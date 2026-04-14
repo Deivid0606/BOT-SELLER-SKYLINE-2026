@@ -3,7 +3,10 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AuthProvider } from "@/contexts/AuthContext";
+import ProtectedRoute from "@/components/ProtectedRoute";
 import AppLayout from "@/components/AppLayout";
+import AuthPage from "@/pages/AuthPage";
 import DashboardPage from "@/pages/DashboardPage";
 import ChatPage from "@/pages/ChatPage";
 import InboxPage from "@/pages/InboxPage";
@@ -21,28 +24,31 @@ const queryClient = new QueryClient();
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <Routes>
-          <Route element={<AppLayout />}>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/chat" element={<ChatPage />} />
-            <Route path="/inbox" element={<InboxPage />} />
-            <Route path="/mensajes" element={<MessagesPage />} />
-            <Route path="/pedidos" element={<OrdersPage />} />
-            <Route path="/plantillas" element={<TemplatesPage />} />
-            <Route path="/disparadores" element={<TriggersV2Page />} />
-            <Route path="/etiquetas" element={<TagsPage />} />
-            <Route path="/entrenamiento" element={<TrainingPage />} />
-            <Route path="/configuracion" element={<SettingsPage />} />
-            <Route path="/notificaciones" element={<NotificationsPage />} />
-          </Route>
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </BrowserRouter>
-    </TooltipProvider>
+    <AuthProvider>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <BrowserRouter>
+          <Routes>
+            <Route path="/auth" element={<AuthPage />} />
+            <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
+              <Route path="/" element={<DashboardPage />} />
+              <Route path="/chat" element={<ChatPage />} />
+              <Route path="/inbox" element={<InboxPage />} />
+              <Route path="/mensajes" element={<MessagesPage />} />
+              <Route path="/pedidos" element={<OrdersPage />} />
+              <Route path="/plantillas" element={<TemplatesPage />} />
+              <Route path="/disparadores" element={<TriggersV2Page />} />
+              <Route path="/etiquetas" element={<TagsPage />} />
+              <Route path="/entrenamiento" element={<TrainingPage />} />
+              <Route path="/configuracion" element={<SettingsPage />} />
+              <Route path="/notificaciones" element={<NotificationsPage />} />
+            </Route>
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </BrowserRouter>
+      </TooltipProvider>
+    </AuthProvider>
   </QueryClientProvider>
 );
 
