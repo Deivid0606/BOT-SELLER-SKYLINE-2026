@@ -1,11 +1,12 @@
-import { motion } from "framer-motion";
-import { Search, Filter } from "lucide-react";
+import { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Search, ImageIcon, MapPin, X, ExternalLink } from "lucide-react";
 
 const mockOrders = [
-  { id: "1", number: "+595 981 234 567", product: "iPhone 15 Pro Max 256GB", name: "Carlos López", city: "Asunción", address: "Av. España 1234", phone: "+595981234567", quantity: "1", total: "Gs. 6.500.000", status: "pending", date: "2024-01-15" },
-  { id: "2", number: "+595 972 345 678", product: "Samsung Galaxy S24 Ultra", name: "María García", city: "Ciudad del Este", address: "Calle Monseñor 456", phone: "+595972345678", quantity: "2", total: "Gs. 11.000.000", status: "loaded", date: "2024-01-14" },
-  { id: "3", number: "+595 961 456 789", product: "AirPods Pro 2", name: "Juan Martínez", city: "Encarnación", address: "Ruta 1 km 370", phone: "+595961456789", quantity: "1", total: "Gs. 1.200.000", status: "dropi", date: "2024-01-13" },
-  { id: "4", number: "+595 983 567 890", product: "iPad Air M2", name: "Ana Benítez", city: "Luque", address: "Barrio San Isidro", phone: "+595983567890", quantity: "1", total: "Gs. 4.800.000", status: "canceled", date: "2024-01-12" },
+  { id: "1", number: "+595 981 234 567", product: "iPhone 15 Pro Max 256GB", name: "Carlos López", city: "Asunción", address: "Av. España 1234", phone: "+595981234567", quantity: "1", total: "Gs. 6.500.000", status: "pending", date: "2024-01-15", paymentType: "transfer", transferImage: "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=400&h=600&fit=crop", locationUrl: "https://maps.google.com/?q=-25.2637,-57.5759" },
+  { id: "2", number: "+595 972 345 678", product: "Samsung Galaxy S24 Ultra", name: "María García", city: "Ciudad del Este", address: "Calle Monseñor 456", phone: "+595972345678", quantity: "2", total: "Gs. 11.000.000", status: "loaded", date: "2024-01-14", paymentType: "transfer", transferImage: "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=400&h=600&fit=crop", locationUrl: null },
+  { id: "3", number: "+595 961 456 789", product: "AirPods Pro 2", name: "Juan Martínez", city: "Encarnación", address: "Ruta 1 km 370", phone: "+595961456789", quantity: "1", total: "Gs. 1.200.000", status: "dropi", date: "2024-01-13", paymentType: "cash", transferImage: null, locationUrl: "https://maps.google.com/?q=-27.3167,-55.8667" },
+  { id: "4", number: "+595 983 567 890", product: "iPad Air M2", name: "Ana Benítez", city: "Luque", address: "Barrio San Isidro", phone: "+595983567890", quantity: "1", total: "Gs. 4.800.000", status: "canceled", date: "2024-01-12", paymentType: "cash", transferImage: null, locationUrl: null },
 ];
 
 const statusConfig: Record<string, { label: string; color: string; bg: string; border: string }> = {
@@ -16,6 +17,8 @@ const statusConfig: Record<string, { label: string; color: string; bg: string; b
 };
 
 export default function OrdersPage() {
+  const [viewingImage, setViewingImage] = useState<string | null>(null);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -67,6 +70,32 @@ export default function OrdersPage() {
                 <p><span className="font-medium">Dirección:</span> <span className="text-muted-foreground">{order.address}</span></p>
                 <p><span className="font-medium">Cant:</span> <span className="text-muted-foreground">{order.quantity}</span></p>
                 <p><span className="font-medium">Total:</span> <span className="text-foreground font-bold">{order.total}</span></p>
+                <p><span className="font-medium">Pago:</span> <span className="text-muted-foreground">{order.paymentType === "transfer" ? "💳 Transferencia" : "💵 Efectivo"}</span></p>
+              </div>
+
+              {/* Transfer image & Location links */}
+              <div className="flex gap-2 mt-3">
+                {order.transferImage && (
+                  <button
+                    onClick={() => setViewingImage(order.transferImage)}
+                    className="flex items-center gap-1.5 text-[10px] px-2.5 py-1.5 rounded-md bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors font-medium"
+                  >
+                    <ImageIcon className="h-3.5 w-3.5" />
+                    Ver comprobante
+                  </button>
+                )}
+                {order.locationUrl && (
+                  <a
+                    href={order.locationUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 text-[10px] px-2.5 py-1.5 rounded-md bg-success/10 text-success border border-success/20 hover:bg-success/20 transition-colors font-medium"
+                  >
+                    <MapPin className="h-3.5 w-3.5" />
+                    Ver ubicación
+                    <ExternalLink className="h-2.5 w-2.5" />
+                  </a>
+                )}
               </div>
 
               <div className="flex gap-1.5 mt-3 flex-wrap">
@@ -79,6 +108,40 @@ export default function OrdersPage() {
           );
         })}
       </div>
+
+      {/* Image lightbox */}
+      <AnimatePresence>
+        {viewingImage && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            onClick={() => setViewingImage(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="relative max-w-lg w-full bg-card border border-border rounded-xl overflow-hidden shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+                <div className="flex items-center gap-2">
+                  <ImageIcon className="h-4 w-4 text-primary" />
+                  <span className="text-sm font-semibold">Comprobante de transferencia</span>
+                </div>
+                <button onClick={() => setViewingImage(null)} className="p-1 rounded-lg hover:bg-secondary transition-colors">
+                  <X className="h-4 w-4 text-muted-foreground" />
+                </button>
+              </div>
+              <div className="p-4">
+                <img src={viewingImage} alt="Comprobante de transferencia" className="w-full rounded-lg border border-border" />
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
