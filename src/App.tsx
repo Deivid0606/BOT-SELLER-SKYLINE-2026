@@ -10,7 +10,6 @@ import InboxPage from "@/pages/InboxPage";
 import MessagesPage from "@/pages/MessagesPage";
 import OrdersPage from "@/pages/OrdersPage";
 import TemplatesPage from "@/pages/TemplatesPage";
-import TriggersPage from "@/pages/TriggersPage";
 import TriggersV2Page from "@/pages/TriggersV2Page";
 import TagsPage from "@/pages/TagsPage";
 import TrainingPage from "@/pages/TrainingPage";
@@ -34,8 +33,7 @@ const App = () => (
             <Route path="/mensajes" element={<MessagesPage />} />
             <Route path="/pedidos" element={<OrdersPage />} />
             <Route path="/plantillas" element={<TemplatesPage />} />
-            <Route path="/disparadores" element={<TriggersPage />} />
-            <Route path="/disparadores-v2" element={<TriggersV2Page />} />
+            <Route path="/disparadores" element={<TriggersV2Page />} />
             <Route path="/etiquetas" element={<TagsPage />} />
             <Route path="/entrenamiento" element={<TrainingPage />} />
             <Route path="/configuracion" element={<SettingsPage />} />
