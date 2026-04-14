@@ -1,11 +1,14 @@
+import { useState } from "react";
 import { motion } from "framer-motion";
-import { Rocket, Plus, Trash2, Clock, MessageSquare } from "lucide-react";
+import { Rocket, Plus, Trash2, ShieldCheck } from "lucide-react";
 
 export default function TriggersV2Page() {
+  const [noRepeat, setNoRepeat] = useState(false);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold font-heading text-gradient">Disparadores V2</h1>
+        <h1 className="text-2xl font-bold font-heading text-gradient">Disparadores</h1>
         <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">Avanzado</span>
       </div>
 
@@ -51,6 +54,26 @@ export default function TriggersV2Page() {
             </select>
           </div>
         </div>
+
+        {/* No repeat toggle */}
+        <div
+          onClick={() => setNoRepeat(!noRepeat)}
+          className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+            noRepeat
+              ? "bg-primary/10 border-primary/30"
+              : "bg-secondary/30 border-border hover:bg-secondary/50"
+          }`}
+        >
+          <ShieldCheck className={`h-5 w-5 shrink-0 ${noRepeat ? "text-primary" : "text-muted-foreground"}`} />
+          <div className="flex-1 min-w-0">
+            <p className={`text-sm font-medium ${noRepeat ? "text-primary" : "text-foreground"}`}>No enviar si ya se envió esta plantilla</p>
+            <p className="text-[10px] text-muted-foreground">Evita enviar la misma plantilla dos veces al mismo contacto</p>
+          </div>
+          <div className={`w-10 h-5 rounded-full transition-colors relative ${noRepeat ? "bg-primary" : "bg-muted"}`}>
+            <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${noRepeat ? "translate-x-5" : "translate-x-0.5"}`} />
+          </div>
+        </div>
+
         <div className="flex gap-2">
           <button className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
             <Plus className="h-4 w-4" /> Guardar
