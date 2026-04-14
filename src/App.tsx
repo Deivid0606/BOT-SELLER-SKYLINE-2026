@@ -3,8 +3,21 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import Index from "./pages/Index.tsx";
-import NotFound from "./pages/NotFound.tsx";
+import AppLayout from "@/components/AppLayout";
+import DashboardPage from "@/pages/DashboardPage";
+import ChatPage from "@/pages/ChatPage";
+import InboxPage from "@/pages/InboxPage";
+import MessagesPage from "@/pages/MessagesPage";
+import OrdersPage from "@/pages/OrdersPage";
+import QrPage from "@/pages/QrPage";
+import TemplatesPage from "@/pages/TemplatesPage";
+import TriggersPage from "@/pages/TriggersPage";
+import TriggersV2Page from "@/pages/TriggersV2Page";
+import TagsPage from "@/pages/TagsPage";
+import TrainingPage from "@/pages/TrainingPage";
+import SettingsPage from "@/pages/SettingsPage";
+import NotificationsPage from "@/pages/NotificationsPage";
+import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
 
@@ -15,8 +28,21 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Index />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+          <Route element={<AppLayout />}>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/chat" element={<ChatPage />} />
+            <Route path="/inbox" element={<InboxPage />} />
+            <Route path="/mensajes" element={<MessagesPage />} />
+            <Route path="/pedidos" element={<OrdersPage />} />
+            <Route path="/qr" element={<QrPage />} />
+            <Route path="/plantillas" element={<TemplatesPage />} />
+            <Route path="/disparadores" element={<TriggersPage />} />
+            <Route path="/disparadores-v2" element={<TriggersV2Page />} />
+            <Route path="/etiquetas" element={<TagsPage />} />
+            <Route path="/entrenamiento" element={<TrainingPage />} />
+            <Route path="/configuracion" element={<SettingsPage />} />
+            <Route path="/notificaciones" element={<NotificationsPage />} />
+          </Route>
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
