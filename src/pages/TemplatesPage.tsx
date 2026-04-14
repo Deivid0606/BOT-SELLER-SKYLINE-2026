@@ -1,5 +1,6 @@
-import { motion } from "framer-motion";
-import { FileText, Plus, Trash2, Eye } from "lucide-react";
+import { useState, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { FileText, Plus, Trash2, Eye, Upload, X, Image, Video, Sparkles } from "lucide-react";
 
 const mockTemplates = [
   { name: "BIENVENIDA", preview: "¡Hola! 👋 Bienvenido a Skyline..." },
@@ -9,7 +10,52 @@ const mockTemplates = [
   { name: "PAGO", preview: "💳 Para realizar el pago..." },
 ];
 
+type MediaFile = {
+  file: File;
+  preview: string;
+  type: "image" | "video" | "gif";
+};
+
 export default function TemplatesPage() {
+  const [images, setImages] = useState<MediaFile[]>([]);
+  const [video, setVideo] = useState<MediaFile | null>(null);
+  const [gif, setGif] = useState<MediaFile | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const gifInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    const remaining = 3 - images.length;
+    const toAdd = files.slice(0, remaining).map((file) => ({
+      file,
+      preview: URL.createObjectURL(file),
+      type: "image" as const,
+    }));
+    setImages((prev) => [...prev, ...toAdd]);
+    e.target.value = "";
+  };
+
+  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setVideo({ file, preview: URL.createObjectURL(file), type: "video" });
+    }
+    e.target.value = "";
+  };
+
+  const handleGifUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setGif({ file, preview: URL.createObjectURL(file), type: "gif" });
+    }
+    e.target.value = "";
+  };
+
+  const removeImage = (index: number) => {
+    setImages((prev) => prev.filter((_, i) => i !== index));
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -30,10 +76,85 @@ export default function TemplatesPage() {
             <label className="text-xs text-muted-foreground">Mensaje</label>
             <textarea className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[120px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50" placeholder="Texto de la plantilla…" />
           </div>
-          <div>
-            <label className="text-xs text-muted-foreground">URL de imagen (opcional)</label>
-            <input className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50" placeholder="https://…" />
+
+          {/* Media uploads */}
+          <div className="space-y-3">
+            <label className="text-xs text-muted-foreground font-medium">Archivos multimedia</label>
+
+            {/* Images (up to 3) */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] text-muted-foreground flex items-center gap-1"><Image className="h-3 w-3" /> Imágenes ({images.length}/3)</span>
+                {images.length < 3 && (
+                  <button onClick={() => imageInputRef.current?.click()} className="text-[10px] px-2 py-1 rounded bg-secondary border border-border hover:bg-secondary/80 transition-colors flex items-center gap-1">
+                    <Upload className="h-3 w-3" /> Subir imagen
+                  </button>
+                )}
+              </div>
+              <input ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" onChange={handleImageUpload} />
+              <AnimatePresence>
+                {images.length > 0 && (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex gap-2 flex-wrap">
+                    {images.map((img, i) => (
+                      <motion.div key={i} initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.8, opacity: 0 }} className="relative w-20 h-20 rounded-lg overflow-hidden border border-border group">
+                        <img src={img.preview} alt="" className="w-full h-full object-cover" />
+                        <button onClick={() => removeImage(i)} className="absolute top-0.5 right-0.5 bg-background/80 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <X className="h-3 w-3 text-destructive" />
+                        </button>
+                      </motion.div>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* Video (1) */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] text-muted-foreground flex items-center gap-1"><Video className="h-3 w-3" /> Video ({video ? "1" : "0"}/1)</span>
+                {!video && (
+                  <button onClick={() => videoInputRef.current?.click()} className="text-[10px] px-2 py-1 rounded bg-secondary border border-border hover:bg-secondary/80 transition-colors flex items-center gap-1">
+                    <Upload className="h-3 w-3" /> Subir video
+                  </button>
+                )}
+              </div>
+              <input ref={videoInputRef} type="file" accept="video/mp4,video/webm,video/quicktime" className="hidden" onChange={handleVideoUpload} />
+              <AnimatePresence>
+                {video && (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="relative rounded-lg overflow-hidden border border-border w-fit group">
+                    <video src={video.preview} className="h-20 rounded-lg" controls />
+                    <button onClick={() => setVideo(null)} className="absolute top-0.5 right-0.5 bg-background/80 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <X className="h-3 w-3 text-destructive" />
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
+            {/* GIF (1) */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] text-muted-foreground flex items-center gap-1"><Sparkles className="h-3 w-3" /> GIF ({gif ? "1" : "0"}/1)</span>
+                {!gif && (
+                  <button onClick={() => gifInputRef.current?.click()} className="text-[10px] px-2 py-1 rounded bg-secondary border border-border hover:bg-secondary/80 transition-colors flex items-center gap-1">
+                    <Upload className="h-3 w-3" /> Subir GIF
+                  </button>
+                )}
+              </div>
+              <input ref={gifInputRef} type="file" accept="image/gif" className="hidden" onChange={handleGifUpload} />
+              <AnimatePresence>
+                {gif && (
+                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="relative w-20 h-20 rounded-lg overflow-hidden border border-border group">
+                    <img src={gif.preview} alt="" className="w-full h-full object-cover" />
+                    <button onClick={() => setGif(null)} className="absolute top-0.5 right-0.5 bg-background/80 rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <X className="h-3 w-3 text-destructive" />
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
           </div>
+
           <div className="flex gap-2">
             <button className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
               <Plus className="h-4 w-4" /> Guardar
