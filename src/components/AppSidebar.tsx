@@ -10,9 +10,11 @@ import {
   GraduationCap,
   Settings,
   Bell,
+  LogOut,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   Sidebar,
   SidebarContent,
@@ -42,6 +44,7 @@ export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
   const location = useLocation();
+  const { user, role, signOut } = useAuth();
 
   return (
     <Sidebar collapsible="icon" className="border-r border-sidebar-border">
@@ -96,6 +99,31 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {/* User info + logout */}
+        <div className="mt-auto border-t border-sidebar-border p-3">
+          {!collapsed ? (
+            <div className="space-y-2">
+              <div className="text-xs text-muted-foreground truncate">{user?.email}</div>
+              <div className="flex items-center justify-between">
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                  role === "admin"
+                    ? "bg-primary/10 text-primary border border-primary/20"
+                    : "bg-secondary text-muted-foreground border border-border"
+                }`}>
+                  {role === "admin" ? "Admin" : "Vendedor"}
+                </span>
+                <button onClick={signOut} className="text-muted-foreground hover:text-destructive transition-colors p-1">
+                  <LogOut className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={signOut} className="w-full flex justify-center text-muted-foreground hover:text-destructive transition-colors p-1">
+              <LogOut className="h-4 w-4" />
+            </button>
+          )}
+        </div>
       </SidebarContent>
     </Sidebar>
   );
