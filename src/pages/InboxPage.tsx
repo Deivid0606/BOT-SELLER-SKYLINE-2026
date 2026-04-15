@@ -131,7 +131,7 @@ export default function InboxPage() {
           </div>
 
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-5 space-y-3 bg-[hsl(220,14%,90%)]">
+          <div className="flex-1 overflow-y-auto p-5 space-y-3 bg-[hsl(220,14%,78%)]">
             {mockMessages.map((msg, idx) => {
               const showDateSeparator = idx === 0 || msg.date !== mockMessages[idx - 1].date;
               return (
