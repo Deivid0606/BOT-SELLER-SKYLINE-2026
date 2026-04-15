@@ -29,6 +29,13 @@ const mockMessages = [
 export default function InboxPage() {
   const [selectedChat, setSelectedChat] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
+  const [messageInput, setMessageInput] = useState("");
+  const [showTemplates, setShowTemplates] = useState(false);
+
+  const handleSelectTemplate = (template: typeof availableTemplates[0]) => {
+    setMessageInput(template.preview);
+    setShowTemplates(false);
+  };
 
   return (
     <div className="space-y-4">
