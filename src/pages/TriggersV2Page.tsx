@@ -348,6 +348,7 @@ export default function TriggersV2Page() {
                             </div>
                           </div>
 
+                          <div className={`rounded-lg border transition-all ${editingTrigger.followUpEnabled ? "bg-amber-500/5 border-amber-500/30" : "bg-secondary/30 border-border"}`}>
                             <div onClick={() => setEditingTrigger({ ...editingTrigger, followUpEnabled: !editingTrigger.followUpEnabled })} className="flex items-center gap-3 p-3 cursor-pointer">
                               <MessageSquare className={`h-5 w-5 shrink-0 ${editingTrigger.followUpEnabled ? "text-amber-400" : "text-muted-foreground"}`} />
                               <div className="flex-1 min-w-0">
