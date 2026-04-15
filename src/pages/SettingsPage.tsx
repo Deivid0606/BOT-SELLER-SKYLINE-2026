@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Globe, Bot, Users, Key, Copy, Check, MessageSquare } from "lucide-react";
+import { Globe, Bot, Users, Key, Copy, Check, MessageSquare, Sheet } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
@@ -14,6 +14,7 @@ export default function SettingsPage() {
     permanent_token: "",
     webhook_url: "",
     webhook_token: "",
+    google_sheets_url: "",
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -36,6 +37,7 @@ export default function SettingsPage() {
             permanent_token: data.permanent_token || "",
             webhook_url: data.webhook_url || "",
             webhook_token: data.webhook_token || "",
+            google_sheets_url: (data as any).google_sheets_url || "",
           });
         }
         setLoading(false);
@@ -52,7 +54,8 @@ export default function SettingsPage() {
         business_account_id: config.business_account_id,
         meta_app_id: config.meta_app_id,
         permanent_token: config.permanent_token,
-      })
+        google_sheets_url: config.google_sheets_url,
+      } as any)
       .eq("user_id", user.id);
 
     if (error) {
@@ -208,6 +211,22 @@ export default function SettingsPage() {
                 El Token es un texto de seguridad para validar que la URL proviene de tu plataforma. 
                 <strong className="text-foreground"> Para configurar correctamente el Webhook, debes copiar estos valores y pegarlos en la página de Facebook Developer en la sección de Webhook.</strong>
               </p>
+            </div>
+
+            {/* Google Sheets Integration */}
+            <div className="bg-card border border-border rounded-lg p-5 space-y-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Sheet className="h-4 w-4 text-emerald-500" />
+                <h3 className="font-heading font-semibold text-sm">Google Sheets</h3>
+              </div>
+              <FieldRow
+                label="URL de Google Sheets"
+                description="Pega aquí la URL de tu Apps Script Web App. Los pedidos confirmados se enviarán automáticamente a tu hoja de cálculo. Seguí las instrucciones para crear tu script en Google Sheets → Extensiones → Apps Script."
+                value={config.google_sheets_url}
+                onChange={(v) => setConfig({ ...config, google_sheets_url: v })}
+                onCopy={() => copyToClipboard(config.google_sheets_url, "sheets")}
+                copied={copiedField === "sheets"}
+              />
             </div>
           </>
         )}
