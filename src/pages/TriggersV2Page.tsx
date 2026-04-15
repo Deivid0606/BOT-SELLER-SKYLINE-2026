@@ -37,6 +37,10 @@ interface RemarketingCampaign {
   customMessage: string;
   selectedTemplate: string;
   intervalDays: number;
+  scheduleType: "always" | "days_hours";
+  scheduleDays: string[];
+  scheduleTimeFrom: string;
+  scheduleTimeTo: string;
 }
 
 const mockTags = [
