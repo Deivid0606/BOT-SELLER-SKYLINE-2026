@@ -76,26 +76,41 @@ export type Database = {
       }
       profiles: {
         Row: {
+          active: boolean
+          active_from: string | null
+          active_until: string | null
+          approved: boolean
           avatar_url: string | null
           created_at: string
           display_name: string | null
           id: string
+          inactive_message: string | null
           updated_at: string
           user_id: string
         }
         Insert: {
+          active?: boolean
+          active_from?: string | null
+          active_until?: string | null
+          approved?: boolean
           avatar_url?: string | null
           created_at?: string
           display_name?: string | null
           id?: string
+          inactive_message?: string | null
           updated_at?: string
           user_id: string
         }
         Update: {
+          active?: boolean
+          active_from?: string | null
+          active_until?: string | null
+          approved?: boolean
           avatar_url?: string | null
           created_at?: string
           display_name?: string | null
           id?: string
+          inactive_message?: string | null
           updated_at?: string
           user_id?: string
         }

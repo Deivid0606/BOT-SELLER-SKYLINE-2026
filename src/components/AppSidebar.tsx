@@ -11,6 +11,7 @@ import {
   Settings,
   Bell,
   LogOut,
+  ShieldCheck,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
@@ -38,6 +39,10 @@ const navItems = [
   { title: "Entrenamiento", url: "/entrenamiento", icon: GraduationCap },
   { title: "Configuración", url: "/configuracion", icon: Settings },
   { title: "Notificaciones", url: "/notificaciones", icon: Bell },
+];
+
+const adminItems = [
+  { title: "Gestión Usuarios", url: "/admin/usuarios", icon: ShieldCheck },
 ];
 
 export function AppSidebar() {
@@ -100,6 +105,41 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {/* Admin section */}
+        {role === "admin" && (
+          <SidebarGroup>
+            <SidebarGroupContent>
+              <SidebarMenu className="px-2 py-1 space-y-0.5">
+                {!collapsed && (
+                  <p className="px-3 pt-2 pb-1 text-[9px] uppercase tracking-wider text-muted-foreground font-semibold">Admin</p>
+                )}
+                {adminItems.map((item) => {
+                  const active = location.pathname === item.url;
+                  return (
+                    <SidebarMenuItem key={item.title}>
+                      <SidebarMenuButton asChild>
+                        <NavLink
+                          to={item.url}
+                          end
+                          className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 text-sm ${
+                            active
+                              ? "glass glass-border text-primary shadow-sm"
+                              : "text-sidebar-foreground hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground border border-transparent"
+                          }`}
+                          activeClassName=""
+                        >
+                          <item.icon className={`h-4 w-4 shrink-0 ${active ? "drop-shadow-[0_0_6px_hsl(239,84%,67%,0.4)]" : ""}`} />
+                          {!collapsed && <span className="flex-1 truncate font-medium">{item.title}</span>}
+                        </NavLink>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  );
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
 
         {/* User info + logout */}
         <div className="mt-auto border-t border-sidebar-border/50 p-3">
