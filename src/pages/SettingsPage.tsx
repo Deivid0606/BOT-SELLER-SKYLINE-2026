@@ -14,6 +14,7 @@ export default function SettingsPage() {
     permanent_token: "",
     webhook_url: "",
     webhook_token: "",
+    google_sheets_url: "",
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
