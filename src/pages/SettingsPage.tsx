@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Globe, Bot, Users, Key, Copy, Check, MessageSquare } from "lucide-react";
+import { Globe, Bot, Users, Key, Copy, Check, MessageSquare, Sheet } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
