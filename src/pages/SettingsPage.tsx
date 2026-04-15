@@ -54,7 +54,8 @@ export default function SettingsPage() {
         business_account_id: config.business_account_id,
         meta_app_id: config.meta_app_id,
         permanent_token: config.permanent_token,
-      })
+        google_sheets_url: config.google_sheets_url,
+      } as any)
       .eq("user_id", user.id);
 
     if (error) {
