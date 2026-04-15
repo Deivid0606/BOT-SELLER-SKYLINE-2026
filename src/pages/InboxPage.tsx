@@ -26,8 +26,8 @@ const mockChats = [
 ];
 
 const mockMessages = [
-  { id: 1, from: "in", text: "Hola! Me interesa el iPhone 15 Pro Max. Tienen disponible?", time: "14:20", date: "2026-04-15" },
-  { id: 2, from: "out", text: "¡Hola! 👋 Sí, tenemos disponible el iPhone 15 Pro Max.\n\n📱 *iPhone 15 Pro Max*\n💰 Precio: Gs. 6.500.000\n📦 Envío gratis a todo el país\n\n¿Te gustaría hacer el pedido?", time: "14:20", date: "2026-04-15", badge: "IA" },
+  { id: 1, from: "in", text: "Hola, ¿Precio de la Crema Veneno de Abeja porfa?", time: "14:20", date: "2026-04-15", adSource: { type: "meta", label: "Anuncio", adId: "120248410168840550", adPreview: "⚡ Resultados visibles en pocos días\n🌟 La crema que está ayudando a miles de personas a recuperar una piel joven 🌟 ¿Arrugas, manchas o piel sin vida? El Veneno de Abeja se ha convertido en uno de los secretos mejor guardados del cuidado facial por su..." } },
+  { id: 2, from: "out", text: "¡Hola! 👋 Sí, tenemos disponible la Crema Veneno de Abeja.\n\n🧴 *Crema Veneno de Abeja*\n💰 Precio: Gs. 150.000\n📦 Envío gratis a todo el país\n\n¿Te gustaría hacer el pedido?", time: "14:20", date: "2026-04-15", badge: "IA" },
   { id: 3, from: "in", text: "Cuanto sale el de 256GB?", time: "14:25", date: "2026-04-15" },
   { id: 4, from: "out", text: "El iPhone 15 Pro Max de 256GB está a Gs. 6.500.000 💰\n\nTambién tenemos:\n• 512GB: Gs. 7.800.000\n• 1TB: Gs. 9.200.000\n\n¿Cuál te interesa? 😊", time: "14:25", date: "2026-04-15", badge: "IA" },
   { id: 5, from: "in", text: "El de 256 está bien. Cómo hago para pagar?", time: "14:30", date: "2026-04-15" },
