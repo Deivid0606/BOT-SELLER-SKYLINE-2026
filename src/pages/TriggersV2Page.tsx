@@ -35,6 +35,7 @@ interface Trigger {
   followUpMinutes: number;
   followUpMessage: string;
   secondary: SecondaryTrigger;
+  autoTag: string;
 }
 
 interface RemarketingCampaign {
