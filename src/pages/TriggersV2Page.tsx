@@ -251,6 +251,7 @@ export default function TriggersV2Page() {
                         <p className="text-[10px] text-cyan-400 flex items-center gap-1 mt-0.5">
                           <GitBranch className="h-3 w-3" /> Secundario: {trigger.secondary.conditionValues.join(", ") || "sin configurar"}
                         </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${trigger.active ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-muted text-muted-foreground border border-border"}`}>
