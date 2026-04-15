@@ -68,52 +68,60 @@ export default function InboxPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="h-8 w-1 rounded-full bg-success" />
-          <h1 className="text-xl font-bold font-heading">Inbox Profesional</h1>
-          <span className="text-xs px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/20 font-medium">
-            {filteredChats.length} chats activos
+          <div className="h-8 w-1 rounded-full bg-gradient-to-b from-primary to-accent" />
+          <div>
+            <h1 className="text-xl font-bold font-heading">Inbox Profesional</h1>
+            <p className="text-[11px] text-muted-foreground">WhatsApp Business integrado</p>
+          </div>
+          <span className="text-[11px] px-2.5 py-1 rounded-full bg-success/10 text-success border border-success/20 font-medium font-mono">
+            {filteredChats.length} activos
           </span>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4 h-[calc(100vh-180px)]">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 h-[calc(100vh-180px)]">
         {/* Chat Area */}
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="bg-card border border-border rounded-lg flex flex-col overflow-hidden">
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass glass-border rounded-xl flex flex-col overflow-hidden">
           {/* Chat Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-card/80">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-border/40 bg-secondary/20">
             <div className="flex items-center gap-3">
-              <span className="font-heading font-bold text-sm">{filteredChats[selectedChat]?.number}</span>
-              {filteredChats[selectedChat]?.tag && (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/20">
-                  {filteredChats[selectedChat].tag}
-                </span>
-              )}
+              <div className="w-8 h-8 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-xs font-bold text-primary font-mono">
+                {filteredChats[selectedChat]?.number?.slice(-2)}
+              </div>
+              <div>
+                <span className="font-heading font-bold text-sm">{filteredChats[selectedChat]?.number}</span>
+                {filteredChats[selectedChat]?.tag && (
+                  <span className="ml-2 text-[9px] px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/20 font-medium">
+                    {filteredChats[selectedChat].tag}
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <button className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-foreground" title="Pausar IA">
+            <div className="flex items-center gap-1">
+              <button className="p-2 rounded-lg hover:bg-secondary/60 transition-all duration-200 text-muted-foreground hover:text-foreground" title="Pausar IA">
                 <Pause className="h-4 w-4" />
               </button>
-              <button className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground hover:text-primary" title="Forzar IA">
+              <button className="p-2 rounded-lg hover:bg-primary/10 transition-all duration-200 text-muted-foreground hover:text-primary" title="Forzar IA">
                 <Bot className="h-4 w-4" />
               </button>
-              <button className="p-2 rounded-lg hover:bg-destructive/10 transition-colors text-muted-foreground hover:text-destructive" title="Eliminar">
+              <button className="p-2 rounded-lg hover:bg-destructive/10 transition-all duration-200 text-muted-foreground hover:text-destructive" title="Eliminar">
                 <Trash2 className="h-4 w-4" />
               </button>
             </div>
           </div>
 
           {/* Toolbar */}
-          <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-secondary/30">
-            <button className="text-xs px-3 py-1.5 rounded-md bg-success/10 text-success border border-success/20 hover:bg-success/20 transition-colors font-medium">
+          <div className="flex items-center gap-2 px-5 py-2.5 border-b border-border/30 bg-secondary/10">
+            <button className="text-[11px] px-3 py-1.5 rounded-lg bg-success/8 text-success border border-success/15 hover:bg-success/15 transition-all duration-200 font-medium">
               ✏️ Venta Normal
             </button>
-            <button className="text-xs px-3 py-1.5 rounded-md bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors font-medium">
+            <button className="text-[11px] px-3 py-1.5 rounded-lg bg-primary/8 text-primary border border-primary/15 hover:bg-primary/15 transition-all duration-200 font-medium">
               🌐 Venta Web
             </button>
-            <button className="text-xs px-3 py-1.5 rounded-md bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive/20 transition-colors font-medium">
+            <button className="text-[11px] px-3 py-1.5 rounded-lg bg-destructive/8 text-destructive border border-destructive/15 hover:bg-destructive/15 transition-all duration-200 font-medium">
               🧹 Limpiar
             </button>
-            <select className="ml-auto text-xs bg-secondary border border-border rounded-md px-2 py-1.5 text-muted-foreground">
+            <select className="ml-auto text-[11px] bg-secondary/40 border border-border/40 rounded-lg px-2.5 py-1.5 text-muted-foreground focus:outline-none focus:border-primary/30 transition-colors">
               <option>Etiquetar...</option>
               <option>venta normal cargada</option>
               <option>venta web cargada</option>
@@ -123,58 +131,63 @@ export default function InboxPage() {
           </div>
 
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3" style={{
-            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='40' height='40' fill='hsl(230,50%25,5%25)'/%3E%3Cg stroke='hsl(232,30%25,16%25)' stroke-opacity='0.3'%3E%3Cpath d='M0 20h40M20 0v40'/%3E%3C/g%3E%3C/svg%3E")`,
+          <div className="flex-1 overflow-y-auto p-5 space-y-3" style={{
+            backgroundImage: `radial-gradient(circle at 50% 50%, hsl(230 35% 6%) 0%, hsl(228 40% 4%) 100%)`,
           }}>
             {mockMessages.map((msg, idx) => {
               const showDateSeparator = idx === 0 || msg.date !== mockMessages[idx - 1].date;
               return (
                 <div key={msg.id}>
                   {showDateSeparator && (
-                    <div className="flex items-center justify-center my-2">
-                      <span className="text-[10px] px-3 py-1 rounded-full bg-secondary/80 text-muted-foreground border border-border">
+                    <div className="flex items-center justify-center my-3">
+                      <span className="text-[10px] px-4 py-1.5 rounded-full glass glass-border text-muted-foreground font-medium">
                         {format(new Date(msg.date), "EEEE, d 'de' MMMM yyyy", { locale: es })}
                       </span>
                     </div>
                   )}
-                  <div className={`flex ${msg.from === "out" ? "justify-end" : "justify-start"}`}>
+                  <motion.div 
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: idx * 0.05 }}
+                    className={`flex ${msg.from === "out" ? "justify-end" : "justify-start"}`}
+                  >
                     <div
-                      className={`max-w-[75%] px-4 py-3 rounded-2xl text-sm whitespace-pre-line ${
+                      className={`max-w-[75%] px-4 py-3 text-sm whitespace-pre-line ${
                         msg.from === "out"
-                          ? "bg-gradient-to-br from-[hsl(160,100%,18%)] to-[hsl(164,100%,25%)] border border-[hsl(160,80%,28%)] rounded-br-sm"
-                          : "bg-secondary/80 border border-border rounded-bl-sm"
+                          ? "bg-gradient-to-br from-[hsl(160,80%,16%)] to-[hsl(165,70%,22%)] border border-[hsl(160,60%,26%/0.4)] rounded-2xl rounded-br-md shadow-lg shadow-[hsl(160,80%,16%/0.15)]"
+                          : "glass glass-border rounded-2xl rounded-bl-md"
                       }`}
                     >
-                      <div>{msg.text}</div>
-                      <div className="flex items-center gap-2 mt-1.5 text-[10px] text-muted-foreground/70">
-                        <span>{msg.date} {msg.time}</span>
+                      <div className="leading-relaxed">{msg.text}</div>
+                      <div className="flex items-center gap-2 mt-2 text-[10px] text-muted-foreground/60">
+                        <span>{msg.time}</span>
                         {msg.badge && (
-                          <span className="px-1.5 py-0.5 rounded-full bg-primary/20 text-primary text-[9px] font-medium">
+                          <span className="px-1.5 py-0.5 rounded-full bg-primary/15 text-primary text-[9px] font-semibold font-mono">
                             {msg.badge}
                           </span>
                         )}
-                        {msg.from === "out" && <span>✓✓</span>}
+                        {msg.from === "out" && <span className="text-success/60">✓✓</span>}
                       </div>
                     </div>
-                  </div>
+                  </motion.div>
                 </div>
               );
             })}
           </div>
 
           {/* Input */}
-          <div className="border-t border-border p-3 bg-card/80 space-y-2 relative">
+          <div className="border-t border-border/30 p-4 bg-secondary/10 space-y-2 relative">
             <AnimatePresence>
               {showTemplates && (
                 <motion.div
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 10 }}
-                  className="absolute bottom-full left-0 right-0 mx-3 mb-2 bg-card border border-border rounded-lg shadow-lg overflow-hidden z-10"
+                  className="absolute bottom-full left-0 right-0 mx-4 mb-2 glass glass-border rounded-xl shadow-pro overflow-hidden z-10"
                 >
-                  <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-secondary/30">
+                  <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/30 bg-secondary/20">
                     <span className="text-xs font-heading font-bold">📋 Plantillas</span>
-                    <button onClick={() => setShowTemplates(false)} className="p-1 rounded hover:bg-secondary text-muted-foreground">
+                    <button onClick={() => setShowTemplates(false)} className="p-1 rounded-lg hover:bg-secondary/60 text-muted-foreground transition-colors">
                       <X className="h-3.5 w-3.5" />
                     </button>
                   </div>
@@ -183,9 +196,9 @@ export default function InboxPage() {
                       <button
                         key={tpl.name}
                         onClick={() => handleSelectTemplate(tpl)}
-                        className="w-full text-left px-3 py-2.5 hover:bg-primary/5 border-b border-border/50 last:border-0 transition-colors"
+                        className="w-full text-left px-4 py-3 hover:bg-primary/5 border-b border-border/20 last:border-0 transition-colors"
                       >
-                        <span className="text-[10px] font-bold text-primary">{tpl.name}</span>
+                        <span className="text-[10px] font-bold text-primary font-mono tracking-wider">{tpl.name}</span>
                         <p className="text-xs text-muted-foreground truncate mt-0.5">{tpl.preview}</p>
                       </button>
                     ))}
@@ -195,26 +208,26 @@ export default function InboxPage() {
             </AnimatePresence>
 
             <div className="flex items-center gap-2">
-              <button className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground">
+              <button className="p-2.5 rounded-xl hover:bg-secondary/50 transition-all duration-200 text-muted-foreground hover:text-foreground">
                 <Smile className="h-4 w-4" />
               </button>
-              <button className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground">
+              <button className="p-2.5 rounded-xl hover:bg-secondary/50 transition-all duration-200 text-muted-foreground hover:text-foreground">
                 <Image className="h-4 w-4" />
               </button>
               <button
                 onClick={() => setShowTemplates(!showTemplates)}
-                className={`p-2 rounded-lg transition-colors ${showTemplates ? "bg-primary/10 text-primary" : "hover:bg-secondary text-muted-foreground"}`}
+                className={`p-2.5 rounded-xl transition-all duration-200 ${showTemplates ? "bg-primary/10 text-primary shadow-sm" : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"}`}
                 title="Plantillas"
               >
                 <FileText className="h-4 w-4" />
               </button>
               <input
-                className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
+                className="flex-1 bg-secondary/30 border border-border/40 rounded-xl px-4 py-2.5 text-sm placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/30 focus:ring-2 focus:ring-primary/10 focus:bg-secondary/50 transition-all duration-200"
                 placeholder="Escribe tu mensaje aquí..."
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
               />
-              <button className="p-2.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
+              <button className="p-2.5 rounded-xl bg-gradient-to-r from-primary to-accent text-primary-foreground hover:shadow-[0_0_16px_hsl(239,84%,67%,0.3)] hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200">
                 <Send className="h-4 w-4" />
               </button>
             </div>
@@ -222,22 +235,22 @@ export default function InboxPage() {
         </motion.div>
 
         {/* Sidebar - Chats */}
-        <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="bg-card border border-border rounded-lg flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-border">
-            <div className="flex items-center justify-between mb-2">
+        <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="glass glass-border rounded-xl flex flex-col overflow-hidden">
+          <div className="px-4 py-3 border-b border-border/30">
+            <div className="flex items-center justify-between mb-2.5">
               <span className="font-heading font-bold text-sm">Chats Recientes</span>
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => setShowFilters(!showFilters)}
-                  className={`p-1.5 rounded-md transition-colors relative ${showFilters || hasActiveFilters ? "bg-primary/10 text-primary" : "hover:bg-secondary text-muted-foreground"}`}
+                  className={`p-1.5 rounded-lg transition-all duration-200 relative ${showFilters || hasActiveFilters ? "bg-primary/10 text-primary" : "hover:bg-secondary/60 text-muted-foreground"}`}
                   title="Filtros"
                 >
                   <Filter className="h-3.5 w-3.5" />
                   {hasActiveFilters && (
-                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-primary" />
+                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-primary shadow-[0_0_6px_hsl(239,84%,67%,0.5)]" />
                   )}
                 </button>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground border border-border">
+                <span className="text-[11px] px-2 py-0.5 rounded-lg bg-secondary/60 text-muted-foreground border border-border/30 font-mono">
                   {filteredChats.length}
                 </span>
               </div>
@@ -252,10 +265,9 @@ export default function InboxPage() {
                   exit={{ height: 0, opacity: 0 }}
                   className="overflow-hidden"
                 >
-                  <div className="space-y-2 pb-2">
-                    {/* Tag Filter */}
+                  <div className="space-y-2.5 pb-2.5">
                     <div>
-                      <label className="text-[10px] text-muted-foreground font-medium flex items-center gap-1 mb-1">
+                      <label className="text-[10px] text-muted-foreground font-medium flex items-center gap-1 mb-1.5 uppercase tracking-wider">
                         <Tag className="h-3 w-3" /> Etiqueta
                       </label>
                       <div className="flex flex-wrap gap-1">
@@ -263,10 +275,10 @@ export default function InboxPage() {
                           <button
                             key={tag}
                             onClick={() => setFilterTag(filterTag === tag ? null : tag)}
-                            className={`text-[10px] px-2 py-1 rounded-full border transition-colors ${
+                            className={`text-[10px] px-2.5 py-1 rounded-lg border transition-all duration-200 ${
                               filterTag === tag
-                                ? "bg-primary/20 text-primary border-primary/30"
-                                : "bg-secondary/50 text-muted-foreground border-border hover:bg-secondary"
+                                ? "bg-primary/15 text-primary border-primary/25 shadow-sm"
+                                : "bg-secondary/30 text-muted-foreground border-border/30 hover:bg-secondary/50"
                             }`}
                           >
                             {tag}
@@ -275,18 +287,17 @@ export default function InboxPage() {
                       </div>
                     </div>
 
-                    {/* Date Filter */}
                     <div>
-                      <label className="text-[10px] text-muted-foreground font-medium flex items-center gap-1 mb-1">
+                      <label className="text-[10px] text-muted-foreground font-medium flex items-center gap-1 mb-1.5 uppercase tracking-wider">
                         <CalendarDays className="h-3 w-3" /> Fecha
                       </label>
                       <Popover>
                         <PopoverTrigger asChild>
                           <button className={cn(
-                            "w-full text-left text-xs px-3 py-1.5 rounded-md border transition-colors",
+                            "w-full text-left text-xs px-3 py-2 rounded-lg border transition-all duration-200",
                             filterDate
-                              ? "bg-primary/10 text-primary border-primary/30"
-                              : "bg-secondary/50 text-muted-foreground border-border hover:bg-secondary"
+                              ? "bg-primary/10 text-primary border-primary/25"
+                              : "bg-secondary/30 text-muted-foreground border-border/30 hover:bg-secondary/50"
                           )}>
                             {filterDate ? format(filterDate, "d 'de' MMMM yyyy", { locale: es }) : "Seleccionar fecha..."}
                           </button>
@@ -306,7 +317,7 @@ export default function InboxPage() {
                     {hasActiveFilters && (
                       <button
                         onClick={clearFilters}
-                        className="text-[10px] text-destructive hover:underline"
+                        className="text-[10px] text-destructive hover:underline font-medium"
                       >
                         ✕ Limpiar filtros
                       </button>
@@ -319,7 +330,7 @@ export default function InboxPage() {
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <input
-                className="w-full bg-secondary/50 border border-border rounded-lg pl-8 pr-3 py-2 text-xs placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+                className="w-full bg-secondary/30 border border-border/30 rounded-xl pl-8 pr-3 py-2 text-xs placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/30 focus:ring-2 focus:ring-primary/10 transition-all duration-200"
                 placeholder="Buscar chat..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -332,35 +343,40 @@ export default function InboxPage() {
               <button
                 key={chat.number}
                 onClick={() => setSelectedChat(i)}
-                className={`w-full text-left px-4 py-3 border-b border-border/50 transition-all hover:bg-secondary/50 ${
+                className={`w-full text-left px-4 py-3.5 border-b border-border/20 transition-all duration-200 hover:bg-secondary/30 ${
                   selectedChat === i ? "bg-primary/5 border-l-2 border-l-primary" : ""
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className="font-mono text-xs font-bold">{chat.number}</span>
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-7 h-7 rounded-full bg-secondary/60 border border-border/30 flex items-center justify-center text-[10px] font-bold text-muted-foreground font-mono">
+                      {chat.number.slice(-2)}
+                    </div>
+                    <span className="font-mono text-xs font-bold">{chat.number}</span>
+                  </div>
                   <div className="flex items-center gap-1.5">
                     {chat.tag && (
-                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-success/10 text-success border border-success/20">
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-success/10 text-success border border-success/15 font-medium">
                         {chat.tag}
                       </span>
                     )}
                   </div>
                 </div>
-                <div className="flex items-center justify-between mt-1">
+                <div className="flex items-center justify-between mt-1.5 ml-9.5">
                   <span className="text-xs text-muted-foreground truncate max-w-[180px]">{chat.lastMsg}</span>
                   {chat.unread > 0 && (
-                    <span className="min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] font-bold">
+                    <span className="min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-gradient-to-r from-primary to-accent text-primary-foreground text-[10px] font-bold shadow-[0_0_8px_hsl(239,84%,67%,0.3)]">
                       {chat.unread}
                     </span>
                   )}
                 </div>
-                <div className="text-[10px] text-muted-foreground/60 mt-0.5">
+                <div className="text-[10px] text-muted-foreground/40 mt-1 ml-9.5 font-mono">
                   {chat.date} · {chat.time}
                 </div>
               </button>
             ))}
             {filteredChats.length === 0 && (
-              <div className="p-6 text-center text-xs text-muted-foreground">
+              <div className="p-8 text-center text-xs text-muted-foreground">
                 No se encontraron chats con los filtros aplicados
               </div>
             )}

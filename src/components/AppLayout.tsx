@@ -8,11 +8,14 @@ export default function AppLayout() {
       <div className="min-h-screen flex w-full">
         <AppSidebar />
         <div className="flex-1 flex flex-col min-w-0">
-          <header className="h-14 flex items-center border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-50 px-4 gap-4">
-            <SidebarTrigger />
-            <div className="flex items-center gap-2 ml-auto">
-              <div className="h-2 w-2 rounded-full bg-success animate-pulse-glow" />
-              <span className="text-xs text-muted-foreground">Online</span>
+          <header className="h-14 flex items-center border-b border-border/50 glass sticky top-0 z-50 px-5 gap-4">
+            <SidebarTrigger className="hover:bg-secondary/80 rounded-lg transition-colors" />
+            <div className="flex items-center gap-2.5 ml-auto">
+              <div className="relative">
+                <div className="h-2 w-2 rounded-full bg-success" />
+                <div className="absolute inset-0 h-2 w-2 rounded-full bg-success animate-ping opacity-40" />
+              </div>
+              <span className="text-xs text-muted-foreground font-medium">En línea</span>
             </div>
           </header>
           <main className="flex-1 p-6 overflow-auto">
