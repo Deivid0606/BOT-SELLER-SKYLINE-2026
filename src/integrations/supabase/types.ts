@@ -119,6 +119,45 @@ export type Database = {
         }
         Relationships: []
       }
+      whatsapp_config: {
+        Row: {
+          business_account_id: string | null
+          created_at: string
+          id: string
+          meta_app_id: string | null
+          permanent_token: string | null
+          phone_number_id: string | null
+          updated_at: string
+          user_id: string
+          webhook_token: string
+          webhook_url: string
+        }
+        Insert: {
+          business_account_id?: string | null
+          created_at?: string
+          id?: string
+          meta_app_id?: string | null
+          permanent_token?: string | null
+          phone_number_id?: string | null
+          updated_at?: string
+          user_id: string
+          webhook_token: string
+          webhook_url: string
+        }
+        Update: {
+          business_account_id?: string | null
+          created_at?: string
+          id?: string
+          meta_app_id?: string | null
+          permanent_token?: string | null
+          phone_number_id?: string | null
+          updated_at?: string
+          user_id?: string
+          webhook_token?: string
+          webhook_url?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
