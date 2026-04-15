@@ -1,6 +1,11 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, Send, Pause, Trash2, Bot, Image, Smile, FileText, X } from "lucide-react";
+import { Search, Send, Pause, Trash2, Bot, Image, Smile, FileText, X, Filter, CalendarDays, Tag } from "lucide-react";
+import { format } from "date-fns";
+import { es } from "date-fns/locale";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
+import { cn } from "@/lib/utils";
 
 const availableTemplates = [
   { name: "BIENVENIDA", preview: "¡Hola! 👋 Bienvenido a Skyline Store. ¿En qué podemos ayudarte hoy?" },
@@ -10,20 +15,22 @@ const availableTemplates = [
   { name: "PAGO", preview: "💳 Para realizar el pago podés transferir a:\nBanco: ...\nCuenta: ...\nTitular: ..." },
 ];
 
+const allTags = ["venta", "confirmado", "prospecto", "consulta", "venta web"];
+
 const mockChats = [
-  { number: "+595 981 234 567", lastMsg: "Hola, quiero saber precio del iPhone 15", time: "14:32", unread: 3 },
-  { number: "+595 972 345 678", lastMsg: "Ya transferí el pago", time: "14:15", unread: 0, tag: "venta" },
-  { number: "+595 961 456 789", lastMsg: "Tienen en color azul?", time: "13:50", unread: 1 },
-  { number: "+595 983 567 890", lastMsg: "Cuánto sale el envío a Encarnación?", time: "12:22", unread: 0 },
-  { number: "+595 974 678 901", lastMsg: "Perfecto, confirmo el pedido", time: "11:45", unread: 0, tag: "confirmado" },
+  { number: "+595 981 234 567", lastMsg: "Hola, quiero saber precio del iPhone 15", time: "14:32", date: "2026-04-15", unread: 3 },
+  { number: "+595 972 345 678", lastMsg: "Ya transferí el pago", time: "14:15", date: "2026-04-15", unread: 0, tag: "venta" },
+  { number: "+595 961 456 789", lastMsg: "Tienen en color azul?", time: "13:50", date: "2026-04-14", unread: 1 },
+  { number: "+595 983 567 890", lastMsg: "Cuánto sale el envío a Encarnación?", time: "12:22", date: "2026-04-13", unread: 0, tag: "consulta" },
+  { number: "+595 974 678 901", lastMsg: "Perfecto, confirmo el pedido", time: "11:45", date: "2026-04-12", unread: 0, tag: "confirmado" },
 ];
 
 const mockMessages = [
-  { id: 1, from: "in", text: "Hola! Me interesa el iPhone 15 Pro Max. Tienen disponible?", time: "14:20" },
-  { id: 2, from: "out", text: "¡Hola! 👋 Sí, tenemos disponible el iPhone 15 Pro Max.\n\n📱 *iPhone 15 Pro Max*\n💰 Precio: Gs. 6.500.000\n📦 Envío gratis a todo el país\n\n¿Te gustaría hacer el pedido?", time: "14:20", badge: "IA" },
-  { id: 3, from: "in", text: "Cuanto sale el de 256GB?", time: "14:25" },
-  { id: 4, from: "out", text: "El iPhone 15 Pro Max de 256GB está a Gs. 6.500.000 💰\n\nTambién tenemos:\n• 512GB: Gs. 7.800.000\n• 1TB: Gs. 9.200.000\n\n¿Cuál te interesa? 😊", time: "14:25", badge: "IA" },
-  { id: 5, from: "in", text: "El de 256 está bien. Cómo hago para pagar?", time: "14:30" },
+  { id: 1, from: "in", text: "Hola! Me interesa el iPhone 15 Pro Max. Tienen disponible?", time: "14:20", date: "2026-04-15" },
+  { id: 2, from: "out", text: "¡Hola! 👋 Sí, tenemos disponible el iPhone 15 Pro Max.\n\n📱 *iPhone 15 Pro Max*\n💰 Precio: Gs. 6.500.000\n📦 Envío gratis a todo el país\n\n¿Te gustaría hacer el pedido?", time: "14:20", date: "2026-04-15", badge: "IA" },
+  { id: 3, from: "in", text: "Cuanto sale el de 256GB?", time: "14:25", date: "2026-04-15" },
+  { id: 4, from: "out", text: "El iPhone 15 Pro Max de 256GB está a Gs. 6.500.000 💰\n\nTambién tenemos:\n• 512GB: Gs. 7.800.000\n• 1TB: Gs. 9.200.000\n\n¿Cuál te interesa? 😊", time: "14:25", date: "2026-04-15", badge: "IA" },
+  { id: 5, from: "in", text: "El de 256 está bien. Cómo hago para pagar?", time: "14:30", date: "2026-04-15" },
 ];
 
 export default function InboxPage() {
@@ -31,11 +38,30 @@ export default function InboxPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [messageInput, setMessageInput] = useState("");
   const [showTemplates, setShowTemplates] = useState(false);
+  const [filterTag, setFilterTag] = useState<string | null>(null);
+  const [filterDate, setFilterDate] = useState<Date | undefined>(undefined);
+  const [showFilters, setShowFilters] = useState(false);
 
   const handleSelectTemplate = (template: typeof availableTemplates[0]) => {
     setMessageInput(template.preview);
     setShowTemplates(false);
   };
+
+  const filteredChats = useMemo(() => {
+    return mockChats.filter((chat) => {
+      if (searchQuery && !chat.number.includes(searchQuery) && !chat.lastMsg.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      if (filterTag && chat.tag !== filterTag) return false;
+      if (filterDate && chat.date !== format(filterDate, "yyyy-MM-dd")) return false;
+      return true;
+    });
+  }, [searchQuery, filterTag, filterDate]);
+
+  const clearFilters = () => {
+    setFilterTag(null);
+    setFilterDate(undefined);
+  };
+
+  const hasActiveFilters = filterTag || filterDate;
 
   return (
     <div className="space-y-4">
@@ -45,7 +71,7 @@ export default function InboxPage() {
           <div className="h-8 w-1 rounded-full bg-success" />
           <h1 className="text-xl font-bold font-heading">Inbox Profesional</h1>
           <span className="text-xs px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/20 font-medium">
-            {mockChats.length} chats activos
+            {filteredChats.length} chats activos
           </span>
         </div>
       </div>
@@ -56,10 +82,10 @@ export default function InboxPage() {
           {/* Chat Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-card/80">
             <div className="flex items-center gap-3">
-              <span className="font-heading font-bold text-sm">{mockChats[selectedChat]?.number}</span>
-              {mockChats[selectedChat]?.tag && (
+              <span className="font-heading font-bold text-sm">{filteredChats[selectedChat]?.number}</span>
+              {filteredChats[selectedChat]?.tag && (
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/20">
-                  {mockChats[selectedChat].tag}
+                  {filteredChats[selectedChat].tag}
                 </span>
               )}
             </div>
@@ -100,33 +126,44 @@ export default function InboxPage() {
           <div className="flex-1 overflow-y-auto p-4 space-y-3" style={{
             backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='40' height='40' fill='hsl(230,50%25,5%25)'/%3E%3Cg stroke='hsl(232,30%25,16%25)' stroke-opacity='0.3'%3E%3Cpath d='M0 20h40M20 0v40'/%3E%3C/g%3E%3C/svg%3E")`,
           }}>
-            {mockMessages.map((msg) => (
-              <div key={msg.id} className={`flex ${msg.from === "out" ? "justify-end" : "justify-start"}`}>
-                <div
-                  className={`max-w-[75%] px-4 py-3 rounded-2xl text-sm whitespace-pre-line ${
-                    msg.from === "out"
-                      ? "bg-gradient-to-br from-[hsl(160,100%,18%)] to-[hsl(164,100%,25%)] border border-[hsl(160,80%,28%)] rounded-br-sm"
-                      : "bg-secondary/80 border border-border rounded-bl-sm"
-                  }`}
-                >
-                  <div>{msg.text}</div>
-                  <div className="flex items-center gap-2 mt-1.5 text-[10px] text-muted-foreground/70">
-                    <span>{msg.time}</span>
-                    {msg.badge && (
-                      <span className="px-1.5 py-0.5 rounded-full bg-primary/20 text-primary text-[9px] font-medium">
-                        {msg.badge}
+            {mockMessages.map((msg, idx) => {
+              const showDateSeparator = idx === 0 || msg.date !== mockMessages[idx - 1].date;
+              return (
+                <div key={msg.id}>
+                  {showDateSeparator && (
+                    <div className="flex items-center justify-center my-2">
+                      <span className="text-[10px] px-3 py-1 rounded-full bg-secondary/80 text-muted-foreground border border-border">
+                        {format(new Date(msg.date), "EEEE, d 'de' MMMM yyyy", { locale: es })}
                       </span>
-                    )}
-                    {msg.from === "out" && <span>✓✓</span>}
+                    </div>
+                  )}
+                  <div className={`flex ${msg.from === "out" ? "justify-end" : "justify-start"}`}>
+                    <div
+                      className={`max-w-[75%] px-4 py-3 rounded-2xl text-sm whitespace-pre-line ${
+                        msg.from === "out"
+                          ? "bg-gradient-to-br from-[hsl(160,100%,18%)] to-[hsl(164,100%,25%)] border border-[hsl(160,80%,28%)] rounded-br-sm"
+                          : "bg-secondary/80 border border-border rounded-bl-sm"
+                      }`}
+                    >
+                      <div>{msg.text}</div>
+                      <div className="flex items-center gap-2 mt-1.5 text-[10px] text-muted-foreground/70">
+                        <span>{msg.date} {msg.time}</span>
+                        {msg.badge && (
+                          <span className="px-1.5 py-0.5 rounded-full bg-primary/20 text-primary text-[9px] font-medium">
+                            {msg.badge}
+                          </span>
+                        )}
+                        {msg.from === "out" && <span>✓✓</span>}
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Input */}
           <div className="border-t border-border p-3 bg-card/80 space-y-2 relative">
-            {/* Template Picker */}
             <AnimatePresence>
               {showTemplates && (
                 <motion.div
@@ -189,10 +226,96 @@ export default function InboxPage() {
           <div className="px-4 py-3 border-b border-border">
             <div className="flex items-center justify-between mb-2">
               <span className="font-heading font-bold text-sm">Chats Recientes</span>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground border border-border">
-                {mockChats.length}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setShowFilters(!showFilters)}
+                  className={`p-1.5 rounded-md transition-colors relative ${showFilters || hasActiveFilters ? "bg-primary/10 text-primary" : "hover:bg-secondary text-muted-foreground"}`}
+                  title="Filtros"
+                >
+                  <Filter className="h-3.5 w-3.5" />
+                  {hasActiveFilters && (
+                    <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-primary" />
+                  )}
+                </button>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground border border-border">
+                  {filteredChats.length}
+                </span>
+              </div>
             </div>
+
+            {/* Filters Panel */}
+            <AnimatePresence>
+              {showFilters && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="space-y-2 pb-2">
+                    {/* Tag Filter */}
+                    <div>
+                      <label className="text-[10px] text-muted-foreground font-medium flex items-center gap-1 mb-1">
+                        <Tag className="h-3 w-3" /> Etiqueta
+                      </label>
+                      <div className="flex flex-wrap gap-1">
+                        {allTags.map((tag) => (
+                          <button
+                            key={tag}
+                            onClick={() => setFilterTag(filterTag === tag ? null : tag)}
+                            className={`text-[10px] px-2 py-1 rounded-full border transition-colors ${
+                              filterTag === tag
+                                ? "bg-primary/20 text-primary border-primary/30"
+                                : "bg-secondary/50 text-muted-foreground border-border hover:bg-secondary"
+                            }`}
+                          >
+                            {tag}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Date Filter */}
+                    <div>
+                      <label className="text-[10px] text-muted-foreground font-medium flex items-center gap-1 mb-1">
+                        <CalendarDays className="h-3 w-3" /> Fecha
+                      </label>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button className={cn(
+                            "w-full text-left text-xs px-3 py-1.5 rounded-md border transition-colors",
+                            filterDate
+                              ? "bg-primary/10 text-primary border-primary/30"
+                              : "bg-secondary/50 text-muted-foreground border-border hover:bg-secondary"
+                          )}>
+                            {filterDate ? format(filterDate, "d 'de' MMMM yyyy", { locale: es }) : "Seleccionar fecha..."}
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="end">
+                          <Calendar
+                            mode="single"
+                            selected={filterDate}
+                            onSelect={setFilterDate}
+                            initialFocus
+                            className="p-3 pointer-events-auto"
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+
+                    {hasActiveFilters && (
+                      <button
+                        onClick={clearFilters}
+                        className="text-[10px] text-destructive hover:underline"
+                      >
+                        ✕ Limpiar filtros
+                      </button>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <input
@@ -205,7 +328,7 @@ export default function InboxPage() {
           </div>
 
           <div className="flex-1 overflow-y-auto">
-            {mockChats.map((chat, i) => (
+            {filteredChats.map((chat, i) => (
               <button
                 key={chat.number}
                 onClick={() => setSelectedChat(i)}
@@ -215,18 +338,32 @@ export default function InboxPage() {
               >
                 <div className="flex items-center justify-between">
                   <span className="font-mono text-xs font-bold">{chat.number}</span>
-                  <span className="text-[10px] text-muted-foreground">{chat.time}</span>
+                  <div className="flex items-center gap-1.5">
+                    {chat.tag && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-success/10 text-success border border-success/20">
+                        {chat.tag}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center justify-between mt-1">
-                  <span className="text-xs text-muted-foreground truncate max-w-[200px]">{chat.lastMsg}</span>
+                  <span className="text-xs text-muted-foreground truncate max-w-[180px]">{chat.lastMsg}</span>
                   {chat.unread > 0 && (
                     <span className="min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-primary text-primary-foreground text-[10px] font-bold">
                       {chat.unread}
                     </span>
                   )}
                 </div>
+                <div className="text-[10px] text-muted-foreground/60 mt-0.5">
+                  {chat.date} · {chat.time}
+                </div>
               </button>
             ))}
+            {filteredChats.length === 0 && (
+              <div className="p-6 text-center text-xs text-muted-foreground">
+                No se encontraron chats con los filtros aplicados
+              </div>
+            )}
           </div>
         </motion.div>
       </div>
