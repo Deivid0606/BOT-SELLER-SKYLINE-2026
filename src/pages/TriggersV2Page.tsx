@@ -92,7 +92,7 @@ export default function TriggersV2Page() {
 
   // Remarketing state
   const [campaigns, setCampaigns] = useState<RemarketingCampaign[]>([
-    { ...defaultCampaign, id: "r1", name: "Oferta Semanal", active: true, tags: ["prospecto", "consulta"], customMessage: "¡Hola! 🔥 No te pierdas nuestras ofertas exclusivas de esta semana. ¿Te interesa saber más?", intervalDays: 4 },
+    { ...defaultCampaign, id: "r1", name: "Oferta Semanal", active: true, tags: ["prospecto", "consulta"], customMessage: "¡Hola! 🔥 No te pierdas nuestras ofertas exclusivas de esta semana. ¿Te interesa saber más?", intervalDays: 4, scheduleType: "days_hours", scheduleDays: ["lun", "mie", "vie"], scheduleTimeFrom: "10:00", scheduleTimeTo: "17:00" },
   ]);
   const [expandedCampaignId, setExpandedCampaignId] = useState<string | null>(null);
   const [editingCampaign, setEditingCampaign] = useState<RemarketingCampaign | null>(null);
