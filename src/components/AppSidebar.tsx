@@ -11,6 +11,7 @@ import {
   Settings,
   Bell,
   LogOut,
+  ShieldCheck,
 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { useLocation } from "react-router-dom";
@@ -38,6 +39,10 @@ const navItems = [
   { title: "Entrenamiento", url: "/entrenamiento", icon: GraduationCap },
   { title: "Configuración", url: "/configuracion", icon: Settings },
   { title: "Notificaciones", url: "/notificaciones", icon: Bell },
+];
+
+const adminItems = [
+  { title: "Gestión Usuarios", url: "/admin/usuarios", icon: ShieldCheck },
 ];
 
 export function AppSidebar() {

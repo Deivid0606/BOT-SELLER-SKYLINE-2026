@@ -18,6 +18,7 @@ import TagsPage from "@/pages/TagsPage";
 import TrainingPage from "@/pages/TrainingPage";
 import SettingsPage from "@/pages/SettingsPage";
 import NotificationsPage from "@/pages/NotificationsPage";
+import AdminUsersPage from "@/pages/AdminUsersPage";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -43,6 +44,7 @@ const App = () => (
               <Route path="/entrenamiento" element={<TrainingPage />} />
               <Route path="/configuracion" element={<SettingsPage />} />
               <Route path="/notificaciones" element={<NotificationsPage />} />
+              <Route path="/admin/usuarios" element={<AdminUsersPage />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>
