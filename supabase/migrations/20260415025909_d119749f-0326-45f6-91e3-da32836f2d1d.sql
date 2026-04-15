@@ -1,0 +1,1 @@
+ALTER TABLE public.whatsapp_config ADD COLUMN google_sheets_url text DEFAULT '';

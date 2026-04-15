@@ -138,6 +138,7 @@ export type Database = {
         Row: {
           business_account_id: string | null
           created_at: string
+          google_sheets_url: string | null
           id: string
           meta_app_id: string | null
           permanent_token: string | null
@@ -150,6 +151,7 @@ export type Database = {
         Insert: {
           business_account_id?: string | null
           created_at?: string
+          google_sheets_url?: string | null
           id?: string
           meta_app_id?: string | null
           permanent_token?: string | null
@@ -162,6 +164,7 @@ export type Database = {
         Update: {
           business_account_id?: string | null
           created_at?: string
+          google_sheets_url?: string | null
           id?: string
           meta_app_id?: string | null
           permanent_token?: string | null
