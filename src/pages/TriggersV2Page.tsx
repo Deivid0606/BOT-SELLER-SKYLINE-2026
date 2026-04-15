@@ -319,7 +319,35 @@ export default function TriggersV2Page() {
                             </div>
                           </div>
 
-                          <div className={`rounded-lg border transition-all ${editingTrigger.followUpEnabled ? "bg-amber-500/5 border-amber-500/30" : "bg-secondary/30 border-border"}`}>
+                          {/* Auto-tag on trigger */}
+                          <div className={`rounded-lg border transition-all ${editingTrigger.autoTag ? "bg-emerald-500/5 border-emerald-500/30" : "bg-secondary/30 border-border"}`}>
+                            <div className="flex items-center gap-3 p-3">
+                              <Tags className={`h-5 w-5 shrink-0 ${editingTrigger.autoTag ? "text-emerald-400" : "text-muted-foreground"}`} />
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-sm font-medium ${editingTrigger.autoTag ? "text-emerald-400" : "text-foreground"}`}>Etiquetar automáticamente</p>
+                                <p className="text-[10px] text-muted-foreground">Asigna una etiqueta al contacto cuando se activa este disparador</p>
+                              </div>
+                            </div>
+                            <div className="px-3 pb-3">
+                              <select
+                                className={inputClass}
+                                value={editingTrigger.autoTag}
+                                onChange={e => setEditingTrigger({ ...editingTrigger, autoTag: e.target.value })}
+                              >
+                                <option value="">Sin etiqueta</option>
+                                {mockTags.map(tag => (
+                                  <option key={tag.name} value={tag.name}>{tag.name}</option>
+                                ))}
+                              </select>
+                              {editingTrigger.autoTag && (
+                                <div className="flex items-center gap-2 mt-2">
+                                  <div className="h-3 w-3 rounded-full" style={{ backgroundColor: mockTags.find(t => t.name === editingTrigger.autoTag)?.color || "#888" }} />
+                                  <span className="text-xs text-emerald-400">{editingTrigger.autoTag}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
                             <div onClick={() => setEditingTrigger({ ...editingTrigger, followUpEnabled: !editingTrigger.followUpEnabled })} className="flex items-center gap-3 p-3 cursor-pointer">
                               <MessageSquare className={`h-5 w-5 shrink-0 ${editingTrigger.followUpEnabled ? "text-amber-400" : "text-muted-foreground"}`} />
                               <div className="flex-1 min-w-0">
