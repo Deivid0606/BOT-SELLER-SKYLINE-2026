@@ -27,7 +27,7 @@ export default function AuthPage() {
         if (error) throw error;
         navigate("/");
       } else {
-        const { error } = await supabase.auth.signUp({
+        const { data, error } = await supabase.auth.signUp({
           email,
           password,
           options: {
@@ -36,7 +36,21 @@ export default function AuthPage() {
           },
         });
         if (error) throw error;
-        setMessage("Revisa tu email para confirmar tu cuenta.");
+
+        if (data.session) {
+          navigate("/");
+          return;
+        }
+
+        const { error: loginError } = await supabase.auth.signInWithPassword({ email, password });
+        if (!loginError) {
+          navigate("/");
+          return;
+        }
+
+        setIsLogin(true);
+        setPassword("");
+        setMessage("Cuenta creada. Ahora inicia sesión.");
       }
     } catch (err: any) {
       setError(err.message || "Error inesperado");
