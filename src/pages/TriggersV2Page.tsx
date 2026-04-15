@@ -449,7 +449,7 @@ export default function TriggersV2Page() {
                             </AnimatePresence>
                           </div>
 
-
+                          <div className="flex gap-2 pt-1">
                             <button onClick={saveEdit} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
                               <Plus className="h-4 w-4" /> Guardar
                             </button>
