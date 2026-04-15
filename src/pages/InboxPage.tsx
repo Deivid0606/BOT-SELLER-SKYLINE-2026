@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { motion } from "framer-motion";
-import { Search, Send, Pause, Trash2, Bot, Image, Smile } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Search, Send, Pause, Trash2, Bot, Image, Smile, FileText, X } from "lucide-react";
 
 const mockChats = [
   { number: "+595 981 234 567", lastMsg: "Hola, quiero saber precio del iPhone 15", time: "14:32", unread: 3 },
