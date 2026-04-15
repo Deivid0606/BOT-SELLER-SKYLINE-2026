@@ -1,6 +1,16 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Trash2, ShieldCheck, Power, Clock, MessageSquare, ChevronDown, ChevronUp, Megaphone, Tags, FileText, CalendarDays } from "lucide-react";
+import { Plus, Trash2, ShieldCheck, Power, Clock, MessageSquare, ChevronDown, ChevronUp, Megaphone, Tags, FileText, CalendarDays, Timer } from "lucide-react";
+
+const DAYS_OF_WEEK = [
+  { key: "lun", label: "Lun" },
+  { key: "mar", label: "Mar" },
+  { key: "mie", label: "Mié" },
+  { key: "jue", label: "Jue" },
+  { key: "vie", label: "Vie" },
+  { key: "sab", label: "Sáb" },
+  { key: "dom", label: "Dom" },
+];
 
 interface Trigger {
   id: string;
