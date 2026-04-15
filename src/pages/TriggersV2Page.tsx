@@ -346,7 +346,110 @@ export default function TriggersV2Page() {
                             </AnimatePresence>
                           </div>
 
-                          <div className="flex gap-2 pt-1">
+                          {/* Secondary Trigger */}
+                          <div className={`rounded-lg border transition-all ${editingTrigger.secondary.enabled ? "bg-cyan-500/5 border-cyan-500/30" : "bg-secondary/30 border-border"}`}>
+                            <div onClick={() => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, enabled: !editingTrigger.secondary.enabled } })} className="flex items-center gap-3 p-3 cursor-pointer">
+                              <GitBranch className={`h-5 w-5 shrink-0 ${editingTrigger.secondary.enabled ? "text-cyan-400" : "text-muted-foreground"}`} />
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-sm font-medium ${editingTrigger.secondary.enabled ? "text-cyan-400" : "text-foreground"}`}>Disparador secundario</p>
+                                <p className="text-[10px] text-muted-foreground">Si detecta una condición especial (ej. ciudad sin cobertura), envía una respuesta diferente</p>
+                              </div>
+                              <div className={`w-10 h-5 rounded-full transition-colors relative ${editingTrigger.secondary.enabled ? "bg-cyan-500" : "bg-muted"}`}>
+                                <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${editingTrigger.secondary.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
+                              </div>
+                            </div>
+                            <AnimatePresence>
+                              {editingTrigger.secondary.enabled && (
+                                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                                  <div className="px-3 pb-3 space-y-3">
+                                    {/* Condition type */}
+                                    <div>
+                                      <label className="text-xs text-muted-foreground">Tipo de condición</label>
+                                      <div className="flex gap-1 mt-1 bg-secondary/30 p-1 rounded-lg border border-border w-fit">
+                                        <button
+                                          onClick={() => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, conditionType: "city" } })}
+                                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingTrigger.secondary.conditionType === "city" ? "bg-cyan-500 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                                        >
+                                          <MapPin className="h-3 w-3" /> Ciudades
+                                        </button>
+                                        <button
+                                          onClick={() => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, conditionType: "keyword" } })}
+                                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingTrigger.secondary.conditionType === "keyword" ? "bg-cyan-500 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                                        >
+                                          <MessageSquare className="h-3 w-3" /> Palabras clave
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    {/* Condition values */}
+                                    <div>
+                                      <label className="text-xs text-muted-foreground flex items-center gap-1">
+                                        {editingTrigger.secondary.conditionType === "city" ? (
+                                          <><MapPin className="h-3 w-3" /> Ciudades sin cobertura (separar con coma)</>
+                                        ) : (
+                                          <><MessageSquare className="h-3 w-3" /> Palabras clave (separar con coma)</>
+                                        )}
+                                      </label>
+                                      <input
+                                        className={inputClass}
+                                        placeholder={editingTrigger.secondary.conditionType === "city" ? "ej. Encarnación, Pedro Juan, Salto del Guairá" : "ej. no quiero, cancelar, no gracias"}
+                                        value={editingTrigger.secondary.conditionValues.join(", ")}
+                                        onChange={e => setEditingTrigger({
+                                          ...editingTrigger,
+                                          secondary: {
+                                            ...editingTrigger.secondary,
+                                            conditionValues: e.target.value.split(",").map(v => v.trim()).filter(Boolean)
+                                          }
+                                        })}
+                                      />
+                                      {editingTrigger.secondary.conditionValues.length > 0 && (
+                                        <div className="flex flex-wrap gap-1 mt-1.5">
+                                          {editingTrigger.secondary.conditionValues.map((val, i) => (
+                                            <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex items-center gap-1">
+                                              {editingTrigger.secondary.conditionType === "city" ? <MapPin className="h-2.5 w-2.5" /> : null}
+                                              {val}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    {/* Secondary response */}
+                                    <div>
+                                      <label className="text-xs text-muted-foreground">Respuesta del secundario</label>
+                                      <textarea
+                                        className={`${inputClass} min-h-[80px] resize-y`}
+                                        placeholder="Mensaje alternativo cuando se detecta la condición…"
+                                        value={editingTrigger.secondary.response}
+                                        onChange={e => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, response: e.target.value } })}
+                                      />
+                                    </div>
+
+                                    {/* Or use template */}
+                                    <div>
+                                      <label className="text-xs text-muted-foreground">O usar plantilla</label>
+                                      <select
+                                        className={inputClass}
+                                        value={editingTrigger.secondary.template}
+                                        onChange={e => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, template: e.target.value } })}
+                                      >
+                                        <option>Ninguna</option>
+                                        {mockTemplates.map(t => <option key={t}>{t}</option>)}
+                                      </select>
+                                    </div>
+
+                                    <div className="rounded-lg bg-cyan-500/5 border border-cyan-500/15 p-2.5">
+                                      <p className="text-[10px] text-cyan-400/80 leading-relaxed">
+                                        <strong>Lógica:</strong> Si el mensaje del cliente contiene alguna de las {editingTrigger.secondary.conditionType === "city" ? "ciudades" : "palabras"} listadas → se envía la respuesta secundaria. Si no → se envía la respuesta primaria normal.
+                                      </p>
+                                    </div>
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </div>
+
+
                             <button onClick={saveEdit} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
                               <Plus className="h-4 w-4" /> Guardar
                             </button>
