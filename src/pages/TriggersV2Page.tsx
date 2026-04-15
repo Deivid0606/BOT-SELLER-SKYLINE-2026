@@ -62,6 +62,14 @@ const mockTags = [
 
 const mockTemplates = ["BIENVENIDA", "CATALOGO", "SEGUIMIENTO", "CONFIRMACION", "PAGO"];
 
+const defaultSecondary: SecondaryTrigger = {
+  enabled: false,
+  conditionType: "city",
+  conditionValues: [],
+  response: "Lo sentimos, actualmente no tenemos cobertura en tu zona. Te avisaremos cuando estemos disponibles 📍",
+  template: "Ninguna",
+};
+
 const defaultTrigger: Omit<Trigger, "id"> = {
   name: "",
   type: "Palabra clave",
@@ -75,6 +83,7 @@ const defaultTrigger: Omit<Trigger, "id"> = {
   followUpEnabled: false,
   followUpMinutes: 20,
   followUpMessage: "¡Hola! 👋 Vi que no pudiste responder. ¿Te gustaría aprovechar nuestra oferta? Estoy aquí para ayudarte 😊",
+  secondary: { ...defaultSecondary },
 };
 
 const defaultCampaign: Omit<RemarketingCampaign, "id"> = {
