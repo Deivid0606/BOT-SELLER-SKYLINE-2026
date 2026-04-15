@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, Send, Pause, Trash2, Bot, Image, Smile, FileText, X, Filter, CalendarDays, Tag } from "lucide-react";
+import { Search, Send, Pause, Trash2, Bot, Image, Smile, FileText, X, Filter, CalendarDays, Tag, Megaphone } from "lucide-react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
