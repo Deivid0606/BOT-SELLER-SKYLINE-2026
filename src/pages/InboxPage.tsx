@@ -2,6 +2,14 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, Send, Pause, Trash2, Bot, Image, Smile, FileText, X } from "lucide-react";
 
+const availableTemplates = [
+  { name: "BIENVENIDA", preview: "¡Hola! 👋 Bienvenido a Skyline Store. ¿En qué podemos ayudarte hoy?" },
+  { name: "CATALOGO", preview: "📱 Nuestro catálogo actualizado está disponible. ¿Qué producto te interesa?" },
+  { name: "SEGUIMIENTO", preview: "Hola! Quería saber si pudiste revisar nuestra propuesta. Quedamos atentos 😊" },
+  { name: "CONFIRMACION", preview: "✅ Tu pedido ha sido confirmado. Te avisaremos cuando esté en camino." },
+  { name: "PAGO", preview: "💳 Para realizar el pago podés transferir a:\nBanco: ...\nCuenta: ...\nTitular: ..." },
+];
+
 const mockChats = [
   { number: "+595 981 234 567", lastMsg: "Hola, quiero saber precio del iPhone 15", time: "14:32", unread: 3 },
   { number: "+595 972 345 678", lastMsg: "Ya transferí el pago", time: "14:15", unread: 0, tag: "venta" },
