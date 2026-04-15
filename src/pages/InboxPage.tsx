@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, Send, Pause, Trash2, Bot, Image, Smile, FileText, X, Filter, CalendarDays, Tag } from "lucide-react";
+import { Search, Send, Pause, Trash2, Bot, Image, Smile, FileText, X, Filter, CalendarDays, Tag, Megaphone } from "lucide-react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -26,8 +26,8 @@ const mockChats = [
 ];
 
 const mockMessages = [
-  { id: 1, from: "in", text: "Hola! Me interesa el iPhone 15 Pro Max. Tienen disponible?", time: "14:20", date: "2026-04-15" },
-  { id: 2, from: "out", text: "¡Hola! 👋 Sí, tenemos disponible el iPhone 15 Pro Max.\n\n📱 *iPhone 15 Pro Max*\n💰 Precio: Gs. 6.500.000\n📦 Envío gratis a todo el país\n\n¿Te gustaría hacer el pedido?", time: "14:20", date: "2026-04-15", badge: "IA" },
+  { id: 1, from: "in", text: "Hola, ¿Precio de la Crema Veneno de Abeja porfa?", time: "14:20", date: "2026-04-15", adSource: { type: "meta", label: "Anuncio", adId: "120248410168840550", adPreview: "⚡ Resultados visibles en pocos días\n🌟 La crema que está ayudando a miles de personas a recuperar una piel joven 🌟 ¿Arrugas, manchas o piel sin vida? El Veneno de Abeja se ha convertido en uno de los secretos mejor guardados del cuidado facial por su..." } },
+  { id: 2, from: "out", text: "¡Hola! 👋 Sí, tenemos disponible la Crema Veneno de Abeja.\n\n🧴 *Crema Veneno de Abeja*\n💰 Precio: Gs. 150.000\n📦 Envío gratis a todo el país\n\n¿Te gustaría hacer el pedido?", time: "14:20", date: "2026-04-15", badge: "IA" },
   { id: 3, from: "in", text: "Cuanto sale el de 256GB?", time: "14:25", date: "2026-04-15" },
   { id: 4, from: "out", text: "El iPhone 15 Pro Max de 256GB está a Gs. 6.500.000 💰\n\nTambién tenemos:\n• 512GB: Gs. 7.800.000\n• 1TB: Gs. 9.200.000\n\n¿Cuál te interesa? 😊", time: "14:25", date: "2026-04-15", badge: "IA" },
   { id: 5, from: "in", text: "El de 256 está bien. Cómo hago para pagar?", time: "14:30", date: "2026-04-15" },
@@ -156,6 +156,22 @@ export default function InboxPage() {
                           : "glass glass-border rounded-2xl rounded-bl-md"
                       }`}
                     >
+                      {/* Meta Ads referral card */}
+                      {msg.adSource && (
+                        <div className="mb-2.5 rounded-lg bg-[hsl(220,20%,18%)] border border-[hsl(220,15%,28%)] overflow-hidden">
+                          <div className="flex items-center justify-between px-3 py-1.5 bg-[hsl(220,18%,22%)] border-b border-[hsl(220,15%,28%)]">
+                            <div className="flex items-center gap-1.5">
+                              <Megaphone className="h-3 w-3 text-muted-foreground" />
+                              <span className="text-[10px] text-muted-foreground font-medium">{msg.adSource.label}</span>
+                            </div>
+                            <span className="text-[10px] text-muted-foreground/60 font-mono">{msg.adSource.adId}</span>
+                          </div>
+                          <div className="px-3 py-2">
+                            <p className="text-xs text-muted-foreground/80 leading-relaxed line-clamp-4">{msg.adSource.adPreview}</p>
+                            <p className="text-[10px] text-primary/60 mt-1">fb.me</p>
+                          </div>
+                        </div>
+                      )}
                       <div className="leading-relaxed">{msg.text}</div>
                       <div className="flex items-center gap-2 mt-2 text-[10px] text-muted-foreground/60">
                         <span>{msg.time}</span>
