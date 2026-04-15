@@ -227,6 +227,43 @@ export default function SettingsPage() {
                 onCopy={() => copyToClipboard(config.google_sheets_url, "sheets")}
                 copied={copiedField === "sheets"}
               />
+
+              <div className="bg-secondary/30 border border-border rounded-lg p-4 space-y-3">
+                <p className="text-xs font-semibold text-foreground">📋 Instrucciones para conectar Google Sheets</p>
+                <ol className="text-[11px] text-muted-foreground space-y-2 list-decimal list-inside leading-relaxed">
+                  <li>Abrí una <strong className="text-foreground">Google Sheet</strong> nueva o existente.</li>
+                  <li>Andá a <strong className="text-foreground">Extensiones → Apps Script</strong>.</li>
+                  <li>Borrá todo el código y pegá lo siguiente:</li>
+                </ol>
+                <pre className="bg-background border border-border rounded-lg p-3 text-[10px] font-mono text-muted-foreground overflow-x-auto whitespace-pre">{`function doPost(e) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var data = JSON.parse(e.postData.contents);
+  sheet.appendRow([
+    new Date(),
+    data.nombre,
+    data.telefono,
+    data.producto,
+    data.cantidad,
+    data.ciudad,
+    data.calle,
+    data.referencia,
+    data.monto,
+    data.payment_type,
+    data.status
+  ]);
+  return ContentService.createTextOutput(
+    JSON.stringify({result: "ok"})
+  ).setMimeType(ContentService.MimeType.JSON);
+}`}</pre>
+                <ol start={4} className="text-[11px] text-muted-foreground space-y-2 list-decimal list-inside leading-relaxed">
+                  <li>Guardá el proyecto (Ctrl+S).</li>
+                  <li>Clic en <strong className="text-foreground">Implementar → Nueva implementación</strong>.</li>
+                  <li>Tipo: <strong className="text-foreground">Aplicación web</strong>.</li>
+                  <li>Ejecutar como: <strong className="text-foreground">Yo</strong> · Acceso: <strong className="text-foreground">Cualquier persona</strong>.</li>
+                  <li>Clic en <strong className="text-foreground">Implementar</strong> y copiá la URL.</li>
+                  <li>Pegá la URL arriba y hacé clic en <strong className="text-foreground">Guardar</strong>.</li>
+                </ol>
+              </div>
             </div>
           </>
         )}
