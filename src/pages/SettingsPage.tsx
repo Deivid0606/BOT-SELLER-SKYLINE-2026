@@ -37,6 +37,7 @@ export default function SettingsPage() {
             permanent_token: data.permanent_token || "",
             webhook_url: data.webhook_url || "",
             webhook_token: data.webhook_token || "",
+            google_sheets_url: (data as any).google_sheets_url || "",
           });
         }
         setLoading(false);
