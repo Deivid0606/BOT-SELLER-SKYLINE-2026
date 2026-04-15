@@ -396,6 +396,11 @@ export default function TriggersV2Page() {
                         <span className="text-[10px] text-muted-foreground flex items-center gap-1">
                           <CalendarDays className="h-3 w-3" /> cada {campaign.intervalDays} días
                         </span>
+                        {campaign.scheduleType === "days_hours" && (
+                          <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                            <Timer className="h-3 w-3" /> {campaign.scheduleDays.join(", ")} {campaign.scheduleTimeFrom}-{campaign.scheduleTimeTo}
+                          </span>
+                        )}
                       </div>
                     </div>
 
