@@ -125,7 +125,38 @@ export default function InboxPage() {
           </div>
 
           {/* Input */}
-          <div className="border-t border-border p-3 bg-card/80 space-y-2">
+          <div className="border-t border-border p-3 bg-card/80 space-y-2 relative">
+            {/* Template Picker */}
+            <AnimatePresence>
+              {showTemplates && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 10 }}
+                  className="absolute bottom-full left-0 right-0 mx-3 mb-2 bg-card border border-border rounded-lg shadow-lg overflow-hidden z-10"
+                >
+                  <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-secondary/30">
+                    <span className="text-xs font-heading font-bold">📋 Plantillas</span>
+                    <button onClick={() => setShowTemplates(false)} className="p-1 rounded hover:bg-secondary text-muted-foreground">
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <div className="max-h-[200px] overflow-y-auto">
+                    {availableTemplates.map((tpl) => (
+                      <button
+                        key={tpl.name}
+                        onClick={() => handleSelectTemplate(tpl)}
+                        className="w-full text-left px-3 py-2.5 hover:bg-primary/5 border-b border-border/50 last:border-0 transition-colors"
+                      >
+                        <span className="text-[10px] font-bold text-primary">{tpl.name}</span>
+                        <p className="text-xs text-muted-foreground truncate mt-0.5">{tpl.preview}</p>
+                      </button>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             <div className="flex items-center gap-2">
               <button className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground">
                 <Smile className="h-4 w-4" />
@@ -133,9 +164,18 @@ export default function InboxPage() {
               <button className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground">
                 <Image className="h-4 w-4" />
               </button>
+              <button
+                onClick={() => setShowTemplates(!showTemplates)}
+                className={`p-2 rounded-lg transition-colors ${showTemplates ? "bg-primary/10 text-primary" : "hover:bg-secondary text-muted-foreground"}`}
+                title="Plantillas"
+              >
+                <FileText className="h-4 w-4" />
+              </button>
               <input
                 className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20"
                 placeholder="Escribe tu mensaje aquí..."
+                value={messageInput}
+                onChange={(e) => setMessageInput(e.target.value)}
               />
               <button className="p-2.5 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-colors">
                 <Send className="h-4 w-4" />
