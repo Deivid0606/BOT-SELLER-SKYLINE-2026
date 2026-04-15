@@ -76,6 +76,10 @@ const defaultCampaign: Omit<RemarketingCampaign, "id"> = {
   customMessage: "",
   selectedTemplate: mockTemplates[0],
   intervalDays: 4,
+  scheduleType: "always",
+  scheduleDays: ["lun", "mar", "mie", "jue", "vie"],
+  scheduleTimeFrom: "09:00",
+  scheduleTimeTo: "18:00",
 };
 
 export default function TriggersV2Page() {
