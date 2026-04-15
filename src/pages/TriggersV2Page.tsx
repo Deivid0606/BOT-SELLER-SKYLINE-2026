@@ -12,6 +12,14 @@ const DAYS_OF_WEEK = [
   { key: "dom", label: "Dom" },
 ];
 
+interface SecondaryTrigger {
+  enabled: boolean;
+  conditionType: "city" | "keyword";
+  conditionValues: string[];
+  response: string;
+  template: string;
+}
+
 interface Trigger {
   id: string;
   name: string;
@@ -26,6 +34,7 @@ interface Trigger {
   followUpEnabled: boolean;
   followUpMinutes: number;
   followUpMessage: string;
+  secondary: SecondaryTrigger;
 }
 
 interface RemarketingCampaign {
