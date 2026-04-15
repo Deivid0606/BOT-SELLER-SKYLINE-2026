@@ -156,6 +156,22 @@ export default function InboxPage() {
                           : "glass glass-border rounded-2xl rounded-bl-md"
                       }`}
                     >
+                      {/* Meta Ads referral card */}
+                      {msg.adSource && (
+                        <div className="mb-2.5 rounded-lg bg-[hsl(220,20%,18%)] border border-[hsl(220,15%,28%)] overflow-hidden">
+                          <div className="flex items-center justify-between px-3 py-1.5 bg-[hsl(220,18%,22%)] border-b border-[hsl(220,15%,28%)]">
+                            <div className="flex items-center gap-1.5">
+                              <Megaphone className="h-3 w-3 text-muted-foreground" />
+                              <span className="text-[10px] text-muted-foreground font-medium">{msg.adSource.label}</span>
+                            </div>
+                            <span className="text-[10px] text-muted-foreground/60 font-mono">{msg.adSource.adId}</span>
+                          </div>
+                          <div className="px-3 py-2">
+                            <p className="text-xs text-muted-foreground/80 leading-relaxed line-clamp-4">{msg.adSource.adPreview}</p>
+                            <p className="text-[10px] text-primary/60 mt-1">fb.me</p>
+                          </div>
+                        </div>
+                      )}
                       <div className="leading-relaxed">{msg.text}</div>
                       <div className="flex items-center gap-2 mt-2 text-[10px] text-muted-foreground/60">
                         <span>{msg.time}</span>
