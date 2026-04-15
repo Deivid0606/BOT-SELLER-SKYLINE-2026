@@ -85,6 +85,7 @@ const defaultTrigger: Omit<Trigger, "id"> = {
   followUpMinutes: 20,
   followUpMessage: "¡Hola! 👋 Vi que no pudiste responder. ¿Te gustaría aprovechar nuestra oferta? Estoy aquí para ayudarte 😊",
   secondary: { ...defaultSecondary },
+  autoTag: "",
 };
 
 const defaultCampaign: Omit<RemarketingCampaign, "id"> = {
