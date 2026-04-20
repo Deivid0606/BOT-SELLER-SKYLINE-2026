@@ -5,7 +5,7 @@ import type { User, Session } from "@supabase/supabase-js";
 type AuthContextType = {
   user: User | null;
   session: Session | null;
-  role: "admin" | "vendedor" | null;
+  role: "admin" | "seller" | "pending" | "banned" | null;
   loading: boolean;
   signOut: () => Promise<void>;
 };
@@ -23,16 +23,31 @@ export const useAuth = () => useContext(AuthContext);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
-  const [role, setRole] = useState<"admin" | "vendedor" | null>(null);
+  const [role, setRole] = useState<"admin" | "seller" | "pending" | "banned" | null>(null);
   const [loading, setLoading] = useState(true);
 
   const fetchRole = async (userId: string) => {
-    const { data } = await supabase
-      .from("user_roles")
-      .select("role")
-      .eq("user_id", userId)
-      .single();
-    setRole((data?.role as "admin" | "vendedor") ?? null);
+    try {
+      const { data, error } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .maybeSingle();
+      
+      if (error) {
+        console.error("Error fetching role:", error);
+        setRole(null);
+        return;
+      }
+      
+      // El rol viene como 'admin', 'seller', 'pending', 'banned' desde Supabase
+      const roleValue = data?.role as "admin" | "seller" | "pending" | "banned" | null;
+      setRole(roleValue);
+      console.log("Rol obtenido de Supabase:", roleValue);
+    } catch (err) {
+      console.error("Error in fetchRole:", err);
+      setRole(null);
+    }
   };
 
   useEffect(() => {
@@ -41,7 +56,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSession(session);
         setUser(session?.user ?? null);
         if (session?.user) {
-          setTimeout(() => fetchRole(session.user.id), 0);
+          await fetchRole(session.user.id);
         } else {
           setRole(null);
         }
@@ -49,11 +64,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     );
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchRole(session.user.id);
+        await fetchRole(session.user.id);
       }
       setLoading(false);
     });
