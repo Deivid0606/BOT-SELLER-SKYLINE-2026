@@ -2,12 +2,8 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Search, ImageIcon, MapPin, X, ExternalLink } from "lucide-react";
 
-const mockOrders = [
-  { id: "1", number: "+595 981 234 567", product: "iPhone 15 Pro Max 256GB", name: "Carlos López", city: "Asunción", address: "Av. España 1234", phone: "+595981234567", quantity: "1", total: "Gs. 6.500.000", status: "pending", date: "2024-01-15", paymentType: "transfer", transferImage: "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=400&h=600&fit=crop", locationUrl: "https://maps.google.com/?q=-25.2637,-57.5759" },
-  { id: "2", number: "+595 972 345 678", product: "Samsung Galaxy S24 Ultra", name: "María García", city: "Ciudad del Este", address: "Calle Monseñor 456", phone: "+595972345678", quantity: "2", total: "Gs. 11.000.000", status: "loaded", date: "2024-01-14", paymentType: "transfer", transferImage: "https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=400&h=600&fit=crop", locationUrl: null },
-  { id: "3", number: "+595 961 456 789", product: "AirPods Pro 2", name: "Juan Martínez", city: "Encarnación", address: "Ruta 1 km 370", phone: "+595961456789", quantity: "1", total: "Gs. 1.200.000", status: "dropi", date: "2024-01-13", paymentType: "cash", transferImage: null, locationUrl: "https://maps.google.com/?q=-27.3167,-55.8667" },
-  { id: "4", number: "+595 983 567 890", product: "iPad Air M2", name: "Ana Benítez", city: "Luque", address: "Barrio San Isidro", phone: "+595983567890", quantity: "1", total: "Gs. 4.800.000", status: "canceled", date: "2024-01-12", paymentType: "cash", transferImage: null, locationUrl: null },
-];
+type Order = { id: string; number: string; product: string; name: string; city: string; address: string; phone: string; quantity: string; total: string; status: string; date: string; paymentType: string; transferImage: string | null; locationUrl: string | null };
+const mockOrders: Order[] = [];
 
 const statusConfig: Record<string, { label: string; color: string; bg: string; border: string }> = {
   pending: { label: "Pendiente", color: "text-warning", bg: "bg-warning/10", border: "border-warning/20" },
@@ -37,6 +33,12 @@ export default function OrdersPage() {
           </select>
         </div>
       </div>
+
+      {mockOrders.length === 0 && (
+        <div className="bg-card border border-border rounded-lg p-12 text-center">
+          <p className="text-sm text-muted-foreground">Aún no hay pedidos confirmados</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {mockOrders.map((order, i) => {

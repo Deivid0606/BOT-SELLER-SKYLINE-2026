@@ -21,40 +21,28 @@ import {
 import { motion } from "framer-motion";
 
 const msgData = [
-  { day: "Lun", msgs: 45 },
-  { day: "Mar", msgs: 62 },
-  { day: "Mié", msgs: 58 },
-  { day: "Jue", msgs: 71 },
-  { day: "Vie", msgs: 89 },
-  { day: "Sáb", msgs: 34 },
-  { day: "Dom", msgs: 22 },
+  { day: "Lun", msgs: 0 },
+  { day: "Mar", msgs: 0 },
+  { day: "Mié", msgs: 0 },
+  { day: "Jue", msgs: 0 },
+  { day: "Vie", msgs: 0 },
+  { day: "Sáb", msgs: 0 },
+  { day: "Dom", msgs: 0 },
 ];
 
 const salesData = [
-  { day: "Lun", ventas: 3 },
-  { day: "Mar", ventas: 5 },
-  { day: "Mié", ventas: 4 },
-  { day: "Jue", ventas: 7 },
-  { day: "Vie", ventas: 6 },
-  { day: "Sáb", ventas: 2 },
-  { day: "Dom", ventas: 1 },
+  { day: "Lun", ventas: 0 },
+  { day: "Mar", ventas: 0 },
+  { day: "Mié", ventas: 0 },
+  { day: "Jue", ventas: 0 },
+  { day: "Vie", ventas: 0 },
+  { day: "Sáb", ventas: 0 },
+  { day: "Dom", ventas: 0 },
 ];
 
-const topProducts = [
-  { name: "iPhone 15 Pro Max", count: 12 },
-  { name: "Samsung Galaxy S24", count: 8 },
-  { name: "AirPods Pro 2", count: 6 },
-  { name: "iPad Air M2", count: 5 },
-  { name: "MacBook Air M3", count: 3 },
-];
+const topProducts: { name: string; count: number }[] = [];
 
-const topCities = [
-  { name: "Asunción", count: 18 },
-  { name: "Ciudad del Este", count: 12 },
-  { name: "Encarnación", count: 7 },
-  { name: "Luque", count: 5 },
-  { name: "San Lorenzo", count: 4 },
-];
+const topCities: { name: string; count: number }[] = [];
 
 export default function DashboardPage() {
   return (
@@ -84,10 +72,10 @@ export default function DashboardPage() {
 
       {/* KPIs */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard title="Mensajes Hoy" value="127" icon={MessageSquare} trend={{ value: "+23%", positive: true }} delay={0} />
-        <KpiCard title="Chats Activos" value="34" icon={Users} trend={{ value: "+5", positive: true }} delay={0.08} />
-        <KpiCard title="Ventas del Día" value="8" icon={ShoppingCart} trend={{ value: "+2", positive: true }} delay={0.16} />
-        <KpiCard title="Tasa Conversión" value="12%" icon={TrendingUp} trend={{ value: "-1.2%", positive: false }} delay={0.24} />
+        <KpiCard title="Mensajes Hoy" value="0" icon={MessageSquare} delay={0} />
+        <KpiCard title="Chats Activos" value="0" icon={Users} delay={0.08} />
+        <KpiCard title="Ventas del Día" value="0" icon={ShoppingCart} delay={0.16} />
+        <KpiCard title="Tasa Conversión" value="0%" icon={TrendingUp} delay={0.24} />
       </div>
 
       {/* Charts */}
@@ -178,17 +166,21 @@ export default function DashboardPage() {
           <h3 className="text-sm font-semibold text-foreground mb-4 font-heading flex items-center gap-2">
             <Package className="h-4 w-4 text-primary" /> Top Productos
           </h3>
-          <div className="space-y-1">
-            {topProducts.map((p, i) => (
-              <div key={p.name} className="flex items-center gap-3 py-2.5 px-3 rounded-lg hover:bg-secondary/30 transition-colors duration-200 group">
-                <span className="text-xs font-bold text-primary/60 w-5 font-mono">{String(i + 1).padStart(2, '0')}</span>
-                <span className="flex-1 text-sm font-medium">{p.name}</span>
-                <span className="text-xs px-2.5 py-1 rounded-lg bg-secondary/60 border border-border/40 font-mono font-medium group-hover:bg-primary/10 group-hover:text-primary group-hover:border-primary/20 transition-all">
-                  {p.count}
-                </span>
-              </div>
-            ))}
-          </div>
+          {topProducts.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-8">Sin datos todavía</p>
+          ) : (
+            <div className="space-y-1">
+              {topProducts.map((p, i) => (
+                <div key={p.name} className="flex items-center gap-3 py-2.5 px-3 rounded-lg hover:bg-secondary/30 transition-colors duration-200 group">
+                  <span className="text-xs font-bold text-primary/60 w-5 font-mono">{String(i + 1).padStart(2, '0')}</span>
+                  <span className="flex-1 text-sm font-medium">{p.name}</span>
+                  <span className="text-xs px-2.5 py-1 rounded-lg bg-secondary/60 border border-border/40 font-mono font-medium group-hover:bg-primary/10 group-hover:text-primary group-hover:border-primary/20 transition-all">
+                    {p.count}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </motion.div>
 
         <motion.div
@@ -200,17 +192,21 @@ export default function DashboardPage() {
           <h3 className="text-sm font-semibold text-foreground mb-4 font-heading flex items-center gap-2">
             <MapPin className="h-4 w-4 text-accent" /> Ventas por Ciudad
           </h3>
-          <div className="space-y-1">
-            {topCities.map((c, i) => (
-              <div key={c.name} className="flex items-center gap-3 py-2.5 px-3 rounded-lg hover:bg-secondary/30 transition-colors duration-200 group">
-                <span className="text-xs font-bold text-accent/60 w-5 font-mono">{String(i + 1).padStart(2, '0')}</span>
-                <span className="flex-1 text-sm font-medium">{c.name}</span>
-                <span className="text-xs px-2.5 py-1 rounded-lg bg-secondary/60 border border-border/40 font-mono font-medium group-hover:bg-accent/10 group-hover:text-accent group-hover:border-accent/20 transition-all">
-                  {c.count}
-                </span>
-              </div>
-            ))}
-          </div>
+          {topCities.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-8">Sin datos todavía</p>
+          ) : (
+            <div className="space-y-1">
+              {topCities.map((c, i) => (
+                <div key={c.name} className="flex items-center gap-3 py-2.5 px-3 rounded-lg hover:bg-secondary/30 transition-colors duration-200 group">
+                  <span className="text-xs font-bold text-accent/60 w-5 font-mono">{String(i + 1).padStart(2, '0')}</span>
+                  <span className="flex-1 text-sm font-medium">{c.name}</span>
+                  <span className="text-xs px-2.5 py-1 rounded-lg bg-secondary/60 border border-border/40 font-mono font-medium group-hover:bg-accent/10 group-hover:text-accent group-hover:border-accent/20 transition-all">
+                    {c.count}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </motion.div>
       </div>
     </div>

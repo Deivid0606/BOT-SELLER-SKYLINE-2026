@@ -2,13 +2,7 @@ import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { FileText, Plus, Trash2, Eye, Upload, X, Image, Video, Sparkles, Phone } from "lucide-react";
 
-const mockTemplates = [
-  { name: "BIENVENIDA", preview: "¡Hola! 👋 Bienvenido a Skyline..." },
-  { name: "CATALOGO", preview: "📱 Nuestro catálogo actualizado..." },
-  { name: "SEGUIMIENTO", preview: "Hola! Quería saber si..." },
-  { name: "CONFIRMACION", preview: "✅ Tu pedido ha sido confirmado..." },
-  { name: "PAGO", preview: "💳 Para realizar el pago..." },
-];
+const mockTemplates: { name: string; preview: string }[] = [];
 
 type MediaFile = {
   file: File;
@@ -267,18 +261,22 @@ export default function TemplatesPage() {
           <div className="px-4 py-3 border-b border-border">
             <h3 className="font-heading font-semibold text-sm">Lista de Plantillas</h3>
           </div>
-          <div className="divide-y divide-border">
-            {mockTemplates.map((tpl) => (
-              <div key={tpl.name} className="px-4 py-3 hover:bg-secondary/30 transition-colors cursor-pointer flex items-center gap-3">
-                <FileText className="h-4 w-4 text-primary shrink-0" />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-bold">{tpl.name}</p>
-                  <p className="text-xs text-muted-foreground truncate">{tpl.preview}</p>
+          {mockTemplates.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-8 px-4">Aún no hay plantillas guardadas</p>
+          ) : (
+            <div className="divide-y divide-border">
+              {mockTemplates.map((tpl) => (
+                <div key={tpl.name} className="px-4 py-3 hover:bg-secondary/30 transition-colors cursor-pointer flex items-center gap-3">
+                  <FileText className="h-4 w-4 text-primary shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-bold">{tpl.name}</p>
+                    <p className="text-xs text-muted-foreground truncate">{tpl.preview}</p>
+                  </div>
+                  <Eye className="h-3.5 w-3.5 text-muted-foreground" />
                 </div>
-                <Eye className="h-3.5 w-3.5 text-muted-foreground" />
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </motion.div>
       </div>
     </div>
