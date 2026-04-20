@@ -80,9 +80,10 @@ export default function SettingsPage() {
 
   const webhookFullUrl = `${window.location.origin}/api/webhook/${config.webhook_url}`;
 
+  // TABS - Se ha eliminado la pestaña "Conexión QR"
   const tabs = [
     { id: "whatsapp" as const, label: "API Meta", icon: MessageSquare },
-    { id: "qr" as const, label: "Conexión QR", icon: QrCode },
+    // { id: "qr" as const, label: "Conexión QR", icon: QrCode }, // ELIMINADA - OCULTA
     { id: "ia" as const, label: "IA", icon: Bot },
     { id: "chat" as const, label: "Chat", icon: Globe },
   ];
@@ -278,12 +279,15 @@ export default function SettingsPage() {
           </>
         )}
 
+        {/* SECCIÓN QR ELIMINADA - COMENTADA PARA NO MOSTRARSE */}
+        {/* 
         {activeTab === "qr" && (
           <div className="space-y-4">
             {role === "admin" && <BaileysServerConfig />}
             <WhatsAppQRConnection />
           </div>
-        )}
+        )} 
+        */}
 
         {activeTab === "ia" && (
           <div className="space-y-4">
