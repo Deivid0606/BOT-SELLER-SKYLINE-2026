@@ -29,27 +29,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const fetchRole = async (userId: string) => {
     console.log("🔍 FETCHING ROLE for:", userId);
     
-    const { data, error } = await supabase
-      .from("user_roles")
-      .select("role")
-      .eq("user_id", userId)
-      .maybeSingle();
-    
-    if (error) {
-      console.error("❌ Error:", error);
-      return;
-    }
-    
-    console.log("✅ DATA RECEIVED:", data);
-    console.log("✅ ROLE VALUE:", data?.role);
-    
-    if (data?.role) {
-      setRole(data.role as "admin" | "seller" | "pending" | "banned");
+    try {
+      const { data, error } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .maybeSingle();
+      
+      if (error) {
+        console.error("❌ Error fetching role:", error);
+        return;
+      }
+      
+      console.log("✅ DATA RECEIVED:", data);
+      console.log("✅ ROLE VALUE:", data?.role);
+      
+      if (data?.role) {
+        setRole(data.role as "admin" | "seller" | "pending" | "banned");
+      } else {
+        setRole("pending");
+      }
+    } catch (err) {
+      console.error("❌ Exception fetching role:", err);
+      setRole("pending");
     }
   };
 
   useEffect(() => {
     console.log("🚀 AuthProvider mounted");
+    
+    const timeoutId = setTimeout(() => {
+      if (loading) {
+        console.log("⚠️ Forzando fin de carga después de 5 segundos");
+        setLoading(false);
+      }
+    }, 5000);
     
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
@@ -68,28 +82,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     );
 
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      console.log("🎯 Initial session:", session?.user?.email);
-      setSession(session);
-      setUser(session?.user ?? null);
-      
-      if (session?.user) {
-        await fetchRole(session.user.id);
-      }
-      setLoading(false);
-    });
+    supabase.auth.getSession()
+      .then(async ({ data: { session } }) => {
+        console.log("🎯 Initial session:", session?.user?.email);
+        setSession(session);
+        setUser(session?.user ?? null);
+        
+        if (session?.user) {
+          await fetchRole(session.user.id);
+        } else {
+          setRole(null);
+        }
+        setLoading(false);
+      })
+      .catch((error) => {
+        console.error("❌ Error getting session:", error);
+        setLoading(false);
+      });
 
     return () => {
       console.log("🔚 AuthProvider unmounting");
+      clearTimeout(timeoutId);
       subscription.unsubscribe();
     };
   }, []);
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    try {
+      await supabase.auth.signOut();
+    } catch (error) {
+      console.error("Error signing out:", error);
+    }
     setRole(null);
     setUser(null);
     setSession(null);
+    setLoading(false);
+    
+    localStorage.removeItem('supabase.auth.token');
+    sessionStorage.clear();
+    
+    window.location.href = '/login';
   };
 
   console.log("📌 Current state - role:", role, "loading:", loading);
