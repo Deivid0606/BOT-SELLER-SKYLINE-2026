@@ -116,6 +116,101 @@ export type Database = {
         }
         Relationships: []
       }
+      remarketing_campaigns: {
+        Row: {
+          active: boolean
+          created_at: string
+          id: string
+          interval_days: number
+          message: string
+          name: string
+          schedule_days: string[]
+          schedule_time_from: string | null
+          schedule_time_to: string | null
+          schedule_type: string
+          tags: string[]
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          id?: string
+          interval_days?: number
+          message?: string
+          name: string
+          schedule_days?: string[]
+          schedule_time_from?: string | null
+          schedule_time_to?: string | null
+          schedule_type?: string
+          tags?: string[]
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          id?: string
+          interval_days?: number
+          message?: string
+          name?: string
+          schedule_days?: string[]
+          schedule_time_from?: string | null
+          schedule_time_to?: string | null
+          schedule_type?: string
+          tags?: string[]
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      remarketing_sends: {
+        Row: {
+          campaign_id: string
+          created_at: string
+          delivered_at: string | null
+          error: string | null
+          id: string
+          phone: string
+          replied_at: string | null
+          sent_at: string | null
+          status: string
+          user_id: string
+        }
+        Insert: {
+          campaign_id: string
+          created_at?: string
+          delivered_at?: string | null
+          error?: string | null
+          id?: string
+          phone: string
+          replied_at?: string | null
+          sent_at?: string | null
+          status?: string
+          user_id: string
+        }
+        Update: {
+          campaign_id?: string
+          created_at?: string
+          delivered_at?: string | null
+          error?: string | null
+          id?: string
+          phone?: string
+          replied_at?: string | null
+          sent_at?: string | null
+          status?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "remarketing_sends_campaign_id_fkey"
+            columns: ["campaign_id"]
+            isOneToOne: false
+            referencedRelation: "remarketing_campaigns"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       user_roles: {
         Row: {
           id: string
@@ -136,6 +231,7 @@ export type Database = {
       }
       whatsapp_config: {
         Row: {
+          bot_response_delay_seconds: number
           business_account_id: string | null
           created_at: string
           google_sheets_url: string | null
@@ -149,6 +245,7 @@ export type Database = {
           webhook_url: string
         }
         Insert: {
+          bot_response_delay_seconds?: number
           business_account_id?: string | null
           created_at?: string
           google_sheets_url?: string | null
@@ -162,6 +259,7 @@ export type Database = {
           webhook_url: string
         }
         Update: {
+          bot_response_delay_seconds?: number
           business_account_id?: string | null
           created_at?: string
           google_sheets_url?: string | null
