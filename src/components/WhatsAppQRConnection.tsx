@@ -20,6 +20,26 @@ export function WhatsAppQRConnection() {
   });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [serverConfig, setServerConfig] = useState<{ url: string; apiKey: string } | null>(null);
+
+  // Cargar configuración del servidor Baileys desde Supabase
+  useEffect(() => {
+    const loadConfig = async () => {
+      const { data } = await supabase
+        .from("baileys_server_config")
+        .select("server_url, server_api_key")
+        .limit(1)
+        .single();
+      
+      if (data) {
+        setServerConfig({
+          url: (data as any).server_url,
+          apiKey: (data as any).server_api_key
+        });
+      }
+    };
+    loadConfig();
+  }, []);
 
   // Initial load + realtime subscription
   useEffect(() => {
@@ -28,7 +48,7 @@ export function WhatsAppQRConnection() {
 
     const load = async () => {
       const { data } = await supabase
-        .from("whatsapp_qr_sessions" as any)
+        .from("whatsapp_qr_sessions")
         .select("status, last_qr, connected_phone, connected_at")
         .eq("user_id", user.id)
         .maybeSingle();
@@ -62,13 +82,52 @@ export function WhatsAppQRConnection() {
   }, [session.status]);
 
   const generateQR = async () => {
+    if (!serverConfig) {
+      toast({ title: "Error", description: "Configuración del servidor no encontrada", variant: "destructive" });
+      return;
+    }
+    if (!user) {
+      toast({ title: "Error", description: "Usuario no autenticado", variant: "destructive" });
+      return;
+    }
+
     setBusy(true);
     try {
-      const { data, error } = await supabase.functions.invoke("whatsapp-qr-init");
-      if (error) throw error;
-      if ((data as any)?.error) throw new Error((data as any).error);
-      toast({ title: "QR generado", description: "Escanealo desde WhatsApp en tu celular." });
+      // Llamada DIRECTA a Railway (sin Edge Functions)
+      const response = await fetch(`${serverConfig.url}/qr/init`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': serverConfig.apiKey,
+        },
+        body: JSON.stringify({ userId: user.id }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `Error ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      // Actualizar la sesión en Supabase con el QR recibido
+      if (data.qr) {
+        await supabase
+          .from("whatsapp_qr_sessions")
+          .upsert({
+            user_id: user.id,
+            status: "pending_qr",
+            last_qr: data.qr,
+            updated_at: new Date().toISOString(),
+          });
+        
+        setSession(prev => ({ ...prev, status: "pending_qr", last_qr: data.qr }));
+        toast({ title: "QR generado", description: "Escanealo desde WhatsApp en tu celular." });
+      } else {
+        throw new Error("No se recibió el código QR");
+      }
     } catch (e) {
+      console.error("Error al generar QR:", e);
       toast({ title: "Error", description: (e as Error).message, variant: "destructive" });
     } finally {
       setBusy(false);
@@ -76,19 +135,77 @@ export function WhatsAppQRConnection() {
   };
 
   const refreshStatus = async () => {
+    if (!serverConfig || !user) return;
+    
     try {
-      await supabase.functions.invoke("whatsapp-qr-status");
+      // Llamada DIRECTA a Railway para verificar estado
+      const response = await fetch(`${serverConfig.url}/qr/status?userId=${user.id}`, {
+        headers: {
+          'x-api-key': serverConfig.apiKey,
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        
+        // Actualizar estado en Supabase según respuesta de Railway
+        const newStatus = data.connected ? "connected" : session.status;
+        const phone = data.phone || null;
+        
+        if (data.connected && session.status !== "connected") {
+          await supabase
+            .from("whatsapp_qr_sessions")
+            .upsert({
+              user_id: user.id,
+              status: "connected",
+              connected_phone: phone,
+              connected_at: new Date().toISOString(),
+              last_qr: null,
+            });
+          
+          setSession(prev => ({ 
+            ...prev, 
+            status: "connected", 
+            connected_phone: phone,
+            connected_at: new Date().toISOString(),
+            last_qr: null 
+          }));
+          
+          toast({ title: "¡Conectado!", description: `WhatsApp conectado como ${phone}` });
+        }
+      }
     } catch (e) {
-      console.error(e);
+      console.error("Error al refrescar estado:", e);
     }
   };
 
   const disconnect = async () => {
     if (!confirm("¿Seguro que querés desconectar la sesión QR?")) return;
+    if (!serverConfig || !user) return;
+    
     setBusy(true);
     try {
-      const { error } = await supabase.functions.invoke("whatsapp-qr-logout");
-      if (error) throw error;
+      // Llamada DIRECTA a Railway para desconectar
+      await fetch(`${serverConfig.url}/qr/logout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': serverConfig.apiKey,
+        },
+        body: JSON.stringify({ userId: user.id }),
+      });
+
+      // Actualizar estado en Supabase
+      await supabase
+        .from("whatsapp_qr_sessions")
+        .upsert({
+          user_id: user.id,
+          status: "disconnected",
+          last_qr: null,
+          connected_phone: null,
+        });
+
+      setSession({ status: "disconnected", last_qr: null, connected_phone: null, connected_at: null });
       toast({ title: "Desconectado", description: "La sesión QR fue cerrada." });
     } catch (e) {
       toast({ title: "Error", description: (e as Error).message, variant: "destructive" });
@@ -158,7 +275,7 @@ export function WhatsAppQRConnection() {
           {session.status !== "connected" && (
             <button
               onClick={generateQR}
-              disabled={busy}
+              disabled={busy || !serverConfig}
               className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <QrCode className="h-4 w-4" />}
