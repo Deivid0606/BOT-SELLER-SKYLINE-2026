@@ -39,6 +39,7 @@ export default function SettingsPage() {
             webhook_url: data.webhook_url || "",
             webhook_token: data.webhook_token || "",
             google_sheets_url: (data as any).google_sheets_url || "",
+            bot_response_delay_seconds: (data as any).bot_response_delay_seconds ?? 30,
           });
         }
         setLoading(false);
@@ -56,6 +57,7 @@ export default function SettingsPage() {
         meta_app_id: config.meta_app_id,
         permanent_token: config.permanent_token,
         google_sheets_url: config.google_sheets_url,
+        bot_response_delay_seconds: config.bot_response_delay_seconds,
       } as any)
       .eq("user_id", user.id);
 
