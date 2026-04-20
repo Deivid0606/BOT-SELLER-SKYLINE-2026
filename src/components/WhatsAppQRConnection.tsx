@@ -14,6 +14,11 @@ interface QRSession {
 }
 
 export function WhatsAppQRConnection() {
+  // COMPONENTE OCULTO - No renderiza nada
+  return null;
+  
+  // El código original queda comentado abajo, sin ejecutarse
+  /*
   const { user } = useAuth();
   const [session, setSession] = useState<QRSession>({
     status: "disconnected", last_qr: null, connected_phone: null, connected_at: null,
@@ -317,4 +322,5 @@ export function WhatsAppQRConnection() {
       </div>
     </div>
   );
+  */
 }
