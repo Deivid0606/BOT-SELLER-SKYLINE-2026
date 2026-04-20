@@ -791,6 +791,8 @@ export default function TriggersV2Page() {
             {campaigns.length === 0 && (
               <div className="text-center py-12 text-muted-foreground text-sm">No hay campañas de remarketing. Crea una nueva para empezar.</div>
             )}
+            </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
