@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Globe, Bot, Users, Key, Copy, Check, MessageSquare, Sheet } from "lucide-react";
+import { Globe, Bot, Users, Key, Copy, Check, MessageSquare, Sheet, Timer } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
@@ -15,6 +15,7 @@ export default function SettingsPage() {
     webhook_url: "",
     webhook_token: "",
     google_sheets_url: "",
+    bot_response_delay_seconds: 30,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
