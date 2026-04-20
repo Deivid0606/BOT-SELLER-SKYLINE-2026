@@ -6,6 +6,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
 import { WhatsAppQRConnection } from "@/components/WhatsAppQRConnection";
 import { BaileysServerConfig } from "@/components/BaileysServerConfig";
+import { OrderNotificationsConfig } from "@/components/OrderNotificationsConfig";
 
 export default function SettingsPage() {
   const { user, role } = useAuth();
@@ -271,6 +272,9 @@ export default function SettingsPage() {
                 </ol>
               </div>
             </div>
+
+            {/* Notificación de pedidos confirmados */}
+            <OrderNotificationsConfig />
           </>
         )}
 
