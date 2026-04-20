@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Globe, Bot, Users, Key, Copy, Check, MessageSquare, Sheet } from "lucide-react";
+import { Globe, Bot, Users, Key, Copy, Check, MessageSquare, Sheet, Timer } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
@@ -15,6 +15,7 @@ export default function SettingsPage() {
     webhook_url: "",
     webhook_token: "",
     google_sheets_url: "",
+    bot_response_delay_seconds: 30,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -38,6 +39,7 @@ export default function SettingsPage() {
             webhook_url: data.webhook_url || "",
             webhook_token: data.webhook_token || "",
             google_sheets_url: (data as any).google_sheets_url || "",
+            bot_response_delay_seconds: (data as any).bot_response_delay_seconds ?? 30,
           });
         }
         setLoading(false);
@@ -55,6 +57,7 @@ export default function SettingsPage() {
         meta_app_id: config.meta_app_id,
         permanent_token: config.permanent_token,
         google_sheets_url: config.google_sheets_url,
+        bot_response_delay_seconds: config.bot_response_delay_seconds,
       } as any)
       .eq("user_id", user.id);
 
@@ -269,22 +272,78 @@ export default function SettingsPage() {
         )}
 
         {activeTab === "ia" && (
-          <div className="bg-card border border-border rounded-lg p-5 space-y-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Bot className="h-4 w-4 text-primary" />
-              <h3 className="font-heading font-semibold text-sm">IA (Gemini)</h3>
+          <div className="space-y-4">
+            {/* Tiempo de respuesta del bot */}
+            <div className="bg-card border border-border rounded-lg p-5 space-y-4">
+              <div className="flex items-center gap-2 mb-1">
+                <Timer className="h-4 w-4 text-primary" />
+                <h3 className="font-heading font-semibold text-sm">Tiempo de respuesta del bot</h3>
+              </div>
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                Cuánto espera el bot antes de responder un mensaje. Un pequeño retraso hace que la conversación se sienta más humana. Mínimo 5s, máximo 600s (10 min).
+              </p>
+
+              <div className="flex items-center gap-4">
+                <input
+                  type="range"
+                  min={5}
+                  max={600}
+                  step={5}
+                  value={config.bot_response_delay_seconds}
+                  onChange={(e) => setConfig({ ...config, bot_response_delay_seconds: Number(e.target.value) })}
+                  className="flex-1 accent-primary"
+                />
+                <div className="flex items-center gap-2 shrink-0">
+                  <input
+                    type="number"
+                    min={5}
+                    max={600}
+                    value={config.bot_response_delay_seconds}
+                    onChange={(e) => {
+                      const v = Math.max(5, Math.min(600, Number(e.target.value) || 5));
+                      setConfig({ ...config, bot_response_delay_seconds: v });
+                    }}
+                    className="w-20 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary/50"
+                  />
+                  <span className="text-xs text-muted-foreground font-mono">seg</span>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {[15, 30, 60, 120, 300].map((sec) => (
+                  <button
+                    key={sec}
+                    onClick={() => setConfig({ ...config, bot_response_delay_seconds: sec })}
+                    className={`text-[11px] px-3 py-1.5 rounded-lg border transition-colors ${
+                      config.bot_response_delay_seconds === sec
+                        ? "bg-primary/10 border-primary/30 text-primary"
+                        : "bg-secondary/30 border-border text-muted-foreground hover:bg-secondary/50"
+                    }`}
+                  >
+                    {sec < 60 ? `${sec}s` : `${sec / 60} min`}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div>
-              <label className="text-xs text-muted-foreground">API Key de Gemini</label>
-              <input type="password" className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50" placeholder="AIzaxxxxxxx..." />
-            </div>
-            <div>
-              <label className="text-xs text-muted-foreground">Modelo preferido</label>
-              <select className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm text-muted-foreground focus:outline-none focus:border-primary/50">
-                <option>gemini-1.5-pro</option>
-                <option>gemini-1.5-flash</option>
-                <option>gemini-1.0-pro</option>
-              </select>
+
+            {/* Gemini config */}
+            <div className="bg-card border border-border rounded-lg p-5 space-y-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Bot className="h-4 w-4 text-primary" />
+                <h3 className="font-heading font-semibold text-sm">IA (Gemini)</h3>
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">API Key de Gemini</label>
+                <input type="password" className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50" placeholder="AIzaxxxxxxx..." />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Modelo preferido</label>
+                <select className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm text-muted-foreground focus:outline-none focus:border-primary/50">
+                  <option>gemini-1.5-pro</option>
+                  <option>gemini-1.5-flash</option>
+                  <option>gemini-1.0-pro</option>
+                </select>
+              </div>
             </div>
           </div>
         )}

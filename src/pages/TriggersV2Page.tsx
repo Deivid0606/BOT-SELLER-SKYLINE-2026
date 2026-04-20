@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Trash2, ShieldCheck, Power, Clock, MessageSquare, ChevronDown, ChevronUp, Megaphone, Tags, FileText, CalendarDays, Timer, GitBranch, MapPin } from "lucide-react";
+import { Plus, Trash2, ShieldCheck, Power, Clock, MessageSquare, ChevronDown, ChevronUp, Megaphone, Tags, FileText, CalendarDays, Timer, GitBranch, MapPin, BarChart3, Settings2 } from "lucide-react";
+import RemarketingStats from "@/components/RemarketingStats";
 
 const DAYS_OF_WEEK = [
   { key: "lun", label: "Lun" },
@@ -119,6 +120,7 @@ export default function TriggersV2Page() {
 
   // Active tab
   const [activeTab, setActiveTab] = useState<"triggers" | "remarketing">("triggers");
+  const [remarketingSubTab, setRemarketingSubTab] = useState<"campaigns" | "stats">("campaigns");
 
   const toggleActive = (id: string) => {
     setTriggers(prev => prev.map(t => t.id === id ? { ...t, active: !t.active } : t));
@@ -512,7 +514,27 @@ export default function TriggersV2Page() {
           </motion.div>
         ) : (
           /* ==================== REMARKETING TAB ==================== */
-          <motion.div key="remarketing" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-3">
+          <motion.div key="remarketing" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-4">
+            {/* Sub-tabs */}
+            <div className="flex gap-1 bg-secondary/30 p-1 rounded-lg border border-border w-fit">
+              <button
+                onClick={() => setRemarketingSubTab("campaigns")}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${remarketingSubTab === "campaigns" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                <Settings2 className="h-3.5 w-3.5" /> Campañas
+              </button>
+              <button
+                onClick={() => setRemarketingSubTab("stats")}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${remarketingSubTab === "stats" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                <BarChart3 className="h-3.5 w-3.5" /> Estadísticas
+              </button>
+            </div>
+
+            {remarketingSubTab === "stats" ? (
+              <RemarketingStats />
+            ) : (
+            <div className="space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-xs text-muted-foreground">Envía mensajes masivos por etiqueta, 1 vez cada X días</p>
               <button onClick={addCampaign} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
@@ -768,6 +790,8 @@ export default function TriggersV2Page() {
 
             {campaigns.length === 0 && (
               <div className="text-center py-12 text-muted-foreground text-sm">No hay campañas de remarketing. Crea una nueva para empezar.</div>
+            )}
+            </div>
             )}
           </motion.div>
         )}
