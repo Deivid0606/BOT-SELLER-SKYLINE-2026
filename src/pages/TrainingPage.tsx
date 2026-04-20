@@ -1,52 +1,228 @@
 import { motion } from "framer-motion";
-import { GraduationCap, Plus, Trash2, BookOpen } from "lucide-react";
+import { GraduationCap, Plus, Trash2, BookOpen, Loader2 } from "lucide-react";
+import { useState, useEffect } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
 
-type TrainingTopic = { topic: string; entries: number };
-const mockTraining: TrainingTopic[] = [];
+interface TrainingItem {
+  id: string;
+  intent: string;
+  examples: string[];
+  response: string;
+  is_active: boolean;
+  created_at: string;
+}
 
 export default function TrainingPage() {
+  const { user } = useAuth();
+  const [trainingData, setTrainingData] = useState<TrainingItem[]>([]);
+  const [intent, setIntent] = useState("");
+  const [response, setResponse] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Cargar datos existentes
+  const loadTrainingData = async () => {
+    if (!user) return;
+    
+    setLoading(true);
+    const { data, error } = await supabase
+      .from("training_data")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Error cargando:", error);
+    } else {
+      setTrainingData(data || []);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (user) {
+      loadTrainingData();
+    }
+  }, [user]);
+
+  const handleSave = async () => {
+    if (!user) {
+      alert("Debes iniciar sesión");
+      return;
+    }
+    
+    if (!intent.trim()) {
+      alert("Por favor completa el Tema / Categoría");
+      return;
+    }
+    if (!response.trim()) {
+      alert("Por favor completa la información de entrenamiento");
+      return;
+    }
+
+    setSaving(true);
+
+    if (editingId) {
+      // Actualizar existente
+      const { error } = await supabase
+        .from("training_data")
+        .update({
+          intent: intent.trim(),
+          response: response.trim(),
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", editingId)
+        .eq("user_id", user.id);
+
+      if (error) {
+        console.error("Error al actualizar:", error);
+        alert("Error al actualizar: " + error.message);
+      } else {
+        alert("✅ Datos actualizados correctamente");
+        resetForm();
+        loadTrainingData();
+      }
+    } else {
+      // Crear nuevo
+      const { error } = await supabase
+        .from("training_data")
+        .insert({
+          user_id: user.id,
+          intent: intent.trim(),
+          examples: [],
+          response: response.trim(),
+          is_active: true
+        });
+
+      if (error) {
+        console.error("Error al guardar:", error);
+        alert("Error al guardar: " + error.message);
+      } else {
+        alert("✅ Datos guardados correctamente en Supabase");
+        resetForm();
+        loadTrainingData();
+      }
+    }
+    setSaving(false);
+  };
+
+  const handleEdit = (item: TrainingItem) => {
+    setIntent(item.intent);
+    setResponse(item.response);
+    setEditingId(item.id);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("¿Eliminar este dato de entrenamiento?")) return;
+
+    setLoading(true);
+    const { error } = await supabase
+      .from("training_data")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", user?.id);
+
+    if (error) {
+      console.error("Error al eliminar:", error);
+      alert("Error al eliminar: " + error.message);
+    } else {
+      alert("✅ Dato eliminado");
+      loadTrainingData();
+    }
+    setLoading(false);
+  };
+
+  const resetForm = () => {
+    setIntent("");
+    setResponse("");
+    setEditingId(null);
+  };
+
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold font-heading text-gradient">Entrenamiento IA</h1>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Formulario */}
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="bg-card border border-border rounded-lg p-5 space-y-4">
           <div>
             <label className="text-xs text-muted-foreground">Tema / Categoría</label>
-            <input className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50" placeholder="ej. Productos disponibles" />
+            <input
+              value={intent}
+              onChange={(e) => setIntent(e.target.value)}
+              className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+              placeholder="ej. Productos disponibles, Precios, Envíos"
+            />
           </div>
           <div>
             <label className="text-xs text-muted-foreground">Información de entrenamiento</label>
-            <textarea className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[200px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50" placeholder="Escribe la información que la IA debe conocer…" />
+            <textarea
+              value={response}
+              onChange={(e) => setResponse(e.target.value)}
+              className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[200px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+              placeholder="Escribe la información que la IA debe conocer…"
+            />
           </div>
           <div className="flex gap-2">
-            <button className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
-              <Plus className="h-4 w-4" /> Guardar
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              {saving ? "Guardando..." : (editingId ? "Actualizar" : "Guardar")}
             </button>
-            <button className="flex items-center gap-2 px-4 py-2 rounded-lg bg-destructive/10 text-destructive text-sm border border-destructive/20 hover:bg-destructive/20 transition-colors">
-              <Trash2 className="h-4 w-4" /> Eliminar
-            </button>
+            {editingId && (
+              <button
+                onClick={resetForm}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-600 text-white text-sm font-medium hover:bg-gray-500 transition-colors"
+              >
+                Cancelar
+              </button>
+            )}
           </div>
         </motion.div>
 
+        {/* Lista de datos */}
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="bg-card border border-border rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-border">
             <h3 className="font-heading font-semibold text-sm">Datos de Entrenamiento</h3>
           </div>
-          {mockTraining.length === 0 ? (
+          {loading ? (
+            <div className="px-4 py-12 text-center">
+              <Loader2 className="h-8 w-8 text-muted-foreground/40 animate-spin mx-auto mb-2" />
+              <p className="text-xs text-muted-foreground">Cargando...</p>
+            </div>
+          ) : trainingData.length === 0 ? (
             <div className="px-4 py-12 text-center">
               <BookOpen className="h-8 w-8 text-muted-foreground/40 mx-auto mb-2" />
               <p className="text-xs text-muted-foreground">Aún no hay datos de entrenamiento</p>
             </div>
           ) : (
             <div className="divide-y divide-border">
-              {mockTraining.map((t) => (
-                <div key={t.topic} className="px-4 py-3 hover:bg-secondary/30 transition-colors cursor-pointer flex items-center gap-3">
-                  <BookOpen className="h-4 w-4 text-primary shrink-0" />
-                  <div className="flex-1">
-                    <p className="text-sm font-medium">{t.topic}</p>
+              {trainingData.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => handleEdit(item)}
+                  className="px-4 py-3 hover:bg-secondary/30 transition-colors cursor-pointer flex items-center gap-3 group"
+                >
+                  <GraduationCap className="h-4 w-4 text-primary shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{item.intent}</p>
+                    <p className="text-xs text-muted-foreground truncate">{item.response.substring(0, 60)}</p>
                   </div>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground border border-border">{t.entries} entradas</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(item.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-destructive/10 rounded"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                  </button>
                 </div>
               ))}
             </div>
