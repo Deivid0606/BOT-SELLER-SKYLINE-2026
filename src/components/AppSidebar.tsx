@@ -51,6 +51,38 @@ export function AppSidebar() {
   const location = useLocation();
   const { user, role, signOut } = useAuth();
 
+  // Función para mostrar el texto del rol
+  const getRoleDisplay = () => {
+    switch (role) {
+      case "admin":
+        return "ADMINISTRADOR";
+      case "seller":
+        return "VENDEDOR";
+      case "pending":
+        return "PENDIENTE";
+      case "banned":
+        return "BANEADO";
+      default:
+        return "SIN ROL";
+    }
+  };
+
+  // Función para obtener los estilos del rol
+  const getRoleStyles = () => {
+    switch (role) {
+      case "admin":
+        return "bg-primary/12 text-primary border border-primary/20";
+      case "seller":
+        return "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
+      case "pending":
+        return "bg-yellow-500/10 text-yellow-400 border border-yellow-500/20";
+      case "banned":
+        return "bg-red-500/10 text-red-400 border border-red-500/20";
+      default:
+        return "bg-secondary text-muted-foreground border border-border";
+    }
+  };
+
   return (
     <Sidebar collapsible="icon" className="border-r border-border/50">
       <SidebarContent className="bg-sidebar">
@@ -106,7 +138,7 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* Admin section */}
+        {/* Admin section - solo visible para admin */}
         {role === "admin" && (
           <SidebarGroup>
             <SidebarGroupContent>
@@ -147,12 +179,8 @@ export function AppSidebar() {
             <div className="glass glass-border rounded-lg p-3 space-y-2">
               <div className="text-xs text-muted-foreground truncate font-mono">{user?.email}</div>
               <div className="flex items-center justify-between">
-                <span className={`text-[10px] px-2.5 py-1 rounded-full font-semibold tracking-wide ${
-                  role === "admin"
-                    ? "bg-primary/12 text-primary border border-primary/20"
-                    : "bg-secondary text-muted-foreground border border-border"
-                }`}>
-                  {role === "admin" ? "ADMIN" : "VENDEDOR"}
+                <span className={`text-[10px] px-2.5 py-1 rounded-full font-semibold tracking-wide ${getRoleStyles()}`}>
+                  {getRoleDisplay()}
                 </span>
                 <button onClick={signOut} className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all duration-200">
                   <LogOut className="h-4 w-4" />
