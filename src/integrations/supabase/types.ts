@@ -14,6 +14,30 @@ export type Database = {
   }
   public: {
     Tables: {
+      baileys_server_config: {
+        Row: {
+          created_at: string
+          id: string
+          server_api_key: string
+          server_url: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          server_api_key?: string
+          server_url?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          server_api_key?: string
+          server_url?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       orders: {
         Row: {
           calle: string | null
@@ -271,6 +295,39 @@ export type Database = {
           user_id?: string
           webhook_token?: string
           webhook_url?: string
+        }
+        Relationships: []
+      }
+      whatsapp_qr_sessions: {
+        Row: {
+          connected_at: string | null
+          connected_phone: string | null
+          created_at: string
+          id: string
+          last_qr: string | null
+          status: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          connected_at?: string | null
+          connected_phone?: string | null
+          created_at?: string
+          id?: string
+          last_qr?: string | null
+          status?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          connected_at?: string | null
+          connected_phone?: string | null
+          created_at?: string
+          id?: string
+          last_qr?: string | null
+          status?: string
+          updated_at?: string
+          user_id?: string
         }
         Relationships: []
       }
