@@ -1,12 +1,14 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Globe, Bot, Users, Key, Copy, Check, MessageSquare, Sheet, Timer } from "lucide-react";
+import { Globe, Bot, Users, Key, Copy, Check, MessageSquare, Sheet, Timer, QrCode } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
+import { WhatsAppQRConnection } from "@/components/WhatsAppQRConnection";
+import { BaileysServerConfig } from "@/components/BaileysServerConfig";
 
 export default function SettingsPage() {
-  const { user } = useAuth();
+  const { user, role } = useAuth();
   const [config, setConfig] = useState({
     phone_number_id: "",
     business_account_id: "",
@@ -20,7 +22,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"whatsapp" | "ia" | "chat">("whatsapp");
+  const [activeTab, setActiveTab] = useState<"whatsapp" | "qr" | "ia" | "chat">("whatsapp");
 
   useEffect(() => {
     if (!user) return;
@@ -78,7 +80,8 @@ export default function SettingsPage() {
   const webhookFullUrl = `${window.location.origin}/api/webhook/${config.webhook_url}`;
 
   const tabs = [
-    { id: "whatsapp" as const, label: "WhatsApp", icon: MessageSquare },
+    { id: "whatsapp" as const, label: "API Meta", icon: MessageSquare },
+    { id: "qr" as const, label: "Conexión QR", icon: QrCode },
     { id: "ia" as const, label: "IA", icon: Bot },
     { id: "chat" as const, label: "Chat", icon: Globe },
   ];
@@ -269,6 +272,13 @@ export default function SettingsPage() {
               </div>
             </div>
           </>
+        )}
+
+        {activeTab === "qr" && (
+          <div className="space-y-4">
+            {role === "admin" && <BaileysServerConfig />}
+            <WhatsAppQRConnection />
+          </div>
         )}
 
         {activeTab === "ia" && (
