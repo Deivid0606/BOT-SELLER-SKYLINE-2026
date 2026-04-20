@@ -261,6 +261,9 @@ export type Database = {
           google_sheets_url: string | null
           id: string
           meta_app_id: string | null
+          notify_channel: string
+          notify_enabled: boolean
+          notify_phones: string[]
           permanent_token: string | null
           phone_number_id: string | null
           updated_at: string
@@ -275,6 +278,9 @@ export type Database = {
           google_sheets_url?: string | null
           id?: string
           meta_app_id?: string | null
+          notify_channel?: string
+          notify_enabled?: boolean
+          notify_phones?: string[]
           permanent_token?: string | null
           phone_number_id?: string | null
           updated_at?: string
@@ -289,6 +295,9 @@ export type Database = {
           google_sheets_url?: string | null
           id?: string
           meta_app_id?: string | null
+          notify_channel?: string
+          notify_enabled?: boolean
+          notify_phones?: string[]
           permanent_token?: string | null
           phone_number_id?: string | null
           updated_at?: string
