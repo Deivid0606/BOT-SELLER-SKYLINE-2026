@@ -1,13 +1,8 @@
 import { motion } from "framer-motion";
 import { GraduationCap, Plus, Trash2, BookOpen } from "lucide-react";
 
-const mockTraining = [
-  { topic: "Productos disponibles", entries: 15 },
-  { topic: "Precios y ofertas", entries: 8 },
-  { topic: "Política de envíos", entries: 4 },
-  { topic: "Formas de pago", entries: 6 },
-  { topic: "Garantías", entries: 3 },
-];
+type TrainingTopic = { topic: string; entries: number };
+const mockTraining: TrainingTopic[] = [];
 
 export default function TrainingPage() {
   return (
@@ -38,17 +33,24 @@ export default function TrainingPage() {
           <div className="px-4 py-3 border-b border-border">
             <h3 className="font-heading font-semibold text-sm">Datos de Entrenamiento</h3>
           </div>
-          <div className="divide-y divide-border">
-            {mockTraining.map((t) => (
-              <div key={t.topic} className="px-4 py-3 hover:bg-secondary/30 transition-colors cursor-pointer flex items-center gap-3">
-                <BookOpen className="h-4 w-4 text-primary shrink-0" />
-                <div className="flex-1">
-                  <p className="text-sm font-medium">{t.topic}</p>
+          {mockTraining.length === 0 ? (
+            <div className="px-4 py-12 text-center">
+              <BookOpen className="h-8 w-8 text-muted-foreground/40 mx-auto mb-2" />
+              <p className="text-xs text-muted-foreground">Aún no hay datos de entrenamiento</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-border">
+              {mockTraining.map((t) => (
+                <div key={t.topic} className="px-4 py-3 hover:bg-secondary/30 transition-colors cursor-pointer flex items-center gap-3">
+                  <BookOpen className="h-4 w-4 text-primary shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium">{t.topic}</p>
+                  </div>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground border border-border">{t.entries} entradas</span>
                 </div>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-secondary text-muted-foreground border border-border">{t.entries} entradas</span>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </motion.div>
       </div>
     </div>
