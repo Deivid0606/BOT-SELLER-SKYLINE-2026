@@ -17,21 +17,11 @@ const availableTemplates = [
 
 const allTags = ["venta", "confirmado", "prospecto", "consulta", "venta web"];
 
-const mockChats = [
-  { number: "+595 981 234 567", lastMsg: "Hola, quiero saber precio del iPhone 15", time: "14:32", date: "2026-04-15", unread: 3 },
-  { number: "+595 972 345 678", lastMsg: "Ya transferí el pago", time: "14:15", date: "2026-04-15", unread: 0, tag: "venta" },
-  { number: "+595 961 456 789", lastMsg: "Tienen en color azul?", time: "13:50", date: "2026-04-14", unread: 1 },
-  { number: "+595 983 567 890", lastMsg: "Cuánto sale el envío a Encarnación?", time: "12:22", date: "2026-04-13", unread: 0, tag: "consulta" },
-  { number: "+595 974 678 901", lastMsg: "Perfecto, confirmo el pedido", time: "11:45", date: "2026-04-12", unread: 0, tag: "confirmado" },
-];
+type Chat = { number: string; lastMsg: string; time: string; date: string; unread: number; tag?: string };
+const mockChats: Chat[] = [];
 
-const mockMessages = [
-  { id: 1, from: "in", text: "Hola, ¿Precio de la Crema Veneno de Abeja porfa?", time: "14:20", date: "2026-04-15", adSource: { type: "meta", label: "Anuncio", adId: "120248410168840550", adPreview: "⚡ Resultados visibles en pocos días\n🌟 La crema que está ayudando a miles de personas a recuperar una piel joven 🌟 ¿Arrugas, manchas o piel sin vida? El Veneno de Abeja se ha convertido en uno de los secretos mejor guardados del cuidado facial por su..." } },
-  { id: 2, from: "out", text: "¡Hola! 👋 Sí, tenemos disponible la Crema Veneno de Abeja.\n\n🧴 *Crema Veneno de Abeja*\n💰 Precio: Gs. 150.000\n📦 Envío gratis a todo el país\n\n¿Te gustaría hacer el pedido?", time: "14:20", date: "2026-04-15", badge: "IA" },
-  { id: 3, from: "in", text: "Cuanto sale el de 256GB?", time: "14:25", date: "2026-04-15" },
-  { id: 4, from: "out", text: "El iPhone 15 Pro Max de 256GB está a Gs. 6.500.000 💰\n\nTambién tenemos:\n• 512GB: Gs. 7.800.000\n• 1TB: Gs. 9.200.000\n\n¿Cuál te interesa? 😊", time: "14:25", date: "2026-04-15", badge: "IA" },
-  { id: 5, from: "in", text: "El de 256 está bien. Cómo hago para pagar?", time: "14:30", date: "2026-04-15" },
-];
+type Message = { id: number; from: "in" | "out"; text: string; time: string; date: string; badge?: string; adSource?: { type: string; label: string; adId: string; adPreview: string } };
+const mockMessages: Message[] = [];
 
 export default function InboxPage() {
   const [selectedChat, setSelectedChat] = useState(0);
