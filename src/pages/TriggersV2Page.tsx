@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Trash2, ShieldCheck, Power, Clock, MessageSquare, ChevronDown, ChevronUp, Megaphone, Tags, FileText, CalendarDays, Timer, GitBranch, MapPin } from "lucide-react";
+import { Plus, Trash2, ShieldCheck, Power, Clock, MessageSquare, ChevronDown, ChevronUp, Megaphone, Tags, FileText, CalendarDays, Timer, GitBranch, MapPin, BarChart3, Settings2 } from "lucide-react";
+import RemarketingStats from "@/components/RemarketingStats";
 
 const DAYS_OF_WEEK = [
   { key: "lun", label: "Lun" },
@@ -119,6 +120,7 @@ export default function TriggersV2Page() {
 
   // Active tab
   const [activeTab, setActiveTab] = useState<"triggers" | "remarketing">("triggers");
+  const [remarketingSubTab, setRemarketingSubTab] = useState<"campaigns" | "stats">("campaigns");
 
   const toggleActive = (id: string) => {
     setTriggers(prev => prev.map(t => t.id === id ? { ...t, active: !t.active } : t));
