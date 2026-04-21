@@ -20,6 +20,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Calendar } from "@/components/ui/calendar";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
+import { toast } from "@/hooks/use-toast";
 
 const availableTemplates = [
   { name: "BIENVENIDA", preview: "¡Hola! 👋 Bienvenido a Skyline Store. ¿En qué podemos ayudarte hoy?" },
@@ -42,6 +44,11 @@ type DbMessage = {
   is_processed: boolean | null;
 };
 
+type WhatsAppConfig = {
+  phone_number_id: string | null;
+  permanent_token: string | null;
+};
+
 type Chat = {
   number: string;
   lastMsg: string;
@@ -60,7 +67,19 @@ type Message = {
   badge?: string;
 };
 
+function isOutgoingType(type?: string | null) {
+  return !!type && type.startsWith("out_");
+}
+
+function getDisplayType(type?: string | null) {
+  if (!type) return undefined;
+  if (type.startsWith("out_")) return type.replace("out_", "");
+  return type;
+}
+
 export default function InboxPage() {
+  const { user } = useAuth();
+
   const [selectedChat, setSelectedChat] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [messageInput, setMessageInput] = useState("");
@@ -71,6 +90,11 @@ export default function InboxPage() {
 
   const [dbMessages, setDbMessages] = useState<DbMessage[]>([]);
   const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [waConfig, setWaConfig] = useState<WhatsAppConfig>({
+    phone_number_id: null,
+    permanent_token: null,
+  });
 
   const handleSelectTemplate = (template: (typeof availableTemplates)[0]) => {
     setMessageInput(template.preview);
@@ -96,8 +120,31 @@ export default function InboxPage() {
     setLoading(false);
   };
 
+  const loadWhatsAppConfig = async () => {
+    if (!user) return;
+
+    const { data, error } = await supabase
+      .from("whatsapp_config")
+      .select("phone_number_id, permanent_token")
+      .eq("user_id", user.id)
+      .single();
+
+    if (error) {
+      console.error("Error cargando config WhatsApp:", error);
+      return;
+    }
+
+    if (data) {
+      setWaConfig({
+        phone_number_id: data.phone_number_id,
+        permanent_token: data.permanent_token,
+      });
+    }
+  };
+
   useEffect(() => {
     loadMessages();
+    loadWhatsAppConfig();
 
     const channel = supabase
       .channel("received_messages_realtime")
@@ -113,7 +160,7 @@ export default function InboxPage() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [user]);
 
   const chats = useMemo<Chat[]>(() => {
     const grouped = new Map<string, DbMessage[]>();
@@ -133,7 +180,7 @@ export default function InboxPage() {
         lastMsg: last?.message || "",
         time: "Ahora",
         date: new Date().toISOString().slice(0, 10),
-        unread: messages.filter((m) => !m.is_processed).length,
+        unread: messages.filter((m) => !m.is_processed && !isOutgoingType(m.message_type)).length,
       };
     });
   }, [dbMessages]);
@@ -164,11 +211,11 @@ export default function InboxPage() {
       .reverse()
       .map((msg) => ({
         id: msg.id,
-        from: "in",
+        from: isOutgoingType(msg.message_type) ? "out" : "in",
         text: msg.message || "",
         time: "Ahora",
         date: new Date().toISOString(),
-        badge: msg.message_type || undefined,
+        badge: getDisplayType(msg.message_type),
       }));
   }, [dbMessages, selectedNumber]);
 
@@ -178,12 +225,138 @@ export default function InboxPage() {
     }
   }, [filteredChats.length, selectedChat]);
 
+  useEffect(() => {
+    const markAsProcessed = async () => {
+      if (!selectedNumber) return;
+
+      const idsToUpdate = dbMessages
+        .filter(
+          (msg) =>
+            msg.from_number === selectedNumber &&
+            !msg.is_processed &&
+            !isOutgoingType(msg.message_type)
+        )
+        .map((msg) => msg.id);
+
+      if (idsToUpdate.length === 0) return;
+
+      const { error } = await supabase
+        .from("received_messages")
+        .update({ is_processed: true })
+        .in("id", idsToUpdate);
+
+      if (error) {
+        console.error("Error marcando mensajes como leídos:", error);
+      } else {
+        setDbMessages((prev) =>
+          prev.map((msg) =>
+            idsToUpdate.includes(msg.id) ? { ...msg, is_processed: true } : msg
+          )
+        );
+      }
+    };
+
+    markAsProcessed();
+  }, [selectedNumber, dbMessages]);
+
   const clearFilters = () => {
     setFilterTag(null);
     setFilterDate(undefined);
   };
 
   const hasActiveFilters = !!(filterTag || filterDate);
+
+  const handleSendMessage = async () => {
+    if (!selectedNumber) {
+      toast({
+        title: "Selecciona un chat",
+        description: "Primero selecciona un chat para responder.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!messageInput.trim()) {
+      toast({
+        title: "Mensaje vacío",
+        description: "Escribe un mensaje antes de enviar.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!waConfig.phone_number_id || !waConfig.permanent_token) {
+      toast({
+        title: "Falta configuración",
+        description: "Revisa phone_number_id y permanent_token en Ajustes.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      setSending(true);
+
+      const response = await fetch(
+        `https://graph.facebook.com/v25.0/${waConfig.phone_number_id}/messages`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${waConfig.permanent_token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            to: selectedNumber,
+            type: "text",
+            text: {
+              body: messageInput.trim(),
+            },
+          }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        console.error("Error enviando a Meta:", result);
+        throw new Error(result?.error?.message || "No se pudo enviar el mensaje");
+      }
+
+      const textToSave = messageInput.trim();
+
+      const { error: insertError } = await supabase.from("received_messages").insert({
+        user_id: user?.id ?? null,
+        platform: "whatsapp",
+        from_number: selectedNumber,
+        message: textToSave,
+        message_type: "out_text",
+        media_url: null,
+        is_processed: true,
+      });
+
+      if (insertError) {
+        console.error("Error guardando mensaje saliente:", insertError);
+      }
+
+      setMessageInput("");
+      await loadMessages();
+
+      toast({
+        title: "✅ Mensaje enviado",
+        description: "La respuesta se envió correctamente por WhatsApp.",
+      });
+    } catch (error: any) {
+      console.error(error);
+      toast({
+        title: "Error al enviar",
+        description: error?.message || "No se pudo enviar el mensaje.",
+        variant: "destructive",
+      });
+    } finally {
+      setSending(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -275,9 +448,15 @@ export default function InboxPage() {
                       initial={{ opacity: 0, y: 8 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: idx * 0.03 }}
-                      className="flex justify-start"
+                      className={`flex ${msg.from === "out" ? "justify-end" : "justify-start"}`}
                     >
-                      <div className="max-w-[75%] px-4 py-3 text-sm whitespace-pre-line glass glass-border rounded-2xl rounded-bl-md">
+                      <div
+                        className={`max-w-[75%] px-4 py-3 text-sm whitespace-pre-line ${
+                          msg.from === "out"
+                            ? "bg-gradient-to-br from-[hsl(160,80%,16%)] to-[hsl(165,70%,22%)] border border-[hsl(160,60%,26%/0.4)] rounded-2xl rounded-br-md shadow-lg shadow-[hsl(160,80%,16%/0.15)]"
+                            : "glass glass-border rounded-2xl rounded-bl-md"
+                        }`}
+                      >
                         <div className="leading-relaxed">{msg.text}</div>
                         <div className="flex items-center gap-2 mt-2 text-[10px] text-muted-foreground/60">
                           <span>{msg.time}</span>
@@ -286,6 +465,7 @@ export default function InboxPage() {
                               {msg.badge}
                             </span>
                           )}
+                          {msg.from === "out" && <span className="text-success/60">✓</span>}
                         </div>
                       </div>
                     </motion.div>
@@ -356,8 +536,17 @@ export default function InboxPage() {
                 placeholder="Escribe tu mensaje aquí..."
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !sending) {
+                    handleSendMessage();
+                  }
+                }}
               />
-              <button className="p-2.5 rounded-xl bg-gradient-to-r from-primary to-accent text-primary-foreground hover:shadow-[0_0_16px_hsl(239,84%,67%,0.3)] hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200">
+              <button
+                onClick={handleSendMessage}
+                disabled={sending}
+                className="p-2.5 rounded-xl bg-gradient-to-r from-primary to-accent text-primary-foreground hover:shadow-[0_0_16px_hsl(239,84%,67%,0.3)] hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200 disabled:opacity-50"
+              >
                 <Send className="h-4 w-4" />
               </button>
             </div>
