@@ -44,11 +44,6 @@ type DbMessage = {
   is_processed: boolean | null;
 };
 
-type WhatsAppConfig = {
-  phone_number_id: string | null;
-  permanent_token: string | null;
-};
-
 type Chat = {
   number: string;
   lastMsg: string;
@@ -91,10 +86,6 @@ export default function InboxPage() {
   const [dbMessages, setDbMessages] = useState<DbMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
-  const [waConfig, setWaConfig] = useState<WhatsAppConfig>({
-    phone_number_id: null,
-    permanent_token: null,
-  });
 
   const handleSelectTemplate = (template: (typeof availableTemplates)[0]) => {
     setMessageInput(template.preview);
@@ -120,31 +111,8 @@ export default function InboxPage() {
     setLoading(false);
   };
 
-  const loadWhatsAppConfig = async () => {
-    if (!user) return;
-
-    const { data, error } = await supabase
-      .from("whatsapp_config")
-      .select("phone_number_id, permanent_token")
-      .eq("user_id", user.id)
-      .single();
-
-    if (error) {
-      console.error("Error cargando config WhatsApp:", error);
-      return;
-    }
-
-    if (data) {
-      setWaConfig({
-        phone_number_id: data.phone_number_id,
-        permanent_token: data.permanent_token,
-      });
-    }
-  };
-
   useEffect(() => {
     loadMessages();
-    loadWhatsAppConfig();
 
     const channel = supabase
       .channel("received_messages_realtime")
@@ -285,58 +253,27 @@ export default function InboxPage() {
       return;
     }
 
-    if (!waConfig.phone_number_id || !waConfig.permanent_token) {
-      toast({
-        title: "Falta configuración",
-        description: "Revisa phone_number_id y permanent_token en Ajustes.",
-        variant: "destructive",
-      });
-      return;
-    }
-
     try {
       setSending(true);
 
-      const response = await fetch(
-        `https://graph.facebook.com/v25.0/${waConfig.phone_number_id}/messages`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${waConfig.permanent_token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            messaging_product: "whatsapp",
-            to: selectedNumber,
-            type: "text",
-            text: {
-              body: messageInput.trim(),
-            },
-          }),
-        }
-      );
+      const textToSend = messageInput.trim();
+
+      const response = await fetch("/api/send-whatsapp", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          user_id: user?.id ?? null,
+          to: selectedNumber,
+          message: textToSend,
+        }),
+      });
 
       const result = await response.json();
 
       if (!response.ok) {
-        console.error("Error enviando a Meta:", result);
-        throw new Error(result?.error?.message || "No se pudo enviar el mensaje");
-      }
-
-      const textToSave = messageInput.trim();
-
-      const { error: insertError } = await supabase.from("received_messages").insert({
-        user_id: user?.id ?? null,
-        platform: "whatsapp",
-        from_number: selectedNumber,
-        message: textToSave,
-        message_type: "out_text",
-        media_url: null,
-        is_processed: true,
-      });
-
-      if (insertError) {
-        console.error("Error guardando mensaje saliente:", insertError);
+        throw new Error(result?.error || "No se pudo enviar el mensaje");
       }
 
       setMessageInput("");
@@ -347,7 +284,7 @@ export default function InboxPage() {
         description: "La respuesta se envió correctamente por WhatsApp.",
       });
     } catch (error: any) {
-      console.error(error);
+      console.error("Error enviando mensaje:", error);
       toast({
         title: "Error al enviar",
         description: error?.message || "No se pudo enviar el mensaje.",
