@@ -1,11 +1,25 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, Send, Pause, Trash2, Bot, Image, Smile, FileText, X, Filter, CalendarDays, Tag, Megaphone } from "lucide-react";
+import {
+  Search,
+  Send,
+  Pause,
+  Trash2,
+  Bot,
+  Image,
+  Smile,
+  FileText,
+  X,
+  Filter,
+  CalendarDays,
+  Tag,
+} from "lucide-react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
 
 const availableTemplates = [
   { name: "BIENVENIDA", preview: "¡Hola! 👋 Bienvenido a Skyline Store. ¿En qué podemos ayudarte hoy?" },
@@ -17,11 +31,34 @@ const availableTemplates = [
 
 const allTags = ["venta", "confirmado", "prospecto", "consulta", "venta web"];
 
-type Chat = { number: string; lastMsg: string; time: string; date: string; unread: number; tag?: string };
-const mockChats: Chat[] = [];
+type DbMessage = {
+  id: string;
+  user_id: string | null;
+  platform: string | null;
+  from_number: string | null;
+  message: string | null;
+  message_type: string | null;
+  media_url: string | null;
+  is_processed: boolean | null;
+};
 
-type Message = { id: number; from: "in" | "out"; text: string; time: string; date: string; badge?: string; adSource?: { type: string; label: string; adId: string; adPreview: string } };
-const mockMessages: Message[] = [];
+type Chat = {
+  number: string;
+  lastMsg: string;
+  time: string;
+  date: string;
+  unread: number;
+  tag?: string;
+};
+
+type Message = {
+  id: string;
+  from: "in" | "out";
+  text: string;
+  time: string;
+  date: string;
+  badge?: string;
+};
 
 export default function InboxPage() {
   const [selectedChat, setSelectedChat] = useState(0);
@@ -32,30 +69,124 @@ export default function InboxPage() {
   const [filterDate, setFilterDate] = useState<Date | undefined>(undefined);
   const [showFilters, setShowFilters] = useState(false);
 
-  const handleSelectTemplate = (template: typeof availableTemplates[0]) => {
+  const [dbMessages, setDbMessages] = useState<DbMessage[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const handleSelectTemplate = (template: (typeof availableTemplates)[0]) => {
     setMessageInput(template.preview);
     setShowTemplates(false);
   };
 
+  const loadMessages = async () => {
+    setLoading(true);
+
+    const { data, error } = await supabase
+      .from("received_messages")
+      .select("*")
+      .order("id", { ascending: false });
+
+    if (error) {
+      console.error("Error cargando mensajes:", error);
+      setDbMessages([]);
+      setLoading(false);
+      return;
+    }
+
+    setDbMessages((data || []) as DbMessage[]);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadMessages();
+
+    const channel = supabase
+      .channel("received_messages_realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "received_messages" },
+        () => {
+          loadMessages();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const chats = useMemo<Chat[]>(() => {
+    const grouped = new Map<string, DbMessage[]>();
+
+    for (const msg of dbMessages) {
+      const number = msg.from_number || "Sin número";
+      if (!grouped.has(number)) grouped.set(number, []);
+      grouped.get(number)!.push(msg);
+    }
+
+    return Array.from(grouped.entries()).map(([number, messages]) => {
+      const ordered = [...messages].reverse();
+      const last = ordered[ordered.length - 1];
+
+      return {
+        number,
+        lastMsg: last?.message || "",
+        time: "Ahora",
+        date: new Date().toISOString().slice(0, 10),
+        unread: messages.filter((m) => !m.is_processed).length,
+      };
+    });
+  }, [dbMessages]);
+
   const filteredChats = useMemo(() => {
-    return mockChats.filter((chat) => {
-      if (searchQuery && !chat.number.includes(searchQuery) && !chat.lastMsg.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    return chats.filter((chat) => {
+      if (
+        searchQuery &&
+        !chat.number.includes(searchQuery) &&
+        !chat.lastMsg.toLowerCase().includes(searchQuery.toLowerCase())
+      ) return false;
+
       if (filterTag && chat.tag !== filterTag) return false;
       if (filterDate && chat.date !== format(filterDate, "yyyy-MM-dd")) return false;
+
       return true;
     });
-  }, [searchQuery, filterTag, filterDate]);
+  }, [chats, searchQuery, filterTag, filterDate]);
+
+  const selectedNumber = filteredChats[selectedChat]?.number;
+
+  const currentMessages = useMemo<Message[]>(() => {
+    if (!selectedNumber) return [];
+
+    return dbMessages
+      .filter((msg) => msg.from_number === selectedNumber)
+      .slice()
+      .reverse()
+      .map((msg) => ({
+        id: msg.id,
+        from: "in",
+        text: msg.message || "",
+        time: "Ahora",
+        date: new Date().toISOString(),
+        badge: msg.message_type || undefined,
+      }));
+  }, [dbMessages, selectedNumber]);
+
+  useEffect(() => {
+    if (selectedChat >= filteredChats.length) {
+      setSelectedChat(0);
+    }
+  }, [filteredChats.length, selectedChat]);
 
   const clearFilters = () => {
     setFilterTag(null);
     setFilterDate(undefined);
   };
 
-  const hasActiveFilters = filterTag || filterDate;
+  const hasActiveFilters = !!(filterTag || filterDate);
 
   return (
     <div className="space-y-4">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="h-8 w-1 rounded-full bg-gradient-to-b from-primary to-accent" />
@@ -70,37 +201,35 @@ export default function InboxPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 h-[calc(100vh-180px)]">
-        {/* Chat Area */}
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="glass glass-border rounded-xl flex flex-col overflow-hidden">
-          {/* Chat Header */}
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="glass glass-border rounded-xl flex flex-col overflow-hidden"
+        >
           <div className="flex items-center justify-between px-5 py-3 border-b border-border/40 bg-secondary/20">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-xs font-bold text-primary font-mono">
-                {filteredChats[selectedChat]?.number?.slice(-2)}
+                {selectedNumber?.slice(-2) || "--"}
               </div>
               <div>
-                <span className="font-heading font-bold text-sm">{filteredChats[selectedChat]?.number}</span>
-                {filteredChats[selectedChat]?.tag && (
-                  <span className="ml-2 text-[9px] px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/20 font-medium">
-                    {filteredChats[selectedChat].tag}
-                  </span>
-                )}
+                <span className="font-heading font-bold text-sm">
+                  {selectedNumber || "Sin chat seleccionado"}
+                </span>
               </div>
             </div>
             <div className="flex items-center gap-1">
-              <button className="p-2 rounded-lg hover:bg-secondary/60 transition-all duration-200 text-muted-foreground hover:text-foreground" title="Pausar IA">
+              <button className="p-2 rounded-lg hover:bg-secondary/60 transition-all duration-200 text-muted-foreground hover:text-foreground">
                 <Pause className="h-4 w-4" />
               </button>
-              <button className="p-2 rounded-lg hover:bg-primary/10 transition-all duration-200 text-muted-foreground hover:text-primary" title="Forzar IA">
+              <button className="p-2 rounded-lg hover:bg-primary/10 transition-all duration-200 text-muted-foreground hover:text-primary">
                 <Bot className="h-4 w-4" />
               </button>
-              <button className="p-2 rounded-lg hover:bg-destructive/10 transition-all duration-200 text-muted-foreground hover:text-destructive" title="Eliminar">
+              <button className="p-2 rounded-lg hover:bg-destructive/10 transition-all duration-200 text-muted-foreground hover:text-destructive">
                 <Trash2 className="h-4 w-4" />
               </button>
             </div>
           </div>
 
-          {/* Toolbar */}
           <div className="flex items-center gap-2 px-5 py-2.5 border-b border-border/30 bg-secondary/10">
             <button className="text-[11px] px-3 py-1.5 rounded-lg bg-success/8 text-success border border-success/15 hover:bg-success/15 transition-all duration-200 font-medium">
               ✏️ Venta Normal
@@ -120,66 +249,52 @@ export default function InboxPage() {
             </select>
           </div>
 
-          {/* Messages */}
           <div className="flex-1 overflow-y-auto p-5 space-y-3 bg-[hsl(198,19%,18%)]">
-            {mockMessages.map((msg, idx) => {
-              const showDateSeparator = idx === 0 || msg.date !== mockMessages[idx - 1].date;
-              return (
-                <div key={msg.id}>
-                  {showDateSeparator && (
-                    <div className="flex items-center justify-center my-3">
-                      <span className="text-[10px] px-4 py-1.5 rounded-full glass glass-border text-muted-foreground font-medium">
-                        {format(new Date(msg.date), "EEEE, d 'de' MMMM yyyy", { locale: es })}
-                      </span>
-                    </div>
-                  )}
-                  <motion.div 
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: idx * 0.05 }}
-                    className={`flex ${msg.from === "out" ? "justify-end" : "justify-start"}`}
-                  >
-                    <div
-                      className={`max-w-[75%] px-4 py-3 text-sm whitespace-pre-line ${
-                        msg.from === "out"
-                          ? "bg-gradient-to-br from-[hsl(160,80%,16%)] to-[hsl(165,70%,22%)] border border-[hsl(160,60%,26%/0.4)] rounded-2xl rounded-br-md shadow-lg shadow-[hsl(160,80%,16%/0.15)]"
-                          : "glass glass-border rounded-2xl rounded-bl-md"
-                      }`}
-                    >
-                      {/* Meta Ads referral card */}
-                      {msg.adSource && (
-                        <div className="mb-2.5 rounded-lg bg-[hsl(220,20%,18%)] border border-[hsl(220,15%,28%)] overflow-hidden">
-                          <div className="flex items-center justify-between px-3 py-1.5 bg-[hsl(220,18%,22%)] border-b border-[hsl(220,15%,28%)]">
-                            <div className="flex items-center gap-1.5">
-                              <Megaphone className="h-3 w-3 text-muted-foreground" />
-                              <span className="text-[10px] text-muted-foreground font-medium">{msg.adSource.label}</span>
-                            </div>
-                            <span className="text-[10px] text-muted-foreground/60 font-mono">{msg.adSource.adId}</span>
-                          </div>
-                          <div className="px-3 py-2">
-                            <p className="text-xs text-muted-foreground/80 leading-relaxed line-clamp-4">{msg.adSource.adPreview}</p>
-                            <p className="text-[10px] text-primary/60 mt-1">fb.me</p>
-                          </div>
-                        </div>
-                      )}
-                      <div className="leading-relaxed">{msg.text}</div>
-                      <div className="flex items-center gap-2 mt-2 text-[10px] text-muted-foreground/60">
-                        <span>{msg.time}</span>
-                        {msg.badge && (
-                          <span className="px-1.5 py-0.5 rounded-full bg-primary/15 text-primary text-[9px] font-semibold font-mono">
-                            {msg.badge}
-                          </span>
-                        )}
-                        {msg.from === "out" && <span className="text-success/60">✓✓</span>}
+            {loading ? (
+              <div className="text-sm text-muted-foreground">Cargando mensajes...</div>
+            ) : currentMessages.length === 0 ? (
+              <div className="text-sm text-muted-foreground">No hay mensajes para este chat.</div>
+            ) : (
+              currentMessages.map((msg, idx) => {
+                const showDateSeparator =
+                  idx === 0 ||
+                  format(new Date(msg.date), "yyyy-MM-dd") !==
+                    format(new Date(currentMessages[idx - 1].date), "yyyy-MM-dd");
+
+                return (
+                  <div key={msg.id}>
+                    {showDateSeparator && (
+                      <div className="flex items-center justify-center my-3">
+                        <span className="text-[10px] px-4 py-1.5 rounded-full glass glass-border text-muted-foreground font-medium">
+                          {format(new Date(msg.date), "EEEE, d 'de' MMMM yyyy", { locale: es })}
+                        </span>
                       </div>
-                    </div>
-                  </motion.div>
-                </div>
-              );
-            })}
+                    )}
+
+                    <motion.div
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: idx * 0.03 }}
+                      className="flex justify-start"
+                    >
+                      <div className="max-w-[75%] px-4 py-3 text-sm whitespace-pre-line glass glass-border rounded-2xl rounded-bl-md">
+                        <div className="leading-relaxed">{msg.text}</div>
+                        <div className="flex items-center gap-2 mt-2 text-[10px] text-muted-foreground/60">
+                          <span>{msg.time}</span>
+                          {msg.badge && (
+                            <span className="px-1.5 py-0.5 rounded-full bg-primary/15 text-primary text-[9px] font-semibold font-mono">
+                              {msg.badge}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </motion.div>
+                  </div>
+                );
+              })
+            )}
           </div>
 
-          {/* Input */}
           <div className="border-t border-border/30 p-4 bg-secondary/10 space-y-2 relative">
             <AnimatePresence>
               {showTemplates && (
@@ -191,7 +306,10 @@ export default function InboxPage() {
                 >
                   <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/30 bg-secondary/20">
                     <span className="text-xs font-heading font-bold">📋 Plantillas</span>
-                    <button onClick={() => setShowTemplates(false)} className="p-1 rounded-lg hover:bg-secondary/60 text-muted-foreground transition-colors">
+                    <button
+                      onClick={() => setShowTemplates(false)}
+                      className="p-1 rounded-lg hover:bg-secondary/60 text-muted-foreground transition-colors"
+                    >
                       <X className="h-3.5 w-3.5" />
                     </button>
                   </div>
@@ -202,8 +320,12 @@ export default function InboxPage() {
                         onClick={() => handleSelectTemplate(tpl)}
                         className="w-full text-left px-4 py-3 hover:bg-primary/5 border-b border-border/20 last:border-0 transition-colors"
                       >
-                        <span className="text-[10px] font-bold text-primary font-mono tracking-wider">{tpl.name}</span>
-                        <p className="text-xs text-muted-foreground truncate mt-0.5">{tpl.preview}</p>
+                        <span className="text-[10px] font-bold text-primary font-mono tracking-wider">
+                          {tpl.name}
+                        </span>
+                        <p className="text-xs text-muted-foreground truncate mt-0.5">
+                          {tpl.preview}
+                        </p>
                       </button>
                     ))}
                   </div>
@@ -220,7 +342,11 @@ export default function InboxPage() {
               </button>
               <button
                 onClick={() => setShowTemplates(!showTemplates)}
-                className={`p-2.5 rounded-xl transition-all duration-200 ${showTemplates ? "bg-primary/10 text-primary shadow-sm" : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"}`}
+                className={`p-2.5 rounded-xl transition-all duration-200 ${
+                  showTemplates
+                    ? "bg-primary/10 text-primary shadow-sm"
+                    : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"
+                }`}
                 title="Plantillas"
               >
                 <FileText className="h-4 w-4" />
@@ -238,15 +364,22 @@ export default function InboxPage() {
           </div>
         </motion.div>
 
-        {/* Sidebar - Chats */}
-        <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="glass glass-border rounded-xl flex flex-col overflow-hidden">
+        <motion.div
+          initial={{ opacity: 0, x: 20 }}
+          animate={{ opacity: 1, x: 0 }}
+          className="glass glass-border rounded-xl flex flex-col overflow-hidden"
+        >
           <div className="px-4 py-3 border-b border-border/30">
             <div className="flex items-center justify-between mb-2.5">
               <span className="font-heading font-bold text-sm">Chats Recientes</span>
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => setShowFilters(!showFilters)}
-                  className={`p-1.5 rounded-lg transition-all duration-200 relative ${showFilters || hasActiveFilters ? "bg-primary/10 text-primary" : "hover:bg-secondary/60 text-muted-foreground"}`}
+                  className={`p-1.5 rounded-lg transition-all duration-200 relative ${
+                    showFilters || hasActiveFilters
+                      ? "bg-primary/10 text-primary"
+                      : "hover:bg-secondary/60 text-muted-foreground"
+                  }`}
                   title="Filtros"
                 >
                   <Filter className="h-3.5 w-3.5" />
@@ -260,7 +393,6 @@ export default function InboxPage() {
               </div>
             </div>
 
-            {/* Filters Panel */}
             <AnimatePresence>
               {showFilters && (
                 <motion.div
@@ -297,13 +429,17 @@ export default function InboxPage() {
                       </label>
                       <Popover>
                         <PopoverTrigger asChild>
-                          <button className={cn(
-                            "w-full text-left text-xs px-3 py-2 rounded-lg border transition-all duration-200",
-                            filterDate
-                              ? "bg-primary/10 text-primary border-primary/25"
-                              : "bg-secondary/30 text-muted-foreground border-border/30 hover:bg-secondary/50"
-                          )}>
-                            {filterDate ? format(filterDate, "d 'de' MMMM yyyy", { locale: es }) : "Seleccionar fecha..."}
+                          <button
+                            className={cn(
+                              "w-full text-left text-xs px-3 py-2 rounded-lg border transition-all duration-200",
+                              filterDate
+                                ? "bg-primary/10 text-primary border-primary/25"
+                                : "bg-secondary/30 text-muted-foreground border-border/30 hover:bg-secondary/50"
+                            )}
+                          >
+                            {filterDate
+                              ? format(filterDate, "d 'de' MMMM yyyy", { locale: es })
+                              : "Seleccionar fecha..."}
                           </button>
                         </PopoverTrigger>
                         <PopoverContent className="w-auto p-0" align="end">
@@ -367,7 +503,9 @@ export default function InboxPage() {
                   </div>
                 </div>
                 <div className="flex items-center justify-between mt-1.5 ml-9.5">
-                  <span className="text-xs text-muted-foreground truncate max-w-[180px]">{chat.lastMsg}</span>
+                  <span className="text-xs text-muted-foreground truncate max-w-[180px]">
+                    {chat.lastMsg}
+                  </span>
                   {chat.unread > 0 && (
                     <span className="min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-gradient-to-r from-primary to-accent text-primary-foreground text-[10px] font-bold shadow-[0_0_8px_hsl(239,84%,67%,0.3)]">
                       {chat.unread}
@@ -379,7 +517,8 @@ export default function InboxPage() {
                 </div>
               </button>
             ))}
-            {filteredChats.length === 0 && (
+
+            {!loading && filteredChats.length === 0 && (
               <div className="p-8 text-center text-xs text-muted-foreground">
                 No se encontraron chats con los filtros aplicados
               </div>
