@@ -266,6 +266,48 @@ export type Database = {
           },
         ]
       }
+      templates: {
+        Row: {
+          id: string
+          user_id: string
+          name: string
+          category: string | null
+          content: string | null
+          variables: Json | null
+          platform: string | null
+          is_active: boolean | null
+          usage_count: number | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          name: string
+          category?: string | null
+          content?: string | null
+          variables?: Json | null
+          platform?: string | null
+          is_active?: boolean | null
+          usage_count?: number | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          name?: string
+          category?: string | null
+          content?: string | null
+          variables?: Json | null
+          platform?: string | null
+          is_active?: boolean | null
+          usage_count?: number | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           id: string
