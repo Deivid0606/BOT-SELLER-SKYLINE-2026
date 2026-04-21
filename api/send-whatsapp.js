@@ -21,12 +21,12 @@ export default async function handler(req, res) {
   try {
     const { user_id, to, message } = req.body || {};
 
-    if (!to || !message) {
-      return res.status(400).json({ error: 'Faltan datos: to y message son obligatorios' });
-    }
-
     if (!user_id) {
       return res.status(400).json({ error: 'Falta user_id' });
+    }
+
+    if (!to || !message) {
+      return res.status(400).json({ error: 'Faltan datos: to y message son obligatorios' });
     }
 
     const { data: config, error: configError } = await supabase
