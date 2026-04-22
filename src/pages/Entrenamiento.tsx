@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import { motion } from "framer-motion";
+import { Plus, Trash2, BookOpen, Loader2, GraduationCap } from "lucide-react";
 import { supabase } from '@/integrations/supabase/client'
 import { useAuth } from '@/contexts/AuthContext'
 
@@ -34,7 +36,6 @@ export default function Entrenamiento() {
 
     if (error) {
       console.error('Error cargando:', error)
-      alert('Error al cargar los datos: ' + error.message)
     } else {
       setTrainingData(data || [])
     }
@@ -58,7 +59,7 @@ export default function Entrenamiento() {
       return
     }
     if (!response.trim()) {
-      alert('Por favor completa la respuesta del bot')
+      alert('Por favor completa la información de entrenamiento')
       return
     }
 
@@ -107,7 +108,7 @@ export default function Entrenamiento() {
         console.error('Error al guardar:', error)
         alert('Error al guardar: ' + error.message)
       } else {
-        alert('✅ Datos guardados correctamente en Supabase')
+        alert('✅ Datos guardados correctamente')
         resetForm()
         loadTrainingData()
       }
@@ -120,7 +121,7 @@ export default function Entrenamiento() {
     setResponse(item.response)
     setExamples(item.examples.join('\n'))
     setEditingId(item.id)
-    document.getElementById('formulario')?.scrollIntoView({ behavior: 'smooth' })
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const handleDelete = async (id: string) => {
@@ -151,136 +152,113 @@ export default function Entrenamiento() {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6">Entrenamiento IA</h1>
+    <div className="space-y-6">
+      <h1 className="text-2xl font-bold font-heading text-gradient">Entrenamiento IA</h1>
 
-      {/* Formulario */}
-      <div id="formulario" className="bg-gray-800 rounded-lg p-6 mb-8">
-        <h2 className="text-xl font-semibold mb-4">
-          {editingId ? '✏️ Editar' : '➕ Nuevo'} Dato de Entrenamiento
-        </h2>
-
-        <div className="space-y-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Formulario */}
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="bg-card border border-border rounded-lg p-5 space-y-4">
           <div>
-            <label className="block text-sm font-medium mb-2">
-              Tema / Categoría *
-            </label>
+            <label className="text-xs text-muted-foreground">Tema / Categoría</label>
             <input
-              type="text"
               value={intent}
               onChange={(e) => setIntent(e.target.value)}
-              placeholder="Ej: precio, envio, garantia, saludo"
-              className="w-full px-3 py-2 bg-gray-700 rounded-lg border border-gray-600 focus:outline-none focus:border-blue-500"
+              className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+              placeholder="ej. Productos disponibles, Precios, Envíos"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-2">
-              Frases de ejemplo (una por línea)
-            </label>
+            <label className="text-xs text-muted-foreground">Frases de ejemplo (una por línea)</label>
             <textarea
               value={examples}
               onChange={(e) => setExamples(e.target.value)}
               placeholder="cuánto cuesta?&#10;precio del producto&#10;valor final"
-              rows={4}
-              className="w-full px-3 py-2 bg-gray-700 rounded-lg border border-gray-600 focus:outline-none focus:border-blue-500 font-mono text-sm"
+              rows={3}
+              className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm font-mono resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
             />
-            <p className="text-xs text-gray-400 mt-1">
+            <p className="text-[10px] text-muted-foreground mt-1">
               El bot usará estas frases para identificar la intención
             </p>
           </div>
 
           <div>
-            <label className="block text-sm font-medium mb-2">
-              Respuesta del bot *
-            </label>
+            <label className="text-xs text-muted-foreground">Información de entrenamiento</label>
             <textarea
               value={response}
               onChange={(e) => setResponse(e.target.value)}
-              placeholder="Respuesta que dará el bot cuando detecte esta intención..."
-              rows={4}
-              className="w-full px-3 py-2 bg-gray-700 rounded-lg border border-gray-600 focus:outline-none focus:border-blue-500"
+              className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[150px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+              placeholder="Escribe la información que la IA debe conocer…"
             />
           </div>
 
-          <div className="flex gap-3">
+          <div className="flex gap-2">
             <button
               onClick={handleSave}
               disabled={saving}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium disabled:opacity-50 transition-colors"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
-              {saving ? 'Guardando...' : (editingId ? 'Actualizar' : 'Guardar')}
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              {saving ? "Guardando..." : (editingId ? "Actualizar" : "Guardar")}
             </button>
             {editingId && (
               <button
                 onClick={resetForm}
-                className="px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded-lg font-medium transition-colors"
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-sm font-medium border border-border hover:bg-secondary/80 transition-colors"
               >
                 Cancelar
               </button>
             )}
           </div>
-        </div>
-      </div>
+        </motion.div>
 
-      {/* Lista de datos existentes */}
-      <div>
-        <h2 className="text-xl font-semibold mb-4">Datos de Entrenamiento</h2>
-        
-        {loading && <p className="text-center text-gray-400 py-8">Cargando...</p>}
-
-        {!loading && trainingData.length === 0 && (
-          <div className="bg-gray-800 rounded-lg p-8 text-center text-gray-400">
-            <p className="mb-2">📚 Aún no hay datos de entrenamiento</p>
-            <p className="text-sm">Completa el formulario arriba para agregar tu primer dato</p>
+        {/* Lista de datos */}
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="bg-card border border-border rounded-lg overflow-hidden">
+          <div className="px-4 py-3 border-b border-border">
+            <h3 className="font-heading font-semibold text-sm">Datos de Entrenamiento</h3>
           </div>
-        )}
-
-        <div className="space-y-3">
-          {trainingData.map((item) => (
-            <div key={item.id} className="bg-gray-800 rounded-lg p-4 border border-gray-700 hover:border-gray-600 transition-colors">
-              <div className="flex justify-between items-start">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-sm font-semibold text-blue-400 bg-blue-400/10 px-2 py-0.5 rounded">
-                      {item.intent}
-                    </span>
-                    <span className="text-xs text-gray-500">
-                      {item.examples.length} ejemplos
-                    </span>
-                  </div>
-                  <p className="text-gray-300 text-sm mb-2">
-                    {item.response}
-                  </p>
-                  <div className="flex flex-wrap gap-1 mt-2">
-                    {item.examples.slice(0, 3).map((ex, idx) => (
-                      <span key={idx} className="text-xs text-gray-500 bg-gray-700 px-2 py-0.5 rounded">
-                        "{ex}"
-                      </span>
-                    ))}
-                    {item.examples.length > 3 && (
-                      <span className="text-xs text-gray-500">+{item.examples.length - 3} más</span>
+          {loading ? (
+            <div className="px-4 py-12 text-center">
+              <Loader2 className="h-8 w-8 text-muted-foreground/40 animate-spin mx-auto mb-2" />
+              <p className="text-xs text-muted-foreground">Cargando...</p>
+            </div>
+          ) : trainingData.length === 0 ? (
+            <div className="px-4 py-12 text-center">
+              <BookOpen className="h-8 w-8 text-muted-foreground/40 mx-auto mb-2" />
+              <p className="text-xs text-muted-foreground">Aún no hay datos de entrenamiento</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-border">
+              {trainingData.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => handleEdit(item)}
+                  className="px-4 py-3 hover:bg-secondary/30 transition-colors cursor-pointer flex items-center gap-3 group"
+                >
+                  <GraduationCap className="h-4 w-4 text-primary shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{item.intent}</p>
+                    <p className="text-xs text-muted-foreground truncate">{item.response.substring(0, 60)}</p>
+                    {item.examples.length > 0 && (
+                      <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+                        {item.examples.length} ejemplo{item.examples.length !== 1 ? 's' : ''}
+                      </p>
                     )}
                   </div>
-                </div>
-                <div className="flex gap-2 ml-4">
                   <button
-                    onClick={() => handleEdit(item)}
-                    className="text-blue-400 hover:text-blue-300 text-sm px-2 py-1"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(item.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-destructive/10 rounded"
                   >
-                    Editar
-                  </button>
-                  <button
-                    onClick={() => handleDelete(item.id)}
-                    className="text-red-400 hover:text-red-300 text-sm px-2 py-1"
-                  >
-                    Eliminar
+                    <Trash2 className="h-3.5 w-3.5 text-destructive" />
                   </button>
                 </div>
-              </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+        </motion.div>
       </div>
     </div>
   );
