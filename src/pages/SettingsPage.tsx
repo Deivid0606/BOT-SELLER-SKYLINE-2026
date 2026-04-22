@@ -20,13 +20,22 @@ export default function SettingsPage() {
     google_sheets_url: "",
     bot_response_delay_seconds: 30,
   });
+  const [iaConfig, setIaConfig] = useState({
+    api_key: "",
+    model: "gemini-1.5-pro",
+    system_instruction: "",
+    is_active: true,
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savingIA, setSavingIA] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"whatsapp" | "qr" | "ia" | "chat">("whatsapp");
 
   useEffect(() => {
     if (!user) return;
+    
+    // Cargar configuración de WhatsApp
     supabase
       .from("whatsapp_config")
       .select("*")
@@ -46,6 +55,23 @@ export default function SettingsPage() {
           });
         }
         setLoading(false);
+      });
+
+    // Cargar configuración de IA
+    supabase
+      .from("chat_ia_gemini")
+      .select("*")
+      .eq("user_id", user.id)
+      .single()
+      .then(({ data }) => {
+        if (data) {
+          setIaConfig({
+            api_key: data.api_key || "",
+            model: data.model || "gemini-1.5-pro",
+            system_instruction: data.system_instruction || "",
+            is_active: data.is_active ?? true,
+          });
+        }
       });
   }, [user]);
 
@@ -72,6 +98,30 @@ export default function SettingsPage() {
     setSaving(false);
   };
 
+  const handleSaveIA = async () => {
+    if (!user) return;
+    setSavingIA(true);
+
+    const { error } = await supabase
+      .from("chat_ia_gemini")
+      .upsert({
+        user_id: user.id,
+        api_key: iaConfig.api_key,
+        model: iaConfig.model,
+        system_instruction: iaConfig.system_instruction,
+        is_active: iaConfig.is_active,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", user.id);
+
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+    } else {
+      toast({ title: "✅ IA Guardada", description: "Configuración de IA actualizada correctamente" });
+    }
+    setSavingIA(false);
+  };
+
   const copyToClipboard = (text: string, field: string) => {
     navigator.clipboard.writeText(text);
     setCopiedField(field);
@@ -80,10 +130,8 @@ export default function SettingsPage() {
 
   const webhookFullUrl = `${window.location.origin}/api/webhook/${config.webhook_url}`;
 
-  // TABS - Se ha eliminado la pestaña "Conexión QR"
   const tabs = [
     { id: "whatsapp" as const, label: "API Meta", icon: MessageSquare },
-    // { id: "qr" as const, label: "Conexión QR", icon: QrCode }, // ELIMINADA - OCULTA
     { id: "ia" as const, label: "IA", icon: Bot },
     { id: "chat" as const, label: "Chat", icon: Globe },
   ];
@@ -113,7 +161,6 @@ export default function SettingsPage() {
         </button>
       </div>
 
-      {/* Tabs */}
       <div className="flex border-b border-border">
         {tabs.map((tab) => (
           <button
@@ -134,38 +181,34 @@ export default function SettingsPage() {
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
         {activeTab === "whatsapp" && (
           <>
-            {/* WhatsApp Config */}
             <div className="bg-card border border-border rounded-lg p-5 space-y-5">
               <FieldRow
                 label="Id. Número de teléfono"
-                description="Valor único asignado a cada número de teléfono registrado en la plataforma de WhatsApp Business API Cloud. Se utiliza para identificar y autenticar el número al enviar y recibir mensajes."
+                description="Valor único asignado a cada número de teléfono registrado en la plataforma de WhatsApp Business API Cloud."
                 value={config.phone_number_id}
                 onChange={(v) => setConfig({ ...config, phone_number_id: v })}
                 onCopy={() => copyToClipboard(config.phone_number_id, "phone")}
                 copied={copiedField === "phone"}
               />
-
               <FieldRow
                 label="Id. cuenta de WhatsApp Business (Opcional)"
-                description="Identificador de la cuenta de WhatsApp Business. Permite que las plantillas de WhatsApp se puedan ver, crear, editar y eliminar desde Seller Skyline."
+                description="Identificador de la cuenta de WhatsApp Business."
                 value={config.business_account_id}
                 onChange={(v) => setConfig({ ...config, business_account_id: v })}
                 onCopy={() => copyToClipboard(config.business_account_id, "biz")}
                 copied={copiedField === "biz"}
               />
-
               <FieldRow
                 label="Id. de la aplicación de Meta (Opcional)"
-                description="Identificador de la aplicación de Meta donde se encuentra alojado el número de WhatsApp. Permite crear, editar y eliminar plantillas de WhatsApp de Imagen, Video y Documento."
+                description="Identificador de la aplicación de Meta."
                 value={config.meta_app_id}
                 onChange={(v) => setConfig({ ...config, meta_app_id: v })}
                 onCopy={() => copyToClipboard(config.meta_app_id, "app")}
                 copied={copiedField === "app"}
               />
-
               <FieldRow
                 label="Token permanente"
-                description="Cadena de caracteres utilizado para permitir el acceso al uso de servicios de Meta. Debe ser el permanente ya que Meta utiliza otros Tokens con caducidad."
+                description="Cadena de caracteres para acceder a servicios de Meta."
                 value={config.permanent_token}
                 onChange={(v) => setConfig({ ...config, permanent_token: v })}
                 onCopy={() => copyToClipboard(config.permanent_token, "token")}
@@ -174,23 +217,14 @@ export default function SettingsPage() {
               />
             </div>
 
-            {/* Webhook Config - Read only */}
             <div className="bg-card border border-border rounded-lg p-5 space-y-4">
               <h3 className="font-heading font-semibold text-sm">Configuración de Webhook</h3>
-
               <div className="flex gap-3">
                 <div className="flex-1">
                   <label className="text-[10px] text-muted-foreground mb-1 block">URL Webhook</label>
                   <div className="flex items-center gap-2">
-                    <input
-                      readOnly
-                      value={webhookFullUrl}
-                      className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-xs font-mono text-muted-foreground focus:outline-none"
-                    />
-                    <button
-                      onClick={() => copyToClipboard(webhookFullUrl, "wh_url")}
-                      className="p-2 rounded-lg bg-secondary border border-border hover:bg-secondary/80 transition-colors shrink-0"
-                    >
+                    <input readOnly value={webhookFullUrl} className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-xs font-mono text-muted-foreground" />
+                    <button onClick={() => copyToClipboard(webhookFullUrl, "wh_url")} className="p-2 rounded-lg bg-secondary border border-border">
                       {copiedField === "wh_url" ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5 text-muted-foreground" />}
                     </button>
                   </div>
@@ -198,30 +232,15 @@ export default function SettingsPage() {
                 <div className="w-48">
                   <label className="text-[10px] text-muted-foreground mb-1 block">Token Verificación</label>
                   <div className="flex items-center gap-2">
-                    <input
-                      readOnly
-                      value={config.webhook_token}
-                      className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-xs font-mono text-muted-foreground focus:outline-none"
-                    />
-                    <button
-                      onClick={() => copyToClipboard(config.webhook_token, "wh_token")}
-                      className="p-2 rounded-lg bg-secondary border border-border hover:bg-secondary/80 transition-colors shrink-0"
-                    >
+                    <input readOnly value={config.webhook_token} className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-xs font-mono text-muted-foreground" />
+                    <button onClick={() => copyToClipboard(config.webhook_token, "wh_token")} className="p-2 rounded-lg bg-secondary border border-border">
                       {copiedField === "wh_token" ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5 text-muted-foreground" />}
                     </button>
                   </div>
                 </div>
               </div>
-
-              <p className="text-[10px] text-muted-foreground leading-relaxed">
-                Los parámetros URL Webhook y Token son esenciales para establecer una conexión bidireccional con la plataforma de WhatsApp a través de la API de WhatsApp Business. 
-                La URL del webhook es la dirección donde WhatsApp enviará notificaciones y eventos en tiempo real. 
-                El Token es un texto de seguridad para validar que la URL proviene de tu plataforma. 
-                <strong className="text-foreground"> Para configurar correctamente el Webhook, debes copiar estos valores y pegarlos en la página de Facebook Developer en la sección de Webhook.</strong>
-              </p>
             </div>
 
-            {/* Google Sheets Integration */}
             <div className="bg-card border border-border rounded-lg p-5 space-y-4">
               <div className="flex items-center gap-2 mb-2">
                 <Sheet className="h-4 w-4 text-emerald-500" />
@@ -229,139 +248,95 @@ export default function SettingsPage() {
               </div>
               <FieldRow
                 label="URL de Google Sheets"
-                description="Pega aquí la URL de tu Apps Script Web App. Los pedidos confirmados se enviarán automáticamente a tu hoja de cálculo. Seguí las instrucciones para crear tu script en Google Sheets → Extensiones → Apps Script."
+                description="Pega aquí la URL de tu Apps Script Web App."
                 value={config.google_sheets_url}
                 onChange={(v) => setConfig({ ...config, google_sheets_url: v })}
                 onCopy={() => copyToClipboard(config.google_sheets_url, "sheets")}
                 copied={copiedField === "sheets"}
               />
-
-              <div className="bg-secondary/30 border border-border rounded-lg p-4 space-y-3">
-                <p className="text-xs font-semibold text-foreground">📋 Instrucciones para conectar Google Sheets</p>
-                <ol className="text-[11px] text-muted-foreground space-y-2 list-decimal list-inside leading-relaxed">
-                  <li>Abrí una <strong className="text-foreground">Google Sheet</strong> nueva o existente.</li>
-                  <li>Andá a <strong className="text-foreground">Extensiones → Apps Script</strong>.</li>
-                  <li>Borrá todo el código y pegá lo siguiente:</li>
-                </ol>
-                <pre className="bg-background border border-border rounded-lg p-3 text-[10px] font-mono text-muted-foreground overflow-x-auto whitespace-pre">{`function doPost(e) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-  var data = JSON.parse(e.postData.contents);
-  sheet.appendRow([
-    new Date(),
-    data.nombre,
-    data.telefono,
-    data.producto,
-    data.cantidad,
-    data.ciudad,
-    data.calle,
-    data.referencia,
-    data.monto,
-    data.payment_type,
-    data.status
-  ]);
-  return ContentService.createTextOutput(
-    JSON.stringify({result: "ok"})
-  ).setMimeType(ContentService.MimeType.JSON);
-}`}</pre>
-                <ol start={4} className="text-[11px] text-muted-foreground space-y-2 list-decimal list-inside leading-relaxed">
-                  <li>Guardá el proyecto (Ctrl+S).</li>
-                  <li>Clic en <strong className="text-foreground">Implementar → Nueva implementación</strong>.</li>
-                  <li>Tipo: <strong className="text-foreground">Aplicación web</strong>.</li>
-                  <li>Ejecutar como: <strong className="text-foreground">Yo</strong> · Acceso: <strong className="text-foreground">Cualquier persona</strong>.</li>
-                  <li>Clic en <strong className="text-foreground">Implementar</strong> y copiá la URL.</li>
-                  <li>Pegá la URL arriba y hacé clic en <strong className="text-foreground">Guardar</strong>.</li>
-                </ol>
-              </div>
             </div>
 
-            {/* Notificación de pedidos confirmados */}
             <OrderNotificationsConfig />
           </>
         )}
 
-        {/* SECCIÓN QR ELIMINADA - COMENTADA PARA NO MOSTRARSE */}
-        {/* 
-        {activeTab === "qr" && (
-          <div className="space-y-4">
-            {role === "admin" && <BaileysServerConfig />}
-            <WhatsAppQRConnection />
-          </div>
-        )} 
-        */}
-
         {activeTab === "ia" && (
           <div className="space-y-4">
-            {/* Tiempo de respuesta del bot */}
             <div className="bg-card border border-border rounded-lg p-5 space-y-4">
               <div className="flex items-center gap-2 mb-1">
                 <Timer className="h-4 w-4 text-primary" />
                 <h3 className="font-heading font-semibold text-sm">Tiempo de respuesta del bot</h3>
               </div>
-              <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Cuánto espera el bot antes de responder un mensaje. Un pequeño retraso hace que la conversación se sienta más humana. Mínimo 5s, máximo 600s (10 min).
-              </p>
-
               <div className="flex items-center gap-4">
-                <input
-                  type="range"
-                  min={5}
-                  max={600}
-                  step={5}
-                  value={config.bot_response_delay_seconds}
-                  onChange={(e) => setConfig({ ...config, bot_response_delay_seconds: Number(e.target.value) })}
-                  className="flex-1 accent-primary"
-                />
-                <div className="flex items-center gap-2 shrink-0">
-                  <input
-                    type="number"
-                    min={5}
-                    max={600}
-                    value={config.bot_response_delay_seconds}
-                    onChange={(e) => {
-                      const v = Math.max(5, Math.min(600, Number(e.target.value) || 5));
-                      setConfig({ ...config, bot_response_delay_seconds: v });
-                    }}
-                    className="w-20 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-primary/50"
-                  />
-                  <span className="text-xs text-muted-foreground font-mono">seg</span>
+                <input type="range" min={5} max={600} step={5} value={config.bot_response_delay_seconds} onChange={(e) => setConfig({ ...config, bot_response_delay_seconds: Number(e.target.value) })} className="flex-1 accent-primary" />
+                <div className="flex items-center gap-2">
+                  <input type="number" min={5} max={600} value={config.bot_response_delay_seconds} onChange={(e) => setConfig({ ...config, bot_response_delay_seconds: Math.max(5, Math.min(600, Number(e.target.value) || 5)) })} className="w-20 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm" />
+                  <span className="text-xs text-muted-foreground">seg</span>
                 </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                {[15, 30, 60, 120, 300].map((sec) => (
-                  <button
-                    key={sec}
-                    onClick={() => setConfig({ ...config, bot_response_delay_seconds: sec })}
-                    className={`text-[11px] px-3 py-1.5 rounded-lg border transition-colors ${
-                      config.bot_response_delay_seconds === sec
-                        ? "bg-primary/10 border-primary/30 text-primary"
-                        : "bg-secondary/30 border-border text-muted-foreground hover:bg-secondary/50"
-                    }`}
-                  >
-                    {sec < 60 ? `${sec}s` : `${sec / 60} min`}
-                  </button>
-                ))}
               </div>
             </div>
 
-            {/* Gemini config */}
             <div className="bg-card border border-border rounded-lg p-5 space-y-4">
               <div className="flex items-center gap-2 mb-2">
                 <Bot className="h-4 w-4 text-primary" />
                 <h3 className="font-heading font-semibold text-sm">IA (Gemini)</h3>
               </div>
+              
               <div>
                 <label className="text-xs text-muted-foreground">API Key de Gemini</label>
-                <input type="password" className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50" placeholder="AIzaxxxxxxx..." />
+                <input 
+                  type="password" 
+                  value={iaConfig.api_key}
+                  onChange={(e) => setIaConfig({ ...iaConfig, api_key: e.target.value })}
+                  className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm"
+                  placeholder="AIzaSy..."
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  Obtené tu API Key en <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-primary underline">Google AI Studio</a>
+                </p>
               </div>
+              
               <div>
                 <label className="text-xs text-muted-foreground">Modelo preferido</label>
-                <select className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm text-muted-foreground focus:outline-none focus:border-primary/50">
-                  <option>gemini-1.5-pro</option>
-                  <option>gemini-1.5-flash</option>
-                  <option>gemini-1.0-pro</option>
+                <select 
+                  value={iaConfig.model}
+                  onChange={(e) => setIaConfig({ ...iaConfig, model: e.target.value })}
+                  className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm"
+                >
+                  <option value="gemini-1.5-pro">gemini-1.5-pro (Recomendado)</option>
+                  <option value="gemini-1.5-flash">gemini-1.5-flash (Rápido)</option>
+                  <option value="gemini-1.0-pro">gemini-1.0-pro</option>
                 </select>
               </div>
+
+              <div>
+                <label className="text-xs text-muted-foreground">Instrucción del sistema</label>
+                <textarea 
+                  rows={4}
+                  value={iaConfig.system_instruction}
+                  onChange={(e) => setIaConfig({ ...iaConfig, system_instruction: e.target.value })}
+                  className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm resize-y"
+                  placeholder="Eres un asistente de ventas para una tienda online..."
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <label className="text-xs text-muted-foreground">Activar IA</label>
+                <button
+                  onClick={() => setIaConfig({ ...iaConfig, is_active: !iaConfig.is_active })}
+                  className={`relative w-12 h-6 rounded-full transition-colors ${iaConfig.is_active ? "bg-emerald-500" : "bg-muted"}`}
+                >
+                  <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-transform ${iaConfig.is_active ? "translate-x-6" : "translate-x-0.5"}`} />
+                </button>
+              </div>
+
+              <button
+                onClick={handleSaveIA}
+                disabled={savingIA}
+                className="w-full px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                {savingIA ? "Guardando..." : "Guardar configuración de IA"}
+              </button>
             </div>
           </div>
         )}
@@ -383,15 +358,7 @@ export default function SettingsPage() {
   );
 }
 
-function FieldRow({
-  label,
-  description,
-  value,
-  onChange,
-  onCopy,
-  copied,
-  type = "text",
-}: {
+function FieldRow({ label, description, value, onChange, onCopy, copied, type = "text" }: {
   label: string;
   description: string;
   value: string;
@@ -407,17 +374,8 @@ function FieldRow({
       </div>
       <div className="space-y-2">
         <div className="flex items-center gap-2">
-          <input
-            type={type}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
-            placeholder="..."
-          />
-          <button
-            onClick={onCopy}
-            className="p-2 rounded-lg bg-secondary border border-border hover:bg-secondary/80 transition-colors shrink-0"
-          >
+          <input type={type} value={value} onChange={(e) => onChange(e.target.value)} className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm" />
+          <button onClick={onCopy} className="p-2 rounded-lg bg-secondary border border-border">
             {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5 text-muted-foreground" />}
           </button>
         </div>
