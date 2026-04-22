@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Search,
@@ -16,6 +16,7 @@ import {
   Megaphone,
   Play,
   Music,
+  Video as VideoIcon,
 } from "lucide-react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
@@ -25,6 +26,27 @@ import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
+
+// Emojis comunes
+const COMMON_EMOJIS = [
+  "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇",
+  "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘", "😗", "😙", "😚",
+  "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🤩",
+  "🥳", "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "☹️", "😣",
+  "😖", "😫", "😩", "🥺", "😢", "😭", "😤", "😠", "😡", "🤬",
+  "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥", "😓", "🤗",
+  "🤔", "🤭", "🤫", "🤥", "😶", "😐", "😑", "😬", "🙄", "😯",
+  "😦", "😧", "😮", "😲", "🥱", "😴", "🤤", "😪", "😵", "🤐",
+  "🥴", "🤢", "🤮", "🤧", "😷", "🤒", "🤕", "🤑", "🤠", "😈",
+  "👿", "👹", "👺", "🤡", "💩", "👻", "💀", "☠️", "👽", "👾",
+  "🤖", "🎃", "😺", "😸", "😹", "😻", "😼", "😽", "🙀", "😿",
+  "😾", "🙈", "🙉", "🙊", "💋", "💌", "💘", "💝", "💖", "💗",
+  "💓", "💞", "💕", "💟", "❣️", "💔", "❤️", "🧡", "💛", "💚",
+  "💙", "💜", "🤎", "🖤", "🤍", "💯", "💢", "💥", "💫", "💦",
+  "💨", "🕳️", "💣", "💬", "👋", "🤚", "✋", "🖖", "👌", "🤌",
+  "🤏", "✌️", "🤞", "🤟", "🤘", "🤙", "👈", "👉", "👆", "🖕",
+  "👇", "☝️", "👍", "👎", "✊", "👊", "🤛", "🤜", "👏", "🙌",
+];
 
 type DbMessage = {
   id: string;
@@ -64,6 +86,7 @@ type Message = {
 };
 
 type FullTemplate = {
+  id: string;
   name: string;
   content: string;
   media_url: string | null;
@@ -98,6 +121,7 @@ export default function InboxPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [messageInput, setMessageInput] = useState("");
   const [showTemplates, setShowTemplates] = useState(false);
+  const [showEmojis, setShowEmojis] = useState(false);
   const [filterTag, setFilterTag] = useState<string | null>(null);
   const [filterDate, setFilterDate] = useState<Date | undefined>(undefined);
   const [showFilters, setShowFilters] = useState(false);
@@ -106,15 +130,19 @@ export default function InboxPage() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [availableTemplates, setAvailableTemplates] = useState<FullTemplate[]>([]);
-  const [selectedTemplateMedia, setSelectedTemplateMedia] = useState<{url: string, type: string} | null>(null);
+  const [selectedFile, setSelectedFile] = useState<{ file: File; preview: string; type: string } | null>(null);
+  const [selectedTemplateMedia, setSelectedTemplateMedia] = useState<{ url: string; type: string } | null>(null);
 
-  // Cargar plantillas reales desde Supabase (con multimedia)
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const emojiPickerRef = useRef<HTMLDivElement>(null);
+
+  // Cargar plantillas reales desde Supabase
   useEffect(() => {
     const loadTemplates = async () => {
       if (!user) return;
       const { data, error } = await supabase
         .from("templates")
-        .select("name, content, media_url, media_type, variables")
+        .select("id, name, content, media_url, media_type, variables")
         .eq("user_id", user.id)
         .eq("is_active", true)
         .order("created_at", { ascending: false });
@@ -133,6 +161,17 @@ export default function InboxPage() {
     loadTemplates();
   }, [user]);
 
+  // Cerrar emoji picker al hacer clic fuera
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (emojiPickerRef.current && !emojiPickerRef.current.contains(event.target as Node)) {
+        setShowEmojis(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   const handleSelectTemplate = (template: FullTemplate) => {
     setMessageInput(template.content || "");
     // Guardar multimedia de la plantilla si existe
@@ -141,10 +180,44 @@ export default function InboxPage() {
         url: template.media_url,
         type: template.media_type
       });
+      setSelectedFile(null); // Limpiar archivo seleccionado
     } else {
       setSelectedTemplateMedia(null);
     }
     setShowTemplates(false);
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    // Validar tamaño
+    const maxSize = file.type.startsWith('video/') ? 16 * 1024 * 1024 : 5 * 1024 * 1024;
+    if (file.size > maxSize) {
+      toast({ 
+        title: "Archivo muy grande", 
+        description: `El archivo no puede superar ${maxSize / (1024 * 1024)}MB`, 
+        variant: "destructive" 
+      });
+      return;
+    }
+    
+    const fileType = file.type.startsWith('image/') ? 'image' : 
+                     file.type.startsWith('video/') ? 'video' : 
+                     file.type.startsWith('audio/') ? 'audio' : 'document';
+    
+    setSelectedFile({
+      file,
+      preview: URL.createObjectURL(file),
+      type: fileType
+    });
+    setSelectedTemplateMedia(null); // Limpiar multimedia de plantilla
+    e.target.value = "";
+  };
+
+  const addEmoji = (emoji: string) => {
+    setMessageInput(prev => prev + emoji);
+    setShowEmojis(false);
   };
 
   const loadMessages = async () => {
@@ -234,18 +307,31 @@ export default function InboxPage() {
       .filter((msg) => msg.from_number === selectedNumber)
       .slice()
       .reverse()
-      .map((msg) => ({
-        id: msg.id,
-        from: isOutgoingType(msg.message_type) ? "out" : "in",
-        text: msg.message || "",
-        time: buildTimeLabel(),
-        date: buildDateLabel(),
-        badge: getDisplayType(msg.message_type),
-        mediaUrl: msg.media_url || undefined,
-        mediaType: msg.message_type?.includes('image') ? 'image' : 
-                   msg.message_type?.includes('video') ? 'video' : 
-                   msg.message_type?.includes('audio') ? 'audio' : undefined,
-      }));
+      .map((msg) => {
+        let mediaType = msg.message_type || '';
+        let mediaUrl = msg.media_url;
+        
+        if (mediaType.includes('image')) mediaType = 'image';
+        else if (mediaType.includes('video')) mediaType = 'video';
+        else if (mediaType.includes('audio')) mediaType = 'audio';
+        else if (mediaUrl) {
+          const ext = mediaUrl.split('.').pop()?.toLowerCase();
+          if (ext === 'mp3' || ext === 'ogg' || ext === 'wav') mediaType = 'audio';
+          else if (ext === 'mp4' || ext === 'webm') mediaType = 'video';
+          else if (ext === 'jpg' || ext === 'png' || ext === 'jpeg' || ext === 'gif') mediaType = 'image';
+        }
+        
+        return {
+          id: msg.id,
+          from: isOutgoingType(msg.message_type) ? "out" : "in",
+          text: msg.message || "",
+          time: buildTimeLabel(),
+          date: buildDateLabel(),
+          badge: getDisplayType(msg.message_type),
+          mediaUrl: msg.media_url || undefined,
+          mediaType: mediaType || undefined,
+        };
+      });
   }, [dbMessages, selectedNumber]);
 
   useEffect(() => {
@@ -305,10 +391,10 @@ export default function InboxPage() {
       return;
     }
 
-    if (!messageInput.trim() && !selectedTemplateMedia) {
+    if (!messageInput.trim() && !selectedFile && !selectedTemplateMedia) {
       toast({
         title: "Mensaje vacío",
-        description: "Escribe un mensaje o selecciona una plantilla con multimedia antes de enviar.",
+        description: "Escribe un mensaje, selecciona un archivo o una plantilla.",
         variant: "destructive",
       });
       return;
@@ -319,17 +405,46 @@ export default function InboxPage() {
 
       const textToSend = messageInput.trim();
       
-      // Construir payload
+      // Determinar qué multimedia enviar
+      let mediaUrl = null;
+      let mediaType = null;
+      
+      if (selectedFile) {
+        // Subir archivo primero a Supabase Storage
+        const fileExt = selectedFile.file.name.split('.').pop();
+        const fileName = `${user?.id}/${Date.now()}.${fileExt}`;
+        const folder = selectedFile.type === 'image' ? 'images' : 
+                       selectedFile.type === 'video' ? 'videos' : 'others';
+        const filePath = `${folder}/${fileName}`;
+        
+        const { error: uploadError } = await supabase.storage
+          .from('templates-media')
+          .upload(filePath, selectedFile.file);
+        
+        if (uploadError) {
+          throw new Error(`Error subiendo archivo: ${uploadError.message}`);
+        }
+        
+        const { data: { publicUrl } } = supabase.storage
+          .from('templates-media')
+          .getPublicUrl(filePath);
+        
+        mediaUrl = publicUrl;
+        mediaType = selectedFile.type;
+      } else if (selectedTemplateMedia) {
+        mediaUrl = selectedTemplateMedia.url;
+        mediaType = selectedTemplateMedia.type;
+      }
+      
       const payload: any = {
         user_id: user?.id ?? null,
         to: selectedNumber,
         message: textToSend,
       };
       
-      // Agregar multimedia si existe
-      if (selectedTemplateMedia) {
-        payload.media_url = selectedTemplateMedia.url;
-        payload.media_type = selectedTemplateMedia.type;
+      if (mediaUrl && mediaType) {
+        payload.media_url = mediaUrl;
+        payload.media_type = mediaType;
       }
 
       const response = await fetch("/api/send-whatsapp", {
@@ -354,6 +469,7 @@ export default function InboxPage() {
       }
 
       setMessageInput("");
+      setSelectedFile(null);
       setSelectedTemplateMedia(null);
       await loadMessages();
 
@@ -373,11 +489,12 @@ export default function InboxPage() {
     }
   };
 
-  // Componente para renderizar multimedia
-  const renderMedia = (mediaUrl?: string, mediaType?: string) => {
+  // Renderizar multimedia
+  const renderMedia = (mediaUrl?: string, mediaType?: string, messageText?: string) => {
     if (!mediaUrl) return null;
     
-    if (mediaType === 'image') {
+    // Imagen
+    if (mediaType === 'image' || mediaUrl.match(/\.(jpg|jpeg|png|webp|gif)/i)) {
       return (
         <div className="mt-2 rounded-lg overflow-hidden">
           <img 
@@ -390,7 +507,8 @@ export default function InboxPage() {
       );
     }
     
-    if (mediaType === 'video') {
+    // Video
+    if (mediaType === 'video' || mediaUrl.match(/\.(mp4|webm|mov)/i)) {
       return (
         <div className="mt-2 rounded-lg overflow-hidden">
           <video 
@@ -403,15 +521,22 @@ export default function InboxPage() {
       );
     }
     
-    if (mediaType === 'audio') {
+    // Audio
+    if (mediaType === 'audio' || mediaUrl.match(/\.(mp3|ogg|wav|m4a)/i)) {
       return (
-        <div className="mt-2 rounded-lg overflow-hidden bg-secondary/30 p-2">
-          <audio 
-            src={mediaUrl} 
-            controls 
-            className="w-full"
-            controlsList="nodownload"
-          />
+        <div className="mt-2 rounded-lg overflow-hidden bg-secondary/30 p-3">
+          <div className="flex items-center gap-3">
+            <Music className="w-5 h-5 text-primary" />
+            <audio 
+              src={mediaUrl} 
+              controls 
+              className="flex-1 h-10"
+              controlsList="nodownload"
+            />
+          </div>
+          {messageText && (
+            <p className="text-xs text-muted-foreground mt-2">{messageText}</p>
+          )}
         </div>
       );
     }
@@ -435,11 +560,13 @@ export default function InboxPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 h-[calc(100vh-180px)]">
+        {/* Chat principal */}
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           className="glass glass-border rounded-xl flex flex-col overflow-hidden"
         >
+          {/* Header del chat */}
           <div className="flex items-center justify-between px-5 py-3 border-b border-border/40 bg-secondary/20">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-xs font-bold text-primary font-mono">
@@ -449,11 +576,6 @@ export default function InboxPage() {
                 <span className="font-heading font-bold text-sm">
                   {filteredChats[selectedChat]?.number || "Sin chat seleccionado"}
                 </span>
-                {filteredChats[selectedChat]?.tag && (
-                  <span className="ml-2 text-[9px] px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/20 font-medium">
-                    {filteredChats[selectedChat].tag}
-                  </span>
-                )}
               </div>
             </div>
             <div className="flex items-center gap-1">
@@ -469,6 +591,7 @@ export default function InboxPage() {
             </div>
           </div>
 
+          {/* Botones rápidos */}
           <div className="flex items-center gap-2 px-5 py-2.5 border-b border-border/30 bg-secondary/10">
             <button className="text-[11px] px-3 py-1.5 rounded-lg bg-success/8 text-success border border-success/15 hover:bg-success/15 transition-all duration-200 font-medium">
               ✏️ Venta Normal
@@ -488,6 +611,7 @@ export default function InboxPage() {
             </select>
           </div>
 
+          {/* Mensajes */}
           <div className="flex-1 overflow-y-auto p-5 space-y-3 bg-[hsl(198,19%,18%)]">
             {loading ? (
               <div className="text-sm text-muted-foreground">Cargando mensajes...</div>
@@ -495,9 +619,7 @@ export default function InboxPage() {
               <div className="text-sm text-muted-foreground">No hay mensajes para este chat.</div>
             ) : (
               currentMessages.map((msg, idx) => {
-                const showDateSeparator =
-                  idx === 0 || msg.date !== currentMessages[idx - 1].date;
-
+                const showDateSeparator = idx === 0 || msg.date !== currentMessages[idx - 1].date;
                 return (
                   <div key={msg.id}>
                     {showDateSeparator && (
@@ -507,43 +629,21 @@ export default function InboxPage() {
                         </span>
                       </div>
                     )}
-
                     <motion.div
                       initial={{ opacity: 0, y: 8 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ delay: idx * 0.05 }}
                       className={`flex ${msg.from === "out" ? "justify-end" : "justify-start"}`}
                     >
-                      <div
-                        className={`max-w-[75%] px-4 py-3 text-sm whitespace-pre-line ${
-                          msg.from === "out"
-                            ? "bg-gradient-to-br from-[hsl(160,80%,16%)] to-[hsl(165,70%,22%)] border border-[hsl(160,60%,26%/0.4)] rounded-2xl rounded-br-md shadow-lg shadow-[hsl(160,80%,16%/0.15)]"
-                            : "glass glass-border rounded-2xl rounded-bl-md"
-                        }`}
-                      >
-                        {msg.adSource && (
-                          <div className="mb-2.5 rounded-lg bg-[hsl(220,20%,18%)] border border-[hsl(220,15%,28%)] overflow-hidden">
-                            <div className="flex items-center justify-between px-3 py-1.5 bg-[hsl(220,18%,22%)] border-b border-[hsl(220,15%,28%)]">
-                              <div className="flex items-center gap-1.5">
-                                <Megaphone className="h-3 w-3 text-muted-foreground" />
-                                <span className="text-[10px] text-muted-foreground font-medium">{msg.adSource.label}</span>
-                              </div>
-                              <span className="text-[10px] text-muted-foreground/60 font-mono">{msg.adSource.adId}</span>
-                            </div>
-                            <div className="px-3 py-2">
-                              <p className="text-xs text-muted-foreground/80 leading-relaxed line-clamp-4">{msg.adSource.adPreview}</p>
-                              <p className="text-[10px] text-primary/60 mt-1">fb.me</p>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Renderizar multimedia si existe */}
-                        {renderMedia(msg.mediaUrl, msg.mediaType)}
-                        
-                        {msg.text && (
+                      <div className={`max-w-[75%] px-4 py-3 text-sm whitespace-pre-line ${
+                        msg.from === "out"
+                          ? "bg-gradient-to-br from-[hsl(160,80%,16%)] to-[hsl(165,70%,22%)] border border-[hsl(160,60%,26%/0.4)] rounded-2xl rounded-br-md shadow-lg"
+                          : "glass glass-border rounded-2xl rounded-bl-md"
+                      }`}>
+                        {renderMedia(msg.mediaUrl, msg.mediaType, msg.text)}
+                        {msg.text && msg.mediaType !== 'audio' && (
                           <div className="leading-relaxed">{msg.text}</div>
                         )}
-
                         <div className="flex items-center gap-2 mt-2 text-[10px] text-muted-foreground/60">
                           <span>{msg.time}</span>
                           {msg.badge && (
@@ -561,7 +661,68 @@ export default function InboxPage() {
             )}
           </div>
 
+          {/* Input area */}
           <div className="border-t border-border/30 p-4 bg-secondary/10 space-y-2 relative">
+            {/* Vista previa de archivo seleccionado */}
+            {selectedFile && (
+              <div className="mb-2 p-2 bg-primary/10 rounded-lg flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {selectedFile.type === 'image' && <Image className="h-4 w-4 text-primary" />}
+                  {selectedFile.type === 'video' && <VideoIcon className="h-4 w-4 text-primary" />}
+                  <span className="text-xs truncate max-w-[200px]">{selectedFile.file.name}</span>
+                </div>
+                <button onClick={() => setSelectedFile(null)} className="p-1 hover:bg-destructive/20 rounded">
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            )}
+            
+            {/* Vista previa de multimedia de plantilla */}
+            {selectedTemplateMedia && !selectedFile && (
+              <div className="mb-2 p-2 bg-primary/10 rounded-lg flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {selectedTemplateMedia.type === 'image' && <Image className="h-4 w-4 text-primary" />}
+                  {selectedTemplateMedia.type === 'video' && <VideoIcon className="h-4 w-4 text-primary" />}
+                  <span className="text-xs">Multimedia de plantilla</span>
+                </div>
+                <button onClick={() => setSelectedTemplateMedia(null)} className="p-1 hover:bg-destructive/20 rounded">
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            )}
+
+            {/* Selector de emojis */}
+            <AnimatePresence>
+              {showEmojis && (
+                <motion.div
+                  ref={emojiPickerRef}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: 10 }}
+                  className="absolute bottom-full left-0 mb-2 glass glass-border rounded-xl shadow-pro overflow-hidden z-10 w-64"
+                >
+                  <div className="flex items-center justify-between px-3 py-2 border-b border-border/30 bg-secondary/20">
+                    <span className="text-xs font-heading font-bold">Emojis</span>
+                    <button onClick={() => setShowEmojis(false)} className="p-1 rounded hover:bg-secondary/60">
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-8 gap-1 p-2 max-h-[200px] overflow-y-auto">
+                    {COMMON_EMOJIS.map((emoji) => (
+                      <button
+                        key={emoji}
+                        onClick={() => addEmoji(emoji)}
+                        className="text-xl p-1 hover:bg-primary/10 rounded transition-colors"
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Selector de plantillas */}
             <AnimatePresence>
               {showTemplates && (
                 <motion.div
@@ -572,10 +733,7 @@ export default function InboxPage() {
                 >
                   <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/30 bg-secondary/20">
                     <span className="text-xs font-heading font-bold">📋 Plantillas</span>
-                    <button
-                      onClick={() => setShowTemplates(false)}
-                      className="p-1 rounded-lg hover:bg-secondary/60 text-muted-foreground transition-colors"
-                    >
+                    <button onClick={() => setShowTemplates(false)} className="p-1 rounded-lg hover:bg-secondary/60">
                       <X className="h-3.5 w-3.5" />
                     </button>
                   </div>
@@ -587,19 +745,22 @@ export default function InboxPage() {
                     ) : (
                       availableTemplates.map((tpl) => (
                         <button
-                          key={tpl.name}
+                          key={tpl.id}
                           onClick={() => handleSelectTemplate(tpl)}
                           className="w-full text-left px-4 py-3 hover:bg-primary/5 border-b border-border/20 last:border-0 transition-colors"
                         >
                           <div className="flex items-center gap-2">
                             {tpl.media_type === 'image' && <Image className="h-3 w-3 text-primary" />}
-                            {tpl.media_type === 'video' && <Play className="h-3 w-3 text-primary" />}
+                            {tpl.media_type === 'video' && <VideoIcon className="h-3 w-3 text-primary" />}
                             {tpl.media_type === 'audio' && <Music className="h-3 w-3 text-primary" />}
                             <span className="text-[10px] font-bold text-primary font-mono tracking-wider">
                               {tpl.name}
                             </span>
                           </div>
                           <p className="text-xs text-muted-foreground truncate mt-0.5">{tpl.content || "Sin contenido"}</p>
+                          {tpl.media_url && (
+                            <p className="text-[9px] text-primary/60 mt-1">📎 Con multimedia</p>
+                          )}
                         </button>
                       ))
                     )}
@@ -608,19 +769,35 @@ export default function InboxPage() {
               )}
             </AnimatePresence>
 
+            {/* Botones y input */}
             <div className="flex items-center gap-2">
-              <button className="p-2.5 rounded-xl hover:bg-secondary/50 transition-all duration-200 text-muted-foreground hover:text-foreground">
-                <Smile className="h-4 w-4" />
-              </button>
-              <button className="p-2.5 rounded-xl hover:bg-secondary/50 transition-all duration-200 text-muted-foreground hover:text-foreground">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="p-2.5 rounded-xl hover:bg-secondary/50 transition-all duration-200 text-muted-foreground hover:text-foreground"
+                title="Subir archivo"
+              >
                 <Image className="h-4 w-4" />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*,video/*,audio/*"
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+              <button
+                onClick={() => setShowEmojis(!showEmojis)}
+                className={`p-2.5 rounded-xl transition-all duration-200 ${
+                  showEmojis ? "bg-primary/10 text-primary" : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"
+                }`}
+                title="Emojis"
+              >
+                <Smile className="h-4 w-4" />
               </button>
               <button
                 onClick={() => setShowTemplates(!showTemplates)}
                 className={`p-2.5 rounded-xl transition-all duration-200 ${
-                  showTemplates
-                    ? "bg-primary/10 text-primary shadow-sm"
-                    : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"
+                  showTemplates ? "bg-primary/10 text-primary shadow-sm" : "hover:bg-secondary/50 text-muted-foreground hover:text-foreground"
                 }`}
                 title="Plantillas"
               >
@@ -637,16 +814,6 @@ export default function InboxPage() {
                   }
                 }}
               />
-              {selectedTemplateMedia && (
-                <div className="absolute bottom-full right-0 mb-2 bg-primary/10 text-primary text-[10px] px-2 py-1 rounded-full flex items-center gap-1">
-                  {selectedTemplateMedia.type === 'image' && <Image className="h-3 w-3" />}
-                  {selectedTemplateMedia.type === 'video' && <Play className="h-3 w-3" />}
-                  <span>Multimedia lista</span>
-                  <button onClick={() => setSelectedTemplateMedia(null)} className="ml-1 hover:text-destructive">
-                    <X className="h-3 w-3" />
-                  </button>
-                </div>
-              )}
               <button
                 onClick={handleSendMessage}
                 disabled={sending}
@@ -658,6 +825,7 @@ export default function InboxPage() {
           </div>
         </motion.div>
 
+        {/* Lista de chats */}
         <motion.div
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
@@ -783,13 +951,6 @@ export default function InboxPage() {
                       {chat.number.slice(-2)}
                     </div>
                     <span className="font-mono text-xs font-bold">{chat.number}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {chat.tag && (
-                      <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-success/10 text-success border border-success/15 font-medium">
-                        {chat.tag}
-                      </span>
-                    )}
                   </div>
                 </div>
                 <div className="flex items-center justify-between mt-1.5 ml-9.5">
