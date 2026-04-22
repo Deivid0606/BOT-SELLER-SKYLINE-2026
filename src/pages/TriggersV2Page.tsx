@@ -30,7 +30,7 @@ interface Trigger {
   condition: string;
   response: string;
   delay: number;
-  limit: string;
+  send_limit: string;
   template: string;
   noRepeat: boolean;
   active: boolean;
@@ -78,7 +78,7 @@ const defaultTrigger: Omit<Trigger, "id"> = {
   condition: "",
   response: "",
   delay: 0,
-  limit: "",
+  send_limit: "",
   template: "Ninguna",
   noRepeat: false,
   active: true,
@@ -105,17 +105,12 @@ const defaultCampaign: Omit<RemarketingCampaign, "id"> = {
 
 export default function TriggersV2Page() {
   const { user } = useAuth();
-  const [triggers, setTriggers] = useState<Trigger[]>([
-    { ...defaultTrigger, id: "1", name: "Bienvenida", type: "Primera interacción", active: true },
-    { ...defaultTrigger, id: "2", name: "Seguimiento oferta", type: "Tiempo sin respuesta", active: false, followUpEnabled: true, followUpMinutes: 20 },
-  ]);
+  const [triggers, setTriggers] = useState<Trigger[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editingTrigger, setEditingTrigger] = useState<Trigger | null>(null);
 
   // Remarketing state
-  const [campaigns, setCampaigns] = useState<RemarketingCampaign[]>([
-    { ...defaultCampaign, id: "r1", name: "Oferta Semanal", active: true, tags: ["prospecto", "consulta"], customMessage: "¡Hola! 🔥 No te pierdas nuestras ofertas exclusivas de esta semana. ¿Te interesa saber más?", intervalDays: 4, scheduleType: "days_hours", scheduleDays: ["lun", "mie", "vie"], scheduleTimeFrom: "10:00", scheduleTimeTo: "17:00" },
-  ]);
+  const [campaigns, setCampaigns] = useState<RemarketingCampaign[]>([]);
   const [expandedCampaignId, setExpandedCampaignId] = useState<string | null>(null);
   const [editingCampaign, setEditingCampaign] = useState<RemarketingCampaign | null>(null);
 
@@ -125,6 +120,48 @@ export default function TriggersV2Page() {
 
   // Plantillas reales desde Supabase
   const [realTemplates, setRealTemplates] = useState<string[]>([]);
+
+  // Cargar triggers desde Supabase
+  const loadTriggers = async () => {
+    if (!user) return;
+    const { data, error } = await supabase
+      .from("triggers")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
+    
+    if (error) {
+      console.error("Error cargando triggers:", error);
+      return;
+    }
+    
+    if (data && data.length > 0) {
+      setTriggers(data as Trigger[]);
+    } else {
+      setTriggers([]);
+    }
+  };
+
+  // Cargar remarketing campaigns
+  const loadCampaigns = async () => {
+    if (!user) return;
+    const { data, error } = await supabase
+      .from("remarketing_campaigns")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
+    
+    if (error) {
+      console.error("Error cargando campañas:", error);
+      return;
+    }
+    
+    if (data && data.length > 0) {
+      setCampaigns(data as RemarketingCampaign[]);
+    } else {
+      setCampaigns([]);
+    }
+  };
 
   // Cargar plantillas reales
   useEffect(() => {
@@ -149,15 +186,40 @@ export default function TriggersV2Page() {
       }
     };
     loadTemplates();
+    loadTriggers();
+    loadCampaigns();
   }, [user]);
 
-  const toggleActive = (id: string) => {
-    setTriggers(prev => prev.map(t => t.id === id ? { ...t, active: !t.active } : t));
+  const toggleActive = async (id: string) => {
+    const trigger = triggers.find(t => t.id === id);
+    if (!trigger) return;
+    
+    const { error } = await supabase
+      .from("triggers")
+      .update({ active: !trigger.active, updated_at: new Date().toISOString() })
+      .eq("id", id)
+      .eq("user_id", user?.id);
+    
+    if (error) {
+      console.error("Error actualizando trigger:", error);
+    } else {
+      setTriggers(prev => prev.map(t => t.id === id ? { ...t, active: !t.active } : t));
+    }
   };
 
-  const deleteTrigger = (id: string) => {
-    setTriggers(prev => prev.filter(t => t.id !== id));
-    if (expandedId === id) setExpandedId(null);
+  const deleteTrigger = async (id: string) => {
+    const { error } = await supabase
+      .from("triggers")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", user?.id);
+    
+    if (error) {
+      console.error("Error eliminando trigger:", error);
+    } else {
+      setTriggers(prev => prev.filter(t => t.id !== id));
+      if (expandedId === id) setExpandedId(null);
+    }
   };
 
   const addNew = () => {
@@ -172,16 +234,55 @@ export default function TriggersV2Page() {
     setEditingTrigger({ ...t });
   };
 
-  const saveEdit = () => {
-    if (!editingTrigger) return;
-    setTriggers(prev => prev.map(t => t.id === editingTrigger.id ? editingTrigger : t));
-    setExpandedId(null);
-    setEditingTrigger(null);
+  const saveEdit = async () => {
+    if (!editingTrigger || !user) return;
+    
+    const { error } = await supabase
+      .from("triggers")
+      .upsert({
+        id: editingTrigger.id,
+        user_id: user.id,
+        name: editingTrigger.name,
+        type: editingTrigger.type,
+        condition: editingTrigger.condition,
+        response: editingTrigger.response,
+        delay: editingTrigger.delay,
+        send_limit: editingTrigger.send_limit,
+        template: editingTrigger.template,
+        no_repeat: editingTrigger.noRepeat,
+        active: editingTrigger.active,
+        follow_up_enabled: editingTrigger.followUpEnabled,
+        follow_up_minutes: editingTrigger.followUpMinutes,
+        follow_up_message: editingTrigger.followUpMessage,
+        auto_tag: editingTrigger.autoTag,
+        updated_at: new Date().toISOString(),
+      });
+    
+    if (error) {
+      console.error("Error guardando trigger:", error);
+    } else {
+      await loadTriggers();
+      setExpandedId(null);
+      setEditingTrigger(null);
+    }
   };
 
   // Remarketing handlers
-  const toggleCampaignActive = (id: string) => {
-    setCampaigns(prev => prev.map(c => c.id === id ? { ...c, active: !c.active } : c));
+  const toggleCampaignActive = async (id: string) => {
+    const campaign = campaigns.find(c => c.id === id);
+    if (!campaign) return;
+    
+    const { error } = await supabase
+      .from("remarketing_campaigns")
+      .update({ active: !campaign.active, updated_at: new Date().toISOString() })
+      .eq("id", id)
+      .eq("user_id", user?.id);
+    
+    if (error) {
+      console.error("Error actualizando campaña:", error);
+    } else {
+      setCampaigns(prev => prev.map(c => c.id === id ? { ...c, active: !c.active } : c));
+    }
   };
 
   const addCampaign = () => {
@@ -196,16 +297,50 @@ export default function TriggersV2Page() {
     setEditingCampaign({ ...c });
   };
 
-  const saveCampaign = () => {
-    if (!editingCampaign) return;
-    setCampaigns(prev => prev.map(c => c.id === editingCampaign.id ? editingCampaign : c));
-    setExpandedCampaignId(null);
-    setEditingCampaign(null);
+  const saveCampaign = async () => {
+    if (!editingCampaign || !user) return;
+    
+    const { error } = await supabase
+      .from("remarketing_campaigns")
+      .upsert({
+        id: editingCampaign.id,
+        user_id: user.id,
+        name: editingCampaign.name,
+        active: editingCampaign.active,
+        tags: editingCampaign.tags,
+        message_type: editingCampaign.messageType,
+        custom_message: editingCampaign.customMessage,
+        selected_template: editingCampaign.selectedTemplate,
+        interval_days: editingCampaign.intervalDays,
+        schedule_type: editingCampaign.scheduleType,
+        schedule_days: editingCampaign.scheduleDays,
+        schedule_time_from: editingCampaign.scheduleTimeFrom,
+        schedule_time_to: editingCampaign.scheduleTimeTo,
+        updated_at: new Date().toISOString(),
+      });
+    
+    if (error) {
+      console.error("Error guardando campaña:", error);
+    } else {
+      await loadCampaigns();
+      setExpandedCampaignId(null);
+      setEditingCampaign(null);
+    }
   };
 
-  const deleteCampaign = (id: string) => {
-    setCampaigns(prev => prev.filter(c => c.id !== id));
-    if (expandedCampaignId === id) setExpandedCampaignId(null);
+  const deleteCampaign = async (id: string) => {
+    const { error } = await supabase
+      .from("remarketing_campaigns")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", user?.id);
+    
+    if (error) {
+      console.error("Error eliminando campaña:", error);
+    } else {
+      setCampaigns(prev => prev.filter(c => c.id !== id));
+      if (expandedCampaignId === id) setExpandedCampaignId(null);
+    }
   };
 
   const toggleCampaignTag = (tagName: string) => {
@@ -333,7 +468,7 @@ export default function TriggersV2Page() {
                             </div>
                             <div>
                               <label className="text-xs text-muted-foreground">Límite de envíos</label>
-                              <input type="number" className={inputClass} placeholder="∞" value={editingTrigger.limit} onChange={e => setEditingTrigger({ ...editingTrigger, limit: e.target.value })} />
+                              <input type="number" className={inputClass} placeholder="∞" value={editingTrigger.send_limit} onChange={e => setEditingTrigger({ ...editingTrigger, send_limit: e.target.value })} />
                             </div>
                             <div>
                               <label className="text-xs text-muted-foreground">Plantilla</label>
@@ -434,7 +569,6 @@ export default function TriggersV2Page() {
                               {editingTrigger.secondary.enabled && (
                                 <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
                                   <div className="px-3 pb-3 space-y-3">
-                                    {/* Condition type */}
                                     <div>
                                       <label className="text-xs text-muted-foreground">Tipo de condición</label>
                                       <div className="flex gap-1 mt-1 bg-secondary/30 p-1 rounded-lg border border-border w-fit">
@@ -453,7 +587,6 @@ export default function TriggersV2Page() {
                                       </div>
                                     </div>
 
-                                    {/* Condition values */}
                                     <div>
                                       <label className="text-xs text-muted-foreground flex items-center gap-1">
                                         {editingTrigger.secondary.conditionType === "city" ? (
@@ -486,7 +619,6 @@ export default function TriggersV2Page() {
                                       )}
                                     </div>
 
-                                    {/* Secondary response */}
                                     <div>
                                       <label className="text-xs text-muted-foreground">Respuesta del secundario</label>
                                       <textarea
@@ -497,7 +629,6 @@ export default function TriggersV2Page() {
                                       />
                                     </div>
 
-                                    {/* Or use template */}
                                     <div>
                                       <label className="text-xs text-muted-foreground">O usar plantilla</label>
                                       <select
@@ -542,9 +673,7 @@ export default function TriggersV2Page() {
             )}
           </motion.div>
         ) : (
-          /* ==================== REMARKETING TAB ==================== */
           <motion.div key="remarketing" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-4">
-            {/* Sub-tabs */}
             <div className="flex gap-1 bg-secondary/30 p-1 rounded-lg border border-border w-fit">
               <button
                 onClick={() => setRemarketingSubTab("campaigns")}
@@ -563,265 +692,254 @@ export default function TriggersV2Page() {
             {remarketingSubTab === "stats" ? (
               <RemarketingStats />
             ) : (
-            <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-xs text-muted-foreground">Envía mensajes masivos por etiqueta, 1 vez cada X días</p>
-              <button onClick={addCampaign} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
-                <Plus className="h-4 w-4" /> Nueva campaña
-              </button>
-            </div>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-muted-foreground">Envía mensajes masivos por etiqueta, 1 vez cada X días</p>
+                  <button onClick={addCampaign} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
+                    <Plus className="h-4 w-4" /> Nueva campaña
+                  </button>
+                </div>
 
-            <AnimatePresence>
-              {campaigns.map((campaign) => (
-                <motion.div
-                  key={campaign.id}
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -12 }}
-                  className="bg-card border border-border rounded-lg overflow-hidden"
-                >
-                  {/* Header */}
-                  <div className="flex items-center gap-3 p-4 cursor-pointer" onClick={() => startEditCampaign(campaign)}>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); toggleCampaignActive(campaign.id); }}
-                      className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${campaign.active ? "bg-emerald-500" : "bg-muted"}`}
+                <AnimatePresence>
+                  {campaigns.map((campaign) => (
+                    <motion.div
+                      key={campaign.id}
+                      initial={{ opacity: 0, y: 12 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -12 }}
+                      className="bg-card border border-border rounded-lg overflow-hidden"
                     >
-                      <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-transform ${campaign.active ? "translate-x-6" : "translate-x-0.5"}`} />
-                    </button>
+                      <div className="flex items-center gap-3 p-4 cursor-pointer" onClick={() => startEditCampaign(campaign)}>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); toggleCampaignActive(campaign.id); }}
+                          className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${campaign.active ? "bg-emerald-500" : "bg-muted"}`}
+                        >
+                          <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-transform ${campaign.active ? "translate-x-6" : "translate-x-0.5"}`} />
+                        </button>
 
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <Megaphone className={`h-4 w-4 shrink-0 ${campaign.active ? "text-primary" : "text-muted-foreground"}`} />
-                        <p className={`text-sm font-medium truncate ${campaign.active ? "text-foreground" : "text-muted-foreground"}`}>
-                          {campaign.name || "Sin nombre"}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-2 mt-1 flex-wrap">
-                        {campaign.tags.map(tag => {
-                          const found = mockTags.find(t => t.name === tag);
-                          return (
-                            <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded-full border border-border flex items-center gap-1">
-                              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: found?.color || "#888" }} />
-                              {tag}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <Megaphone className={`h-4 w-4 shrink-0 ${campaign.active ? "text-primary" : "text-muted-foreground"}`} />
+                            <p className={`text-sm font-medium truncate ${campaign.active ? "text-foreground" : "text-muted-foreground"}`}>
+                              {campaign.name || "Sin nombre"}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
+                            {campaign.tags.map(tag => {
+                              const found = mockTags.find(t => t.name === tag);
+                              return (
+                                <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded-full border border-border flex items-center gap-1">
+                                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: found?.color || "#888" }} />
+                                  {tag}
+                                </span>
+                              );
+                            })}
+                            <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                              <CalendarDays className="h-3 w-3" /> cada {campaign.intervalDays} días
                             </span>
-                          );
-                        })}
-                        <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                          <CalendarDays className="h-3 w-3" /> cada {campaign.intervalDays} días
-                        </span>
-                        {campaign.scheduleType === "days_hours" && (
-                          <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-                            <Timer className="h-3 w-3" /> {campaign.scheduleDays.join(", ")} {campaign.scheduleTimeFrom}-{campaign.scheduleTimeTo}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${campaign.active ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-muted text-muted-foreground border border-border"}`}>
-                        {campaign.active ? "Activo" : "Inactivo"}
-                      </span>
-                      {expandedCampaignId === campaign.id ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
-                    </div>
-                  </div>
-
-                  {/* Expanded editor */}
-                  <AnimatePresence>
-                    {expandedCampaignId === campaign.id && editingCampaign && (
-                      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                        <div className="px-4 pb-4 space-y-4 border-t border-border pt-4">
-                          {/* Name */}
-                          <div>
-                            <label className="text-xs text-muted-foreground">Nombre de la campaña</label>
-                            <input className={inputClass} placeholder="ej. Oferta Semanal" value={editingCampaign.name} onChange={e => setEditingCampaign({ ...editingCampaign, name: e.target.value })} />
-                          </div>
-
-                          {/* Tags selector (multi) */}
-                          <div>
-                            <label className="text-xs text-muted-foreground flex items-center gap-1 mb-2">
-                              <Tags className="h-3 w-3" /> Etiquetas (selecciona una o más)
-                            </label>
-                            <div className="flex flex-wrap gap-2">
-                              {mockTags.map(tag => {
-                                const selected = editingCampaign.tags.includes(tag.name);
-                                return (
-                                  <button
-                                    key={tag.name}
-                                    onClick={() => toggleCampaignTag(tag.name)}
-                                    className={`text-xs px-3 py-1.5 rounded-full border transition-all flex items-center gap-1.5 ${selected ? "border-primary bg-primary/10 text-primary font-medium" : "border-border bg-secondary/30 text-muted-foreground hover:bg-secondary/50"}`}
-                                  >
-                                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: tag.color }} />
-                                    {tag.name}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            {editingCampaign.tags.length === 0 && (
-                              <p className="text-[10px] text-destructive mt-1">Selecciona al menos una etiqueta</p>
+                            {campaign.scheduleType === "days_hours" && (
+                              <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                                <Timer className="h-3 w-3" /> {campaign.scheduleDays.join(", ")} {campaign.scheduleTimeFrom}-{campaign.scheduleTimeTo}
+                              </span>
                             )}
-                          </div>
-
-                          {/* Interval */}
-                          <div>
-                            <label className="text-xs text-muted-foreground flex items-center gap-1">
-                              <CalendarDays className="h-3 w-3" /> Enviar 1 vez cada
-                            </label>
-                            <div className="flex items-center gap-2 mt-1">
-                              <input
-                                type="number"
-                                min={1}
-                                className={`${inputClass} max-w-[100px]`}
-                                value={editingCampaign.intervalDays}
-                                onChange={e => setEditingCampaign({ ...editingCampaign, intervalDays: Math.max(1, Number(e.target.value)) })}
-                              />
-                              <span className="text-sm text-muted-foreground">días</span>
-                            </div>
-                          </div>
-
-                          {/* Schedule */}
-                          <div className="rounded-lg border border-border bg-secondary/20 p-3 space-y-3">
-                            <label className="text-xs text-muted-foreground flex items-center gap-1">
-                              <Timer className="h-3 w-3" /> Programación horaria
-                            </label>
-                            <div className="flex gap-1 bg-secondary/30 p-1 rounded-lg border border-border w-fit">
-                              <button
-                                onClick={() => setEditingCampaign({ ...editingCampaign, scheduleType: "always" })}
-                                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingCampaign.scheduleType === "always" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                              >
-                                Siempre
-                              </button>
-                              <button
-                                onClick={() => setEditingCampaign({ ...editingCampaign, scheduleType: "days_hours" })}
-                                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingCampaign.scheduleType === "days_hours" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                              >
-                                Días y horario
-                              </button>
-                            </div>
-
-                            <AnimatePresence>
-                              {editingCampaign.scheduleType === "days_hours" && (
-                                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden space-y-3">
-                                  {/* Days */}
-                                  <div>
-                                    <label className="text-[10px] text-muted-foreground mb-1.5 block">Días de envío</label>
-                                    <div className="flex gap-1.5 flex-wrap">
-                                      {DAYS_OF_WEEK.map(day => {
-                                        const selected = editingCampaign.scheduleDays.includes(day.key);
-                                        return (
-                                          <button
-                                            key={day.key}
-                                            onClick={() => {
-                                              const days = selected
-                                                ? editingCampaign.scheduleDays.filter(d => d !== day.key)
-                                                : [...editingCampaign.scheduleDays, day.key];
-                                              setEditingCampaign({ ...editingCampaign, scheduleDays: days });
-                                            }}
-                                            className={`w-10 h-10 rounded-lg text-xs font-medium transition-all border ${selected ? "bg-primary text-primary-foreground border-primary shadow-sm" : "bg-secondary/30 text-muted-foreground border-border hover:bg-secondary/50"}`}
-                                          >
-                                            {day.label}
-                                          </button>
-                                        );
-                                      })}
-                                    </div>
-                                    {editingCampaign.scheduleDays.length === 0 && (
-                                      <p className="text-[10px] text-destructive mt-1">Selecciona al menos un día</p>
-                                    )}
-                                  </div>
-
-                                  {/* Time range */}
-                                  <div className="flex items-center gap-3">
-                                    <div>
-                                      <label className="text-[10px] text-muted-foreground">Desde</label>
-                                      <input
-                                        type="time"
-                                        className={`${inputClass} max-w-[130px]`}
-                                        value={editingCampaign.scheduleTimeFrom}
-                                        onChange={e => setEditingCampaign({ ...editingCampaign, scheduleTimeFrom: e.target.value })}
-                                      />
-                                    </div>
-                                    <span className="text-muted-foreground text-sm mt-4">—</span>
-                                    <div>
-                                      <label className="text-[10px] text-muted-foreground">Hasta</label>
-                                      <input
-                                        type="time"
-                                        className={`${inputClass} max-w-[130px]`}
-                                        value={editingCampaign.scheduleTimeTo}
-                                        onChange={e => setEditingCampaign({ ...editingCampaign, scheduleTimeTo: e.target.value })}
-                                      />
-                                    </div>
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                          </div>
-
-                          <div>
-                            <label className="text-xs text-muted-foreground mb-2 block">Tipo de mensaje</label>
-                            <div className="flex gap-1 bg-secondary/30 p-1 rounded-lg border border-border w-fit">
-                              <button
-                                onClick={() => setEditingCampaign({ ...editingCampaign, messageType: "custom" })}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingCampaign.messageType === "custom" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                              >
-                                <MessageSquare className="h-3 w-3" /> Mensaje personalizado
-                              </button>
-                              <button
-                                onClick={() => setEditingCampaign({ ...editingCampaign, messageType: "template" })}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingCampaign.messageType === "template" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                              >
-                                <FileText className="h-3 w-3" /> Plantilla
-                              </button>
-                            </div>
-                          </div>
-
-                          {/* Custom message or template selector */}
-                          <AnimatePresence mode="wait">
-                            {editingCampaign.messageType === "custom" ? (
-                              <motion.div key="custom" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-                                <label className="text-xs text-muted-foreground">Mensaje de remarketing</label>
-                                <textarea
-                                  className={`${inputClass} min-h-[100px] resize-y`}
-                                  placeholder="Escribe el mensaje que se enviará a todos los contactos con las etiquetas seleccionadas…"
-                                  value={editingCampaign.customMessage}
-                                  onChange={e => setEditingCampaign({ ...editingCampaign, customMessage: e.target.value })}
-                                />
-                                <p className="text-[10px] text-muted-foreground mt-1">Cada vendedor puede editar este mensaje</p>
-                              </motion.div>
-                            ) : (
-                              <motion.div key="template" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-                                <label className="text-xs text-muted-foreground">Seleccionar plantilla</label>
-                                <select
-                                  className={inputClass}
-                                  value={editingCampaign.selectedTemplate}
-                                  onChange={e => setEditingCampaign({ ...editingCampaign, selectedTemplate: e.target.value })}
-                                >
-                                  <option value="">Seleccionar plantilla</option>
-                                  {realTemplates.map(t => <option key={t}>{t}</option>)}
-                                </select>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
-
-                          {/* Actions */}
-                          <div className="flex gap-2 pt-1">
-                            <button onClick={saveCampaign} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
-                              <Plus className="h-4 w-4" /> Guardar
-                            </button>
-                            <button onClick={() => deleteCampaign(campaign.id)} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-destructive/10 text-destructive text-sm border border-destructive/20 hover:bg-destructive/20 transition-colors">
-                              <Trash2 className="h-4 w-4" /> Eliminar
-                            </button>
                           </div>
                         </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </motion.div>
-              ))}
-            </AnimatePresence>
 
-            {campaigns.length === 0 && (
-              <div className="text-center py-12 text-muted-foreground text-sm">No hay campañas de remarketing. Crea una nueva para empezar.</div>
-            )}
-            </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${campaign.active ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-muted text-muted-foreground border border-border"}`}>
+                            {campaign.active ? "Activo" : "Inactivo"}
+                          </span>
+                          {expandedCampaignId === campaign.id ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                        </div>
+                      </div>
+
+                      <AnimatePresence>
+                        {expandedCampaignId === campaign.id && editingCampaign && (
+                          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
+                            <div className="px-4 pb-4 space-y-4 border-t border-border pt-4">
+                              <div>
+                                <label className="text-xs text-muted-foreground">Nombre de la campaña</label>
+                                <input className={inputClass} placeholder="ej. Oferta Semanal" value={editingCampaign.name} onChange={e => setEditingCampaign({ ...editingCampaign, name: e.target.value })} />
+                              </div>
+
+                              <div>
+                                <label className="text-xs text-muted-foreground flex items-center gap-1 mb-2">
+                                  <Tags className="h-3 w-3" /> Etiquetas (selecciona una o más)
+                                </label>
+                                <div className="flex flex-wrap gap-2">
+                                  {mockTags.map(tag => {
+                                    const selected = editingCampaign.tags.includes(tag.name);
+                                    return (
+                                      <button
+                                        key={tag.name}
+                                        onClick={() => toggleCampaignTag(tag.name)}
+                                        className={`text-xs px-3 py-1.5 rounded-full border transition-all flex items-center gap-1.5 ${selected ? "border-primary bg-primary/10 text-primary font-medium" : "border-border bg-secondary/30 text-muted-foreground hover:bg-secondary/50"}`}
+                                      >
+                                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: tag.color }} />
+                                        {tag.name}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                                {editingCampaign.tags.length === 0 && (
+                                  <p className="text-[10px] text-destructive mt-1">Selecciona al menos una etiqueta</p>
+                                )}
+                              </div>
+
+                              <div>
+                                <label className="text-xs text-muted-foreground flex items-center gap-1">
+                                  <CalendarDays className="h-3 w-3" /> Enviar 1 vez cada
+                                </label>
+                                <div className="flex items-center gap-2 mt-1">
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    className={`${inputClass} max-w-[100px]`}
+                                    value={editingCampaign.intervalDays}
+                                    onChange={e => setEditingCampaign({ ...editingCampaign, intervalDays: Math.max(1, Number(e.target.value)) })}
+                                  />
+                                  <span className="text-sm text-muted-foreground">días</span>
+                                </div>
+                              </div>
+
+                              <div className="rounded-lg border border-border bg-secondary/20 p-3 space-y-3">
+                                <label className="text-xs text-muted-foreground flex items-center gap-1">
+                                  <Timer className="h-3 w-3" /> Programación horaria
+                                </label>
+                                <div className="flex gap-1 bg-secondary/30 p-1 rounded-lg border border-border w-fit">
+                                  <button
+                                    onClick={() => setEditingCampaign({ ...editingCampaign, scheduleType: "always" })}
+                                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingCampaign.scheduleType === "always" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                                  >
+                                    Siempre
+                                  </button>
+                                  <button
+                                    onClick={() => setEditingCampaign({ ...editingCampaign, scheduleType: "days_hours" })}
+                                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingCampaign.scheduleType === "days_hours" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                                  >
+                                    Días y horario
+                                  </button>
+                                </div>
+
+                                <AnimatePresence>
+                                  {editingCampaign.scheduleType === "days_hours" && (
+                                    <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden space-y-3">
+                                      <div>
+                                        <label className="text-[10px] text-muted-foreground mb-1.5 block">Días de envío</label>
+                                        <div className="flex gap-1.5 flex-wrap">
+                                          {DAYS_OF_WEEK.map(day => {
+                                            const selected = editingCampaign.scheduleDays.includes(day.key);
+                                            return (
+                                              <button
+                                                key={day.key}
+                                                onClick={() => {
+                                                  const days = selected
+                                                    ? editingCampaign.scheduleDays.filter(d => d !== day.key)
+                                                    : [...editingCampaign.scheduleDays, day.key];
+                                                  setEditingCampaign({ ...editingCampaign, scheduleDays: days });
+                                                }}
+                                                className={`w-10 h-10 rounded-lg text-xs font-medium transition-all border ${selected ? "bg-primary text-primary-foreground border-primary shadow-sm" : "bg-secondary/30 text-muted-foreground border-border hover:bg-secondary/50"}`}
+                                              >
+                                                {day.label}
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                        {editingCampaign.scheduleDays.length === 0 && (
+                                          <p className="text-[10px] text-destructive mt-1">Selecciona al menos un día</p>
+                                        )}
+                                      </div>
+
+                                      <div className="flex items-center gap-3">
+                                        <div>
+                                          <label className="text-[10px] text-muted-foreground">Desde</label>
+                                          <input
+                                            type="time"
+                                            className={`${inputClass} max-w-[130px]`}
+                                            value={editingCampaign.scheduleTimeFrom}
+                                            onChange={e => setEditingCampaign({ ...editingCampaign, scheduleTimeFrom: e.target.value })}
+                                          />
+                                        </div>
+                                        <span className="text-muted-foreground text-sm mt-4">—</span>
+                                        <div>
+                                          <label className="text-[10px] text-muted-foreground">Hasta</label>
+                                          <input
+                                            type="time"
+                                            className={`${inputClass} max-w-[130px]`}
+                                            value={editingCampaign.scheduleTimeTo}
+                                            onChange={e => setEditingCampaign({ ...editingCampaign, scheduleTimeTo: e.target.value })}
+                                          />
+                                        </div>
+                                      </div>
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
+                              </div>
+
+                              <div>
+                                <label className="text-xs text-muted-foreground mb-2 block">Tipo de mensaje</label>
+                                <div className="flex gap-1 bg-secondary/30 p-1 rounded-lg border border-border w-fit">
+                                  <button
+                                    onClick={() => setEditingCampaign({ ...editingCampaign, messageType: "custom" })}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingCampaign.messageType === "custom" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                                  >
+                                    <MessageSquare className="h-3 w-3" /> Mensaje personalizado
+                                  </button>
+                                  <button
+                                    onClick={() => setEditingCampaign({ ...editingCampaign, messageType: "template" })}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingCampaign.messageType === "template" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                                  >
+                                    <FileText className="h-3 w-3" /> Plantilla
+                                  </button>
+                                </div>
+                              </div>
+
+                              <AnimatePresence mode="wait">
+                                {editingCampaign.messageType === "custom" ? (
+                                  <motion.div key="custom" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+                                    <label className="text-xs text-muted-foreground">Mensaje de remarketing</label>
+                                    <textarea
+                                      className={`${inputClass} min-h-[100px] resize-y`}
+                                      placeholder="Escribe el mensaje que se enviará a todos los contactos..."
+                                      value={editingCampaign.customMessage}
+                                      onChange={e => setEditingCampaign({ ...editingCampaign, customMessage: e.target.value })}
+                                    />
+                                  </motion.div>
+                                ) : (
+                                  <motion.div key="template" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+                                    <label className="text-xs text-muted-foreground">Seleccionar plantilla</label>
+                                    <select
+                                      className={inputClass}
+                                      value={editingCampaign.selectedTemplate}
+                                      onChange={e => setEditingCampaign({ ...editingCampaign, selectedTemplate: e.target.value })}
+                                    >
+                                      <option value="">Seleccionar plantilla</option>
+                                      {realTemplates.map(t => <option key={t}>{t}</option>)}
+                                    </select>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+
+                              <div className="flex gap-2 pt-1">
+                                <button onClick={saveCampaign} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
+                                  <Plus className="h-4 w-4" /> Guardar
+                                </button>
+                                <button onClick={() => deleteCampaign(campaign.id)} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-destructive/10 text-destructive text-sm border border-destructive/20 hover:bg-destructive/20 transition-colors">
+                                  <Trash2 className="h-4 w-4" /> Eliminar
+                                </button>
+                              </div>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+
+                {campaigns.length === 0 && (
+                  <div className="text-center py-12 text-muted-foreground text-sm">No hay campañas de remarketing. Crea una nueva para empezar.</div>
+                )}
+              </div>
             )}
           </motion.div>
         )}
