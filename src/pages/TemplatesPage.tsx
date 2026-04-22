@@ -20,6 +20,7 @@ type MediaFile = {
   file: File;
   preview: string;
   type: "image" | "video" | "gif";
+  mediaType: string;
 };
 
 type SavedTemplate = {
@@ -34,6 +35,9 @@ type SavedTemplate = {
   usage_count: number | null;
   created_at: string;
   updated_at: string;
+  media_url: string | null;
+  media_type: string | null;
+  media_file_name: string | null;
 };
 
 export default function TemplatesPage() {
@@ -54,6 +58,31 @@ export default function TemplatesPage() {
   const videoInputRef = useRef<HTMLInputElement>(null);
   const gifInputRef = useRef<HTMLInputElement>(null);
 
+  // Subir archivo a Supabase Storage
+  const uploadFile = async (file: File, folder: string): Promise<string | null> => {
+    if (!user) return null;
+    
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${user.id}/${Date.now()}.${fileExt}`;
+    const filePath = `${folder}/${fileName}`;
+    
+    const { error } = await supabase.storage
+      .from('templates-media')
+      .upload(filePath, file);
+    
+    if (error) {
+      console.error("Error subiendo archivo:", error);
+      toast({ title: "Error al subir archivo", description: error.message, variant: "destructive" });
+      return null;
+    }
+    
+    const { data: { publicUrl } } = supabase.storage
+      .from('templates-media')
+      .getPublicUrl(filePath);
+    
+    return publicUrl;
+  };
+
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     const remaining = 3 - images.length;
@@ -61,6 +90,7 @@ export default function TemplatesPage() {
       file,
       preview: URL.createObjectURL(file),
       type: "image" as const,
+      mediaType: file.type,
     }));
     setImages((prev) => [...prev, ...toAdd]);
     e.target.value = "";
@@ -69,7 +99,7 @@ export default function TemplatesPage() {
   const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      setVideo({ file, preview: URL.createObjectURL(file), type: "video" });
+      setVideo({ file, preview: URL.createObjectURL(file), type: "video", mediaType: file.type });
     }
     e.target.value = "";
   };
@@ -77,7 +107,7 @@ export default function TemplatesPage() {
   const handleGifUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      setGif({ file, preview: URL.createObjectURL(file), type: "gif" });
+      setGif({ file, preview: URL.createObjectURL(file), type: "gif", mediaType: file.type });
     }
     e.target.value = "";
   };
@@ -146,14 +176,35 @@ export default function TemplatesPage() {
 
     setSaving(true);
 
+    let mediaUrl = null;
+    let mediaType = null;
+    let mediaFileName = null;
+
+    // Subir imagen principal (la primera imagen)
+    if (images.length > 0) {
+      mediaUrl = await uploadFile(images[0].file, 'images');
+      mediaType = 'image';
+      mediaFileName = images[0].file.name;
+    }
+    // Subir video
+    else if (video) {
+      mediaUrl = await uploadFile(video.file, 'videos');
+      mediaType = 'video';
+      mediaFileName = video.file.name;
+    }
+    // Subir gif
+    else if (gif) {
+      mediaUrl = await uploadFile(gif.file, 'gifs');
+      mediaType = 'gif';
+      mediaFileName = gif.file.name;
+    }
+
     const variables = {
       media: {
         imageCount: images.length,
         hasVideo: !!video,
         hasGif: !!gif,
       },
-      preview_only_note:
-        "Los archivos multimedia se mantienen solo localmente hasta integrar Supabase Storage.",
     };
 
     const payload = {
@@ -165,6 +216,9 @@ export default function TemplatesPage() {
       platform: "whatsapp",
       is_active: true,
       updated_at: new Date().toISOString(),
+      media_url: mediaUrl,
+      media_type: mediaType,
+      media_file_name: mediaFileName,
     };
 
     let error = null;
@@ -175,14 +229,12 @@ export default function TemplatesPage() {
         .update(payload)
         .eq("id", templateId)
         .eq("user_id", user.id);
-
       error = result.error;
     } else {
       const result = await supabase.from("templates").insert({
         ...payload,
         usage_count: 0,
       });
-
       error = result.error;
     }
 
@@ -205,6 +257,7 @@ export default function TemplatesPage() {
     });
 
     await loadTemplates();
+    resetEditor();
     setSaving(false);
   };
 
@@ -263,7 +316,7 @@ export default function TemplatesPage() {
       hour: "2-digit",
       minute: "2-digit",
     });
-  }, [templateName, templateMessage, images, video, gif]);
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -278,6 +331,7 @@ export default function TemplatesPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Formulario */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -479,6 +533,7 @@ export default function TemplatesPage() {
           </div>
         </motion.div>
 
+        {/* Vista previa */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -607,6 +662,7 @@ export default function TemplatesPage() {
           </div>
         </motion.div>
 
+        {/* Lista de plantillas */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -635,7 +691,9 @@ export default function TemplatesPage() {
                     templateId === tpl.id ? "bg-primary/5" : ""
                   }`}
                 >
-                  <FileText className="h-4 w-4 text-primary shrink-0" />
+                  {tpl.media_type === 'image' && <Image className="h-4 w-4 text-primary shrink-0" />}
+                  {tpl.media_type === 'video' && <Video className="h-4 w-4 text-primary shrink-0" />}
+                  {(!tpl.media_type) && <FileText className="h-4 w-4 text-primary shrink-0" />}
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-bold">{tpl.name}</p>
                     <p className="text-xs text-muted-foreground truncate">
