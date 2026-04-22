@@ -109,6 +109,7 @@ export default function TriggersV2Page() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editingTrigger, setEditingTrigger] = useState<Trigger | null>(null);
   const [saving, setSaving] = useState(false);
+  const [loadingTriggers, setLoadingTriggers] = useState(true);
 
   // Remarketing state
   const [campaigns, setCampaigns] = useState<RemarketingCampaign[]>([]);
@@ -124,7 +125,15 @@ export default function TriggersV2Page() {
 
   // Cargar triggers desde Supabase
   const loadTriggers = async () => {
-    if (!user) return;
+    if (!user) {
+      console.log("No hay usuario logueado");
+      setLoadingTriggers(false);
+      return;
+    }
+    
+    setLoadingTriggers(true);
+    console.log("🔄 Cargando triggers para usuario:", user.id);
+    
     const { data, error } = await supabase
       .from("triggers")
       .select("*")
@@ -133,11 +142,13 @@ export default function TriggersV2Page() {
     
     if (error) {
       console.error("Error cargando triggers:", error);
+      setLoadingTriggers(false);
       return;
     }
     
+    console.log("📦 Triggers cargados:", data?.length || 0);
+    
     if (data && data.length > 0) {
-      // Convertir template null a "Ninguna" para mostrar en el select
       const formattedData = data.map(t => ({
         ...t,
         template: t.template || "Ninguna"
@@ -146,6 +157,7 @@ export default function TriggersV2Page() {
     } else {
       setTriggers([]);
     }
+    setLoadingTriggers(false);
   };
 
   // Cargar remarketing campaigns
@@ -193,6 +205,7 @@ export default function TriggersV2Page() {
         setRealTemplates([]);
       }
     };
+    
     loadTemplates();
     loadTriggers();
     loadCampaigns();
@@ -254,7 +267,6 @@ export default function TriggersV2Page() {
     
     setSaving(true);
     
-    // Validar campos requeridos
     if (!editingTrigger.name.trim()) {
       alert("El nombre del disparador es obligatorio");
       setSaving(false);
@@ -267,7 +279,6 @@ export default function TriggersV2Page() {
       return;
     }
     
-    // Determinar el template a guardar (si es "Ninguna" o vacío, guardar null)
     const templateToSave = !editingTrigger.template || editingTrigger.template === "Ninguna" ? null : editingTrigger.template;
     
     const payload = {
@@ -399,6 +410,14 @@ export default function TriggersV2Page() {
 
   const inputClass = "w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 transition-colors";
 
+  if (loadingTriggers) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="h-6 w-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -433,280 +452,282 @@ export default function TriggersV2Page() {
               </button>
             </div>
 
-            <AnimatePresence>
-              {triggers.map((trigger) => (
-                <motion.div
-                  key={trigger.id}
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -12 }}
-                  className="bg-card border border-border rounded-lg overflow-hidden"
-                >
-                  <div className="flex items-center gap-3 p-4 cursor-pointer" onClick={() => startEdit(trigger)}>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); toggleActive(trigger.id); }}
-                      className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${trigger.active ? "bg-emerald-500" : "bg-muted"}`}
-                    >
-                      <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-transform ${trigger.active ? "translate-x-6" : "translate-x-0.5"}`} />
-                    </button>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className={`text-sm font-medium truncate ${trigger.active ? "text-foreground" : "text-muted-foreground"}`}>
-                          {trigger.name || "Sin nombre"}
-                        </p>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground shrink-0">{trigger.type}</span>
-                      </div>
-                      {trigger.followUpEnabled && (
-                        <p className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5">
-                          <Clock className="h-3 w-3" /> Seguimiento en {trigger.followUpMinutes} min
-                        </p>
-                        )}
-                      {trigger.secondary.enabled && (
-                        <p className="text-[10px] text-cyan-400 flex items-center gap-1 mt-0.5">
-                          <GitBranch className="h-3 w-3" /> Secundario: {trigger.secondary.conditionValues.join(", ") || "sin configurar"}
-                        </p>
-                      )}
-                      {trigger.autoTag && (
-                        <p className="text-[10px] text-emerald-400 flex items-center gap-1 mt-0.5">
-                          <Tags className="h-3 w-3" /> Etiqueta: {trigger.autoTag}
-                        </p>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${trigger.active ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-muted text-muted-foreground border border-border"}`}>
-                        {trigger.active ? "Activo" : "Inactivo"}
-                      </span>
-                      {expandedId === trigger.id ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
-                    </div>
-                  </div>
-
-                  <AnimatePresence>
-                    {expandedId === trigger.id && editingTrigger && (
-                      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
-                        <div className="px-4 pb-4 space-y-4 border-t border-border pt-4">
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div>
-                              <label className="text-xs text-muted-foreground">Nombre</label>
-                              <input className={inputClass} placeholder="Nombre del disparador" value={editingTrigger.name} onChange={e => setEditingTrigger({ ...editingTrigger, name: e.target.value })} />
-                            </div>
-                            <div>
-                              <label className="text-xs text-muted-foreground">Tipo de trigger</label>
-                              <select className={inputClass} value={editingTrigger.type} onChange={e => setEditingTrigger({ ...editingTrigger, type: e.target.value })}>
-                                <option>Palabra clave</option>
-                                <option>Tiempo sin respuesta</option>
-                                <option>Primera interacción</option>
-                                <option>Etiqueta aplicada</option>
-                              </select>
-                            </div>
-                          </div>
-                          <div>
-                            <label className="text-xs text-muted-foreground">Condición (palabra clave)</label>
-                            <input className={inputClass} placeholder="ej. veneno, precio, envío" value={editingTrigger.condition} onChange={e => setEditingTrigger({ ...editingTrigger, condition: e.target.value })} />
-                            <p className="text-[10px] text-muted-foreground mt-1">Cuando el cliente escriba esta palabra, se activará el disparador</p>
-                          </div>
-                          <div>
-                            <label className="text-xs text-muted-foreground">Acción / Respuesta</label>
-                            <textarea className={`${inputClass} min-h-[80px] resize-y`} placeholder="Mensaje que enviará el bot..." value={editingTrigger.response} onChange={e => setEditingTrigger({ ...editingTrigger, response: e.target.value })} />
-                          </div>
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                            <div>
-                              <label className="text-xs text-muted-foreground">Delay (minutos)</label>
-                              <input type="number" className={inputClass} placeholder="0" value={editingTrigger.delay} onChange={e => setEditingTrigger({ ...editingTrigger, delay: Number(e.target.value) })} />
-                            </div>
-                            <div>
-                              <label className="text-xs text-muted-foreground">Límite de envíos</label>
-                              <input type="number" className={inputClass} placeholder="∞" value={editingTrigger.send_limit} onChange={e => setEditingTrigger({ ...editingTrigger, send_limit: e.target.value })} />
-                            </div>
-                            <div>
-                              <label className="text-xs text-muted-foreground">Plantilla</label>
-                              <select 
-                                className={inputClass} 
-                                value={editingTrigger.template || "Ninguna"} 
-                                onChange={e => setEditingTrigger({ 
-                                  ...editingTrigger, 
-                                  template: e.target.value === "Ninguna" ? null : e.target.value 
-                                })}
-                              >
-                                <option value="Ninguna">Ninguna</option>
-                                {realTemplates.map(t => <option key={t} value={t}>{t}</option>)}
-                              </select>
-                            </div>
-                          </div>
-
-                          <div onClick={() => setEditingTrigger({ ...editingTrigger, noRepeat: !editingTrigger.noRepeat })} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${editingTrigger.noRepeat ? "bg-primary/10 border-primary/30" : "bg-secondary/30 border-border hover:bg-secondary/50"}`}>
-                            <ShieldCheck className={`h-5 w-5 shrink-0 ${editingTrigger.noRepeat ? "text-primary" : "text-muted-foreground"}`} />
-                            <div className="flex-1 min-w-0">
-                              <p className={`text-sm font-medium ${editingTrigger.noRepeat ? "text-primary" : "text-foreground"}`}>No repetir plantilla</p>
-                              <p className="text-[10px] text-muted-foreground">Evita enviar la misma plantilla dos veces al mismo contacto</p>
-                            </div>
-                            <div className={`w-10 h-5 rounded-full transition-colors relative ${editingTrigger.noRepeat ? "bg-primary" : "bg-muted"}`}>
-                              <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${editingTrigger.noRepeat ? "translate-x-5" : "translate-x-0.5"}`} />
-                            </div>
-                          </div>
-
-                          {/* Auto-tag on trigger */}
-                          <div className={`rounded-lg border transition-all ${editingTrigger.autoTag ? "bg-emerald-500/5 border-emerald-500/30" : "bg-secondary/30 border-border"}`}>
-                            <div className="flex items-center gap-3 p-3">
-                              <Tags className={`h-5 w-5 shrink-0 ${editingTrigger.autoTag ? "text-emerald-400" : "text-muted-foreground"}`} />
-                              <div className="flex-1 min-w-0">
-                                <p className={`text-sm font-medium ${editingTrigger.autoTag ? "text-emerald-400" : "text-foreground"}`}>Etiquetar automáticamente</p>
-                                <p className="text-[10px] text-muted-foreground">Asigna una etiqueta al contacto cuando se activa este disparador</p>
-                              </div>
-                            </div>
-                            <div className="px-3 pb-3">
-                              <select
-                                className={inputClass}
-                                value={editingTrigger.autoTag}
-                                onChange={e => setEditingTrigger({ ...editingTrigger, autoTag: e.target.value })}
-                              >
-                                <option value="">Sin etiqueta</option>
-                                {mockTags.map(tag => (
-                                  <option key={tag.name} value={tag.name}>{tag.name}</option>
-                                ))}
-                              </select>
-                              {editingTrigger.autoTag && (
-                                <div className="flex items-center gap-2 mt-2">
-                                  <div className="h-3 w-3 rounded-full" style={{ backgroundColor: mockTags.find(t => t.name === editingTrigger.autoTag)?.color || "#888" }} />
-                                  <span className="text-xs text-emerald-400">{editingTrigger.autoTag}</span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className={`rounded-lg border transition-all ${editingTrigger.followUpEnabled ? "bg-amber-500/5 border-amber-500/30" : "bg-secondary/30 border-border"}`}>
-                            <div onClick={() => setEditingTrigger({ ...editingTrigger, followUpEnabled: !editingTrigger.followUpEnabled })} className="flex items-center gap-3 p-3 cursor-pointer">
-                              <MessageSquare className={`h-5 w-5 shrink-0 ${editingTrigger.followUpEnabled ? "text-amber-400" : "text-muted-foreground"}`} />
-                              <div className="flex-1 min-w-0">
-                                <p className={`text-sm font-medium ${editingTrigger.followUpEnabled ? "text-amber-400" : "text-foreground"}`}>Seguimiento automático</p>
-                                <p className="text-[10px] text-muted-foreground">Si el cliente no responde, enviar un mensaje de seguimiento</p>
-                              </div>
-                              <div className={`w-10 h-5 rounded-full transition-colors relative ${editingTrigger.followUpEnabled ? "bg-amber-500" : "bg-muted"}`}>
-                                <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${editingTrigger.followUpEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
-                              </div>
-                            </div>
-                            <AnimatePresence>
-                              {editingTrigger.followUpEnabled && (
-                                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-                                  <div className="px-3 pb-3 space-y-3">
-                                    <div>
-                                      <label className="text-xs text-muted-foreground">Tiempo de espera (minutos)</label>
-                                      <div className="flex items-center gap-2 mt-1">
-                                        <Clock className="h-4 w-4 text-amber-400 shrink-0" />
-                                        <input type="number" min={1} className={inputClass} value={editingTrigger.followUpMinutes} onChange={e => setEditingTrigger({ ...editingTrigger, followUpMinutes: Math.max(1, Number(e.target.value)) })} />
-                                        <span className="text-xs text-muted-foreground whitespace-nowrap">min</span>
-                                      </div>
-                                    </div>
-                                    <div>
-                                      <label className="text-xs text-muted-foreground">Mensaje de seguimiento</label>
-                                      <textarea className={`${inputClass} min-h-[80px] resize-y`} placeholder="Escribe el mensaje…" value={editingTrigger.followUpMessage} onChange={e => setEditingTrigger({ ...editingTrigger, followUpMessage: e.target.value })} />
-                                    </div>
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                          </div>
-
-                          {/* Secondary Trigger */}
-                          <div className={`rounded-lg border transition-all ${editingTrigger.secondary.enabled ? "bg-cyan-500/5 border-cyan-500/30" : "bg-secondary/30 border-border"}`}>
-                            <div onClick={() => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, enabled: !editingTrigger.secondary.enabled } })} className="flex items-center gap-3 p-3 cursor-pointer">
-                              <GitBranch className={`h-5 w-5 shrink-0 ${editingTrigger.secondary.enabled ? "text-cyan-400" : "text-muted-foreground"}`} />
-                              <div className="flex-1 min-w-0">
-                                <p className={`text-sm font-medium ${editingTrigger.secondary.enabled ? "text-cyan-400" : "text-foreground"}`}>Disparador secundario</p>
-                                <p className="text-[10px] text-muted-foreground">Si detecta una condición especial, envía una respuesta diferente</p>
-                              </div>
-                              <div className={`w-10 h-5 rounded-full transition-colors relative ${editingTrigger.secondary.enabled ? "bg-cyan-500" : "bg-muted"}`}>
-                                <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${editingTrigger.secondary.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
-                              </div>
-                            </div>
-                            <AnimatePresence>
-                              {editingTrigger.secondary.enabled && (
-                                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-                                  <div className="px-3 pb-3 space-y-3">
-                                    <div>
-                                      <label className="text-xs text-muted-foreground">Tipo de condición</label>
-                                      <div className="flex gap-1 mt-1 bg-secondary/30 p-1 rounded-lg border border-border w-fit">
-                                        <button
-                                          onClick={() => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, conditionType: "city" } })}
-                                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingTrigger.secondary.conditionType === "city" ? "bg-cyan-500 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                                        >
-                                          <MapPin className="h-3 w-3" /> Ciudades
-                                        </button>
-                                        <button
-                                          onClick={() => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, conditionType: "keyword" } })}
-                                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingTrigger.secondary.conditionType === "keyword" ? "bg-cyan-500 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-                                        >
-                                          <MessageSquare className="h-3 w-3" /> Palabras clave
-                                        </button>
-                                      </div>
-                                    </div>
-
-                                    <div>
-                                      <label className="text-xs text-muted-foreground flex items-center gap-1">
-                                        {editingTrigger.secondary.conditionType === "city" ? (
-                                          <><MapPin className="h-3 w-3" /> Ciudades sin cobertura (separar con coma)</>
-                                        ) : (
-                                          <><MessageSquare className="h-3 w-3" /> Palabras clave (separar con coma)</>
-                                        )}
-                                      </label>
-                                      <input
-                                        className={inputClass}
-                                        placeholder={editingTrigger.secondary.conditionType === "city" ? "ej. Encarnación, Pedro Juan, Salto del Guairá" : "ej. no quiero, cancelar, no gracias"}
-                                        value={editingTrigger.secondary.conditionValues.join(", ")}
-                                        onChange={e => setEditingTrigger({
-                                          ...editingTrigger,
-                                          secondary: {
-                                            ...editingTrigger.secondary,
-                                            conditionValues: e.target.value.split(",").map(v => v.trim()).filter(Boolean)
-                                          }
-                                        })}
-                                      />
-                                    </div>
-
-                                    <div>
-                                      <label className="text-xs text-muted-foreground">Respuesta del secundario</label>
-                                      <textarea
-                                        className={`${inputClass} min-h-[80px] resize-y`}
-                                        placeholder="Mensaje alternativo..."
-                                        value={editingTrigger.secondary.response}
-                                        onChange={e => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, response: e.target.value } })}
-                                      />
-                                    </div>
-
-                                    <div>
-                                      <label className="text-xs text-muted-foreground">O usar plantilla</label>
-                                      <select
-                                        className={inputClass}
-                                        value={editingTrigger.secondary.template}
-                                        onChange={e => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, template: e.target.value } })}
-                                      >
-                                        <option>Ninguna</option>
-                                        {realTemplates.map(t => <option key={t}>{t}</option>)}
-                                      </select>
-                                    </div>
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                          </div>
-
-                          <div className="flex gap-2 pt-1">
-                            <button onClick={saveEdit} disabled={saving} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50">
-                              <Plus className="h-4 w-4" /> {saving ? "Guardando..." : "Guardar"}
-                            </button>
-                            <button onClick={() => deleteTrigger(trigger.id)} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-destructive/10 text-destructive text-sm border border-destructive/20 hover:bg-destructive/20 transition-colors">
-                              <Trash2 className="h-4 w-4" /> Eliminar
-                            </button>
-                          </div>
+            {triggers.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground text-sm bg-card border border-border rounded-lg">
+                No hay disparadores. Crea uno nuevo para empezar.
+              </div>
+            ) : (
+              <AnimatePresence>
+                {triggers.map((trigger) => (
+                  <motion.div
+                    key={trigger.id}
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -12 }}
+                    className="bg-card border border-border rounded-lg overflow-hidden"
+                  >
+                    <div className="flex items-center gap-3 p-4 cursor-pointer" onClick={() => startEdit(trigger)}>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleActive(trigger.id); }}
+                        className={`relative w-12 h-6 rounded-full transition-colors shrink-0 ${trigger.active ? "bg-emerald-500" : "bg-muted"}`}
+                      >
+                        <div className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-transform ${trigger.active ? "translate-x-6" : "translate-x-0.5"}`} />
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className={`text-sm font-medium truncate ${trigger.active ? "text-foreground" : "text-muted-foreground"}`}>
+                            {trigger.name || "Sin nombre"}
+                          </p>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted-foreground shrink-0">{trigger.type}</span>
                         </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </motion.div>
-              ))}
-            </AnimatePresence>
+                        {trigger.followUpEnabled && (
+                          <p className="text-[10px] text-muted-foreground flex items-center gap-1 mt-0.5">
+                            <Clock className="h-3 w-3" /> Seguimiento en {trigger.followUpMinutes} min
+                          </p>
+                        )}
+                        {trigger.secondary.enabled && (
+                          <p className="text-[10px] text-cyan-400 flex items-center gap-1 mt-0.5">
+                            <GitBranch className="h-3 w-3" /> Secundario: {trigger.secondary.conditionValues.join(", ") || "sin configurar"}
+                          </p>
+                        )}
+                        {trigger.autoTag && (
+                          <p className="text-[10px] text-emerald-400 flex items-center gap-1 mt-0.5">
+                            <Tags className="h-3 w-3" /> Etiqueta: {trigger.autoTag}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${trigger.active ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-muted text-muted-foreground border border-border"}`}>
+                          {trigger.active ? "Activo" : "Inactivo"}
+                        </span>
+                        {expandedId === trigger.id ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                      </div>
+                    </div>
 
-            {triggers.length === 0 && (
-              <div className="text-center py-12 text-muted-foreground text-sm">No hay disparadores. Crea uno nuevo para empezar.</div>
+                    <AnimatePresence>
+                      {expandedId === trigger.id && editingTrigger && (
+                        <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
+                          <div className="px-4 pb-4 space-y-4 border-t border-border pt-4">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div>
+                                <label className="text-xs text-muted-foreground">Nombre</label>
+                                <input className={inputClass} placeholder="Nombre del disparador" value={editingTrigger.name} onChange={e => setEditingTrigger({ ...editingTrigger, name: e.target.value })} />
+                              </div>
+                              <div>
+                                <label className="text-xs text-muted-foreground">Tipo de trigger</label>
+                                <select className={inputClass} value={editingTrigger.type} onChange={e => setEditingTrigger({ ...editingTrigger, type: e.target.value })}>
+                                  <option>Palabra clave</option>
+                                  <option>Tiempo sin respuesta</option>
+                                  <option>Primera interacción</option>
+                                  <option>Etiqueta aplicada</option>
+                                </select>
+                              </div>
+                            </div>
+                            <div>
+                              <label className="text-xs text-muted-foreground">Condición (palabra clave)</label>
+                              <input className={inputClass} placeholder="ej. veneno, precio, envío" value={editingTrigger.condition} onChange={e => setEditingTrigger({ ...editingTrigger, condition: e.target.value })} />
+                              <p className="text-[10px] text-muted-foreground mt-1">Cuando el cliente escriba esta palabra, se activará el disparador</p>
+                            </div>
+                            <div>
+                              <label className="text-xs text-muted-foreground">Acción / Respuesta</label>
+                              <textarea className={`${inputClass} min-h-[80px] resize-y`} placeholder="Mensaje que enviará el bot..." value={editingTrigger.response} onChange={e => setEditingTrigger({ ...editingTrigger, response: e.target.value })} />
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                              <div>
+                                <label className="text-xs text-muted-foreground">Delay (minutos)</label>
+                                <input type="number" className={inputClass} placeholder="0" value={editingTrigger.delay} onChange={e => setEditingTrigger({ ...editingTrigger, delay: Number(e.target.value) })} />
+                              </div>
+                              <div>
+                                <label className="text-xs text-muted-foreground">Límite de envíos</label>
+                                <input type="number" className={inputClass} placeholder="∞" value={editingTrigger.send_limit} onChange={e => setEditingTrigger({ ...editingTrigger, send_limit: e.target.value })} />
+                              </div>
+                              <div>
+                                <label className="text-xs text-muted-foreground">Plantilla</label>
+                                <select 
+                                  className={inputClass} 
+                                  value={editingTrigger.template || "Ninguna"} 
+                                  onChange={e => setEditingTrigger({ 
+                                    ...editingTrigger, 
+                                    template: e.target.value === "Ninguna" ? null : e.target.value 
+                                  })}
+                                >
+                                  <option value="Ninguna">Ninguna</option>
+                                  {realTemplates.map(t => <option key={t} value={t}>{t}</option>)}
+                                </select>
+                              </div>
+                            </div>
+
+                            <div onClick={() => setEditingTrigger({ ...editingTrigger, noRepeat: !editingTrigger.noRepeat })} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${editingTrigger.noRepeat ? "bg-primary/10 border-primary/30" : "bg-secondary/30 border-border hover:bg-secondary/50"}`}>
+                              <ShieldCheck className={`h-5 w-5 shrink-0 ${editingTrigger.noRepeat ? "text-primary" : "text-muted-foreground"}`} />
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-sm font-medium ${editingTrigger.noRepeat ? "text-primary" : "text-foreground"}`}>No repetir plantilla</p>
+                                <p className="text-[10px] text-muted-foreground">Evita enviar la misma plantilla dos veces al mismo contacto</p>
+                              </div>
+                              <div className={`w-10 h-5 rounded-full transition-colors relative ${editingTrigger.noRepeat ? "bg-primary" : "bg-muted"}`}>
+                                <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${editingTrigger.noRepeat ? "translate-x-5" : "translate-x-0.5"}`} />
+                              </div>
+                            </div>
+
+                            {/* Auto-tag on trigger */}
+                            <div className={`rounded-lg border transition-all ${editingTrigger.autoTag ? "bg-emerald-500/5 border-emerald-500/30" : "bg-secondary/30 border-border"}`}>
+                              <div className="flex items-center gap-3 p-3">
+                                <Tags className={`h-5 w-5 shrink-0 ${editingTrigger.autoTag ? "text-emerald-400" : "text-muted-foreground"}`} />
+                                <div className="flex-1 min-w-0">
+                                  <p className={`text-sm font-medium ${editingTrigger.autoTag ? "text-emerald-400" : "text-foreground"}`}>Etiquetar automáticamente</p>
+                                  <p className="text-[10px] text-muted-foreground">Asigna una etiqueta al contacto cuando se activa este disparador</p>
+                                </div>
+                              </div>
+                              <div className="px-3 pb-3">
+                                <select
+                                  className={inputClass}
+                                  value={editingTrigger.autoTag}
+                                  onChange={e => setEditingTrigger({ ...editingTrigger, autoTag: e.target.value })}
+                                >
+                                  <option value="">Sin etiqueta</option>
+                                  {mockTags.map(tag => (
+                                    <option key={tag.name} value={tag.name}>{tag.name}</option>
+                                  ))}
+                                </select>
+                                {editingTrigger.autoTag && (
+                                  <div className="flex items-center gap-2 mt-2">
+                                    <div className="h-3 w-3 rounded-full" style={{ backgroundColor: mockTags.find(t => t.name === editingTrigger.autoTag)?.color || "#888" }} />
+                                    <span className="text-xs text-emerald-400">{editingTrigger.autoTag}</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className={`rounded-lg border transition-all ${editingTrigger.followUpEnabled ? "bg-amber-500/5 border-amber-500/30" : "bg-secondary/30 border-border"}`}>
+                              <div onClick={() => setEditingTrigger({ ...editingTrigger, followUpEnabled: !editingTrigger.followUpEnabled })} className="flex items-center gap-3 p-3 cursor-pointer">
+                                <MessageSquare className={`h-5 w-5 shrink-0 ${editingTrigger.followUpEnabled ? "text-amber-400" : "text-muted-foreground"}`} />
+                                <div className="flex-1 min-w-0">
+                                  <p className={`text-sm font-medium ${editingTrigger.followUpEnabled ? "text-amber-400" : "text-foreground"}`}>Seguimiento automático</p>
+                                  <p className="text-[10px] text-muted-foreground">Si el cliente no responde, enviar un mensaje de seguimiento</p>
+                                </div>
+                                <div className={`w-10 h-5 rounded-full transition-colors relative ${editingTrigger.followUpEnabled ? "bg-amber-500" : "bg-muted"}`}>
+                                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${editingTrigger.followUpEnabled ? "translate-x-5" : "translate-x-0.5"}`} />
+                                </div>
+                              </div>
+                              <AnimatePresence>
+                                {editingTrigger.followUpEnabled && (
+                                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                                    <div className="px-3 pb-3 space-y-3">
+                                      <div>
+                                        <label className="text-xs text-muted-foreground">Tiempo de espera (minutos)</label>
+                                        <div className="flex items-center gap-2 mt-1">
+                                          <Clock className="h-4 w-4 text-amber-400 shrink-0" />
+                                          <input type="number" min={1} className={inputClass} value={editingTrigger.followUpMinutes} onChange={e => setEditingTrigger({ ...editingTrigger, followUpMinutes: Math.max(1, Number(e.target.value)) })} />
+                                          <span className="text-xs text-muted-foreground whitespace-nowrap">min</span>
+                                        </div>
+                                      </div>
+                                      <div>
+                                        <label className="text-xs text-muted-foreground">Mensaje de seguimiento</label>
+                                        <textarea className={`${inputClass} min-h-[80px] resize-y`} placeholder="Escribe el mensaje…" value={editingTrigger.followUpMessage} onChange={e => setEditingTrigger({ ...editingTrigger, followUpMessage: e.target.value })} />
+                                      </div>
+                                    </div>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </div>
+
+                            {/* Secondary Trigger */}
+                            <div className={`rounded-lg border transition-all ${editingTrigger.secondary.enabled ? "bg-cyan-500/5 border-cyan-500/30" : "bg-secondary/30 border-border"}`}>
+                              <div onClick={() => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, enabled: !editingTrigger.secondary.enabled } })} className="flex items-center gap-3 p-3 cursor-pointer">
+                                <GitBranch className={`h-5 w-5 shrink-0 ${editingTrigger.secondary.enabled ? "text-cyan-400" : "text-muted-foreground"}`} />
+                                <div className="flex-1 min-w-0">
+                                  <p className={`text-sm font-medium ${editingTrigger.secondary.enabled ? "text-cyan-400" : "text-foreground"}`}>Disparador secundario</p>
+                                  <p className="text-[10px] text-muted-foreground">Si detecta una condición especial, envía una respuesta diferente</p>
+                                </div>
+                                <div className={`w-10 h-5 rounded-full transition-colors relative ${editingTrigger.secondary.enabled ? "bg-cyan-500" : "bg-muted"}`}>
+                                  <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${editingTrigger.secondary.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
+                                </div>
+                              </div>
+                              <AnimatePresence>
+                                {editingTrigger.secondary.enabled && (
+                                  <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                                    <div className="px-3 pb-3 space-y-3">
+                                      <div>
+                                        <label className="text-xs text-muted-foreground">Tipo de condición</label>
+                                        <div className="flex gap-1 mt-1 bg-secondary/30 p-1 rounded-lg border border-border w-fit">
+                                          <button
+                                            onClick={() => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, conditionType: "city" } })}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingTrigger.secondary.conditionType === "city" ? "bg-cyan-500 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                                          >
+                                            <MapPin className="h-3 w-3" /> Ciudades
+                                          </button>
+                                          <button
+                                            onClick={() => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, conditionType: "keyword" } })}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${editingTrigger.secondary.conditionType === "keyword" ? "bg-cyan-500 text-white shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+                                          >
+                                            <MessageSquare className="h-3 w-3" /> Palabras clave
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      <div>
+                                        <label className="text-xs text-muted-foreground flex items-center gap-1">
+                                          {editingTrigger.secondary.conditionType === "city" ? (
+                                            <><MapPin className="h-3 w-3" /> Ciudades sin cobertura (separar con coma)</>
+                                          ) : (
+                                            <><MessageSquare className="h-3 w-3" /> Palabras clave (separar con coma)</>
+                                          )}
+                                        </label>
+                                        <input
+                                          className={inputClass}
+                                          placeholder={editingTrigger.secondary.conditionType === "city" ? "ej. Encarnación, Pedro Juan, Salto del Guairá" : "ej. no quiero, cancelar, no gracias"}
+                                          value={editingTrigger.secondary.conditionValues.join(", ")}
+                                          onChange={e => setEditingTrigger({
+                                            ...editingTrigger,
+                                            secondary: {
+                                              ...editingTrigger.secondary,
+                                              conditionValues: e.target.value.split(",").map(v => v.trim()).filter(Boolean)
+                                            }
+                                          })}
+                                        />
+                                      </div>
+
+                                      <div>
+                                        <label className="text-xs text-muted-foreground">Respuesta del secundario</label>
+                                        <textarea
+                                          className={`${inputClass} min-h-[80px] resize-y`}
+                                          placeholder="Mensaje alternativo..."
+                                          value={editingTrigger.secondary.response}
+                                          onChange={e => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, response: e.target.value } })}
+                                        />
+                                      </div>
+
+                                      <div>
+                                        <label className="text-xs text-muted-foreground">O usar plantilla</label>
+                                        <select
+                                          className={inputClass}
+                                          value={editingTrigger.secondary.template}
+                                          onChange={e => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, template: e.target.value } })}
+                                        >
+                                          <option>Ninguna</option>
+                                          {realTemplates.map(t => <option key={t}>{t}</option>)}
+                                        </select>
+                                      </div>
+                                    </div>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </div>
+
+                            <div className="flex gap-2 pt-1">
+                              <button onClick={saveEdit} disabled={saving} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50">
+                                <Plus className="h-4 w-4" /> {saving ? "Guardando..." : "Guardar"}
+                              </button>
+                              <button onClick={() => deleteTrigger(trigger.id)} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-destructive/10 text-destructive text-sm border border-destructive/20 hover:bg-destructive/20 transition-colors">
+                                <Trash2 className="h-4 w-4" /> Eliminar
+                              </button>
+                            </div>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
             )}
           </motion.div>
         ) : (
