@@ -70,12 +70,64 @@ async function sendWhatsAppMessage(userId, to, message) {
         message: message,
         message_type: 'out_text',
         is_processed: true,
+        created_at: new Date(),
       });
     }
     
     return result;
   } catch (error) {
     console.error('Error enviando mensaje:', error);
+    return null;
+  }
+}
+
+// ============================================
+// FUNCIÓN: Procesar disparadores por palabras clave
+// ============================================
+async function procesarDisparadores(userId, fromNumber, message) {
+  try {
+    const { data: triggers } = await supabase
+      .from('triggers')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('active', true);
+
+    if (!triggers || triggers.length === 0) return null;
+
+    const messageLower = message.toLowerCase();
+    
+    for (const trigger of triggers) {
+      const condition = trigger.condition?.toLowerCase();
+      
+      if (condition && messageLower.includes(condition)) {
+        console.log(`🎯 Disparador encontrado: ${trigger.name} (${condition})`);
+        
+        let responseText = trigger.response;
+        
+        if (trigger.template && trigger.template !== 'Ninguna') {
+          const { data: template } = await supabase
+            .from('templates')
+            .select('content')
+            .eq('name', trigger.template)
+            .eq('user_id', userId)
+            .single();
+          
+          if (template?.content) {
+            responseText = template.content;
+          }
+        }
+        
+        if (responseText) {
+          await sendWhatsAppMessage(userId, fromNumber, responseText);
+        }
+        
+        return trigger;
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Error procesando disparadores:', error);
     return null;
   }
 }
@@ -146,6 +198,7 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     let mediaUrl = null;
     let mediaType = null;
     let mediaId = null;
+    const now = new Date();
     
     if (type === 'text') {
       contenido = message.text.body;
@@ -179,31 +232,37 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       media_url: mediaUrl,
       media_type: mediaType,
       is_processed: false,
+      created_at: now,
     });
     
-    // Responder con IA solo si es mensaje de texto
     if (type === 'text' && contenido.trim()) {
-      const { data: iaConfig } = await supabase
-        .from('chat_ia_gemini')
-        .select('is_active')
-        .eq('user_id', userId)
-        .single();
+      // 1. PRIMERO: Procesar disparadores
+      const triggerResult = await procesarDisparadores(userId, fromNumber, contenido);
       
-      if (iaConfig?.is_active) {
-        const { data: waConfig } = await supabase
-          .from('whatsapp_config')
-          .select('bot_response_delay_seconds')
+      // 2. Si NO hay disparador, usar IA
+      if (!triggerResult) {
+        const { data: iaConfig } = await supabase
+          .from('chat_ia_gemini')
+          .select('is_active')
           .eq('user_id', userId)
           .single();
         
-        const delay = waConfig?.bot_response_delay_seconds || 30;
-        
-        setTimeout(async () => {
-          const aiResponse = await getAIResponse(userId, contenido, fromNumber);
-          if (aiResponse) {
-            await sendWhatsAppMessage(userId, fromNumber, aiResponse);
-          }
-        }, delay * 1000);
+        if (iaConfig?.is_active) {
+          const { data: waConfig } = await supabase
+            .from('whatsapp_config')
+            .select('bot_response_delay_seconds')
+            .eq('user_id', userId)
+            .single();
+          
+          const delay = waConfig?.bot_response_delay_seconds || 30;
+          
+          setTimeout(async () => {
+            const aiResponse = await getAIResponse(userId, contenido, fromNumber);
+            if (aiResponse) {
+              await sendWhatsAppMessage(userId, fromNumber, aiResponse);
+            }
+          }, delay * 1000);
+        }
       }
     }
     
@@ -242,7 +301,6 @@ export default async function handler(req, res) {
         let userId = null;
         let token = null;
         
-        // Obtener configuración del usuario
         const { data: config } = await supabase
           .from('whatsapp_config')
           .select('user_id, permanent_token')
