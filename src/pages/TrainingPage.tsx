@@ -17,12 +17,12 @@ export default function TrainingPage() {
   const { user } = useAuth();
   const [trainingData, setTrainingData] = useState<TrainingItem[]>([]);
   const [intent, setIntent] = useState("");
+  const [examples, setExamples] = useState("");
   const [response, setResponse] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  // Cargar datos existentes
   const loadTrainingData = async () => {
     if (!user) return;
     
@@ -62,14 +62,19 @@ export default function TrainingPage() {
       return;
     }
 
+    const examplesArray = examples
+      .split('\n')
+      .filter(ex => ex.trim())
+      .map(ex => ex.trim());
+
     setSaving(true);
 
     if (editingId) {
-      // Actualizar existente
       const { error } = await supabase
         .from("training_data")
         .update({
           intent: intent.trim(),
+          examples: examplesArray,
           response: response.trim(),
           updated_at: new Date().toISOString()
         })
@@ -85,13 +90,12 @@ export default function TrainingPage() {
         loadTrainingData();
       }
     } else {
-      // Crear nuevo
       const { error } = await supabase
         .from("training_data")
         .insert({
           user_id: user.id,
           intent: intent.trim(),
-          examples: [],
+          examples: examplesArray,
           response: response.trim(),
           is_active: true
         });
@@ -100,7 +104,7 @@ export default function TrainingPage() {
         console.error("Error al guardar:", error);
         alert("Error al guardar: " + error.message);
       } else {
-        alert("✅ Datos guardados correctamente en Supabase");
+        alert("✅ Datos guardados correctamente");
         resetForm();
         loadTrainingData();
       }
@@ -111,6 +115,7 @@ export default function TrainingPage() {
   const handleEdit = (item: TrainingItem) => {
     setIntent(item.intent);
     setResponse(item.response);
+    setExamples(item.examples.join('\n'));
     setEditingId(item.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -137,6 +142,7 @@ export default function TrainingPage() {
 
   const resetForm = () => {
     setIntent("");
+    setExamples("");
     setResponse("");
     setEditingId(null);
   };
@@ -146,7 +152,6 @@ export default function TrainingPage() {
       <h1 className="text-2xl font-bold font-heading text-gradient">Entrenamiento IA</h1>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Formulario */}
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="bg-card border border-border rounded-lg p-5 space-y-4">
           <div>
             <label className="text-xs text-muted-foreground">Tema / Categoría</label>
@@ -157,15 +162,31 @@ export default function TrainingPage() {
               placeholder="ej. Productos disponibles, Precios, Envíos"
             />
           </div>
+
+          <div>
+            <label className="text-xs text-muted-foreground">Frases de ejemplo (una por línea)</label>
+            <textarea
+              value={examples}
+              onChange={(e) => setExamples(e.target.value)}
+              placeholder="cuánto cuesta?&#10;precio del producto&#10;valor final"
+              rows={3}
+              className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm font-mono resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+            />
+            <p className="text-[10px] text-muted-foreground mt-1">
+              El bot usará estas frases para identificar la intención
+            </p>
+          </div>
+
           <div>
             <label className="text-xs text-muted-foreground">Información de entrenamiento</label>
             <textarea
               value={response}
               onChange={(e) => setResponse(e.target.value)}
-              className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[200px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+              className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[150px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
               placeholder="Escribe la información que la IA debe conocer…"
             />
           </div>
+
           <div className="flex gap-2">
             <button
               onClick={handleSave}
@@ -178,7 +199,7 @@ export default function TrainingPage() {
             {editingId && (
               <button
                 onClick={resetForm}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-600 text-white text-sm font-medium hover:bg-gray-500 transition-colors"
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-secondary text-sm font-medium border border-border hover:bg-secondary/80 transition-colors"
               >
                 Cancelar
               </button>
@@ -186,7 +207,6 @@ export default function TrainingPage() {
           </div>
         </motion.div>
 
-        {/* Lista de datos */}
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="bg-card border border-border rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-border">
             <h3 className="font-heading font-semibold text-sm">Datos de Entrenamiento</h3>
@@ -213,6 +233,11 @@ export default function TrainingPage() {
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{item.intent}</p>
                     <p className="text-xs text-muted-foreground truncate">{item.response.substring(0, 60)}</p>
+                    {item.examples.length > 0 && (
+                      <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+                        {item.examples.length} ejemplo{item.examples.length !== 1 ? 's' : ''}
+                      </p>
+                    )}
                   </div>
                   <button
                     onClick={(e) => {
