@@ -22,7 +22,7 @@ export default function SettingsPage() {
   });
   const [iaConfig, setIaConfig] = useState({
     api_key: "",
-    model: "gemini-1.5-pro",
+    model: "auto",
     system_instruction: "",
     is_active: false,
     temperature: 0.7,
@@ -73,7 +73,7 @@ export default function SettingsPage() {
       if (data) {
         setIaConfig({
           api_key: data.api_key || "",
-          model: data.model || "gemini-1.5-pro",
+          model: data.model || "auto",
           system_instruction: data.system_instruction || "",
           is_active: data.is_active ?? false,
           temperature: data.temperature ?? 0.7,
@@ -86,7 +86,7 @@ export default function SettingsPage() {
           .insert({
             user_id: user.id,
             api_key: "",
-            model: "gemini-1.5-pro",
+            model: "auto",
             system_instruction: "Eres un asistente de ventas para una tienda online. Responde de manera amable y profesional.",
             is_active: false,
           });
@@ -127,12 +127,15 @@ export default function SettingsPage() {
     if (!user) return;
     setSavingIA(true);
 
+    // Si el modelo es "auto", guardamos un valor por defecto (el sistema lo detectará)
+    const modelToSave = iaConfig.model === "auto" ? "gemini-1.0-pro" : iaConfig.model;
+
     const { error } = await supabase
       .from("chat_ia_gemini")
       .upsert({
         user_id: user.id,
         api_key: iaConfig.api_key,
-        model: iaConfig.model,
+        model: modelToSave,
         system_instruction: iaConfig.system_instruction,
         is_active: iaConfig.is_active,
         temperature: iaConfig.temperature,
@@ -154,7 +157,7 @@ export default function SettingsPage() {
       if (data) {
         setIaConfig({
           api_key: data.api_key || "",
-          model: data.model || "gemini-1.5-pro",
+          model: data.model || "auto",
           system_instruction: data.system_instruction || "",
           is_active: data.is_active ?? false,
           temperature: data.temperature ?? 0.7,
@@ -357,10 +360,15 @@ export default function SettingsPage() {
                   onChange={(e) => setIaConfig({ ...iaConfig, model: e.target.value })}
                   className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm"
                 >
-                  <option value="gemini-1.5-pro">gemini-1.5-pro (Recomendado)</option>
-                  <option value="gemini-1.5-flash">gemini-1.5-flash (Rápido)</option>
+                  <option value="auto">🔍 Auto-detectar (recomendado)</option>
                   <option value="gemini-1.0-pro">gemini-1.0-pro</option>
+                  <option value="gemini-1.0-pro-vision">gemini-1.0-pro-vision</option>
+                  <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+                  <option value="gemini-1.5-pro">gemini-1.5-pro</option>
                 </select>
+                <p className="text-[10px] text-muted-foreground mt-1">
+                  Seleccioná "Auto-detectar" para que el sistema encuentre el modelo disponible automáticamente.
+                </p>
               </div>
 
               <div>
