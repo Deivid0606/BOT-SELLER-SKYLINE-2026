@@ -24,16 +24,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
 
-const availableTemplates = [
-  { name: "BIENVENIDA", preview: "¡Hola! 👋 Bienvenido a Skyline Store. ¿En qué podemos ayudarte hoy?" },
-  { name: "CATALOGO", preview: "📱 Nuestro catálogo actualizado está disponible. ¿Qué producto te interesa?" },
-  { name: "SEGUIMIENTO", preview: "Hola! Quería saber si pudiste revisar nuestra propuesta. Quedamos atentos 😊" },
-  { name: "CONFIRMACION", preview: "✅ Tu pedido ha sido confirmado. Te avisaremos cuando esté en camino." },
-  { name: "PAGO", preview: "💳 Para realizar el pago podés transferir a:\nBanco: ...\nCuenta: ...\nTitular: ..." },
-];
-
-const allTags = ["venta", "confirmado", "prospecto", "consulta", "venta web"];
-
 type DbMessage = {
   id: string;
   user_id: string | null;
@@ -69,6 +59,8 @@ type Message = {
   };
 };
 
+const allTags = ["venta", "confirmado", "prospecto", "consulta", "venta web"];
+
 function isOutgoingType(type?: string | null) {
   return !!type && type.startsWith("out_");
 }
@@ -101,8 +93,37 @@ export default function InboxPage() {
   const [dbMessages, setDbMessages] = useState<DbMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [availableTemplates, setAvailableTemplates] = useState<{name: string, preview: string}[]>([]);
 
-  const handleSelectTemplate = (template: (typeof availableTemplates)[0]) => {
+  // Cargar plantillas reales desde Supabase
+  useEffect(() => {
+    const loadTemplates = async () => {
+      if (!user) return;
+      const { data, error } = await supabase
+        .from("templates")
+        .select("name, content")
+        .eq("user_id", user.id)
+        .eq("is_active", true)
+        .order("created_at", { ascending: false });
+      
+      if (error) {
+        console.error("Error cargando plantillas:", error);
+        return;
+      }
+      
+      if (data && data.length > 0) {
+        setAvailableTemplates(data.map(t => ({
+          name: t.name,
+          preview: t.content || "Sin contenido"
+        })));
+      } else {
+        setAvailableTemplates([]);
+      }
+    };
+    loadTemplates();
+  }, [user]);
+
+  const handleSelectTemplate = (template: {name: string, preview: string}) => {
     setMessageInput(template.preview);
     setShowTemplates(false);
   };
@@ -475,18 +496,24 @@ export default function InboxPage() {
                     </button>
                   </div>
                   <div className="max-h-[200px] overflow-y-auto">
-                    {availableTemplates.map((tpl) => (
-                      <button
-                        key={tpl.name}
-                        onClick={() => handleSelectTemplate(tpl)}
-                        className="w-full text-left px-4 py-3 hover:bg-primary/5 border-b border-border/20 last:border-0 transition-colors"
-                      >
-                        <span className="text-[10px] font-bold text-primary font-mono tracking-wider">
-                          {tpl.name}
-                        </span>
-                        <p className="text-xs text-muted-foreground truncate mt-0.5">{tpl.preview}</p>
-                      </button>
-                    ))}
+                    {availableTemplates.length === 0 ? (
+                      <div className="px-4 py-3 text-xs text-muted-foreground text-center">
+                        No hay plantillas disponibles. Crea una en Plantillas.
+                      </div>
+                    ) : (
+                      availableTemplates.map((tpl) => (
+                        <button
+                          key={tpl.name}
+                          onClick={() => handleSelectTemplate(tpl)}
+                          className="w-full text-left px-4 py-3 hover:bg-primary/5 border-b border-border/20 last:border-0 transition-colors"
+                        >
+                          <span className="text-[10px] font-bold text-primary font-mono tracking-wider">
+                            {tpl.name}
+                          </span>
+                          <p className="text-xs text-muted-foreground truncate mt-0.5">{tpl.preview}</p>
+                        </button>
+                      ))
+                    )}
                   </div>
                 </motion.div>
               )}
