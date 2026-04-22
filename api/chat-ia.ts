@@ -14,7 +14,7 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    const { user_id, message } = req.body;
+    const { user_id, message, from_number } = req.body;
 
     if (!user_id || !message) {
       return res.status(400).json({ error: 'Faltan user_id o message' });
@@ -44,6 +44,29 @@ export default async function handler(req, res) {
       });
     }
 
+    // ============================================
+    // 1. OBTENER HISTORIAL DE CONVERSACIÓN (últimos 15 mensajes)
+    // ============================================
+    const { data: history } = await supabase
+      .from('received_messages')
+      .select('message, message_type, from_number, created_at')
+      .eq('from_number', from_number || 'chat_web')
+      .order('created_at', { ascending: true })
+      .limit(20);
+
+    // Construir el historial de conversación
+    let conversationHistory = '';
+    if (history && history.length > 0) {
+      conversationHistory = history.map(msg => {
+        const isUser = msg.from_number === (from_number || 'chat_web');
+        const sender = isUser ? 'Usuario' : 'Asistente';
+        return `${sender}: ${msg.message}`;
+      }).join('\n');
+    }
+
+    // ============================================
+    // 2. OBTENER DATOS DE ENTRENAMIENTO
+    // ============================================
     const { data: trainingData } = await supabase
       .from('training_data')
       .select('intent, examples, response')
@@ -63,6 +86,9 @@ export default async function handler(req, res) {
     const systemInstruction = iaConfig.system_instruction || 
       'Eres un asistente de ventas para una tienda online. Responde de manera amable y profesional.';
 
+    // ============================================
+    // 3. PROMPT COMPLETO CON HISTORIAL Y ENTRENAMIENTO
+    // ============================================
     const fullPrompt = `${systemInstruction}
 
 ========================================
@@ -71,15 +97,31 @@ INFORMACIÓN DE ENTRENAMIENTO:
 ${trainingContext || 'No hay información de entrenamiento aún. Usa tu conocimiento general.'}
 
 ========================================
-INSTRUCCIONES:
+HISTORIAL DE CONVERSACIÓN (USA ESTO PARA ENTENDER EL CONTEXTO):
 ========================================
-1. Si el usuario pregunta algo del entrenamiento, responde usando ESA información.
-2. Sé amable, profesional y útil.
-3. Si no sabes algo, sugiere contactar al vendedor.`;
+${conversationHistory || 'No hay historial previo. Esta es la primera interacción.'}
+
+========================================
+INSTRUCCIONES IMPORTANTES:
+========================================
+1. USA el HISTORIAL para entender de qué están hablando.
+2. Si el usuario preguntó por un producto, CONTINÚA hablando de ESE producto.
+3. No cambies de tema abruptamente. Mantén la coherencia.
+4. Responde directamente a la pregunta actual.
+5. Sé amable, profesional y útil.
+6. Si no sabes algo, sugiere contactar al vendedor.
+
+========================================
+MENSAJE ACTUAL DEL USUARIO:
+========================================
+${message}
+
+RESPUESTA DEL ASISTENTE:`;
 
     const model = 'openai/gpt-3.5-turbo';
 
     console.log("🤖 Usando modelo:", model);
+    console.log("📚 Historial:", history?.length || 0, "mensajes");
     console.log("📚 Entrenamiento:", trainingData?.length || 0, "items");
 
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
