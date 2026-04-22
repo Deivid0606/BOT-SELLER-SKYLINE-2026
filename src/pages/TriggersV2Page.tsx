@@ -137,7 +137,12 @@ export default function TriggersV2Page() {
     }
     
     if (data && data.length > 0) {
-      setTriggers(data as Trigger[]);
+      // Convertir template null a "Ninguna" para mostrar en el select
+      const formattedData = data.map(t => ({
+        ...t,
+        template: t.template || "Ninguna"
+      }));
+      setTriggers(formattedData as Trigger[]);
     } else {
       setTriggers([]);
     }
@@ -179,6 +184,8 @@ export default function TriggersV2Page() {
         console.error("Error cargando plantillas:", error);
         return;
       }
+      
+      console.log("📋 Plantillas cargadas:", data?.length || 0);
       
       if (data && data.length > 0) {
         setRealTemplates(data.map(t => t.name));
@@ -260,6 +267,9 @@ export default function TriggersV2Page() {
       return;
     }
     
+    // Determinar el template a guardar (si es "Ninguna" o vacío, guardar null)
+    const templateToSave = !editingTrigger.template || editingTrigger.template === "Ninguna" ? null : editingTrigger.template;
+    
     const payload = {
       id: editingTrigger.id,
       user_id: user.id,
@@ -269,7 +279,7 @@ export default function TriggersV2Page() {
       response: editingTrigger.response,
       delay: editingTrigger.delay || 0,
       send_limit: editingTrigger.send_limit || "",
-      template: editingTrigger.template === "Ninguna" ? null : editingTrigger.template,
+      template: templateToSave,
       no_repeat: editingTrigger.noRepeat,
       active: editingTrigger.active,
       follow_up_enabled: editingTrigger.followUpEnabled,
@@ -509,9 +519,16 @@ export default function TriggersV2Page() {
                             </div>
                             <div>
                               <label className="text-xs text-muted-foreground">Plantilla</label>
-                              <select className={inputClass} value={editingTrigger.template} onChange={e => setEditingTrigger({ ...editingTrigger, template: e.target.value })}>
-                                <option>Ninguna</option>
-                                {realTemplates.map(t => <option key={t}>{t}</option>)}
+                              <select 
+                                className={inputClass} 
+                                value={editingTrigger.template || "Ninguna"} 
+                                onChange={e => setEditingTrigger({ 
+                                  ...editingTrigger, 
+                                  template: e.target.value === "Ninguna" ? null : e.target.value 
+                                })}
+                              >
+                                <option value="Ninguna">Ninguna</option>
+                                {realTemplates.map(t => <option key={t} value={t}>{t}</option>)}
                               </select>
                             </div>
                           </div>
