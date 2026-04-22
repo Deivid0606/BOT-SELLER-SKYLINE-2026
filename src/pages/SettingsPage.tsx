@@ -24,13 +24,16 @@ export default function SettingsPage() {
     api_key: "",
     model: "gemini-1.5-pro",
     system_instruction: "",
-    is_active: true,
+    is_active: false,
+    temperature: 0.7,
+    max_tokens: 2048,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingIA, setSavingIA] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"whatsapp" | "qr" | "ia" | "chat">("whatsapp");
+  const [showApiKey, setShowApiKey] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -58,21 +61,43 @@ export default function SettingsPage() {
       });
 
     // Cargar configuración de IA
-    supabase
-      .from("chat_ia_gemini")
-      .select("*")
-      .eq("user_id", user.id)
-      .single()
-      .then(({ data }) => {
-        if (data) {
-          setIaConfig({
-            api_key: data.api_key || "",
-            model: data.model || "gemini-1.5-pro",
-            system_instruction: data.system_instruction || "",
-            is_active: data.is_active ?? true,
+    const loadIAConfig = async () => {
+      const { data, error } = await supabase
+        .from("chat_ia_gemini")
+        .select("*")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      
+      console.log("📦 Configuración IA cargada:", data ? "SÍ" : "NO");
+      
+      if (data) {
+        setIaConfig({
+          api_key: data.api_key || "",
+          model: data.model || "gemini-1.5-pro",
+          system_instruction: data.system_instruction || "",
+          is_active: data.is_active ?? false,
+          temperature: data.temperature ?? 0.7,
+          max_tokens: data.max_tokens ?? 2048,
+        });
+      } else {
+        // Si no existe, crear un registro vacío
+        const { error: insertError } = await supabase
+          .from("chat_ia_gemini")
+          .insert({
+            user_id: user.id,
+            api_key: "",
+            model: "gemini-1.5-pro",
+            system_instruction: "Eres un asistente de ventas para una tienda online. Responde de manera amable y profesional.",
+            is_active: false,
           });
+        
+        if (insertError) {
+          console.error("Error creando configuración IA:", insertError);
         }
-      });
+      }
+    };
+    
+    loadIAConfig();
   }, [user]);
 
   const handleSave = async () => {
@@ -110,14 +135,32 @@ export default function SettingsPage() {
         model: iaConfig.model,
         system_instruction: iaConfig.system_instruction,
         is_active: iaConfig.is_active,
+        temperature: iaConfig.temperature,
+        max_tokens: iaConfig.max_tokens,
         updated_at: new Date().toISOString(),
-      })
-      .eq("user_id", user.id);
+      });
 
     if (error) {
+      console.error("Error guardando IA:", error);
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } else {
       toast({ title: "✅ IA Guardada", description: "Configuración de IA actualizada correctamente" });
+      // Recargar para confirmar
+      const { data } = await supabase
+        .from("chat_ia_gemini")
+        .select("*")
+        .eq("user_id", user.id)
+        .single();
+      if (data) {
+        setIaConfig({
+          api_key: data.api_key || "",
+          model: data.model || "gemini-1.5-pro",
+          system_instruction: data.system_instruction || "",
+          is_active: data.is_active ?? false,
+          temperature: data.temperature ?? 0.7,
+          max_tokens: data.max_tokens ?? 2048,
+        });
+      }
     }
     setSavingIA(false);
   };
@@ -284,14 +327,25 @@ export default function SettingsPage() {
               
               <div>
                 <label className="text-xs text-muted-foreground">API Key de Gemini</label>
-                <input 
-                  type="password" 
-                  value={iaConfig.api_key}
-                  onChange={(e) => setIaConfig({ ...iaConfig, api_key: e.target.value })}
-                  className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm"
-                  placeholder="AIzaSy..."
-                />
+                <div className="flex gap-2 mt-1">
+                  <input 
+                    type={showApiKey ? "text" : "password"}
+                    value={iaConfig.api_key}
+                    onChange={(e) => setIaConfig({ ...iaConfig, api_key: e.target.value })}
+                    className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm font-mono"
+                    placeholder="AIzaSy..."
+                  />
+                  <button
+                    onClick={() => setShowApiKey(!showApiKey)}
+                    className="px-3 py-2 rounded-lg bg-secondary border border-border text-xs"
+                  >
+                    {showApiKey ? "Ocultar" : "Mostrar"}
+                  </button>
+                </div>
                 <p className="text-[10px] text-muted-foreground mt-1">
+                  {iaConfig.api_key ? "✅ API Key configurada" : "❌ No hay API Key configurada"}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
                   Obtené tu API Key en <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-primary underline">Google AI Studio</a>
                 </p>
               </div>
@@ -321,7 +375,10 @@ export default function SettingsPage() {
               </div>
 
               <div className="flex items-center justify-between">
-                <label className="text-xs text-muted-foreground">Activar IA</label>
+                <div>
+                  <label className="text-xs text-muted-foreground">Activar IA</label>
+                  <p className="text-[10px] text-muted-foreground">Responde automáticamente a los mensajes</p>
+                </div>
                 <button
                   onClick={() => setIaConfig({ ...iaConfig, is_active: !iaConfig.is_active })}
                   className={`relative w-12 h-6 rounded-full transition-colors ${iaConfig.is_active ? "bg-emerald-500" : "bg-muted"}`}
@@ -337,6 +394,23 @@ export default function SettingsPage() {
               >
                 {savingIA ? "Guardando..." : "Guardar configuración de IA"}
               </button>
+
+              {iaConfig.is_active && iaConfig.api_key && (
+                <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-3">
+                  <p className="text-[11px] text-emerald-400 flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    IA activa y configurada correctamente
+                  </p>
+                </div>
+              )}
+
+              {iaConfig.is_active && !iaConfig.api_key && (
+                <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
+                  <p className="text-[11px] text-destructive">
+                    ⚠️ La IA está activa pero no hay API Key configurada. Agrega tu API Key de Gemini.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         )}
