@@ -44,36 +44,36 @@ export default async function handler(req, res) {
       });
     }
 
-    // Usar gemini-1.0-pro (NO gemini-pro)
-    const model = 'gemini-1.0-pro';
-    
     const systemInstruction = iaConfig.system_instruction || 
       'Eres un asistente de ventas para una tienda online. Responde de manera amable y profesional.';
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${iaConfig.api_key}`, {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Authorization': `Bearer ${iaConfig.api_key}`,
+        'Content-Type': 'application/json',
+      },
       body: JSON.stringify({
-        contents: [{
-          parts: [{ text: `${systemInstruction}\n\nUsuario: ${message}\nAsistente:` }]
-        }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 2048,
-        }
+        model: 'google/gemini-1.0-pro',
+        messages: [
+          { role: 'system', content: systemInstruction },
+          { role: 'user', content: message }
+        ],
+        temperature: 0.7,
+        max_tokens: 2048,
       })
     });
 
     const data = await response.json();
 
     if (!response.ok) {
-      console.error('Error Gemini:', data);
+      console.error('Error OpenRouter:', data);
       return res.status(500).json({ 
-        error: data.error?.message || 'Error con la API de Gemini' 
+        error: data.error?.message || 'Error con OpenRouter' 
       });
     }
 
-    const botResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || 
+    const botResponse = data.choices?.[0]?.message?.content || 
       'Lo siento, no pude procesar tu mensaje.';
 
     return res.status(200).json({ response: botResponse });
