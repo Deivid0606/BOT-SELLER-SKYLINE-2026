@@ -108,6 +108,7 @@ export default function TriggersV2Page() {
   const [triggers, setTriggers] = useState<Trigger[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editingTrigger, setEditingTrigger] = useState<Trigger | null>(null);
+  const [saving, setSaving] = useState(false);
 
   // Remarketing state
   const [campaigns, setCampaigns] = useState<RemarketingCampaign[]>([]);
@@ -202,12 +203,15 @@ export default function TriggersV2Page() {
     
     if (error) {
       console.error("Error actualizando trigger:", error);
+      alert("Error al actualizar: " + error.message);
     } else {
       setTriggers(prev => prev.map(t => t.id === id ? { ...t, active: !t.active } : t));
     }
   };
 
   const deleteTrigger = async (id: string) => {
+    if (!confirm("¿Eliminar este disparador?")) return;
+    
     const { error } = await supabase
       .from("triggers")
       .delete()
@@ -216,6 +220,7 @@ export default function TriggersV2Page() {
     
     if (error) {
       console.error("Error eliminando trigger:", error);
+      alert("Error al eliminar: " + error.message);
     } else {
       setTriggers(prev => prev.filter(t => t.id !== id));
       if (expandedId === id) setExpandedId(null);
@@ -235,32 +240,58 @@ export default function TriggersV2Page() {
   };
 
   const saveEdit = async () => {
-    if (!editingTrigger || !user) return;
+    if (!editingTrigger || !user) {
+      alert("No hay datos para guardar");
+      return;
+    }
+    
+    setSaving(true);
+    
+    // Validar campos requeridos
+    if (!editingTrigger.name.trim()) {
+      alert("El nombre del disparador es obligatorio");
+      setSaving(false);
+      return;
+    }
+    
+    if (!editingTrigger.condition.trim()) {
+      alert("La condición (palabra clave) es obligatoria");
+      setSaving(false);
+      return;
+    }
+    
+    const payload = {
+      id: editingTrigger.id,
+      user_id: user.id,
+      name: editingTrigger.name.trim(),
+      type: editingTrigger.type,
+      condition: editingTrigger.condition.trim().toLowerCase(),
+      response: editingTrigger.response,
+      delay: editingTrigger.delay || 0,
+      send_limit: editingTrigger.send_limit || "",
+      template: editingTrigger.template === "Ninguna" ? null : editingTrigger.template,
+      no_repeat: editingTrigger.noRepeat,
+      active: editingTrigger.active,
+      follow_up_enabled: editingTrigger.followUpEnabled,
+      follow_up_minutes: editingTrigger.followUpMinutes,
+      follow_up_message: editingTrigger.followUpMessage,
+      auto_tag: editingTrigger.autoTag || null,
+      updated_at: new Date().toISOString(),
+    };
+    
+    console.log("Guardando trigger:", payload);
     
     const { error } = await supabase
       .from("triggers")
-      .upsert({
-        id: editingTrigger.id,
-        user_id: user.id,
-        name: editingTrigger.name,
-        type: editingTrigger.type,
-        condition: editingTrigger.condition,
-        response: editingTrigger.response,
-        delay: editingTrigger.delay,
-        send_limit: editingTrigger.send_limit,
-        template: editingTrigger.template,
-        no_repeat: editingTrigger.noRepeat,
-        active: editingTrigger.active,
-        follow_up_enabled: editingTrigger.followUpEnabled,
-        follow_up_minutes: editingTrigger.followUpMinutes,
-        follow_up_message: editingTrigger.followUpMessage,
-        auto_tag: editingTrigger.autoTag,
-        updated_at: new Date().toISOString(),
-      });
+      .upsert(payload);
+    
+    setSaving(false);
     
     if (error) {
       console.error("Error guardando trigger:", error);
+      alert("Error al guardar: " + error.message);
     } else {
+      console.log("Trigger guardado correctamente");
       await loadTriggers();
       setExpandedId(null);
       setEditingTrigger(null);
@@ -280,6 +311,7 @@ export default function TriggersV2Page() {
     
     if (error) {
       console.error("Error actualizando campaña:", error);
+      alert("Error al actualizar: " + error.message);
     } else {
       setCampaigns(prev => prev.map(c => c.id === id ? { ...c, active: !c.active } : c));
     }
@@ -321,6 +353,7 @@ export default function TriggersV2Page() {
     
     if (error) {
       console.error("Error guardando campaña:", error);
+      alert("Error al guardar: " + error.message);
     } else {
       await loadCampaigns();
       setExpandedCampaignId(null);
@@ -329,6 +362,8 @@ export default function TriggersV2Page() {
   };
 
   const deleteCampaign = async (id: string) => {
+    if (!confirm("¿Eliminar esta campaña?")) return;
+    
     const { error } = await supabase
       .from("remarketing_campaigns")
       .delete()
@@ -337,6 +372,7 @@ export default function TriggersV2Page() {
     
     if (error) {
       console.error("Error eliminando campaña:", error);
+      alert("Error al eliminar: " + error.message);
     } else {
       setCampaigns(prev => prev.filter(c => c.id !== id));
       if (expandedCampaignId === id) setExpandedCampaignId(null);
@@ -454,12 +490,13 @@ export default function TriggersV2Page() {
                             </div>
                           </div>
                           <div>
-                            <label className="text-xs text-muted-foreground">Condición</label>
-                            <input className={inputClass} placeholder="Condición…" value={editingTrigger.condition} onChange={e => setEditingTrigger({ ...editingTrigger, condition: e.target.value })} />
+                            <label className="text-xs text-muted-foreground">Condición (palabra clave)</label>
+                            <input className={inputClass} placeholder="ej. veneno, precio, envío" value={editingTrigger.condition} onChange={e => setEditingTrigger({ ...editingTrigger, condition: e.target.value })} />
+                            <p className="text-[10px] text-muted-foreground mt-1">Cuando el cliente escriba esta palabra, se activará el disparador</p>
                           </div>
                           <div>
                             <label className="text-xs text-muted-foreground">Acción / Respuesta</label>
-                            <textarea className={`${inputClass} min-h-[80px] resize-y`} placeholder="Mensaje o acción…" value={editingTrigger.response} onChange={e => setEditingTrigger({ ...editingTrigger, response: e.target.value })} />
+                            <textarea className={`${inputClass} min-h-[80px] resize-y`} placeholder="Mensaje que enviará el bot..." value={editingTrigger.response} onChange={e => setEditingTrigger({ ...editingTrigger, response: e.target.value })} />
                           </div>
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div>
@@ -545,7 +582,6 @@ export default function TriggersV2Page() {
                                     <div>
                                       <label className="text-xs text-muted-foreground">Mensaje de seguimiento</label>
                                       <textarea className={`${inputClass} min-h-[80px] resize-y`} placeholder="Escribe el mensaje…" value={editingTrigger.followUpMessage} onChange={e => setEditingTrigger({ ...editingTrigger, followUpMessage: e.target.value })} />
-                                      <p className="text-[10px] text-muted-foreground mt-1">Cada vendedor puede personalizar este mensaje</p>
                                     </div>
                                   </div>
                                 </motion.div>
@@ -559,7 +595,7 @@ export default function TriggersV2Page() {
                               <GitBranch className={`h-5 w-5 shrink-0 ${editingTrigger.secondary.enabled ? "text-cyan-400" : "text-muted-foreground"}`} />
                               <div className="flex-1 min-w-0">
                                 <p className={`text-sm font-medium ${editingTrigger.secondary.enabled ? "text-cyan-400" : "text-foreground"}`}>Disparador secundario</p>
-                                <p className="text-[10px] text-muted-foreground">Si detecta una condición especial (ej. ciudad sin cobertura), envía una respuesta diferente</p>
+                                <p className="text-[10px] text-muted-foreground">Si detecta una condición especial, envía una respuesta diferente</p>
                               </div>
                               <div className={`w-10 h-5 rounded-full transition-colors relative ${editingTrigger.secondary.enabled ? "bg-cyan-500" : "bg-muted"}`}>
                                 <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${editingTrigger.secondary.enabled ? "translate-x-5" : "translate-x-0.5"}`} />
@@ -607,23 +643,13 @@ export default function TriggersV2Page() {
                                           }
                                         })}
                                       />
-                                      {editingTrigger.secondary.conditionValues.length > 0 && (
-                                        <div className="flex flex-wrap gap-1 mt-1.5">
-                                          {editingTrigger.secondary.conditionValues.map((val, i) => (
-                                            <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex items-center gap-1">
-                                              {editingTrigger.secondary.conditionType === "city" ? <MapPin className="h-2.5 w-2.5" /> : null}
-                                              {val}
-                                            </span>
-                                          ))}
-                                        </div>
-                                      )}
                                     </div>
 
                                     <div>
                                       <label className="text-xs text-muted-foreground">Respuesta del secundario</label>
                                       <textarea
                                         className={`${inputClass} min-h-[80px] resize-y`}
-                                        placeholder="Mensaje alternativo cuando se detecta la condición…"
+                                        placeholder="Mensaje alternativo..."
                                         value={editingTrigger.secondary.response}
                                         onChange={e => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, response: e.target.value } })}
                                       />
@@ -640,12 +666,6 @@ export default function TriggersV2Page() {
                                         {realTemplates.map(t => <option key={t}>{t}</option>)}
                                       </select>
                                     </div>
-
-                                    <div className="rounded-lg bg-cyan-500/5 border border-cyan-500/15 p-2.5">
-                                      <p className="text-[10px] text-cyan-400/80 leading-relaxed">
-                                        <strong>Lógica:</strong> Si el mensaje del cliente contiene alguna de las {editingTrigger.secondary.conditionType === "city" ? "ciudades" : "palabras"} listadas → se envía la respuesta secundaria. Si no → se envía la respuesta primaria normal.
-                                      </p>
-                                    </div>
                                   </div>
                                 </motion.div>
                               )}
@@ -653,8 +673,8 @@ export default function TriggersV2Page() {
                           </div>
 
                           <div className="flex gap-2 pt-1">
-                            <button onClick={saveEdit} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors">
-                              <Plus className="h-4 w-4" /> Guardar
+                            <button onClick={saveEdit} disabled={saving} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50">
+                              <Plus className="h-4 w-4" /> {saving ? "Guardando..." : "Guardar"}
                             </button>
                             <button onClick={() => deleteTrigger(trigger.id)} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-destructive/10 text-destructive text-sm border border-destructive/20 hover:bg-destructive/20 transition-colors">
                               <Trash2 className="h-4 w-4" /> Eliminar
@@ -845,9 +865,6 @@ export default function TriggersV2Page() {
                                             );
                                           })}
                                         </div>
-                                        {editingCampaign.scheduleDays.length === 0 && (
-                                          <p className="text-[10px] text-destructive mt-1">Selecciona al menos un día</p>
-                                        )}
                                       </div>
 
                                       <div className="flex items-center gap-3">
