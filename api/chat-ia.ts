@@ -47,8 +47,8 @@ export default async function handler(req, res) {
     const systemInstruction = iaConfig.system_instruction || 
       'Eres un asistente de ventas para una tienda online. Responde de manera amable y profesional.';
 
-    // Modelos disponibles en OpenRouter
-    const model = 'google/gemini-1.5-flash'; // Cambiado a 1.5-flash
+    // Usar GPT-3.5 Turbo (funciona siempre en OpenRouter)
+    const model = 'openai/gpt-3.5-turbo';
 
     console.log("🤖 Usando modelo:", model);
 
