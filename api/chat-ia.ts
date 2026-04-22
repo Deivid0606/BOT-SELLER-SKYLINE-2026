@@ -16,6 +16,8 @@ export default async function handler(req, res) {
   try {
     const { user_id, message, from_number } = req.body;
 
+    console.log("📨 Chat IA - user_id:", user_id, "from_number:", from_number, "msg:", message?.substring(0, 30));
+
     if (!user_id || !message) {
       return res.status(400).json({ error: 'Faltan user_id o message' });
     }
@@ -45,27 +47,27 @@ export default async function handler(req, res) {
     }
 
     // ============================================
-    // 1. OBTENER HISTORIAL DE CONVERSACIÓN (últimos 15 mensajes)
+    // OBTENER HISTORIAL DE CONVERSACIÓN para este número
     // ============================================
     const { data: history } = await supabase
       .from('received_messages')
-      .select('message, message_type, from_number, created_at')
-      .eq('from_number', from_number || 'chat_web')
+      .select('message, from_number, created_at')
+      .eq('from_number', from_number)
       .order('created_at', { ascending: true })
-      .limit(20);
+      .limit(15);
 
-    // Construir el historial de conversación
     let conversationHistory = '';
     if (history && history.length > 0) {
       conversationHistory = history.map(msg => {
-        const isUser = msg.from_number === (from_number || 'chat_web');
+        const isUser = msg.from_number === from_number;
         const sender = isUser ? 'Usuario' : 'Asistente';
         return `${sender}: ${msg.message}`;
       }).join('\n');
+      console.log("📚 Historial cargado:", history.length, "mensajes");
     }
 
     // ============================================
-    // 2. OBTENER DATOS DE ENTRENAMIENTO
+    // OBTENER DATOS DE ENTRENAMIENTO
     // ============================================
     const { data: trainingData } = await supabase
       .from('training_data')
@@ -76,10 +78,7 @@ export default async function handler(req, res) {
     let trainingContext = '';
     if (trainingData && trainingData.length > 0) {
       trainingContext = trainingData.map(item => {
-        const examplesText = item.examples && item.examples.length > 0 
-          ? `Frases de ejemplo: "${item.examples.join('", "')}"` 
-          : '';
-        return `## ${item.intent}\n${examplesText}\nRespuesta: ${item.response}`;
+        return `## ${item.intent}\nRespuesta: ${item.response}`;
       }).join('\n\n');
     }
 
@@ -87,17 +86,17 @@ export default async function handler(req, res) {
       'Eres un asistente de ventas para una tienda online. Responde de manera amable y profesional.';
 
     // ============================================
-    // 3. PROMPT COMPLETO CON HISTORIAL Y ENTRENAMIENTO
+    // PROMPT COMPLETO CON HISTORIAL
     // ============================================
     const fullPrompt = `${systemInstruction}
 
 ========================================
 INFORMACIÓN DE ENTRENAMIENTO:
 ========================================
-${trainingContext || 'No hay información de entrenamiento aún. Usa tu conocimiento general.'}
+${trainingContext || 'No hay información de entrenamiento aún.'}
 
 ========================================
-HISTORIAL DE CONVERSACIÓN (USA ESTO PARA ENTENDER EL CONTEXTO):
+HISTORIAL DE CONVERSACIÓN (USA ESTO PARA NO PERDER EL CONTEXTO):
 ========================================
 ${conversationHistory || 'No hay historial previo. Esta es la primera interacción.'}
 
@@ -107,9 +106,8 @@ INSTRUCCIONES IMPORTANTES:
 1. USA el HISTORIAL para entender de qué están hablando.
 2. Si el usuario preguntó por un producto, CONTINÚA hablando de ESE producto.
 3. No cambies de tema abruptamente. Mantén la coherencia.
-4. Responde directamente a la pregunta actual.
-5. Sé amable, profesional y útil.
-6. Si no sabes algo, sugiere contactar al vendedor.
+4. Si el usuario ya dio su nombre, dirección o teléfono, USA esos datos.
+5. Responde directamente a la pregunta actual.
 
 ========================================
 MENSAJE ACTUAL DEL USUARIO:
@@ -119,10 +117,6 @@ ${message}
 RESPUESTA DEL ASISTENTE:`;
 
     const model = 'openai/gpt-3.5-turbo';
-
-    console.log("🤖 Usando modelo:", model);
-    console.log("📚 Historial:", history?.length || 0, "mensajes");
-    console.log("📚 Entrenamiento:", trainingData?.length || 0, "items");
 
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
