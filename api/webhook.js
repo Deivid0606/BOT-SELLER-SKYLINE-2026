@@ -1,58 +1,110 @@
 import { createClient } from '@supabase/supabase-js';
 
-// Configuración de Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// TOKEN de verificación
 const VERIFY_TOKEN = 'miTokenSeguro2026';
+
+// ============================================
+// FUNCIÓN: Obtener respuesta de IA
+// ============================================
+async function getAIResponse(userId, message, fromNumber) {
+  try {
+    const apiUrl = `${process.env.NEXT_PUBLIC_VERCEL_URL || 'https://bot-seller-skyline-2026.vercel.app'}/api/chat-ia`;
+    
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, message, from_number: fromNumber })
+    });
+    
+    const data = await response.json();
+    if (data.response) {
+      return data.response;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error obteniendo respuesta IA:', error);
+    return null;
+  }
+}
+
+// ============================================
+// FUNCIÓN: Enviar mensaje por WhatsApp
+// ============================================
+async function sendWhatsAppMessage(userId, to, message) {
+  try {
+    const { data: config } = await supabase
+      .from('whatsapp_config')
+      .select('phone_number_id, permanent_token')
+      .eq('user_id', userId)
+      .single();
+
+    if (!config) return null;
+
+    const response = await fetch(
+      `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.permanent_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to: to,
+          type: 'text',
+          text: { body: message },
+        }),
+      }
+    );
+
+    const result = await response.json();
+    
+    if (response.ok) {
+      await supabase.from('received_messages').insert({
+        user_id: userId,
+        platform: 'whatsapp',
+        from_number: to,
+        message: message,
+        message_type: 'out_text',
+        is_processed: true,
+      });
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Error enviando mensaje:', error);
+    return null;
+  }
+}
 
 // ============================================
 // FUNCIÓN: Descargar multimedia y subir a Supabase Storage
 // ============================================
-async function downloadAndUploadMedia(mediaId, phoneNumberId, token, userId) {
+async function downloadAndUploadMedia(mediaId, token) {
   try {
-    console.log(`📥 Descargando media ID: ${mediaId}`);
+    const mediaUrlResponse = await fetch(`https://graph.facebook.com/v22.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
     
-    // 1. Obtener URL del media de Meta
-    const mediaUrlResponse = await fetch(
-      `https://graph.facebook.com/v22.0/${mediaId}`,
-      {
-        headers: { Authorization: `Bearer ${token}` }
-      }
-    );
-    
-    if (!mediaUrlResponse.ok) {
-      console.error("Error obteniendo URL del media:", await mediaUrlResponse.text());
-      return null;
-    }
+    if (!mediaUrlResponse.ok) return null;
     
     const mediaData = await mediaUrlResponse.json();
+    if (!mediaData.url) return null;
     
-    if (!mediaData.url) {
-      console.error("No se obtuvo URL del media:", mediaData);
-      return null;
-    }
-    
-    console.log(`📎 URL del media: ${mediaData.url}`);
-    
-    // 2. Descargar el archivo
     const fileResponse = await fetch(mediaData.url, {
       headers: { Authorization: `Bearer ${token}` }
     });
     
-    if (!fileResponse.ok) {
-      console.error("Error descargando archivo:", await fileResponse.text());
-      return null;
-    }
+    if (!fileResponse.ok) return null;
     
     const fileBuffer = await fileResponse.arrayBuffer();
     
-    // 3. Detectar tipo de archivo
-    let fileExt = 'bin';
     let mediaType = 'document';
-    let mimeType = mediaData.mime_type || 'application/octet-stream';
+    let fileExt = 'bin';
+    const mimeType = mediaData.mime_type || 'application/octet-stream';
     
     if (mimeType.includes('image')) {
       mediaType = 'image';
@@ -65,34 +117,21 @@ async function downloadAndUploadMedia(mediaId, phoneNumberId, token, userId) {
       fileExt = mimeType.split('/')[1] || 'mp3';
     }
     
-    // 4. Generar nombre de archivo único
-    const fileName = `${userId || 'unknown'}/${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
-    const filePath = `incoming/${fileName}`;
+    const fileName = `incoming/${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
     
-    // 5. Subir a Supabase Storage
-    const { error: uploadError, data: uploadData } = await supabase.storage
+    const { error: uploadError } = await supabase.storage
       .from('templates-media')
-      .upload(filePath, Buffer.from(fileBuffer), {
-        contentType: mimeType,
-        cacheControl: '3600',
-      });
+      .upload(fileName, Buffer.from(fileBuffer), { contentType: mimeType });
     
-    if (uploadError) {
-      console.error("Error subiendo a Storage:", uploadError);
-      return null;
-    }
+    if (uploadError) return null;
     
-    // 6. Obtener URL pública
     const { data: { publicUrl } } = supabase.storage
       .from('templates-media')
-      .getPublicUrl(filePath);
+      .getPublicUrl(fileName);
     
-    console.log(`✅ Multimedia guardada: ${publicUrl} (tipo: ${mediaType})`);
-    
-    return { url: publicUrl, type: mediaType, mimeType };
-    
+    return { url: publicUrl, type: mediaType };
   } catch (error) {
-    console.error("Error en downloadAndUploadMedia:", error);
+    console.error('Error en downloadAndUploadMedia:', error);
     return null;
   }
 }
@@ -100,104 +139,76 @@ async function downloadAndUploadMedia(mediaId, phoneNumberId, token, userId) {
 // ============================================
 // FUNCIÓN: Procesar mensaje entrante
 // ============================================
-async function procesarMensaje(message, phoneNumberId, token) {
+async function procesarMensaje(message, token, userId, fromNumber) {
   try {
-    const from = message.from;
     const type = message.type;
-    const timestamp = message.timestamp;
-    
     let contenido = '';
     let mediaUrl = null;
     let mediaType = null;
     let mediaId = null;
     
-    // Extraer media ID según el tipo
     if (type === 'text') {
       contenido = message.text.body;
-    } 
-    else if (type === 'image') {
+    } else if (type === 'image') {
       mediaId = message.image.id;
       contenido = '[Imagen]';
-    } 
-    else if (type === 'video') {
+    } else if (type === 'video') {
       mediaId = message.video.id;
       contenido = '[Video]';
-    } 
-    else if (type === 'audio') {
+    } else if (type === 'audio') {
       mediaId = message.audio.id;
       contenido = '[Audio]';
-    } 
-    else if (type === 'document') {
-      mediaId = message.document.id;
-      contenido = `[Documento: ${message.document.filename || 'archivo'}]`;
-    } 
-    else if (type === 'location') {
-      contenido = `[Ubicación: ${message.location.latitude}, ${message.location.longitude}]`;
-    } 
-    else if (type === 'sticker') {
-      contenido = '[Sticker]';
-    } 
-    else if (type === 'reaction') {
-      contenido = `[Reacción: ${message.reaction.emoji}]`;
-    }
-    else {
+    } else {
       contenido = '[Mensaje no soportado]';
     }
     
-    console.log(`💬 Mensaje de ${from}: ${contenido.substring(0, 100)}`);
-    
-    // Si tiene multimedia, descargar y subir a Storage
     if (mediaId) {
-      console.log(`📥 Procesando multimedia ID: ${mediaId}`);
-      const mediaResult = await downloadAndUploadMedia(mediaId, phoneNumberId, token, null);
+      const mediaResult = await downloadAndUploadMedia(mediaId, token);
       if (mediaResult) {
         mediaUrl = mediaResult.url;
         mediaType = mediaResult.type;
-        console.log(`✅ Multimedia guardada: ${mediaUrl} (${mediaType})`);
-      } else {
-        console.log(`⚠️ No se pudo procesar la multimedia ID: ${mediaId}`);
       }
     }
     
-    // Guardar en Supabase
-    const { data, error } = await supabase
-      .from('received_messages')
-      .insert({
-        user_id: null,
-        platform: 'whatsapp',
-        from_number: from,
-        message: contenido,
-        message_type: type,
-        media_url: mediaUrl,
-        media_type: mediaType,
-        is_processed: false,
-        created_at: new Date(timestamp ? timestamp * 1000 : new Date())
-      })
-      .select();
+    await supabase.from('received_messages').insert({
+      user_id: userId,
+      platform: 'whatsapp',
+      from_number: fromNumber,
+      message: contenido,
+      message_type: type,
+      media_url: mediaUrl,
+      media_type: mediaType,
+      is_processed: false,
+    });
     
-    if (error) {
-      console.error('❌ Error guardando en Supabase:', error);
-    } else {
-      console.log('✅ Mensaje guardado en DB con ID:', data?.[0]?.id);
+    // Responder con IA solo si es mensaje de texto
+    if (type === 'text' && contenido.trim()) {
+      const { data: iaConfig } = await supabase
+        .from('chat_ia_gemini')
+        .select('is_active')
+        .eq('user_id', userId)
+        .single();
+      
+      if (iaConfig?.is_active) {
+        const { data: waConfig } = await supabase
+          .from('whatsapp_config')
+          .select('bot_response_delay_seconds')
+          .eq('user_id', userId)
+          .single();
+        
+        const delay = waConfig?.bot_response_delay_seconds || 30;
+        
+        setTimeout(async () => {
+          const aiResponse = await getAIResponse(userId, contenido, fromNumber);
+          if (aiResponse) {
+            await sendWhatsAppMessage(userId, fromNumber, aiResponse);
+          }
+        }, delay * 1000);
+      }
     }
     
-    return { success: true, mediaUrl, mediaType };
-    
   } catch (err) {
-    console.error('❌ Error procesando mensaje:', err);
-    return { success: false, error: err.message };
-  }
-}
-
-// ============================================
-// FUNCIÓN: Procesar estado de mensaje
-// ============================================
-async function procesarEstado(status) {
-  try {
-    console.log(`📊 Estado actualizado: ${status.status} - ID: ${status.id}`);
-    // Aquí puedes actualizar el estado en tu tabla de mensajes enviados si la tienes
-  } catch (err) {
-    console.error('Error procesando estado:', err);
+    console.error('Error procesando mensaje:', err);
   }
 }
 
@@ -205,99 +216,63 @@ async function procesarEstado(status) {
 // HANDLER PRINCIPAL
 // ============================================
 export default async function handler(req, res) {
-  // Configurar CORS
   res.setHeader('Access-Control-Allow-Credentials', true);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
-  console.log(`📨 ${req.method} ${req.url}`);
-
-  // ============================================
-  // VERIFICACIÓN GET (Handshake con Meta)
-  // ============================================
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
 
-    console.log(`🔑 Verificando - Mode: ${mode}, Token: ${token}`);
-
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-      console.log('✅ Webhook verificado exitosamente!');
       return res.status(200).send(challenge);
-    } else {
-      console.log('❌ Token inválido o modo incorrecto');
-      return res.status(403).send('Token de verificación inválido');
     }
+    return res.status(403).send('Token inválido');
   }
 
-  // ============================================
-  // RECEPCIÓN DE MENSAJES POST
-  // ============================================
   if (req.method === 'POST') {
     try {
       const body = req.body;
-      console.log('📩 Webhook POST recibido');
-
+      
       if (body.object === 'whatsapp_business_account') {
-        const entries = body.entry || [];
+        let userId = null;
+        let token = null;
         
-        // Obtener phone_number_id y token de la configuración
-        // Nota: Esto es un ejemplo, deberías obtenerlo según tu lógica de negocio
-        let phoneNumberId = null;
-        let permanentToken = null;
+        // Obtener configuración del usuario
+        const { data: config } = await supabase
+          .from('whatsapp_config')
+          .select('user_id, permanent_token')
+          .limit(1)
+          .single();
         
-        // Intentar obtener la configuración de Supabase
-        try {
-          const { data: config } = await supabase
-            .from('whatsapp_config')
-            .select('phone_number_id, permanent_token')
-            .limit(1)
-            .single();
-          
-          if (config) {
-            phoneNumberId = config.phone_number_id;
-            permanentToken = config.permanent_token;
-          }
-        } catch (err) {
-          console.log('No se pudo obtener configuración de Supabase:', err.message);
+        if (config) {
+          userId = config.user_id;
+          token = config.permanent_token;
         }
         
-        for (const entry of entries) {
-          const changes = entry.changes || [];
-          
-          for (const change of changes) {
+        for (const entry of body.entry || []) {
+          for (const change of entry.changes || []) {
             const value = change.value;
             
-            // Procesar mensajes entrantes
-            if (value.messages && value.messages.length > 0) {
+            if (value.messages) {
               for (const message of value.messages) {
-                await procesarMensaje(message, phoneNumberId, permanentToken);
-              }
-            }
-            
-            // Procesar estados de mensajes (entregado, leído)
-            if (value.statuses && value.statuses.length > 0) {
-              for (const status of value.statuses) {
-                await procesarEstado(status);
+                const fromNumber = message.from;
+                await procesarMensaje(message, token, userId, fromNumber);
               }
             }
           }
         }
         
         return res.status(200).send('EVENT_RECEIVED');
-      } else {
-        console.log('⚠️ Evento no es de WhatsApp Business');
-        return res.status(404).send('Not a WhatsApp event');
       }
+      return res.status(404).send('Not WhatsApp event');
     } catch (error) {
-      console.error('❌ Error procesando webhook:', error);
-      return res.status(500).json({ error: 'Internal Server Error', details: error.message });
+      console.error('Error:', error);
+      return res.status(500).json({ error: 'Internal Server Error' });
     }
   }
 
