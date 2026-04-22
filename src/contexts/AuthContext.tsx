@@ -8,6 +8,7 @@ type AuthContextType = {
   role: "admin" | "seller" | "pending" | "banned" | null;
   loading: boolean;
   signOut: () => Promise<void>;
+  refreshSession: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType>({
@@ -16,6 +17,7 @@ const AuthContext = createContext<AuthContextType>({
   role: null,
   loading: true,
   signOut: async () => {},
+  refreshSession: async () => {},
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -52,6 +54,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       console.error("❌ Exception fetching role:", err);
       setRole("pending");
+    }
+  };
+
+  const refreshSession = async () => {
+    console.log("🔄 Refrescando sesión...");
+    try {
+      const { data, error } = await supabase.auth.refreshSession();
+      if (error) {
+        console.error("❌ Error refrescando sesión:", error);
+        return;
+      }
+      if (data.session) {
+        setSession(data.session);
+        setUser(data.session.user);
+        if (data.session.user) {
+          await fetchRole(data.session.user.id);
+        }
+        console.log("✅ Sesión refrescada correctamente");
+      }
+    } catch (err) {
+      console.error("❌ Exception refrescando sesión:", err);
     }
   };
 
@@ -100,9 +123,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setLoading(false);
       });
 
+    // Refrescar token cada 25 minutos (evita expiración)
+    const interval = setInterval(() => {
+      if (user) {
+        refreshSession();
+      }
+    }, 25 * 60 * 1000);
+
     return () => {
       console.log("🔚 AuthProvider unmounting");
       clearTimeout(timeoutId);
+      clearInterval(interval);
       subscription.unsubscribe();
     };
   }, []);
@@ -118,16 +149,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setSession(null);
     setLoading(false);
     
-    localStorage.removeItem('supabase.auth.token');
+    // Limpiar todo el almacenamiento
+    localStorage.clear();
     sessionStorage.clear();
     
-    window.location.href = '/login';
+    // Limpiar caché del navegador para páginas de auth
+    if ('caches' in window) {
+      try {
+        const cacheNames = await caches.keys();
+        await Promise.all(cacheNames.map(name => caches.delete(name)));
+      } catch (e) {
+        console.log("No se pudo limpiar caché");
+      }
+    }
+    
+    window.location.href = '/auth';
   };
 
   console.log("📌 Current state - role:", role, "loading:", loading);
 
   return (
-    <AuthContext.Provider value={{ user, session, role, loading, signOut }}>
+    <AuthContext.Provider value={{ user, session, role, loading, signOut, refreshSession }}>
       {children}
     </AuthContext.Provider>
   );
