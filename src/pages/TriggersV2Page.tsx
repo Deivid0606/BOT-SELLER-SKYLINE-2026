@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Trash2, ShieldCheck, Power, Clock, MessageSquare, ChevronDown, ChevronUp, Megaphone, Tags, FileText, CalendarDays, Timer, GitBranch, MapPin, BarChart3, Settings2 } from "lucide-react";
 import RemarketingStats from "@/components/RemarketingStats";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
 
 const DAYS_OF_WEEK = [
   { key: "lun", label: "Lun" },
@@ -62,8 +64,6 @@ const mockTags = [
   { name: "cancelado", color: "#EF4444" },
 ];
 
-const mockTemplates = ["BIENVENIDA", "CATALOGO", "SEGUIMIENTO", "CONFIRMACION", "PAGO"];
-
 const defaultSecondary: SecondaryTrigger = {
   enabled: false,
   conditionType: "city",
@@ -95,7 +95,7 @@ const defaultCampaign: Omit<RemarketingCampaign, "id"> = {
   tags: [],
   messageType: "custom",
   customMessage: "",
-  selectedTemplate: mockTemplates[0],
+  selectedTemplate: "",
   intervalDays: 4,
   scheduleType: "always",
   scheduleDays: ["lun", "mar", "mie", "jue", "vie"],
@@ -104,6 +104,7 @@ const defaultCampaign: Omit<RemarketingCampaign, "id"> = {
 };
 
 export default function TriggersV2Page() {
+  const { user } = useAuth();
   const [triggers, setTriggers] = useState<Trigger[]>([
     { ...defaultTrigger, id: "1", name: "Bienvenida", type: "Primera interacción", active: true },
     { ...defaultTrigger, id: "2", name: "Seguimiento oferta", type: "Tiempo sin respuesta", active: false, followUpEnabled: true, followUpMinutes: 20 },
@@ -121,6 +122,34 @@ export default function TriggersV2Page() {
   // Active tab
   const [activeTab, setActiveTab] = useState<"triggers" | "remarketing">("triggers");
   const [remarketingSubTab, setRemarketingSubTab] = useState<"campaigns" | "stats">("campaigns");
+
+  // Plantillas reales desde Supabase
+  const [realTemplates, setRealTemplates] = useState<string[]>([]);
+
+  // Cargar plantillas reales
+  useEffect(() => {
+    const loadTemplates = async () => {
+      if (!user) return;
+      const { data, error } = await supabase
+        .from("templates")
+        .select("name")
+        .eq("user_id", user.id)
+        .eq("is_active", true)
+        .order("created_at", { ascending: false });
+      
+      if (error) {
+        console.error("Error cargando plantillas:", error);
+        return;
+      }
+      
+      if (data && data.length > 0) {
+        setRealTemplates(data.map(t => t.name));
+      } else {
+        setRealTemplates([]);
+      }
+    };
+    loadTemplates();
+  }, [user]);
 
   const toggleActive = (id: string) => {
     setTriggers(prev => prev.map(t => t.id === id ? { ...t, active: !t.active } : t));
@@ -310,7 +339,7 @@ export default function TriggersV2Page() {
                               <label className="text-xs text-muted-foreground">Plantilla</label>
                               <select className={inputClass} value={editingTrigger.template} onChange={e => setEditingTrigger({ ...editingTrigger, template: e.target.value })}>
                                 <option>Ninguna</option>
-                                {mockTemplates.map(t => <option key={t}>{t}</option>)}
+                                {realTemplates.map(t => <option key={t}>{t}</option>)}
                               </select>
                             </div>
                           </div>
@@ -477,7 +506,7 @@ export default function TriggersV2Page() {
                                         onChange={e => setEditingTrigger({ ...editingTrigger, secondary: { ...editingTrigger.secondary, template: e.target.value } })}
                                       >
                                         <option>Ninguna</option>
-                                        {mockTemplates.map(t => <option key={t}>{t}</option>)}
+                                        {realTemplates.map(t => <option key={t}>{t}</option>)}
                                       </select>
                                     </div>
 
@@ -765,7 +794,8 @@ export default function TriggersV2Page() {
                                   value={editingCampaign.selectedTemplate}
                                   onChange={e => setEditingCampaign({ ...editingCampaign, selectedTemplate: e.target.value })}
                                 >
-                                  {mockTemplates.map(t => <option key={t}>{t}</option>)}
+                                  <option value="">Seleccionar plantilla</option>
+                                  {realTemplates.map(t => <option key={t}>{t}</option>)}
                                 </select>
                               </motion.div>
                             )}
