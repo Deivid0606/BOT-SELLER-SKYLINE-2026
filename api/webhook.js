@@ -7,7 +7,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const VERIFY_TOKEN = 'miTokenSeguro2026';
 
 // ============================================
-// FUNCIÓN: Obtener respuesta de IA (con número de teléfono para historial)
+// FUNCIÓN: Obtener respuesta de IA
 // ============================================
 async function getAIResponse(userId, message, fromNumber) {
   try {
@@ -19,15 +19,12 @@ async function getAIResponse(userId, message, fromNumber) {
       body: JSON.stringify({ 
         user_id: userId, 
         message, 
-        from_number: fromNumber  // ← Clave para el historial
+        from_number: fromNumber
       })
     });
     
     const data = await response.json();
-    if (data.response) {
-      return data.response;
-    }
-    return null;
+    return data.response || null;
   } catch (error) {
     console.error('Error obteniendo respuesta IA:', error);
     return null;
@@ -104,7 +101,7 @@ async function procesarDisparadores(userId, fromNumber, message) {
       const condition = trigger.condition?.toLowerCase();
       
       if (condition && messageLower.includes(condition)) {
-        console.log(`🎯 Disparador encontrado: ${trigger.name} (${condition})`);
+        console.log(`🎯 Disparador encontrado: ${trigger.name}`);
         
         let responseText = trigger.response;
         
@@ -227,6 +224,7 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       }
     }
     
+    // Guardar mensaje con el from_number correcto
     await supabase.from('received_messages').insert({
       user_id: userId,
       platform: 'whatsapp',
@@ -238,6 +236,8 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       is_processed: false,
       created_at: now,
     });
+    
+    console.log(`📝 Mensaje guardado de ${fromNumber}: ${contenido.substring(0, 50)}`);
     
     if (type === 'text' && contenido.trim()) {
       // 1. PRIMERO: Procesar disparadores
@@ -258,11 +258,14 @@ async function procesarMensaje(message, token, userId, fromNumber) {
             .eq('user_id', userId)
             .single();
           
-          const delay = waConfig?.bot_response_delay_seconds || 30;
+          const delay = waConfig?.bot_response_delay_seconds || 5; // 5 segundos para pruebas
+          
+          console.log(`🤖 IA activa, respondiendo en ${delay}s a ${fromNumber}`);
           
           setTimeout(async () => {
             const aiResponse = await getAIResponse(userId, contenido, fromNumber);
             if (aiResponse) {
+              console.log(`💬 IA responde a ${fromNumber}: ${aiResponse.substring(0, 50)}`);
               await sendWhatsAppMessage(userId, fromNumber, aiResponse);
             }
           }, delay * 1000);
@@ -302,18 +305,19 @@ export default async function handler(req, res) {
       const body = req.body;
       
       if (body.object === 'whatsapp_business_account') {
-        let userId = null;
-        let token = null;
-        
+        // Obtener el user_id y token de la configuración
         const { data: config } = await supabase
           .from('whatsapp_config')
           .select('user_id, permanent_token')
           .limit(1)
           .single();
         
-        if (config) {
-          userId = config.user_id;
-          token = config.permanent_token;
+        const userId = config?.user_id;
+        const token = config?.permanent_token;
+        
+        if (!userId) {
+          console.error('❌ No se encontró user_id en whatsapp_config');
+          return res.status(500).json({ error: 'Configuración no encontrada' });
         }
         
         for (const entry of body.entry || []) {
