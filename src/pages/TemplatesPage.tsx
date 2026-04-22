@@ -86,7 +86,17 @@ export default function TemplatesPage() {
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     const remaining = 3 - images.length;
-    const toAdd = files.slice(0, remaining).map((file) => ({
+    
+    // Validar tamaño máximo (5MB por imagen)
+    const validFiles = files.filter(file => {
+      if (file.size > 5 * 1024 * 1024) {
+        toast({ title: "Archivo muy grande", description: `${file.name} excede 5MB`, variant: "destructive" });
+        return false;
+      }
+      return true;
+    });
+    
+    const toAdd = validFiles.slice(0, remaining).map((file) => ({
       file,
       preview: URL.createObjectURL(file),
       type: "image" as const,
@@ -99,6 +109,12 @@ export default function TemplatesPage() {
   const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      // Validar tamaño máximo (16MB para video)
+      if (file.size > 16 * 1024 * 1024) {
+        toast({ title: "Video muy grande", description: "El video no puede superar 16MB", variant: "destructive" });
+        e.target.value = "";
+        return;
+      }
       setVideo({ file, preview: URL.createObjectURL(file), type: "video", mediaType: file.type });
     }
     e.target.value = "";
@@ -107,6 +123,11 @@ export default function TemplatesPage() {
   const handleGifUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        toast({ title: "GIF muy grande", description: "El GIF no puede superar 5MB", variant: "destructive" });
+        e.target.value = "";
+        return;
+      }
       setGif({ file, preview: URL.createObjectURL(file), type: "gif", mediaType: file.type });
     }
     e.target.value = "";
@@ -156,54 +177,54 @@ export default function TemplatesPage() {
     loadTemplates();
   }, [user]);
 
+  // ========== GUARDAR PLANTILLA (CORREGIDO) ==========
   const handleSaveTemplate = async () => {
     if (!user) {
-      toast({
-        title: "Debes iniciar sesión",
-        variant: "destructive",
-      });
+      toast({ title: "Debes iniciar sesión", variant: "destructive" });
       return;
     }
 
     if (!templateName.trim()) {
-      toast({
-        title: "Falta nombre",
-        description: "Escribe un nombre para la plantilla",
-        variant: "destructive",
-      });
+      toast({ title: "Falta nombre", description: "Escribe un nombre para la plantilla", variant: "destructive" });
       return;
     }
 
     setSaving(true);
 
-    let mediaUrl = null;
-    let mediaType = null;
-    let mediaFileName = null;
+    const uploadedImageUrls: string[] = [];
+    let videoUrl = null;
+    let gifUrl = null;
 
-    // Subir imagen principal (la primera imagen)
-    if (images.length > 0) {
-      mediaUrl = await uploadFile(images[0].file, 'images');
-      mediaType = 'image';
-      mediaFileName = images[0].file.name;
+    // Subir TODAS las imágenes
+    for (const image of images) {
+      const url = await uploadFile(image.file, 'images');
+      if (url) {
+        uploadedImageUrls.push(url);
+      }
     }
+
     // Subir video
-    else if (video) {
-      mediaUrl = await uploadFile(video.file, 'videos');
-      mediaType = 'video';
-      mediaFileName = video.file.name;
+    if (video) {
+      videoUrl = await uploadFile(video.file, 'videos');
     }
-    // Subir gif
-    else if (gif) {
-      mediaUrl = await uploadFile(gif.file, 'gifs');
-      mediaType = 'gif';
-      mediaFileName = gif.file.name;
+
+    // Subir GIF
+    if (gif) {
+      gifUrl = await uploadFile(gif.file, 'gifs');
     }
+
+    // Guardar la primera imagen como principal (para compatibilidad)
+    const mainMediaUrl = uploadedImageUrls.length > 0 ? uploadedImageUrls[0] : (videoUrl || gifUrl);
+    const mainMediaType = uploadedImageUrls.length > 0 ? 'image' : (video ? 'video' : (gif ? 'gif' : null));
 
     const variables = {
       media: {
         imageCount: images.length,
         hasVideo: !!video,
         hasGif: !!gif,
+        imageUrls: uploadedImageUrls,
+        videoUrl: videoUrl,
+        gifUrl: gifUrl,
       },
     };
 
@@ -216,9 +237,9 @@ export default function TemplatesPage() {
       platform: "whatsapp",
       is_active: true,
       updated_at: new Date().toISOString(),
-      media_url: mediaUrl,
-      media_type: mediaType,
-      media_file_name: mediaFileName,
+      media_url: mainMediaUrl,
+      media_type: mainMediaType,
+      media_file_name: images.length > 0 ? images[0]?.file.name : (video?.file.name || gif?.file.name),
     };
 
     let error = null;
@@ -240,21 +261,12 @@ export default function TemplatesPage() {
 
     if (error) {
       console.error("Error guardando plantilla:", error);
-      toast({
-        title: "Error",
-        description: error.message || "No se pudo guardar la plantilla",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: error.message || "No se pudo guardar la plantilla", variant: "destructive" });
       setSaving(false);
       return;
     }
 
-    toast({
-      title: "✅ Guardado",
-      description: templateId
-        ? "Plantilla actualizada correctamente"
-        : "Plantilla guardada correctamente",
-    });
+    toast({ title: "✅ Guardado", description: templateId ? "Plantilla actualizada correctamente" : "Plantilla guardada correctamente" });
 
     await loadTemplates();
     resetEditor();
@@ -298,13 +310,59 @@ export default function TemplatesPage() {
     await loadTemplates();
   };
 
+  // ========== SELECCIONAR PLANTILLA (CORREGIDO) ==========
   const handleSelectSavedTemplate = (tpl: SavedTemplate) => {
     setTemplateId(tpl.id);
     setTemplateName(tpl.name || "");
     setTemplateMessage(tpl.content || "");
-    setImages([]);
-    setVideo(null);
-    setGif(null);
+    
+    // Cargar múltiples imágenes desde variables
+    const savedImageUrls = tpl.variables?.media?.imageUrls || [];
+    if (savedImageUrls.length > 0) {
+      const loadedImages: MediaFile[] = savedImageUrls.map((url: string, index: number) => ({
+        file: new File([], `imagen_${index}.jpg`),
+        preview: url,
+        type: "image",
+        mediaType: "image/png",
+      }));
+      setImages(loadedImages);
+    } else if (tpl.media_url && tpl.media_type === 'image') {
+      setImages([{
+        file: new File([], tpl.media_file_name || 'imagen.jpg'),
+        preview: tpl.media_url,
+        type: "image",
+        mediaType: "image/png",
+      }]);
+    } else {
+      setImages([]);
+    }
+    
+    // Cargar video desde variables
+    const savedVideoUrl = tpl.variables?.media?.videoUrl;
+    if (savedVideoUrl) {
+      setVideo({
+        file: new File([], 'video.mp4'),
+        preview: savedVideoUrl,
+        type: "video",
+        mediaType: "video/mp4",
+      });
+    } else {
+      setVideo(null);
+    }
+    
+    // Cargar GIF desde variables
+    const savedGifUrl = tpl.variables?.media?.gifUrl;
+    if (savedGifUrl) {
+      setGif({
+        file: new File([], 'gif.gif'),
+        preview: savedGifUrl,
+        type: "gif",
+        mediaType: "image/gif",
+      });
+    } else {
+      setGif(null);
+    }
+    
     setShowPreview(true);
   };
 
