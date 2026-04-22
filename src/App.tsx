@@ -3,7 +3,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AuthProvider } from "@/contexts/AuthContext";
+import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import AppLayout from "@/components/AppLayout";
 import AuthPage from "@/pages/AuthPage";
@@ -20,12 +20,49 @@ import SettingsPage from "@/pages/SettingsPage";
 import NotificationsPage from "@/pages/NotificationsPage";
 import AdminUsersPage from "@/pages/AdminUsersPage";
 import NotFound from "@/pages/NotFound";
+import { useEffect } from "react";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000,
+      retry: 1,
+    },
+  },
+});
+
+// Componente para manejar la sesión activa
+function SessionManager() {
+  const { user, refreshSession } = useAuth();
+
+  useEffect(() => {
+    // Recuperar sesión al cargar la app
+    const savedSession = localStorage.getItem('sb-ymzkcsjxnzduqolbvbzt-auth-token');
+    if (savedSession && !user) {
+      refreshSession();
+    }
+    
+    // Limpiar caché problemático solo para auth
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && user) {
+        refreshSession();
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [user, refreshSession]);
+
+  return null;
+}
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <AuthProvider>
+      <SessionManager />
       <TooltipProvider>
         <Toaster />
         <Sonner />
