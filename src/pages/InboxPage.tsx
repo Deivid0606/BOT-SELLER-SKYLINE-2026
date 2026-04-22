@@ -14,6 +14,8 @@ import {
   CalendarDays,
   Tag,
   Megaphone,
+  Play,
+  Music,
 } from "lucide-react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
@@ -51,12 +53,22 @@ type Message = {
   time: string;
   date: string;
   badge?: string;
+  mediaUrl?: string;
+  mediaType?: string;
   adSource?: {
     type: string;
     label: string;
     adId: string;
     adPreview: string;
   };
+};
+
+type FullTemplate = {
+  name: string;
+  content: string;
+  media_url: string | null;
+  media_type: string | null;
+  variables: any;
 };
 
 const allTags = ["venta", "confirmado", "prospecto", "consulta", "venta web"];
@@ -93,15 +105,16 @@ export default function InboxPage() {
   const [dbMessages, setDbMessages] = useState<DbMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
-  const [availableTemplates, setAvailableTemplates] = useState<{name: string, preview: string}[]>([]);
+  const [availableTemplates, setAvailableTemplates] = useState<FullTemplate[]>([]);
+  const [selectedTemplateMedia, setSelectedTemplateMedia] = useState<{url: string, type: string} | null>(null);
 
-  // Cargar plantillas reales desde Supabase
+  // Cargar plantillas reales desde Supabase (con multimedia)
   useEffect(() => {
     const loadTemplates = async () => {
       if (!user) return;
       const { data, error } = await supabase
         .from("templates")
-        .select("name, content")
+        .select("name, content, media_url, media_type, variables")
         .eq("user_id", user.id)
         .eq("is_active", true)
         .order("created_at", { ascending: false });
@@ -112,10 +125,7 @@ export default function InboxPage() {
       }
       
       if (data && data.length > 0) {
-        setAvailableTemplates(data.map(t => ({
-          name: t.name,
-          preview: t.content || "Sin contenido"
-        })));
+        setAvailableTemplates(data as FullTemplate[]);
       } else {
         setAvailableTemplates([]);
       }
@@ -123,8 +133,17 @@ export default function InboxPage() {
     loadTemplates();
   }, [user]);
 
-  const handleSelectTemplate = (template: {name: string, preview: string}) => {
-    setMessageInput(template.preview);
+  const handleSelectTemplate = (template: FullTemplate) => {
+    setMessageInput(template.content || "");
+    // Guardar multimedia de la plantilla si existe
+    if (template.media_url && template.media_type) {
+      setSelectedTemplateMedia({
+        url: template.media_url,
+        type: template.media_type
+      });
+    } else {
+      setSelectedTemplateMedia(null);
+    }
     setShowTemplates(false);
   };
 
@@ -222,6 +241,10 @@ export default function InboxPage() {
         time: buildTimeLabel(),
         date: buildDateLabel(),
         badge: getDisplayType(msg.message_type),
+        mediaUrl: msg.media_url || undefined,
+        mediaType: msg.message_type?.includes('image') ? 'image' : 
+                   msg.message_type?.includes('video') ? 'video' : 
+                   msg.message_type?.includes('audio') ? 'audio' : undefined,
       }));
   }, [dbMessages, selectedNumber]);
 
@@ -282,10 +305,10 @@ export default function InboxPage() {
       return;
     }
 
-    if (!messageInput.trim()) {
+    if (!messageInput.trim() && !selectedTemplateMedia) {
       toast({
         title: "Mensaje vacío",
-        description: "Escribe un mensaje antes de enviar.",
+        description: "Escribe un mensaje o selecciona una plantilla con multimedia antes de enviar.",
         variant: "destructive",
       });
       return;
@@ -295,17 +318,26 @@ export default function InboxPage() {
       setSending(true);
 
       const textToSend = messageInput.trim();
+      
+      // Construir payload
+      const payload: any = {
+        user_id: user?.id ?? null,
+        to: selectedNumber,
+        message: textToSend,
+      };
+      
+      // Agregar multimedia si existe
+      if (selectedTemplateMedia) {
+        payload.media_url = selectedTemplateMedia.url;
+        payload.media_type = selectedTemplateMedia.type;
+      }
 
       const response = await fetch("/api/send-whatsapp", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          user_id: user?.id ?? null,
-          to: selectedNumber,
-          message: textToSend,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const rawText = await response.text();
@@ -322,6 +354,7 @@ export default function InboxPage() {
       }
 
       setMessageInput("");
+      setSelectedTemplateMedia(null);
       await loadMessages();
 
       toast({
@@ -338,6 +371,52 @@ export default function InboxPage() {
     } finally {
       setSending(false);
     }
+  };
+
+  // Componente para renderizar multimedia
+  const renderMedia = (mediaUrl?: string, mediaType?: string) => {
+    if (!mediaUrl) return null;
+    
+    if (mediaType === 'image') {
+      return (
+        <div className="mt-2 rounded-lg overflow-hidden">
+          <img 
+            src={mediaUrl} 
+            alt="Imagen" 
+            className="max-w-full max-h-48 rounded-lg object-cover cursor-pointer"
+            onClick={() => window.open(mediaUrl, '_blank')}
+          />
+        </div>
+      );
+    }
+    
+    if (mediaType === 'video') {
+      return (
+        <div className="mt-2 rounded-lg overflow-hidden">
+          <video 
+            src={mediaUrl} 
+            controls 
+            className="max-w-full max-h-48 rounded-lg"
+            controlsList="nodownload"
+          />
+        </div>
+      );
+    }
+    
+    if (mediaType === 'audio') {
+      return (
+        <div className="mt-2 rounded-lg overflow-hidden bg-secondary/30 p-2">
+          <audio 
+            src={mediaUrl} 
+            controls 
+            className="w-full"
+            controlsList="nodownload"
+          />
+        </div>
+      );
+    }
+    
+    return null;
   };
 
   return (
@@ -458,7 +537,12 @@ export default function InboxPage() {
                           </div>
                         )}
 
-                        <div className="leading-relaxed">{msg.text}</div>
+                        {/* Renderizar multimedia si existe */}
+                        {renderMedia(msg.mediaUrl, msg.mediaType)}
+                        
+                        {msg.text && (
+                          <div className="leading-relaxed">{msg.text}</div>
+                        )}
 
                         <div className="flex items-center gap-2 mt-2 text-[10px] text-muted-foreground/60">
                           <span>{msg.time}</span>
@@ -507,10 +591,15 @@ export default function InboxPage() {
                           onClick={() => handleSelectTemplate(tpl)}
                           className="w-full text-left px-4 py-3 hover:bg-primary/5 border-b border-border/20 last:border-0 transition-colors"
                         >
-                          <span className="text-[10px] font-bold text-primary font-mono tracking-wider">
-                            {tpl.name}
-                          </span>
-                          <p className="text-xs text-muted-foreground truncate mt-0.5">{tpl.preview}</p>
+                          <div className="flex items-center gap-2">
+                            {tpl.media_type === 'image' && <Image className="h-3 w-3 text-primary" />}
+                            {tpl.media_type === 'video' && <Play className="h-3 w-3 text-primary" />}
+                            {tpl.media_type === 'audio' && <Music className="h-3 w-3 text-primary" />}
+                            <span className="text-[10px] font-bold text-primary font-mono tracking-wider">
+                              {tpl.name}
+                            </span>
+                          </div>
+                          <p className="text-xs text-muted-foreground truncate mt-0.5">{tpl.content || "Sin contenido"}</p>
                         </button>
                       ))
                     )}
@@ -548,6 +637,16 @@ export default function InboxPage() {
                   }
                 }}
               />
+              {selectedTemplateMedia && (
+                <div className="absolute bottom-full right-0 mb-2 bg-primary/10 text-primary text-[10px] px-2 py-1 rounded-full flex items-center gap-1">
+                  {selectedTemplateMedia.type === 'image' && <Image className="h-3 w-3" />}
+                  {selectedTemplateMedia.type === 'video' && <Play className="h-3 w-3" />}
+                  <span>Multimedia lista</span>
+                  <button onClick={() => setSelectedTemplateMedia(null)} className="ml-1 hover:text-destructive">
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
               <button
                 onClick={handleSendMessage}
                 disabled={sending}
