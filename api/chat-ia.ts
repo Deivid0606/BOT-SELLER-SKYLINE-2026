@@ -20,6 +20,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Faltan user_id o message' });
     }
 
+    // Obtener configuración de IA
     const { data: iaConfig, error: iaError } = await supabase
       .from('chat_ia_gemini')
       .select('*')
@@ -44,13 +45,53 @@ export default async function handler(req, res) {
       });
     }
 
+    // ============================================
+    // OBTENER DATOS DE ENTRENAMIENTO
+    // ============================================
+    const { data: trainingData } = await supabase
+      .from('training_data')
+      .select('intent, examples, response')
+      .eq('user_id', user_id)
+      .eq('is_active', true);
+
+    // Construir contexto de entrenamiento
+    let trainingContext = '';
+    if (trainingData && trainingData.length > 0) {
+      trainingContext = trainingData.map(item => {
+        const examplesText = item.examples && item.examples.length > 0 
+          ? `Frases de ejemplo: "${item.examples.join('", "')}"` 
+          : '';
+        return `## ${item.intent}\n${examplesText}\nRespuesta: ${item.response}`;
+      }).join('\n\n');
+    }
+
     const systemInstruction = iaConfig.system_instruction || 
       'Eres un asistente de ventas para una tienda online. Responde de manera amable y profesional.';
 
-    // Usar GPT-3.5 Turbo (funciona siempre en OpenRouter)
+    // Prompt completo con entrenamiento
+    const fullPrompt = `${systemInstruction}
+
+========================================
+INFORMACIÓN DE ENTRENAMIENTO (USA ESTA INFORMACIÓN PARA RESPONDER):
+========================================
+${trainingContext || 'No hay información de entrenamiento aún. Usa tu conocimiento general para ayudar al usuario.'}
+
+========================================
+INSTRUCCIONES ADICIONALES:
+========================================
+1. Si el usuario pregunta algo que está en el entrenamiento, responde usando EXACTAMENTE esa información.
+2. Si no encuentras la información en el entrenamiento, usa tu conocimiento general.
+3. Sé amable, profesional y útil.
+4. Si no sabes algo, sugiere contactar al vendedor.
+
+========================================
+HISTORIAL Y PREGUNTA ACTUAL:
+========================================`;
+
     const model = 'openai/gpt-3.5-turbo';
 
     console.log("🤖 Usando modelo:", model);
+    console.log("📚 Entrenamiento cargado:", trainingData?.length || 0, "items");
 
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -61,7 +102,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: model,
         messages: [
-          { role: 'system', content: systemInstruction },
+          { role: 'system', content: fullPrompt },
           { role: 'user', content: message }
         ],
         temperature: 0.7,
