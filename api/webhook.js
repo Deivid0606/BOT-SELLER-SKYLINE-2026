@@ -7,7 +7,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const VERIFY_TOKEN = 'miTokenSeguro2026';
 
 // ============================================
-// FUNCIÓN: Obtener respuesta de IA
+// FUNCIÓN: Obtener respuesta de IA (con número de teléfono para historial)
 // ============================================
 async function getAIResponse(userId, message, fromNumber) {
   try {
@@ -16,7 +16,11 @@ async function getAIResponse(userId, message, fromNumber) {
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId, message, from_number: fromNumber })
+      body: JSON.stringify({ 
+        user_id: userId, 
+        message, 
+        from_number: fromNumber  // ← Clave para el historial
+      })
     });
     
     const data = await response.json();
