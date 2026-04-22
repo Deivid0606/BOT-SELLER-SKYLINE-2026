@@ -47,6 +47,11 @@ export default async function handler(req, res) {
     const systemInstruction = iaConfig.system_instruction || 
       'Eres un asistente de ventas para una tienda online. Responde de manera amable y profesional.';
 
+    // Modelos disponibles en OpenRouter
+    const model = 'google/gemini-1.5-flash'; // Cambiado a 1.5-flash
+
+    console.log("🤖 Usando modelo:", model);
+
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -54,7 +59,7 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'google/gemini-1.0-pro',
+        model: model,
         messages: [
           { role: 'system', content: systemInstruction },
           { role: 'user', content: message }
@@ -75,6 +80,8 @@ export default async function handler(req, res) {
 
     const botResponse = data.choices?.[0]?.message?.content || 
       'Lo siento, no pude procesar tu mensaje.';
+
+    console.log("✅ Respuesta generada");
 
     return res.status(200).json({ response: botResponse });
 
