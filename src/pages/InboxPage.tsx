@@ -27,7 +27,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
 
-// Emojis comunes
 const COMMON_EMOJIS = [
   "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇",
   "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘", "😗", "😙", "😚",
@@ -57,6 +56,7 @@ type DbMessage = {
   message_type: string | null;
   media_url: string | null;
   is_processed: boolean | null;
+  created_at?: string;
 };
 
 type Chat = {
@@ -106,12 +106,12 @@ function getDisplayType(type?: string | null) {
   return type;
 }
 
-function buildTimeLabel() {
-  return "Ahora";
+function formatMessageTime(date: Date) {
+  return format(date, "HH:mm");
 }
 
-function buildDateLabel() {
-  return format(new Date(), "yyyy-MM-dd");
+function formatMessageDate(date: Date) {
+  return format(date, "yyyy-MM-dd");
 }
 
 export default function InboxPage() {
@@ -136,7 +136,6 @@ export default function InboxPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
 
-  // Cargar plantillas reales desde Supabase
   useEffect(() => {
     const loadTemplates = async () => {
       if (!user) return;
@@ -161,7 +160,6 @@ export default function InboxPage() {
     loadTemplates();
   }, [user]);
 
-  // Cerrar emoji picker al hacer clic fuera
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (emojiPickerRef.current && !emojiPickerRef.current.contains(event.target as Node)) {
@@ -174,13 +172,12 @@ export default function InboxPage() {
 
   const handleSelectTemplate = (template: FullTemplate) => {
     setMessageInput(template.content || "");
-    // Guardar multimedia de la plantilla si existe
     if (template.media_url && template.media_type) {
       setSelectedTemplateMedia({
         url: template.media_url,
         type: template.media_type
       });
-      setSelectedFile(null); // Limpiar archivo seleccionado
+      setSelectedFile(null);
     } else {
       setSelectedTemplateMedia(null);
     }
@@ -191,7 +188,6 @@ export default function InboxPage() {
     const file = e.target.files?.[0];
     if (!file) return;
     
-    // Validar tamaño
     const maxSize = file.type.startsWith('video/') ? 16 * 1024 * 1024 : 5 * 1024 * 1024;
     if (file.size > maxSize) {
       toast({ 
@@ -211,7 +207,7 @@ export default function InboxPage() {
       preview: URL.createObjectURL(file),
       type: fileType
     });
-    setSelectedTemplateMedia(null); // Limpiar multimedia de plantilla
+    setSelectedTemplateMedia(null);
     e.target.value = "";
   };
 
@@ -226,7 +222,7 @@ export default function InboxPage() {
     const { data, error } = await supabase
       .from("received_messages")
       .select("*")
-      .order("id", { ascending: false });
+      .order("created_at", { ascending: true });
 
     if (error) {
       console.error("Error cargando mensajes:", error);
@@ -268,14 +264,19 @@ export default function InboxPage() {
     }
 
     return Array.from(grouped.entries()).map(([number, messages]) => {
-      const ordered = [...messages].reverse();
-      const last = ordered[ordered.length - 1];
+      const ordered = [...messages].sort((a, b) => {
+        const dateA = new Date(a.created_at || 0).getTime();
+        const dateB = new Date(b.created_at || 0).getTime();
+        return dateB - dateA;
+      });
+      const last = ordered[0];
+      const lastDate = last?.created_at ? new Date(last.created_at) : new Date();
 
       return {
         number,
         lastMsg: last?.message || "",
-        time: buildTimeLabel(),
-        date: buildDateLabel(),
+        time: format(lastDate, "HH:mm"),
+        date: format(lastDate, "yyyy-MM-dd"),
         unread: messages.filter((m) => !m.is_processed && !isOutgoingType(m.message_type)).length,
       };
     });
@@ -303,35 +304,41 @@ export default function InboxPage() {
   const currentMessages = useMemo<Message[]>(() => {
     if (!selectedNumber) return [];
 
-    return dbMessages
-      .filter((msg) => msg.from_number === selectedNumber)
-      .slice()
-      .reverse()
-      .map((msg) => {
-        let mediaType = msg.message_type || '';
-        let mediaUrl = msg.media_url;
-        
-        if (mediaType.includes('image')) mediaType = 'image';
-        else if (mediaType.includes('video')) mediaType = 'video';
-        else if (mediaType.includes('audio')) mediaType = 'audio';
-        else if (mediaUrl) {
-          const ext = mediaUrl.split('.').pop()?.toLowerCase();
-          if (ext === 'mp3' || ext === 'ogg' || ext === 'wav') mediaType = 'audio';
-          else if (ext === 'mp4' || ext === 'webm') mediaType = 'video';
-          else if (ext === 'jpg' || ext === 'png' || ext === 'jpeg' || ext === 'gif') mediaType = 'image';
-        }
-        
-        return {
-          id: msg.id,
-          from: isOutgoingType(msg.message_type) ? "out" : "in",
-          text: msg.message || "",
-          time: buildTimeLabel(),
-          date: buildDateLabel(),
-          badge: getDisplayType(msg.message_type),
-          mediaUrl: msg.media_url || undefined,
-          mediaType: mediaType || undefined,
-        };
-      });
+    const chatMessages = dbMessages.filter((msg) => msg.from_number === selectedNumber);
+    
+    // Ordenar por fecha (más antiguo primero para orden cronológico correcto)
+    const sortedMessages = [...chatMessages].sort((a, b) => {
+      const dateA = new Date(a.created_at || 0).getTime();
+      const dateB = new Date(b.created_at || 0).getTime();
+      return dateA - dateB;
+    });
+    
+    return sortedMessages.map((msg) => {
+      let mediaType = msg.message_type || '';
+      let mediaUrl = msg.media_url;
+      const msgDate = msg.created_at ? new Date(msg.created_at) : new Date();
+      
+      if (mediaType.includes('image')) mediaType = 'image';
+      else if (mediaType.includes('video')) mediaType = 'video';
+      else if (mediaType.includes('audio')) mediaType = 'audio';
+      else if (mediaUrl) {
+        const ext = mediaUrl.split('.').pop()?.toLowerCase();
+        if (ext === 'mp3' || ext === 'ogg' || ext === 'wav') mediaType = 'audio';
+        else if (ext === 'mp4' || ext === 'webm') mediaType = 'video';
+        else if (ext === 'jpg' || ext === 'png' || ext === 'jpeg' || ext === 'gif') mediaType = 'image';
+      }
+      
+      return {
+        id: msg.id,
+        from: isOutgoingType(msg.message_type) ? "out" : "in",
+        text: msg.message || "",
+        time: formatMessageTime(msgDate),
+        date: formatMessageDate(msgDate),
+        badge: getDisplayType(msg.message_type),
+        mediaUrl: msg.media_url || undefined,
+        mediaType: mediaType || undefined,
+      };
+    });
   }, [dbMessages, selectedNumber]);
 
   useEffect(() => {
@@ -405,12 +412,10 @@ export default function InboxPage() {
 
       const textToSend = messageInput.trim();
       
-      // Determinar qué multimedia enviar
       let mediaUrl = null;
       let mediaType = null;
       
       if (selectedFile) {
-        // Subir archivo primero a Supabase Storage
         const fileExt = selectedFile.file.name.split('.').pop();
         const fileName = `${user?.id}/${Date.now()}.${fileExt}`;
         const folder = selectedFile.type === 'image' ? 'images' : 
@@ -489,11 +494,9 @@ export default function InboxPage() {
     }
   };
 
-  // Renderizar multimedia
   const renderMedia = (mediaUrl?: string, mediaType?: string, messageText?: string) => {
     if (!mediaUrl) return null;
     
-    // Imagen
     if (mediaType === 'image' || mediaUrl.match(/\.(jpg|jpeg|png|webp|gif)/i)) {
       return (
         <div className="mt-2 rounded-lg overflow-hidden">
@@ -507,7 +510,6 @@ export default function InboxPage() {
       );
     }
     
-    // Video
     if (mediaType === 'video' || mediaUrl.match(/\.(mp4|webm|mov)/i)) {
       return (
         <div className="mt-2 rounded-lg overflow-hidden">
@@ -521,7 +523,6 @@ export default function InboxPage() {
       );
     }
     
-    // Audio
     if (mediaType === 'audio' || mediaUrl.match(/\.(mp3|ogg|wav|m4a)/i)) {
       return (
         <div className="mt-2 rounded-lg overflow-hidden bg-secondary/30 p-3">
@@ -560,13 +561,11 @@ export default function InboxPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4 h-[calc(100vh-180px)]">
-        {/* Chat principal */}
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           className="glass glass-border rounded-xl flex flex-col overflow-hidden"
         >
-          {/* Header del chat */}
           <div className="flex items-center justify-between px-5 py-3 border-b border-border/40 bg-secondary/20">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-xs font-bold text-primary font-mono">
@@ -591,7 +590,6 @@ export default function InboxPage() {
             </div>
           </div>
 
-          {/* Botones rápidos */}
           <div className="flex items-center gap-2 px-5 py-2.5 border-b border-border/30 bg-secondary/10">
             <button className="text-[11px] px-3 py-1.5 rounded-lg bg-success/8 text-success border border-success/15 hover:bg-success/15 transition-all duration-200 font-medium">
               ✏️ Venta Normal
@@ -611,7 +609,6 @@ export default function InboxPage() {
             </select>
           </div>
 
-          {/* Mensajes */}
           <div className="flex-1 overflow-y-auto p-5 space-y-3 bg-[hsl(198,19%,18%)]">
             {loading ? (
               <div className="text-sm text-muted-foreground">Cargando mensajes...</div>
@@ -619,7 +616,8 @@ export default function InboxPage() {
               <div className="text-sm text-muted-foreground">No hay mensajes para este chat.</div>
             ) : (
               currentMessages.map((msg, idx) => {
-                const showDateSeparator = idx === 0 || msg.date !== currentMessages[idx - 1].date;
+                const prevDate = idx > 0 ? currentMessages[idx - 1].date : null;
+                const showDateSeparator = idx === 0 || msg.date !== prevDate;
                 return (
                   <div key={msg.id}>
                     {showDateSeparator && (
@@ -661,9 +659,7 @@ export default function InboxPage() {
             )}
           </div>
 
-          {/* Input area */}
           <div className="border-t border-border/30 p-4 bg-secondary/10 space-y-2 relative">
-            {/* Vista previa de archivo seleccionado */}
             {selectedFile && (
               <div className="mb-2 p-2 bg-primary/10 rounded-lg flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -677,7 +673,6 @@ export default function InboxPage() {
               </div>
             )}
             
-            {/* Vista previa de multimedia de plantilla */}
             {selectedTemplateMedia && !selectedFile && (
               <div className="mb-2 p-2 bg-primary/10 rounded-lg flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -691,7 +686,6 @@ export default function InboxPage() {
               </div>
             )}
 
-            {/* Selector de emojis */}
             <AnimatePresence>
               {showEmojis && (
                 <motion.div
@@ -722,7 +716,6 @@ export default function InboxPage() {
               )}
             </AnimatePresence>
 
-            {/* Selector de plantillas */}
             <AnimatePresence>
               {showTemplates && (
                 <motion.div
@@ -769,7 +762,6 @@ export default function InboxPage() {
               )}
             </AnimatePresence>
 
-            {/* Botones y input */}
             <div className="flex items-center gap-2">
               <button
                 onClick={() => fileInputRef.current?.click()}
@@ -825,7 +817,6 @@ export default function InboxPage() {
           </div>
         </motion.div>
 
-        {/* Lista de chats */}
         <motion.div
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
