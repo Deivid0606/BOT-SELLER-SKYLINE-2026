@@ -56,8 +56,8 @@ export default async function handler(req, res) {
       });
     }
 
-    // Usar gemini-1.0-pro (más estable)
-    const model = 'gemini-1.0-pro';
+    // Usar gemini-pro (modelo que funciona universalmente)
+    const model = 'gemini-pro';
     const apiKey = iaConfig.api_key;
     
     console.log("🤖 Llamando a Gemini con modelo:", model);
@@ -65,7 +65,7 @@ export default async function handler(req, res) {
     const systemInstruction = iaConfig.system_instruction || 
       'Eres un asistente de ventas para una tienda online. Responde de manera amable y profesional.';
 
-    // Llamar a Gemini API
+    // Llamar a Gemini API con gemini-pro
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -84,7 +84,7 @@ export default async function handler(req, res) {
 
     const data = await response.json();
 
-    console.log("📡 Respuesta Gemini:", response.status, data.error ? "❌ Error" : "✅ OK");
+    console.log("📡 Respuesta Gemini:", response.status);
 
     if (!response.ok) {
       console.error('Error Gemini:', data);
