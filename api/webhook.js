@@ -76,7 +76,52 @@ async function enviarMensaje(userId, to, message) {
 }
 
 // ============================================
-// OBTENER TODO LO NECESARIO DE LA BD
+// OBTENER ENTRENAMIENTO (PRIORIDAD #1)
+// ============================================
+async function getTrainingData(userId) {
+  const { data } = await supabase
+    .from("training_data")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("is_active", true);
+  
+  return data || [];
+}
+
+// ============================================
+// BUSCAR RESPUESTA EN ENTRENAMIENTO (MATCH EXACTO)
+// ============================================
+function buscarRespuestaEnEntrenamiento(trainingData, mensaje) {
+  if (!trainingData || trainingData.length === 0) return null;
+  
+  const mensajeNorm = normalizeText(mensaje);
+  
+  for (const item of trainingData) {
+    // Verificar ejemplos
+    if (item.examples && Array.isArray(item.examples)) {
+      for (const ejemplo of item.examples) {
+        const ejemploNorm = normalizeText(ejemplo);
+        // Buscar coincidencia parcial o exacta
+        if (mensajeNorm.includes(ejemploNorm) || ejemploNorm.includes(mensajeNorm)) {
+          console.log(`✅ Entrenamiento匹配: "${item.intent}" -> "${ejemplo}"`);
+          return item.response;
+        }
+      }
+    }
+    
+    // Verificar intent directamente
+    const intentNorm = normalizeText(item.intent || "");
+    if (intentNorm && mensajeNorm.includes(intentNorm)) {
+      console.log(`✅ Entrenamiento匹配 por intent: "${item.intent}"`);
+      return item.response;
+    }
+  }
+  
+  return null;
+}
+
+// ============================================
+// OBTENER TRIGGERS
 // ============================================
 async function getTriggers(userId) {
   const { data } = await supabase
@@ -87,15 +132,27 @@ async function getTriggers(userId) {
   return data || [];
 }
 
-async function getTrainingData(userId) {
-  const { data } = await supabase
-    .from("training_data")
-    .select("intent, examples, response")
-    .eq("user_id", userId)
-    .eq("is_active", true);
-  return data || [];
+// ============================================
+// VERIFICAR TRIGGERS
+// ============================================
+async function verificarTriggers(userId, fromNumber, mensaje) {
+  const triggers = await getTriggers(userId);
+  const mensajeNorm = normalizeText(mensaje);
+  
+  for (const trigger of triggers) {
+    const condition = normalizeText(trigger.condition);
+    if (mensajeNorm.includes(condition)) {
+      console.log(`🎯 Trigger activado: "${trigger.name}"`);
+      await enviarMensaje(userId, fromNumber, trigger.response);
+      return true;
+    }
+  }
+  return false;
 }
 
+// ============================================
+// OBTENER CONFIG IA
+// ============================================
 async function getIAConfig(userId) {
   const { data } = await supabase
     .from("chat_ia_gemini")
@@ -106,6 +163,9 @@ async function getIAConfig(userId) {
   return data;
 }
 
+// ============================================
+// OBTENER HISTORIAL
+// ============================================
 async function getConversationHistory(userId, fromNumber, limit = 6) {
   const { data } = await supabase
     .from("received_messages")
@@ -129,20 +189,30 @@ async function getConversationHistory(userId, fromNumber, limit = 6) {
 // ============================================
 // LLAMAR A GEMINI CON ENTRENAMIENTO
 // ============================================
-async function callGemini(apiKey, model, systemInstruction, message, history) {
-  const contents = [];
+async function callGemini(apiKey, model, trainingData, message, history) {
+  // Construir system prompt CON el entrenamiento
+  let trainingSection = "INSTRUCCIONES PRIORITARIAS (RESPONDER EXACTAMENTE ASÍ):\n\n";
   
+  for (const item of trainingData) {
+    trainingSection += `Si el cliente dice algo como: "${item.examples?.join('", "') || item.intent}"\n`;
+    trainingSection += `Debes responder EXACTAMENTE: "${item.response}"\n\n`;
+  }
+  
+  trainingSection += `REGLAS OBLIGATORIAS:
+1. PRIORIZA LAS RESPUESTAS DEL ENTRENAMIENTO SOBRE TODO
+2. Si el mensaje del cliente coincide con algún ejemplo, usa ESA respuesta exacta
+3. NO inventes respuestas, usa el entrenamiento
+4. Sé amable y profesional
+5. Catálogo: https://cat-logomegatodo-com.vercel.app/`;
+
+  const contents = [];
   for (const msg of history) {
     contents.push({
       role: msg.role === "assistant" ? "model" : "user",
       parts: [{ text: msg.content }]
     });
   }
-  
-  contents.push({
-    role: "user",
-    parts: [{ text: message }]
-  });
+  contents.push({ role: "user", parts: [{ text: message }] });
   
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -150,74 +220,19 @@ async function callGemini(apiKey, model, systemInstruction, message, history) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemInstruction }] },
+        systemInstruction: { parts: [{ text: trainingSection }] },
         contents: contents,
-        generationConfig: { temperature: 0.7, maxOutputTokens: 300 },
+        generationConfig: { temperature: 0.5, maxOutputTokens: 300 },
       }),
     }
   );
   
   const data = await response.json();
-  
   if (!response.ok) {
     console.error("Error Gemini:", data);
     return null;
   }
-  
   return cleanText(data?.candidates?.[0]?.content?.parts?.[0]?.text || "");
-}
-
-// ============================================
-// CONSTRUIR SYSTEM PROMPT CON ENTRENAMIENTO
-// ============================================
-function buildSystemPrompt(trainingData, hasActiveOrder, orderData = null) {
-  let trainingText = "";
-  
-  if (trainingData && trainingData.length > 0) {
-    trainingText = "INSTRUCCIONES ESPECÍFICAS DE ENTRENAMIENTO:\n\n";
-    for (const item of trainingData) {
-      trainingText += `Intención: ${item.intent}\n`;
-      if (item.examples && item.examples.length > 0) {
-        trainingText += `Ejemplos: ${item.examples.join(", ")}\n`;
-      }
-      trainingText += `Respuesta: ${item.response}\n\n`;
-    }
-  }
-  
-  let estadoPedido = "";
-  if (hasActiveOrder && orderData) {
-    estadoPedido = `
-ESTADO DEL PEDIDO ACTUAL:
-- Producto: ${orderData.product || "No definido"}
-- Cliente: ${orderData.customer_name || "No definido"}
-- Ciudad: ${orderData.city || "No definido"}
-- Dirección: ${orderData.address || "No definido"}
-- Paso actual: ${orderData.status || "inicial"}
-
-REGLAS ESTRICTAS PARA EL PEDIDO:
-1. Si ya tienes el NOMBRE del cliente, NO lo vuelvas a pedir
-2. Si ya tienes la CIUDAD, NO la vuelvas a pedir
-3. Si ya tienes la DIRECCIÓN, NO la vuelvas a pedir
-4. Pide UN SOLO dato por vez, el que falta
-5. Cuando tengas todos los datos (nombre, ciudad, dirección), confirma el pedido
-`;
-  }
-  
-  return `${trainingText}
-
-${estadoPedido}
-
-${!trainingText ? `Eres ARACELI, vendedora de MEGA TODO STORE.
-
-REGLAS BÁSICAS:
-- Responde en español, cálido y natural
-- Pregunta la ciudad primero
-- Luego pregunta qué producto quiere
-- Luego pide nombre y dirección
-- Confirma el pedido al final
-- NUNCA digas "no tengo información"` : ""}
-
-CATÁLOGO: https://cat-logomegatodo-com.vercel.app/`;
 }
 
 // ============================================
@@ -226,16 +241,16 @@ CATÁLOGO: https://cat-logomegatodo-com.vercel.app/`;
 async function procesarMensaje(message, token, userId, fromNumber) {
   try {
     if (message.type !== "text") {
-      await enviarMensaje(userId, fromNumber, "📝 Por favor escribí tu mensaje para ayudarte mejor.");
+      await enviarMensaje(userId, fromNumber, "📝 Por favor escribí tu mensaje.");
       return;
     }
     
     const texto = cleanText(message.text?.body || "");
     if (!texto) return;
     
-    console.log(`📩 ${fromNumber}: ${texto}`);
+    console.log(`📩 ${fromNumber}: "${texto}"`);
     
-    // Guardar mensaje entrante
+    // Guardar mensaje
     await supabase.from("received_messages").insert({
       user_id: userId,
       platform: "whatsapp",
@@ -246,77 +261,52 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     });
     
     // ============================================
-    // 1. CARGAR TRIGGERS Y VERIFICAR
+    // 1. VERIFICAR TRIGGERS (prioridad 1)
     // ============================================
-    const triggers = await getTriggers(userId);
-    const textoLower = normalizeText(texto);
+    const triggerActivado = await verificarTriggers(userId, fromNumber, texto);
+    if (triggerActivado) return;
     
-    for (const trigger of triggers) {
-      if (textoLower.includes(normalizeText(trigger.condition))) {
-        console.log(`✅ Trigger: ${trigger.name}`);
-        await enviarMensaje(userId, fromNumber, trigger.response);
+    // ============================================
+    // 2. CARGAR ENTRENAMIENTO (prioridad 2)
+    // ============================================
+    const trainingData = await getTrainingData(userId);
+    console.log(`📚 Entrenamiento cargado: ${trainingData.length} reglas`);
+    
+    // 3. BUSCAR RESPUESTA EXACTA EN ENTRENAMIENTO
+    const respuestaEntrenamiento = buscarRespuestaEnEntrenamiento(trainingData, texto);
+    if (respuestaEntrenamiento) {
+      console.log(`✅ Usando respuesta de entrenamiento`);
+      await enviarMensaje(userId, fromNumber, respuestaEntrenamiento);
+      return;
+    }
+    
+    // ============================================
+    // 4. SI HAY ENTRENAMIENTO PERO NO MATCH, USAR IA
+    // ============================================
+    const iaConfig = await getIAConfig(userId);
+    
+    if (iaConfig?.api_key && trainingData.length > 0) {
+      console.log(`🤖 Llamando a Gemini con entrenamiento (${trainingData.length} reglas)`);
+      const history = await getConversationHistory(userId, fromNumber, 6);
+      const respuestaIA = await callGemini(
+        iaConfig.api_key,
+        iaConfig.model || "gemini-2.0-flash",
+        trainingData,
+        texto,
+        history
+      );
+      
+      if (respuestaIA) {
+        await enviarMensaje(userId, fromNumber, respuestaIA);
         return;
       }
     }
     
     // ============================================
-    // 2. CARGAR CONFIGURACIÓN DE IA
+    // 5. MENSAJE POR DEFECTO (si nada funciona)
     // ============================================
-    const iaConfig = await getIAConfig(userId);
-    
-    if (!iaConfig || !iaConfig.api_key) {
-      console.log("⚠️ IA no configurada");
-      await enviarMensaje(userId, fromNumber, 
-        "🛍️ *MEGA TODO STORE*\n\n¡Hola! Soy Araceli 😊\n\n¿De qué ciudad sos? 📍\n\n📋 Catálogo: https://cat-logomegatodo-com.vercel.app/");
-      return;
-    }
-    
-    // ============================================
-    // 3. CARGAR ENTRENAMIENTO E HISTORIAL
-    // ============================================
-    const [trainingData, history] = await Promise.all([
-      getTrainingData(userId),
-      getConversationHistory(userId, fromNumber, 8)
-    ]);
-    
-    // ============================================
-    // 4. VERIFICAR SI HAY ORDEN ACTIVA
-    // ============================================
-    const { data: ordenActiva } = await supabase
-      .from("orders")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("from_number", fromNumber)
-      .in("status", ["esperando_nombre", "esperando_ciudad", "esperando_direccion"])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single();
-    
-    // ============================================
-    // 5. CONSTRUIR SYSTEM PROMPT
-    // ============================================
-    const systemPrompt = buildSystemPrompt(trainingData, !!ordenActiva, ordenActiva);
-    
-    // ============================================
-    // 6. LLAMAR A GEMINI
-    // ============================================
-    const respuestaIA = await callGemini(
-      iaConfig.api_key,
-      iaConfig.model || "gemini-2.0-flash",
-      systemPrompt,
-      texto,
-      history
-    );
-    
-    // ============================================
-    // 7. ENVIAR RESPUESTA
-    // ============================================
-    if (respuestaIA) {
-      await enviarMensaje(userId, fromNumber, respuestaIA);
-    } else {
-      await enviarMensaje(userId, fromNumber, 
-        "🛍️ *MEGA TODO STORE*\n\n¿De qué ciudad sos? 📍\n\n📋 Catálogo: https://cat-logomegatodo-com.vercel.app/");
-    }
+    await enviarMensaje(userId, fromNumber, 
+      `🛍️ *MEGA TODO STORE*\n\n¡Hola! Soy Araceli 😊\n\n¿De qué ciudad sos? 📍\n\n📋 Catálogo: https://cat-logomegatodo-com.vercel.app/`);
     
   } catch (error) {
     console.error("❌ Error:", error);
@@ -348,8 +338,6 @@ export default async function handler(req, res) {
   if (req.method === "POST") {
     try {
       const body = req.body;
-      console.log("📨 POST recibido");
-      
       if (body.object !== "whatsapp_business_account") {
         return res.status(404).send("Not WhatsApp");
       }
@@ -367,10 +355,7 @@ export default async function handler(req, res) {
             .eq("phone_number_id", phoneNumberId)
             .single();
           
-          if (!config?.user_id) {
-            console.log("⚠️ Config no encontrada");
-            continue;
-          }
+          if (!config?.user_id) continue;
           
           if (value.messages) {
             for (const message of value.messages) {
