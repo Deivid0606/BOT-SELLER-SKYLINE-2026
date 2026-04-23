@@ -56,10 +56,10 @@ function sanitizeHistory(
   const items = safeArray<IncomingHistoryItem>(history);
 
   return items
-    .slice(-2)
+    .slice(-4)
     .map((item) => {
       const role = item?.role;
-      const content = normalizeText(item?.content).slice(0, 100);
+      const content = normalizeText(item?.content).slice(0, 180);
 
       if (!content) return null;
       if (role !== "user" && role !== "assistant") return null;
@@ -69,14 +69,20 @@ function sanitizeHistory(
     .filter(Boolean) as Array<{ role: "user" | "assistant"; content: string }>;
 }
 
+function normalizeForSearch(text: string): string {
+  return normalizeText(text)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function tokenizeText(text: string): string[] {
   return Array.from(
     new Set(
-      normalizeText(text)
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      normalizeForSearch(text)
         .split(/\s+/)
         .map((word) => word.trim())
         .filter((word) => word.length >= 3)
@@ -100,18 +106,18 @@ function scoreTrainingRow(
   const keywords = tokenizeText(query);
   if (!keywords.length) return 0;
 
-  const intent = normalizeText(row.intent).toLowerCase();
-  const response = normalizeText(row.response).toLowerCase();
+  const intent = normalizeForSearch(normalizeText(row.intent));
+  const response = normalizeForSearch(normalizeText(row.response));
   const examples = safeArray<string>(row.examples)
-    .map((ex) => normalizeText(ex).toLowerCase())
+    .map((ex) => normalizeForSearch(normalizeText(ex)))
     .filter(Boolean);
 
   let score = 0;
 
   for (const keyword of keywords) {
-    if (intent.includes(keyword)) score += 4;
-    if (response.includes(keyword)) score += 2;
-    if (examples.some((ex) => ex.includes(keyword))) score += 3;
+    if (intent.includes(keyword)) score += 5;
+    if (response.includes(keyword)) score += 3;
+    if (examples.some((ex) => ex.includes(keyword))) score += 4;
   }
 
   return score;
@@ -134,12 +140,12 @@ function selectRelevantTrainingRows(
 
   const relevant = ranked
     .filter((item) => item.score > 0)
-    .slice(0, 2)
+    .slice(0, 3)
     .map((item) => item.row);
 
   if (relevant.length > 0) return relevant;
 
-  return rows.slice(0, 1);
+  return rows.slice(0, 2);
 }
 
 function buildTrainingContext(rows: TrainingRow[] = []): string {
@@ -154,18 +160,18 @@ function buildTrainingContext(rows: TrainingRow[] = []): string {
       const examples = safeArray<string>(row.examples)
         .map((ex) => normalizeText(ex))
         .filter(Boolean)
-        .slice(0, 1);
+        .slice(0, 2);
 
       return [
         `Intent: ${intent}`,
-        examples.length ? `Ejemplo: ${examples[0]}` : null,
+        examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
         `Respuesta ideal: ${response}`,
       ]
         .filter(Boolean)
         .join("\n");
     })
     .join("\n\n")
-    .slice(0, 220);
+    .slice(0, 1200);
 }
 
 function buildGeminiContents(params: {
@@ -184,7 +190,7 @@ function buildGeminiContents(params: {
 
   contents.push({
     role: "user",
-    parts: [{ text: normalizeText(currentMessage).slice(0, 120) }],
+    parts: [{ text: normalizeText(currentMessage).slice(0, 250) }],
   });
 
   return contents;
@@ -199,29 +205,37 @@ function buildSystemInstruction(params: {
 
   const contextBlock = [
     context?.last_topic
-      ? `Tema: ${normalizeText(context.last_topic).slice(0, 80)}`
+      ? `Producto o tema actual: ${normalizeText(context.last_topic).slice(0, 160)}`
       : null,
     context?.last_trigger
-      ? `Trigger: ${normalizeText(context.last_trigger).slice(0, 50)}`
+      ? `Último disparador activado: ${normalizeText(context.last_trigger).slice(0, 120)}`
       : null,
   ]
     .filter(Boolean)
     .join("\n");
 
   return `
-${normalizeText(systemInstruction).slice(0, 160) || "Eres un asistente de ventas."}
-Reglas:
-- Responde en español.
-- Sé breve y clara.
-- Mantén el contexto.
-- No inventes precios ni stock.
-- Si ya hay producto activo, seguí sobre ese producto.
+${normalizeText(systemInstruction) || "Eres un asistente de ventas para una tienda online."}
 
-Entrenamiento:
-${trainingContext || "Sin entrenamiento."}
+REGLAS:
+- Responde siempre en español.
+- Mantén continuidad total con el historial del chat.
+- Si el cliente viene hablando de un producto, no cambies de producto.
+- Si hay contexto actual del chat, úsalo como prioridad.
+- Si hubo disparador, continúa vendiendo ese producto.
+- No saludes de nuevo si la conversación ya está iniciada.
+- No respondas genérico si ya hay contexto.
+- Responde claro, útil y con intención de cierre.
+- Si el cliente quiere comprar, guía el pedido de forma concreta.
+- Pedí solo el siguiente dato necesario.
+- No inventes precios, stock ni beneficios.
+- Basate primero en el entrenamiento relevante.
 
-Contexto:
-${contextBlock || "Sin contexto."}
+ENTRENAMIENTO RELEVANTE:
+${trainingContext || "Sin entrenamiento adicional."}
+
+CONTEXTO ACTUAL:
+${contextBlock || "Sin contexto guardado."}
   `.trim();
 }
 
@@ -377,7 +391,7 @@ export default async function handler(req, res) {
     const temperature =
       typeof config.temperature === "number" ? config.temperature : 0.4;
     const maxOutputTokens =
-      typeof config.max_tokens === "number" ? config.max_tokens : 80;
+      typeof config.max_tokens === "number" ? config.max_tokens : 180;
 
     const contents = buildGeminiContents({
       history: sanitizedHistory,
