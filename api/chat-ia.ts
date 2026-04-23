@@ -19,6 +19,7 @@ type IncomingHistoryItem = {
 type IncomingContext = {
   last_topic?: string | null;
   last_trigger?: string | null;
+  updated_at?: string | null;
 };
 
 type TrainingRow = {
@@ -43,20 +44,13 @@ function safeArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-function limitText(value: unknown, max = 220): string {
-  const text = normalizeText(value);
-  return text.length > max ? text.slice(0, max) : text;
-}
-
-function sanitizeHistory(
-  history: unknown
-): Array<{ role: "user" | "assistant"; content: string }> {
+function sanitizeHistory(history: unknown): Array<{ role: "user" | "assistant"; content: string }> {
   const items = safeArray<IncomingHistoryItem>(history);
 
   return items
     .map((item) => {
       const role = item?.role;
-      const content = limitText(item?.content, 180);
+      const content = normalizeText(item?.content);
 
       if (!content) return null;
       if (role !== "user" && role !== "assistant") return null;
@@ -67,22 +61,22 @@ function sanitizeHistory(
 }
 
 function buildTrainingContext(rows: TrainingRow[] = []): string {
-  if (!rows.length) return "";
+  if (!rows.length) {
+    return "No hay entrenamiento adicional cargado.";
+  }
 
   return rows
-    .slice(0, 2)
     .map((row, index) => {
-      const intent = limitText(row.intent, 60) || `Intent ${index + 1}`;
-      const response = limitText(row.response, 160) || "";
+      const intent = normalizeText(row.intent) || `Intent ${index + 1}`;
+      const response = normalizeText(row.response) || "Sin respuesta definida";
       const examples = safeArray<string>(row.examples)
-        .map((ex) => limitText(ex, 60))
-        .filter(Boolean)
-        .slice(0, 1);
+        .map((ex) => normalizeText(ex))
+        .filter(Boolean);
 
       return [
         `Intent: ${intent}`,
-        examples.length ? `Ejemplo: ${examples[0]}` : null,
-        response ? `Respuesta: ${response}` : null,
+        examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
+        `Respuesta sugerida: ${response}`,
       ]
         .filter(Boolean)
         .join("\n");
@@ -91,38 +85,58 @@ function buildTrainingContext(rows: TrainingRow[] = []): string {
 }
 
 function buildMessages(params: {
+  systemInstruction: string;
   trainingContext: string;
   history: Array<{ role: "user" | "assistant"; content: string }>;
   currentMessage: string;
   context: IncomingContext | null;
 }): Array<{ role: ChatRole; content: string }> {
-  const { trainingContext, history, currentMessage, context } = params;
+  const { systemInstruction, trainingContext, history, currentMessage, context } = params;
 
-  const systemLines = [
-    "Eres un asistente de ventas.",
-    "Responde en español.",
-    "Sé breve, claro y útil.",
-    "Mantén el contexto.",
-    "No cambies de producto si ya hay uno en conversación.",
-    context?.last_topic ? `Tema actual: ${limitText(context.last_topic, 120)}` : "",
-    context?.last_trigger ? `Disparador: ${limitText(context.last_trigger, 80)}` : "",
-    trainingContext ? `Entrenamiento:\n${trainingContext}` : "",
-  ].filter(Boolean);
+  const contextBlock = [
+    context?.last_topic ? `Tema actual del chat: ${context.last_topic}` : null,
+    context?.last_trigger ? `Último disparador activado: ${context.last_trigger}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const systemPrompt = `
+${systemInstruction || "Eres un asistente de ventas para una tienda online. Responde de manera amable, clara, persuasiva y útil."}
+
+REGLAS IMPORTANTES:
+- Responde SIEMPRE en español.
+- Mantén continuidad total con el historial.
+- Si el usuario viene hablando de un producto, NO cambies de producto ni reinicies la conversación.
+- Si el usuario dice cosas como "quiero", "sí", "como hago", "precio", "me interesa", "dame más info", asumí que sigue hablando del último producto o tema activo.
+- Si hubo un disparador antes, continúa desde ese producto.
+- Responde breve, útil y orientado a cerrar la venta.
+- Si falta un dato importante para cerrar pedido, pide solo el siguiente dato necesario.
+- No inventes políticas, stock ni precios si no aparecen en el contexto.
+- No saludes de nuevo innecesariamente si la conversación ya está en curso.
+- Si el usuario ya mostró intención de compra, guía el cierre del pedido.
+- Evita respuestas genéricas como "¿en qué producto estás interesado?" cuando el contexto ya indica el producto.
+
+CONTEXTO DE ENTRENAMIENTO:
+${trainingContext}
+
+CONTEXTO ACTUAL DEL CHAT:
+${contextBlock || "Sin contexto explícito guardado."}
+  `.trim();
 
   const messages: Array<{ role: ChatRole; content: string }> = [
-    { role: "system", content: systemLines.join("\n") },
+    { role: "system", content: systemPrompt },
   ];
 
-  for (const item of history.slice(-3)) {
+  for (const item of history) {
     messages.push({
       role: item.role,
-      content: limitText(item.content, 160),
+      content: item.content,
     });
   }
 
   messages.push({
     role: "user",
-    content: limitText(currentMessage, 220),
+    content: currentMessage,
   });
 
   return messages;
@@ -155,12 +169,6 @@ export default async function handler(req, res) {
     const cleanMessage = normalizeText(message);
     const cleanFromNumber = normalizeText(from_number);
 
-    if (!cleanUserId || !cleanMessage) {
-      return res.status(400).json({
-        error: "Faltan user_id o message",
-      });
-    }
-
     console.log(
       "📨 Chat IA:",
       JSON.stringify({
@@ -169,6 +177,12 @@ export default async function handler(req, res) {
         message: cleanMessage.slice(0, 80),
       })
     );
+
+    if (!cleanUserId || !cleanMessage) {
+      return res.status(400).json({
+        error: "Faltan user_id o message",
+      });
+    }
 
     const { data: iaConfig, error: iaError } = await supabase
       .from("chat_ia_gemini")
@@ -197,33 +211,39 @@ export default async function handler(req, res) {
       });
     }
 
-    const sanitizedHistory = sanitizeHistory(incomingHistory).slice(-3);
-
+    const sanitizedHistory = sanitizeHistory(incomingHistory);
     const context: IncomingContext | null =
       incomingContext && typeof incomingContext === "object"
         ? incomingContext
         : null;
 
+    console.log("📚 Historial recibido:", sanitizedHistory.length, "mensajes");
+    if (context?.last_topic || context?.last_trigger) {
+      console.log("🧠 Contexto:", context);
+    }
+
     const { data: trainingData, error: trainingError } = await supabase
       .from("training_data")
       .select("intent, examples, response")
       .eq("user_id", cleanUserId)
-      .eq("is_active", true)
-      .limit(2);
+      .eq("is_active", true);
 
     if (trainingError) {
       console.error("⚠️ Error cargando training_data:", trainingError);
     }
 
-    const trainingContext = buildTrainingContext(
-      ((trainingData || []).slice(0, 2)) as TrainingRow[]
-    );
+    const trainingContext = buildTrainingContext((trainingData || []) as TrainingRow[]);
+
+    const systemInstruction =
+      normalizeText(config.system_instruction) ||
+      "Eres un asistente de ventas para una tienda online. Responde de forma amable, profesional, persuasiva y manteniendo siempre el contexto del chat.";
 
     const model = normalizeText(config.model) || "openai/gpt-3.5-turbo";
     const temperature =
-      typeof config.temperature === "number" ? config.temperature : 0.3;
+      typeof config.temperature === "number" ? config.temperature : 0.5;
 
     const messages = buildMessages({
+      systemInstruction,
       trainingContext,
       history: sanitizedHistory,
       currentMessage: cleanMessage,
@@ -240,7 +260,7 @@ export default async function handler(req, res) {
         model,
         messages,
         temperature,
-        max_tokens: 120,
+        max_tokens: 500,
       }),
     });
 
