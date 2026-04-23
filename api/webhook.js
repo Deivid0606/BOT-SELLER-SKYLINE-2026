@@ -157,10 +157,6 @@ const PRODUCT_CATALOG = [
     name: "RoyalBee Wax",
     aliases: ["royalbee", "royalbee wax"],
   },
-  {
-    name: "Intercomunicador para Casco",
-    aliases: ["intercomunicador para casco"],
-  },
 ];
 
 function detectProductFromText(text) {
@@ -472,6 +468,20 @@ function detectQuantity(text) {
   return 1;
 }
 
+function detectPhoneFromText(text, fallbackPhone = "") {
+  const raw = String(text || "");
+  const compact = raw.replace(/[^\d+]/g, "");
+  const match =
+    compact.match(/(?:\+595|595|0)?9\d{8}/) ||
+    raw.match(/(?:\+595|595|0)?9\d{8}/);
+
+  if (match?.[0]) {
+    return match[0].replace(/\s+/g, "");
+  }
+
+  return cleanText(fallbackPhone) || null;
+}
+
 function extractGsAmount(text) {
   const value = cleanText(text);
   if (!value) return null;
@@ -480,6 +490,64 @@ function extractGsAmount(text) {
   if (!match) return null;
 
   return `${match[1].replace(/,/g, ".")} Gs`;
+}
+
+function extractCustomerDataFromText(text, fallbackPhone = "") {
+  const raw = cleanText(text);
+  const normalized = normalizeForSearch(raw);
+
+  const cityDetection = detectCoverageCity(raw);
+  const city =
+    cityDetection?.type === "coverage"
+      ? formatCityName(cityDetection.value)
+      : null;
+
+  const phone = detectPhoneFromText(raw, fallbackPhone);
+  const quantity = detectQuantity(raw);
+
+  let customerName = null;
+  let address = null;
+
+  if (city) {
+    const cityNormalized = normalizeForSearch(city);
+    const idx = normalized.indexOf(cityNormalized);
+
+    if (idx >= 0) {
+      const beforeCity = raw.slice(0, idx).trim();
+      const afterCity = raw.slice(idx + city.length).trim();
+
+      customerName = cleanText(
+        beforeCity
+          .replace(phone || "", "")
+          .replace(/\bcantidad\b.*$/i, "")
+          .trim()
+      ) || null;
+
+      address = cleanText(
+        afterCity
+          .replace(phone || "", "")
+          .replace(/\bcantidad\b[:\s-]*\d+\b/i, "")
+          .trim()
+      ) || null;
+    }
+  }
+
+  if (!customerName) {
+    const withoutPhone = raw.replace(phone || "", "").trim();
+    const parts = withoutPhone
+      .split(/\s{2,}|,/)
+      .map((x) => cleanText(x))
+      .filter(Boolean);
+    if (parts.length) customerName = parts[0];
+  }
+
+  return {
+    customer_name: customerName || null,
+    city: city || null,
+    address: address || null,
+    phone: phone || null,
+    quantity: quantity || 1,
+  };
 }
 
 function buildConfirmedOrderMessage(order) {
@@ -505,8 +573,7 @@ function buildConfirmedOrderMessage(order) {
 
 ¡Gracias por elegir Mega Todo Store! 💜✨
 
-🔗 Catálogo oficial:
-https://cat-logomegatodo-com.vercel.app/`;
+🔗 Te invito a revisar nuestro catálogo oficial: https://cat-logomegatodo-com.vercel.app/`;
 }
 
 // ============================================
@@ -702,6 +769,45 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
   const text = cleanText(incomingText);
   if (!text) return true;
 
+  const extracted = extractCustomerDataFromText(text, fromNumber);
+
+  if (
+    extracted.customer_name &&
+    extracted.city &&
+    extracted.address &&
+    extracted.phone
+  ) {
+    const updated = await updateOrder(openOrder.id, {
+      customer_name: extracted.customer_name,
+      city: extracted.city,
+      address: extracted.address,
+      phone: extracted.phone,
+      quantity: extracted.quantity || openOrder.quantity || 1,
+      status: "draft",
+    });
+
+    if (!updated) return true;
+
+    if (isOrderComplete(updated)) {
+      const confirmationText = buildConfirmedOrderMessage(updated);
+      const sent = await sendWhatsAppMessage(userId, fromNumber, confirmationText);
+
+      if (sent) {
+        await updateOrder(updated.id, {
+          status: "confirmed",
+        });
+
+        await sendWhatsAppMessage(
+          userId,
+          fromNumber,
+          `¡Gracias por tu compra, ${cleanText(updated.customer_name) || "cliente"}! 💜`
+        );
+      }
+    }
+
+    return true;
+  }
+
   if (openOrder.status === "collecting_name") {
     const updated = await updateOrder(openOrder.id, {
       customer_name: text,
@@ -743,6 +849,7 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
   if (openOrder.status === "collecting_address") {
     const updated = await updateOrder(openOrder.id, {
       address: text,
+      phone: cleanText(openOrder.phone) || cleanText(fromNumber),
       status: "draft",
     });
 
@@ -756,6 +863,12 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
         await updateOrder(updated.id, {
           status: "confirmed",
         });
+
+        await sendWhatsAppMessage(
+          userId,
+          fromNumber,
+          `¡Gracias por tu compra, ${cleanText(updated.customer_name) || "cliente"}! 💜`
+        );
       }
     } else {
       await sendWhatsAppMessage(
