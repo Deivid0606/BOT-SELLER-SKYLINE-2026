@@ -399,7 +399,7 @@ async function getRecentConversation(userId, fromNumber) {
       .eq("user_id", userId)
       .eq("from_number", fromNumber)
       .order("created_at", { ascending: false })
-      .limit(2);
+      .limit(4);
 
     if (error) {
       console.error("Error obteniendo historial:", error);
@@ -413,7 +413,7 @@ async function getRecentConversation(userId, fromNumber) {
           msg.message_type && String(msg.message_type).startsWith("out_")
             ? "assistant"
             : "user",
-        content: String(msg.message || "").slice(0, 100),
+        content: String(msg.message || "").slice(0, 180),
       }))
       .filter((item) => cleanText(item.content));
   } catch (error) {
@@ -663,14 +663,20 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
 // ============================================
 // GEMINI HELPERS
 // ============================================
+function normalizeForSearch(text) {
+  return cleanText(text)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function tokenizeText(text) {
   return Array.from(
     new Set(
-      cleanText(text)
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      normalizeForSearch(text)
         .split(/\s+/)
         .map((word) => word.trim())
         .filter((word) => word.length >= 3)
@@ -690,18 +696,18 @@ function scoreTrainingRow(row, currentMessage, context) {
   const keywords = tokenizeText(query);
   if (!keywords.length) return 0;
 
-  const intent = cleanText(row.intent).toLowerCase();
-  const response = cleanText(row.response).toLowerCase();
+  const intent = normalizeForSearch(cleanText(row.intent));
+  const response = normalizeForSearch(cleanText(row.response));
   const examples = safeArray(row.examples)
-    .map((ex) => cleanText(ex).toLowerCase())
+    .map((ex) => normalizeForSearch(cleanText(ex)))
     .filter(Boolean);
 
   let score = 0;
 
   for (const keyword of keywords) {
-    if (intent.includes(keyword)) score += 4;
-    if (response.includes(keyword)) score += 2;
-    if (examples.some((ex) => ex.includes(keyword))) score += 3;
+    if (intent.includes(keyword)) score += 5;
+    if (response.includes(keyword)) score += 3;
+    if (examples.some((ex) => ex.includes(keyword))) score += 4;
   }
 
   return score;
@@ -720,12 +726,12 @@ function selectRelevantTrainingRows(rows, currentMessage, context) {
 
   const relevant = ranked
     .filter((item) => item.score > 0)
-    .slice(0, 2)
+    .slice(0, 3)
     .map((item) => item.row);
 
   if (relevant.length > 0) return relevant;
 
-  return rows.slice(0, 1);
+  return rows.slice(0, 2);
 }
 
 async function getTrainingContext(userId, currentMessage, context) {
@@ -754,18 +760,18 @@ async function getTrainingContext(userId, currentMessage, context) {
         const examples = safeArray(row.examples)
           .map((ex) => cleanText(ex))
           .filter(Boolean)
-          .slice(0, 1);
+          .slice(0, 2);
 
         return [
           `Intent: ${intent}`,
-          examples.length ? `Ejemplo: ${examples[0]}` : null,
+          examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
           `Respuesta ideal: ${response}`,
         ]
           .filter(Boolean)
           .join("\n");
       })
       .join("\n\n")
-      .slice(0, 220);
+      .slice(0, 1200);
   } catch (error) {
     console.error("Error armando training context:", error);
     return "Sin entrenamiento adicional.";
@@ -781,13 +787,13 @@ function buildGeminiTextContents(history, currentMessage) {
 
     contents.push({
       role: item.role === "assistant" ? "model" : "user",
-      parts: [{ text: String(item.content).slice(0, 100) }],
+      parts: [{ text: String(item.content).slice(0, 180) }],
     });
   }
 
   contents.push({
     role: "user",
-    parts: [{ text: cleanText(currentMessage).slice(0, 120) }],
+    parts: [{ text: cleanText(currentMessage).slice(0, 250) }],
   });
 
   return contents;
@@ -795,26 +801,38 @@ function buildGeminiTextContents(history, currentMessage) {
 
 function buildGeminiSystemInstruction(systemInstruction, trainingContext, context) {
   const contextBlock = [
-    context?.last_topic ? `Tema: ${cleanText(context.last_topic).slice(0, 80)}` : null,
-    context?.last_trigger ? `Trigger: ${cleanText(context.last_trigger).slice(0, 50)}` : null,
+    context?.last_topic
+      ? `Producto o tema actual: ${cleanText(context.last_topic).slice(0, 160)}`
+      : null,
+    context?.last_trigger
+      ? `Último disparador activado: ${cleanText(context.last_trigger).slice(0, 120)}`
+      : null,
   ]
     .filter(Boolean)
     .join("\n");
 
   return `
-${cleanText(systemInstruction).slice(0, 160) || "Eres un asistente de ventas."}
-Reglas:
-- Responde en español.
-- Sé breve y clara.
-- Mantén el contexto.
-- No inventes precios ni stock.
-- Si ya hay producto activo, seguí sobre ese producto.
+${cleanText(systemInstruction) || "Eres un asistente de ventas para una tienda online."}
 
-Entrenamiento:
-${trainingContext || "Sin entrenamiento."}
+REGLAS:
+- Responde siempre en español.
+- Mantén continuidad total con el historial del chat.
+- Si el cliente viene hablando de un producto, no cambies de producto.
+- Si hay contexto actual del chat, úsalo como prioridad.
+- Si hubo disparador, continúa vendiendo ese producto.
+- No saludes de nuevo si la conversación ya está iniciada.
+- No respondas genérico si ya hay contexto.
+- Responde claro, útil y con intención de cierre.
+- Si el cliente quiere comprar, guía el pedido de forma concreta.
+- Pedí solo el siguiente dato necesario.
+- No inventes precios, stock ni beneficios.
+- Basate primero en el entrenamiento relevante.
 
-Contexto:
-${contextBlock || "Sin contexto."}
+ENTRENAMIENTO RELEVANTE:
+${trainingContext || "Sin entrenamiento adicional."}
+
+CONTEXTO ACTUAL:
+${contextBlock || "Sin contexto guardado."}
   `.trim();
 }
 
@@ -900,7 +918,7 @@ async function generateAIReply(userId, message, fromNumber) {
     const temperature =
       typeof iaConfig.temperature === "number" ? iaConfig.temperature : 0.4;
     const maxOutputTokens =
-      typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 80;
+      typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 180;
 
     const contents = buildGeminiTextContents(history, message);
     const finalSystemInstruction = buildGeminiSystemInstruction(
@@ -964,12 +982,13 @@ ${systemInstruction}
 Responde en español.
 Sé breve, útil y orientado a venta.
 Usa el contexto si aplica.
+Basate en el entrenamiento.
 
 Entrenamiento:
-${String(trainingContext).slice(0, 140)}
+${String(trainingContext).slice(0, 300)}
 
 Contexto:
-${context?.last_topic ? cleanText(context.last_topic).slice(0, 60) : "Sin contexto"}
+${context?.last_topic ? cleanText(context.last_topic).slice(0, 100) : "Sin contexto"}
                 `.trim(),
               },
             ],
@@ -989,7 +1008,7 @@ ${context?.last_topic ? cleanText(context.last_topic).slice(0, 60) : "Sin contex
           ],
           generationConfig: {
             temperature: 0.3,
-            maxOutputTokens: 80,
+            maxOutputTokens: 120,
           },
         }),
       }
@@ -1023,9 +1042,6 @@ async function transcribeAudioFromUrl(audioUrl, userId, fromNumber) {
     const iaConfig = await getIAConfig(userId);
     if (!iaConfig) return null;
 
-    const context = await getChatContext(userId, fromNumber);
-    const trainingContext = await getTrainingContext(userId, "[audio]", context);
-
     const inlineAudio = await urlToInlineData(audioUrl, "audio/ogg");
 
     const response = await fetch(
@@ -1056,9 +1072,7 @@ No agregues comentarios.
               role: "user",
               parts: [
                 {
-                  text: `Transcribí este audio. Contexto opcional: ${String(
-                    trainingContext || ""
-                  ).slice(0, 80)}`,
+                  text: "Transcribí este audio en español.",
                 },
                 {
                   inlineData: inlineAudio,
@@ -1068,7 +1082,7 @@ No agregues comentarios.
           ],
           generationConfig: {
             temperature: 0,
-            maxOutputTokens: 160,
+            maxOutputTokens: 220,
           },
         }),
       }
@@ -1398,6 +1412,28 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       const cityDetectionAudio = detectCoverageCity(transcript);
       if (cityDetectionAudio?.type === "ambiguous") {
         await sendWhatsAppMessage(userId, fromNumber, cityDetectionAudio.reply);
+        return;
+      }
+
+      if (cityDetectionAudio?.type === "coverage") {
+        const cityName = formatCityName(cityDetectionAudio.value);
+
+        await saveChatContext(userId, fromNumber, {
+          last_topic: existingContextFromAudio?.last_topic || cityName,
+          last_trigger: "ciudad_cobertura",
+        });
+
+        await sendWhatsAppMessage(
+          userId,
+          fromNumber,
+          `✅ Perfecto 😊 ${cityName} tiene ENVÍO GRATIS contra-entrega 🚚
+💵 Pagás al recibir SIN moverte de casa
+
+¿Te parece si te agendo ahora mismo? ¿Nombre y teléfono? 📝
+
+📋 Catálogo:
+https://cat-logomegatodo-com.vercel.app/`
+        );
         return;
       }
 
