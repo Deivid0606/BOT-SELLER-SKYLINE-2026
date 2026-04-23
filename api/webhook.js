@@ -12,58 +12,6 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const VERIFY_TOKEN = "miTokenSeguro2026";
 
 // ============================================
-// CATÁLOGO DE PRECIOS
-// ============================================
-const PRODUCTOS = {
-  "afilador": { nombre: "Afilador de Cuchillos y Tijeras", precio: 99000, promo2x: 129900 },
-  "plumero": { nombre: "Plumero LimpiaFlex", precio: 99000, promo2x: 129900 },
-  "limpiaflex": { nombre: "Plumero LimpiaFlex", precio: 99000, promo2x: 129900 },
-  "niveladora": { nombre: "Niveladoras Lavarropas", precio: 98000 },
-  "patita": { nombre: "Patita Lavarropas", precio: 98000, promo8u: 159000 },
-  "cocedor": { nombre: "Cocedor de Huevos Automático", precio: 127900 },
-  "karseell": { nombre: "Karseell Collagen", precio: 109000 },
-  "veneno": { nombre: "Veneno de Abeja", precio: 145000, promo2x: 249900 },
-  "linterna": { nombre: "Linterna Potente", precio: 189000 },
-  "intercomunicador": { nombre: "Intercomunicador para Casco", precio: 169000, promo2x: 269000 },
-  "alarma": { nombre: "Alarma Antirrobo", precio: 148900 },
-  "drone": { nombre: "DRONE", precio: 279900 },
-  "dron": { nombre: "DRONE", precio: 279900 },
-  "tobillera": { nombre: "Tobillera de Compresión", precio: 109000, par: 159000 },
-  "rodillera": { nombre: "Rodillera de Compresión", precio: 109000, promo2x: 159900 },
-  "medias": { nombre: "Medias Terapéuticas", precio2p: 120000 },
-  "clip nasal": { nombre: "Clip Nasal Anti-Ronquidos", precio: 95000 },
-  "ortopiex": { nombre: "Plantilla Ortopiex 5D", precio: 159000 },
-  "royalbee": { nombre: "RoyalBee Wax", precio: 120000, promo2x: 169000 },
-  "wild tornado": { nombre: "WILD TORNADO", precio: 179900 },
-  "hongo": { nombre: "Hongo Antihongos Pro+", precio: 99000, promo2x1: 159000 },
-  "huevera": { nombre: "Huevera en forma de Gallinita", precio: 127900 },
-  "aspirador": { nombre: "Aspirador portátil Powerson", precio: 129900 },
-  "mini aspiradora": { nombre: "Mini Aspiradora", precio: 129900 },
-  "raf pro": { nombre: "Procesador de Alimentos RAF PRO", precio: 189900 },
-};
-
-// ============================================
-// CIUDADES CON COBERTURA
-// ============================================
-const CIUDADES = {
-  "asuncion": "Asunción", "asun": "Asunción",
-  "capiatá": "Capiatá", "capiata": "Capiatá", "c@piata": "Capiatá",
-  "luque": "Luque", "lque": "Luque",
-  "san lorenzo": "San Lorenzo", "sanlo": "San Lorenzo",
-  "lambaré": "Lambaré", "lambare": "Lambaré",
-  "fernando de la mora": "Fernando de la Mora", "fdm": "Fernando de la Mora",
-  "ciudad del este": "Ciudad del Este", "cde": "Ciudad del Este",
-  "presidente franco": "Presidente Franco", "pte franco": "Presidente Franco",
-  "hernandarias": "Hernandarias", "hernadarias": "Hernandarias",
-  "limpio": "Limpio", "ita": "Itá", "itaugua": "Itauguá",
-  "aregua": "Areguá", "villa elisa": "Villa Elisa",
-  "mariano roque alonso": "Mariano Roque Alonso", "mra": "Mariano Roque Alonso",
-  "nemby": "Ñemby", "ypane": "Ypané", "villa hayes": "Villa Hayes",
-  "san antonio": "San Antonio", 
-  "altos": "Altos", "caacupe": "Caacupé", "ypacarai": "Ypacaraí",
-};
-
-// ============================================
 // HELPERS
 // ============================================
 function cleanText(text) {
@@ -72,48 +20,6 @@ function cleanText(text) {
 
 function normalizeText(text) {
   return cleanText(text).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-}
-
-function formatGs(value) {
-  if (!value) return "Consultar";
-  return `${value.toLocaleString("es-PY")} Gs`;
-}
-
-function detectarProducto(text) {
-  const lower = normalizeText(text);
-  for (const [key, data] of Object.entries(PRODUCTOS)) {
-    if (lower.includes(normalizeText(key))) {
-      return { ...data, key };
-    }
-  }
-  return null;
-}
-
-function detectarCiudad(text) {
-  const lower = normalizeText(text);
-  for (const [alias, ciudad] of Object.entries(CIUDADES)) {
-    if (lower.includes(normalizeText(alias))) {
-      return ciudad;
-    }
-  }
-  return null;
-}
-
-function detectarCantidad(text) {
-  const lower = normalizeText(text);
-  if (lower.includes("2") || lower.includes("dos")) return 2;
-  if (lower.includes("3") || lower.includes("tres")) return 3;
-  if (lower.includes("4") || lower.includes("cuatro")) return 4;
-  if (lower.includes("5") || lower.includes("cinco")) return 5;
-  return 1;
-}
-
-function calcularPrecio(producto, cantidad = 1) {
-  if (!producto) return null;
-  if (cantidad === 2 && producto.promo2x) return producto.promo2x;
-  if (cantidad === 2 && producto.par) return producto.par;
-  if (producto.precio) return producto.precio * cantidad;
-  return producto.precio || null;
 }
 
 // ============================================
@@ -146,14 +52,12 @@ async function enviarMensaje(userId, to, message) {
       }),
     });
     
-    const result = await response.json();
-    
     if (!response.ok) {
-      console.error("Error Meta:", result);
+      const error = await response.json();
+      console.error("Error Meta:", error);
       return false;
     }
     
-    // Guardar mensaje enviado
     await supabase.from("received_messages").insert({
       user_id: userId,
       platform: "whatsapp",
@@ -172,128 +76,26 @@ async function enviarMensaje(userId, to, message) {
 }
 
 // ============================================
-// ORDENES
+// OBTENER TODO LO NECESARIO DE LA BD
 // ============================================
-async function getOrdenActiva(userId, fromNumber) {
+async function getTriggers(userId) {
   const { data } = await supabase
-    .from("orders")
+    .from("triggers")
     .select("*")
     .eq("user_id", userId)
-    .eq("from_number", fromNumber)
-    .in("status", ["esperando_nombre", "esperando_ciudad", "esperando_direccion"])
-    .order("created_at", { ascending: false })
-    .limit(1);
-  
-  return data?.[0] || null;
+    .eq("active", true);
+  return data || [];
 }
 
-async function crearOrden(userId, fromNumber, producto, cantidad) {
-  const precio = calcularPrecio(producto, cantidad);
-  
-  const { data, error } = await supabase
-    .from("orders")
-    .insert({
-      user_id: userId,
-      from_number: fromNumber,
-      product: producto.nombre,
-      quantity: cantidad,
-      total_amount: precio,
-      status: "esperando_nombre",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .select()
-    .single();
-  
-  if (error) {
-    console.error("Error creando orden:", error);
-    return null;
-  }
-  return data;
+async function getTrainingData(userId) {
+  const { data } = await supabase
+    .from("training_data")
+    .select("intent, examples, response")
+    .eq("user_id", userId)
+    .eq("is_active", true);
+  return data || [];
 }
 
-async function actualizarOrden(id, datos) {
-  const { data, error } = await supabase
-    .from("orders")
-    .update({ ...datos, updated_at: new Date().toISOString() })
-    .eq("id", id)
-    .select()
-    .single();
-  
-  if (error) {
-    console.error("Error actualizando orden:", error);
-    return null;
-  }
-  return data;
-}
-
-async function confirmarOrden(userId, fromNumber, orden) {
-  const mensaje = `✅ *PEDIDO CONFIRMADO* ✅
-━━━━━━━━━━━━━━━━━━━━━━
-✅ Producto: ${orden.product}
-✅ Cliente: ${orden.customer_name}
-✅ Ciudad: ${orden.city}
-✅ Dirección: ${orden.address}
-✅ Cantidad: ${orden.quantity} u.
-
-💰 Total: ${formatGs(orden.total_amount)} Gs
-🚚 Envío GRATIS · Pagás al recibir
-
-¡Gracias por elegir Mega Todo Store! 💜✨
-
-📋 Catálogo: https://cat-logomegatodo-com.vercel.app/`;
-  
-  await enviarMensaje(userId, fromNumber, mensaje);
-  await actualizarOrden(orden.id, { status: "completado" });
-}
-
-// ============================================
-// DISPARADORES (TRIGGERS)
-// ============================================
-async function procesarDisparadores(userId, fromNumber, message) {
-  try {
-    const { data: triggers, error } = await supabase
-      .from("triggers")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("active", true);
-    
-    if (error) {
-      console.error("Error cargando triggers:", error);
-      return null;
-    }
-    
-    if (!triggers || triggers.length === 0) {
-      console.log("No hay triggers activos");
-      return null;
-    }
-    
-    const messageLower = normalizeText(message);
-    
-    for (const trigger of triggers) {
-      const condition = normalizeText(trigger.condition);
-      if (condition && messageLower.includes(condition)) {
-        console.log(`✅ Trigger activado: ${trigger.name}`);
-        
-        const responseText = trigger.response;
-        if (responseText) {
-          await enviarMensaje(userId, fromNumber, responseText);
-        }
-        
-        return trigger;
-      }
-    }
-    
-    return null;
-  } catch (error) {
-    console.error("Error en procesarDisparadores:", error);
-    return null;
-  }
-}
-
-// ============================================
-// IA GEMINI
-// ============================================
 async function getIAConfig(userId) {
   const { data } = await supabase
     .from("chat_ia_gemini")
@@ -301,76 +103,121 @@ async function getIAConfig(userId) {
     .eq("user_id", userId)
     .eq("is_active", true)
     .single();
-  
   return data;
 }
 
-async function generarRespuestaIA(userId, message, fromNumber, ordenActiva) {
-  const config = await getIAConfig(userId);
-  if (!config?.api_key) {
-    console.log("⚠️ IA no configurada");
-    return null;
+async function getConversationHistory(userId, fromNumber, limit = 6) {
+  const { data } = await supabase
+    .from("received_messages")
+    .select("message, message_type, created_at")
+    .eq("user_id", userId)
+    .eq("from_number", fromNumber)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  
+  if (!data || data.length === 0) return [];
+  
+  const history = data.reverse();
+  const formatted = [];
+  for (const msg of history) {
+    const role = msg.message_type && msg.message_type.startsWith("out_") ? "assistant" : "user";
+    formatted.push({ role: role, content: cleanText(msg.message || "").substring(0, 300) });
+  }
+  return formatted;
+}
+
+// ============================================
+// LLAMAR A GEMINI CON ENTRENAMIENTO
+// ============================================
+async function callGemini(apiKey, model, systemInstruction, message, history) {
+  const contents = [];
+  
+  for (const msg of history) {
+    contents.push({
+      role: msg.role === "assistant" ? "model" : "user",
+      parts: [{ text: msg.content }]
+    });
   }
   
-  // Contexto del pedido
-  let contextoPedido = "";
-  if (ordenActiva) {
-    contextoPedido = `
-ESTADO ACTUAL DEL PEDIDO:
-- Producto: ${ordenActiva.product || "No definido"}
-- Cliente: ${ordenActiva.customer_name || "No definido"}
-- Ciudad: ${ordenActiva.city || "No definido"} 
-- Dirección: ${ordenActiva.address || "No definido"}
-- Estado: ${ordenActiva.status}
-
-REGLAS ESTRICTAS:
-1. Si ya tienes el NOMBRE, NO lo pidas de nuevo
-2. Si ya tienes la CIUDAD, NO la pidas de nuevo
-3. Si ya tienes la DIRECCIÓN, NO la pidas de nuevo
-4. Pide SOLO el siguiente dato que falta
-`;
-  }
+  contents.push({
+    role: "user",
+    parts: [{ text: message }]
+  });
   
-  const systemPrompt = `Eres ARACELI, vendedora amable de Mega Todo Store.
-
-${contextoPedido}
-
-PRECIOS CORRECTOS:
-${Object.entries(PRODUCTOS).map(([k, v]) => `- ${v.nombre}: ${formatGs(v.precio)}`).join("\n")}
-
-CIUDADES CON ENVÍO GRATIS: Asunción, Capiatá, Luque, San Lorenzo, Lambaré, Fernando de la Mora, Ciudad del Este, Presidente Franco, Hernandarias, Limpio.
-
-Reglas:
-- Responde en español, cálido y natural
-- Máximo 2 oraciones por mensaje
-- Si preguntan precio, da el precio y pregunta si quiere comprar
-- Si dicen "sí" o "quiero", pide el siguiente dato
-- NUNCA repitas preguntas
-- NUNCA inventes precios`;
-
-  try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${config.api_key}`, {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: "user", parts: [{ text: message }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 250 },
+        systemInstruction: { parts: [{ text: systemInstruction }] },
+        contents: contents,
+        generationConfig: { temperature: 0.7, maxOutputTokens: 300 },
       }),
-    });
-    
-    const data = await response.json();
-    const respuesta = data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
-    
-    if (respuesta) {
-      console.log(`🤖 IA responde: ${respuesta.substring(0, 100)}...`);
     }
-    
-    return respuesta;
-  } catch (error) {
-    console.error("Error IA:", error);
+  );
+  
+  const data = await response.json();
+  
+  if (!response.ok) {
+    console.error("Error Gemini:", data);
     return null;
   }
+  
+  return cleanText(data?.candidates?.[0]?.content?.parts?.[0]?.text || "");
+}
+
+// ============================================
+// CONSTRUIR SYSTEM PROMPT CON ENTRENAMIENTO
+// ============================================
+function buildSystemPrompt(trainingData, hasActiveOrder, orderData = null) {
+  let trainingText = "";
+  
+  if (trainingData && trainingData.length > 0) {
+    trainingText = "INSTRUCCIONES ESPECÍFICAS DE ENTRENAMIENTO:\n\n";
+    for (const item of trainingData) {
+      trainingText += `Intención: ${item.intent}\n`;
+      if (item.examples && item.examples.length > 0) {
+        trainingText += `Ejemplos: ${item.examples.join(", ")}\n`;
+      }
+      trainingText += `Respuesta: ${item.response}\n\n`;
+    }
+  }
+  
+  let estadoPedido = "";
+  if (hasActiveOrder && orderData) {
+    estadoPedido = `
+ESTADO DEL PEDIDO ACTUAL:
+- Producto: ${orderData.product || "No definido"}
+- Cliente: ${orderData.customer_name || "No definido"}
+- Ciudad: ${orderData.city || "No definido"}
+- Dirección: ${orderData.address || "No definido"}
+- Paso actual: ${orderData.status || "inicial"}
+
+REGLAS ESTRICTAS PARA EL PEDIDO:
+1. Si ya tienes el NOMBRE del cliente, NO lo vuelvas a pedir
+2. Si ya tienes la CIUDAD, NO la vuelvas a pedir
+3. Si ya tienes la DIRECCIÓN, NO la vuelvas a pedir
+4. Pide UN SOLO dato por vez, el que falta
+5. Cuando tengas todos los datos (nombre, ciudad, dirección), confirma el pedido
+`;
+  }
+  
+  return `${trainingText}
+
+${estadoPedido}
+
+${!trainingText ? `Eres ARACELI, vendedora de MEGA TODO STORE.
+
+REGLAS BÁSICAS:
+- Responde en español, cálido y natural
+- Pregunta la ciudad primero
+- Luego pregunta qué producto quiere
+- Luego pide nombre y dirección
+- Confirma el pedido al final
+- NUNCA digas "no tengo información"` : ""}
+
+CATÁLOGO: https://cat-logomegatodo-com.vercel.app/`;
 }
 
 // ============================================
@@ -378,137 +225,102 @@ Reglas:
 // ============================================
 async function procesarMensaje(message, token, userId, fromNumber) {
   try {
-    // Solo procesar mensajes de texto
     if (message.type !== "text") {
-      await enviarMensaje(userId, fromNumber, "📝 Por favor escribí tu mensaje para poder ayudarte mejor.");
+      await enviarMensaje(userId, fromNumber, "📝 Por favor escribí tu mensaje para ayudarte mejor.");
       return;
     }
     
     const texto = cleanText(message.text?.body || "");
     if (!texto) return;
     
-    console.log(`📩 Mensaje de ${fromNumber}: "${texto}"`);
+    console.log(`📩 ${fromNumber}: ${texto}`);
+    
+    // Guardar mensaje entrante
+    await supabase.from("received_messages").insert({
+      user_id: userId,
+      platform: "whatsapp",
+      from_number: fromNumber,
+      message: texto,
+      message_type: "in_text",
+      created_at: new Date().toISOString(),
+    });
     
     // ============================================
-    // 1. BUSCAR DISPARADORES (TRIGGERS)
+    // 1. CARGAR TRIGGERS Y VERIFICAR
     // ============================================
-    const triggerActivado = await procesarDisparadores(userId, fromNumber, texto);
-    if (triggerActivado) {
-      console.log(`✅ Trigger "${triggerActivado.name}" ejecutado, no continuar`);
-      return;
+    const triggers = await getTriggers(userId);
+    const textoLower = normalizeText(texto);
+    
+    for (const trigger of triggers) {
+      if (textoLower.includes(normalizeText(trigger.condition))) {
+        console.log(`✅ Trigger: ${trigger.name}`);
+        await enviarMensaje(userId, fromNumber, trigger.response);
+        return;
+      }
     }
     
     // ============================================
-    // 2. BUSCAR ORDEN ACTIVA
+    // 2. CARGAR CONFIGURACIÓN DE IA
     // ============================================
-    let ordenActiva = await getOrdenActiva(userId, fromNumber);
+    const iaConfig = await getIAConfig(userId);
     
-    // ============================================
-    // 3. DETECTAR CIUDAD (si no hay orden activa)
-    // ============================================
-    const ciudad = detectarCiudad(texto);
-    if (ciudad && !ordenActiva) {
+    if (!iaConfig || !iaConfig.api_key) {
+      console.log("⚠️ IA no configurada");
       await enviarMensaje(userId, fromNumber, 
-        `✅ *Perfecto!* 😊\n\n${ciudad} tiene *ENVÍO GRATIS* contra-entrega 🚚\n💵 Pagás al recibir SIN moverte de casa\n\n🛍️ ¿Qué producto te gustaría pedir?\n\n📋 Catálogo: https://cat-logomegatodo-com.vercel.app/`);
+        "🛍️ *MEGA TODO STORE*\n\n¡Hola! Soy Araceli 😊\n\n¿De qué ciudad sos? 📍\n\n📋 Catálogo: https://cat-logomegatodo-com.vercel.app/");
       return;
     }
     
     // ============================================
-    // 4. PREGUNTA DE PRECIO
+    // 3. CARGAR ENTRENAMIENTO E HISTORIAL
     // ============================================
-    const producto = detectarProducto(texto);
-    const preguntaPrecio = /precio|cuanto|cuesta|costo|valor/i.test(texto);
-    
-    if (preguntaPrecio && producto) {
-      let respuestaPrecio = `💰 *${producto.nombre}*\n\n✅ 1 unidad: ${formatGs(producto.precio)}`;
-      if (producto.promo2x) respuestaPrecio += `\n🔥 2 unidades: ${formatGs(producto.promo2x)}`;
-      respuestaPrecio += `\n\n🚚 *ENVÍO GRATIS* contra-entrega\n💵 Pagás al recibir\n\n¿Te interesa llevarlo? 😊`;
-      await enviarMensaje(userId, fromNumber, respuestaPrecio);
-      return;
-    }
+    const [trainingData, history] = await Promise.all([
+      getTrainingData(userId),
+      getConversationHistory(userId, fromNumber, 8)
+    ]);
     
     // ============================================
-    // 5. INICIAR NUEVA ORDEN (si hay producto y quiere comprar)
+    // 4. VERIFICAR SI HAY ORDEN ACTIVA
     // ============================================
-    const intencionCompra = /quiero|comprar|me interesa|si|sí|ok|dale|confirmo/i.test(texto);
-    
-    if (producto && intencionCompra && !ordenActiva) {
-      const cantidad = detectarCantidad(texto);
-      const nuevaOrden = await crearOrden(userId, fromNumber, producto, cantidad);
-      
-      if (nuevaOrden) {
-        await enviarMensaje(userId, fromNumber, 
-          `🛍️ *${producto.nombre}* - ${formatGs(calcularPrecio(producto, cantidad))} Gs\n\n✅ ¡Excelente elección!\n\n📝 Para agendar tu pedido, pasame tu *nombre completo*.`);
-      }
-      return;
-    }
+    const { data: ordenActiva } = await supabase
+      .from("orders")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("from_number", fromNumber)
+      .in("status", ["esperando_nombre", "esperando_ciudad", "esperando_direccion"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
     
     // ============================================
-    // 6. FLUJO DE ORDEN ACTIVA
+    // 5. CONSTRUIR SYSTEM PROMPT
     // ============================================
-    if (ordenActiva) {
-      // Estado: esperando nombre
-      if (ordenActiva.status === "esperando_nombre" && !ordenActiva.customer_name) {
-        if (texto.length > 2 && !detectarProducto(texto) && !detectarCiudad(texto)) {
-          await actualizarOrden(ordenActiva.id, { 
-            customer_name: texto, 
-            status: "esperando_ciudad"
-          });
-          await enviarMensaje(userId, fromNumber, `🙌 Gracias *${texto}*!\n\nAhora pasame tu *ciudad* 📍`);
-        } else {
-          await enviarMensaje(userId, fromNumber, `📝 Pasame tu *nombre completo* para agendar tu pedido.`);
-        }
-        return;
-      }
-      
-      // Estado: esperando ciudad
-      if (ordenActiva.status === "esperando_ciudad" && !ordenActiva.city) {
-        const ciudadOrden = detectarCiudad(texto);
-        if (ciudadOrden) {
-          await actualizarOrden(ordenActiva.id, { 
-            city: ciudadOrden, 
-            status: "esperando_direccion"
-          });
-          await enviarMensaje(userId, fromNumber, `✅ *${ciudadOrden}* tiene envío gratis 🚚\n\nAhora pasame tu *dirección exacta* (calle y número) 📍`);
-        } else {
-          await enviarMensaje(userId, fromNumber, `📍 ¿Podés decirme tu ciudad? Ej: "San Lorenzo", "Luque", "Capiatá"`);
-        }
-        return;
-      }
-      
-      // Estado: esperando dirección
-      if (ordenActiva.status === "esperando_direccion" && !ordenActiva.address) {
-        if (texto.length > 5) {
-          const ordenActualizada = await actualizarOrden(ordenActiva.id, { 
-            address: texto, 
-            status: "confirmando"
-          });
-          if (ordenActualizada) {
-            await confirmarOrden(userId, fromNumber, ordenActualizada);
-          }
-        } else {
-          await enviarMensaje(userId, fromNumber, `📍 Pasame tu *dirección completa* (calle, número, referencia) para coordinar la entrega.`);
-        }
-        return;
-      }
-    }
+    const systemPrompt = buildSystemPrompt(trainingData, !!ordenActiva, ordenActiva);
     
     // ============================================
-    // 7. RESPONDER CON IA (si no aplicó nada anterior)
+    // 6. LLAMAR A GEMINI
     // ============================================
-    const respuestaIA = await generarRespuestaIA(userId, texto, fromNumber, ordenActiva);
+    const respuestaIA = await callGemini(
+      iaConfig.api_key,
+      iaConfig.model || "gemini-2.0-flash",
+      systemPrompt,
+      texto,
+      history
+    );
     
+    // ============================================
+    // 7. ENVIAR RESPUESTA
+    // ============================================
     if (respuestaIA) {
       await enviarMensaje(userId, fromNumber, respuestaIA);
     } else {
-      // Mensaje por defecto si la IA no responde
       await enviarMensaje(userId, fromNumber, 
-        `🛍️ *MEGA TODO STORE*\n\n¡Hola! Soy Araceli 😊\n\n¿De qué ciudad sos? 📍\nAsí te confirmo si tenemos *envío GRATIS* contra-entrega.\n\n📋 Catálogo: https://cat-logomegatodo-com.vercel.app/`);
+        "🛍️ *MEGA TODO STORE*\n\n¿De qué ciudad sos? 📍\n\n📋 Catálogo: https://cat-logomegatodo-com.vercel.app/");
     }
     
   } catch (error) {
-    console.error("❌ Error procesando mensaje:", error);
-    await enviarMensaje(userId, fromNumber, "⚠️ Hubo un error, por favor escribí tu mensaje nuevamente.");
+    console.error("❌ Error:", error);
+    await enviarMensaje(userId, fromNumber, "⚠️ Hubo un error. Por favor escribí tu mensaje nuevamente.");
   }
 }
 
@@ -519,35 +331,27 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
   
-  // Verificación del webhook (GET)
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
     
-    console.log("🔐 Verificación webhook - mode:", mode, "token:", token);
-    
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
-      console.log("✅ Webhook verificado correctamente");
+      console.log("✅ Webhook verificado");
       return res.status(200).send(challenge);
     }
-    
-    console.log("❌ Token inválido para verificación");
     return res.status(403).send("Token inválido");
   }
   
-  // Recepción de mensajes (POST)
   if (req.method === "POST") {
     try {
       const body = req.body;
-      console.log("📨 Webhook POST recibido");
+      console.log("📨 POST recibido");
       
       if (body.object !== "whatsapp_business_account") {
-        return res.status(404).send("Not WhatsApp event");
+        return res.status(404).send("Not WhatsApp");
       }
       
       for (const entry of body.entry || []) {
@@ -564,7 +368,7 @@ export default async function handler(req, res) {
             .single();
           
           if (!config?.user_id) {
-            console.log("⚠️ No se encontró configuración para phone_number_id:", phoneNumberId);
+            console.log("⚠️ Config no encontrada");
             continue;
           }
           
@@ -578,7 +382,7 @@ export default async function handler(req, res) {
       
       return res.status(200).send("EVENT_RECEIVED");
     } catch (error) {
-      console.error("❌ Error en webhook POST:", error);
+      console.error("❌ Error POST:", error);
       return res.status(500).json({ error: "Error interno" });
     }
   }
