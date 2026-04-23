@@ -17,7 +17,7 @@ type IncomingHistoryItem = {
 };
 
 type IncomingContext = {
-  last_topic?: string | null;
+  last_topic?: string | null; // PRODUCTO ACTIVO
   last_trigger?: string | null;
   updated_at?: string | null;
 };
@@ -50,25 +50,6 @@ function safeArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-function sanitizeHistory(
-  history: unknown
-): Array<{ role: "user" | "assistant"; content: string }> {
-  const items = safeArray<IncomingHistoryItem>(history);
-
-  return items
-    .slice(-4)
-    .map((item) => {
-      const role = item?.role;
-      const content = normalizeText(item?.content).slice(0, 180);
-
-      if (!content) return null;
-      if (role !== "user" && role !== "assistant") return null;
-
-      return { role, content };
-    })
-    .filter(Boolean) as Array<{ role: "user" | "assistant"; content: string }>;
-}
-
 function normalizeForSearch(text: string): string {
   return normalizeText(text)
     .toLowerCase()
@@ -90,6 +71,25 @@ function tokenizeText(text: string): string[] {
   );
 }
 
+function sanitizeHistory(
+  history: unknown
+): Array<{ role: "user" | "assistant"; content: string }> {
+  const items = safeArray<IncomingHistoryItem>(history);
+
+  return items
+    .slice(-4)
+    .map((item) => {
+      const role = item?.role;
+      const content = normalizeText(item?.content).slice(0, 180);
+
+      if (!content) return null;
+      if (role !== "user" && role !== "assistant") return null;
+
+      return { role, content };
+    })
+    .filter(Boolean) as Array<{ role: "user" | "assistant"; content: string }>;
+}
+
 function scoreTrainingRow(
   row: TrainingRow,
   currentMessage: string,
@@ -106,10 +106,10 @@ function scoreTrainingRow(
   const keywords = tokenizeText(query);
   if (!keywords.length) return 0;
 
-  const intent = normalizeForSearch(normalizeText(row.intent));
-  const response = normalizeForSearch(normalizeText(row.response));
+  const intent = normalizeForSearch(row.intent || "");
+  const response = normalizeForSearch(row.response || "");
   const examples = safeArray<string>(row.examples)
-    .map((ex) => normalizeForSearch(normalizeText(ex)))
+    .map((ex) => normalizeForSearch(ex))
     .filter(Boolean);
 
   let score = 0;
@@ -119,6 +119,11 @@ function scoreTrainingRow(
     if (response.includes(keyword)) score += 3;
     if (examples.some((ex) => ex.includes(keyword))) score += 4;
   }
+
+  // refuerzo fuerte si el intent menciona precio y el mensaje menciona precio
+  const current = normalizeForSearch(currentMessage);
+  if (current.includes("precio") && intent.includes("precio")) score += 8;
+  if (current.includes("cuanto cuesta") && response.includes("gs")) score += 8;
 
   return score;
 }
@@ -140,7 +145,7 @@ function selectRelevantTrainingRows(
 
   const relevant = ranked
     .filter((item) => item.score > 0)
-    .slice(0, 3)
+    .slice(0, 4)
     .map((item) => item.row);
 
   if (relevant.length > 0) return relevant;
@@ -171,7 +176,7 @@ function buildTrainingContext(rows: TrainingRow[] = []): string {
         .join("\n");
     })
     .join("\n\n")
-    .slice(0, 1200);
+    .slice(0, 1500);
 }
 
 function buildGeminiContents(params: {
@@ -205,10 +210,10 @@ function buildSystemInstruction(params: {
 
   const contextBlock = [
     context?.last_topic
-      ? `Producto o tema actual: ${normalizeText(context.last_topic).slice(0, 160)}`
+      ? `PRODUCTO ACTIVO DEL CHAT: ${normalizeText(context.last_topic).slice(0, 160)}`
       : null,
     context?.last_trigger
-      ? `Último disparador activado: ${normalizeText(context.last_trigger).slice(0, 120)}`
+      ? `ÚLTIMO DISPARADOR: ${normalizeText(context.last_trigger).slice(0, 120)}`
       : null,
   ]
     .filter(Boolean)
@@ -217,24 +222,22 @@ function buildSystemInstruction(params: {
   return `
 ${normalizeText(systemInstruction) || "Eres un asistente de ventas para una tienda online."}
 
-REGLAS:
+REGLAS OBLIGATORIAS:
 - Responde siempre en español.
-- Mantén continuidad total con el historial del chat.
-- Si el cliente viene hablando de un producto, no cambies de producto.
-- Si hay contexto actual del chat, úsalo como prioridad.
-- Si hubo disparador, continúa vendiendo ese producto.
-- No saludes de nuevo si la conversación ya está iniciada.
-- No respondas genérico si ya hay contexto.
-- Responde claro, útil y con intención de cierre.
-- Si el cliente quiere comprar, guía el pedido de forma concreta.
-- Pedí solo el siguiente dato necesario.
-- No inventes precios, stock ni beneficios.
+- Mantén continuidad total con el chat.
+- Si ya existe PRODUCTO ACTIVO, NO cambies de producto.
+- Si el cliente dice "quiero", "si", "sí", "1", "2", "dale", "ok", seguí con el PRODUCTO ACTIVO.
+- Nunca cambies a otro producto por tu cuenta.
+- No inventes precios, stock ni promociones.
 - Basate primero en el entrenamiento relevante.
+- Responde claro, útil y orientado a cerrar venta.
+- Si el cliente quiere comprar, guiá el pedido de forma concreta.
+- Pedí solo el siguiente dato necesario.
 
 ENTRENAMIENTO RELEVANTE:
 ${trainingContext || "Sin entrenamiento adicional."}
 
-CONTEXTO ACTUAL:
+CONTEXTO:
 ${contextBlock || "Sin contexto guardado."}
   `.trim();
 }
@@ -276,9 +279,7 @@ async function callGemini(params: {
 
   if (!response.ok) {
     console.error("❌ Error Gemini:", data);
-    throw new Error(
-      data?.error?.message || data?.message || "Error con Gemini API"
-    );
+    throw new Error(data?.error?.message || "Error con Gemini API");
   }
 
   const text =
@@ -323,15 +324,6 @@ export default async function handler(req, res) {
       });
     }
 
-    console.log(
-      "📨 Chat IA Gemini:",
-      JSON.stringify({
-        user_id: cleanUserId,
-        from_number: cleanFromNumber,
-        message: cleanMessage.slice(0, 80),
-      })
-    );
-
     const { data: iaConfig, error: iaError } = await supabase
       .from("chat_ia_gemini")
       .select("*")
@@ -341,7 +333,7 @@ export default async function handler(req, res) {
     if (iaError || !iaConfig) {
       console.error("❌ Error cargando configuración IA:", iaError);
       return res.status(400).json({
-        error: "No hay configuración de IA. Ve a Ajustes → IA y guarda tu API Key.",
+        error: "No hay configuración de IA.",
       });
     }
 
@@ -349,7 +341,7 @@ export default async function handler(req, res) {
 
     if (!config.is_active) {
       return res.status(400).json({
-        error: "La IA está desactivada. Actívala en Ajustes → IA.",
+        error: "La IA está desactivada.",
       });
     }
 
@@ -391,7 +383,7 @@ export default async function handler(req, res) {
     const temperature =
       typeof config.temperature === "number" ? config.temperature : 0.4;
     const maxOutputTokens =
-      typeof config.max_tokens === "number" ? config.max_tokens : 180;
+      typeof config.max_tokens === "number" ? config.max_tokens : 300;
 
     const contents = buildGeminiContents({
       history: sanitizedHistory,
@@ -418,8 +410,6 @@ export default async function handler(req, res) {
         error: "La IA no devolvió contenido.",
       });
     }
-
-    console.log("✅ Respuesta Gemini generada:", botResponse.slice(0, 120));
 
     return res.status(200).json({
       response: botResponse,
