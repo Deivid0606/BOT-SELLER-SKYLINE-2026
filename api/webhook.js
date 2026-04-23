@@ -22,21 +22,112 @@ function cleanText(value) {
   return String(value || "").trim();
 }
 
-function safeArray(value) {
-  return Array.isArray(value) ? value : [];
-}
-
-function normalizeLocationText(text) {
-  return String(text || "")
+function normalizeForSearch(text) {
+  return cleanText(text)
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/@/g, "a")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeLocationText(text) {
+  return normalizeForSearch(text).replace(/@/g, "a");
+}
+
+// ============================================
+// PRODUCTOS ACTIVOS
+// ============================================
+const PRODUCT_CATALOG = [
+  {
+    name: "Afilador de Cuchillos y Tijeras",
+    aliases: ["afilador", "afilador de cuchillos", "afilador de cuchillos y tijeras"],
+  },
+  {
+    name: "Veneno de Abeja",
+    aliases: ["veneno de abeja", "crema de veneno de abeja", "abeja"],
+  },
+  {
+    name: "DRONE",
+    aliases: ["dron", "drone"],
+  },
+  {
+    name: "Linterna Potente",
+    aliases: ["linterna", "linterna potente"],
+  },
+  {
+    name: "Mini Aspiradora",
+    aliases: ["mini aspiradora", "aspiradora pequeña"],
+  },
+  {
+    name: "Procesador de Alimentos RAF PRO",
+    aliases: ["raf pro", "procesador raf", "procesador de alimentos"],
+  },
+  {
+    name: "Plantillas Ortopiex 5D",
+    aliases: ["ortopiex", "plantillas ortopiex", "plantillas", "plantillas ortopedicas"],
+  },
+  {
+    name: "Medias Terapéuticas",
+    aliases: ["medias terapeuticas", "medias compresion"],
+  },
+  {
+    name: "Rodillera de Compresión",
+    aliases: ["rodillera", "rodillera de compresion"],
+  },
+  {
+    name: "Tobillera de Compresión",
+    aliases: ["tobillera", "tobillera de compresion"],
+  },
+  {
+    name: "Karseell Collagen",
+    aliases: ["karseell", "karseell collagen"],
+  },
+  {
+    name: "Cocedor de Huevos Automático",
+    aliases: ["cocedor de huevos", "huevos automatico"],
+  },
+];
+
+function detectProductFromText(text) {
+  const normalized = normalizeForSearch(text);
+  if (!normalized) return null;
+
+  const sorted = [...PRODUCT_CATALOG].sort(
+    (a, b) =>
+      Math.max(...b.aliases.map((x) => x.length)) -
+      Math.max(...a.aliases.map((x) => x.length))
+  );
+
+  for (const product of sorted) {
+    for (const alias of product.aliases) {
+      if (normalized.includes(normalizeForSearch(alias))) {
+        return product.name;
+      }
+    }
+  }
+
+  return null;
+}
+
+function buildTopicFromTrigger(trigger, responseText) {
+  const fromTrigger =
+    detectProductFromText(trigger?.name) ||
+    detectProductFromText(trigger?.condition) ||
+    detectProductFromText(trigger?.response) ||
+    detectProductFromText(responseText);
+
+  return fromTrigger || null;
+}
+
+// ============================================
+// CIUDADES
+// ============================================
 const CIUDADES_COBERTURA = [
   "asuncion",
   "asun",
@@ -230,17 +321,9 @@ function formatCityName(city) {
   return map[city] || city;
 }
 
-function buildTopicFromTrigger(trigger, responseText) {
-  return (
-    cleanText(trigger?.template) ||
-    cleanText(responseText) ||
-    cleanText(trigger?.response) ||
-    cleanText(trigger?.name) ||
-    cleanText(trigger?.condition) ||
-    null
-  );
-}
-
+// ============================================
+// PEDIDO / INTENCIÓN
+// ============================================
 function isFollowUpMessage(text) {
   const normalized = normalizeText(text);
 
@@ -269,8 +352,11 @@ function isFollowUpMessage(text) {
     "dos",
     "promo",
     "confirmo",
+    "enviame",
     "envíame",
     "me quedo",
+    "1 unidad",
+    "2 unidades",
   ];
 
   return followUps.some((item) => normalized.includes(item));
@@ -280,28 +366,39 @@ function detectQuantity(text) {
   const normalized = normalizeText(text);
 
   if (
-    normalized.includes(" 5 ") ||
-    normalized.includes("cinco") ||
-    normalized.startsWith("5")
-  ) return 5;
+    normalized === "1" ||
+    normalized.includes("1 unidad") ||
+    normalized.includes("uno") ||
+    normalized.startsWith("1")
+  ) return 1;
 
   if (
-    normalized.includes(" 4 ") ||
-    normalized.includes("cuatro") ||
-    normalized.startsWith("4")
-  ) return 4;
+    normalized === "2" ||
+    normalized.includes("2 unidades") ||
+    normalized.includes("dos") ||
+    normalized.startsWith("2")
+  ) return 2;
 
   if (
-    normalized.includes(" 3 ") ||
+    normalized === "3" ||
+    normalized.includes("3 unidades") ||
     normalized.includes("tres") ||
     normalized.startsWith("3")
   ) return 3;
 
   if (
-    normalized.includes(" 2 ") ||
-    normalized.includes("dos") ||
-    normalized.startsWith("2")
-  ) return 2;
+    normalized === "4" ||
+    normalized.includes("4 unidades") ||
+    normalized.includes("cuatro") ||
+    normalized.startsWith("4")
+  ) return 4;
+
+  if (
+    normalized === "5" ||
+    normalized.includes("5 unidades") ||
+    normalized.includes("cinco") ||
+    normalized.startsWith("5")
+  ) return 5;
 
   return 1;
 }
@@ -313,25 +410,7 @@ function extractGsAmount(text) {
   const match = value.match(/(\d{1,3}(?:[.,]\d{3})+|\d+)\s*gs/i);
   if (!match) return null;
 
-  let amount = match[1].replace(/,/g, ".");
-  if (!amount.toLowerCase().includes("gs")) {
-    amount = `${amount} Gs`;
-  }
-
-  return amount;
-}
-
-function simplifyProductName(context) {
-  const text = cleanText(context);
-  if (!text) return "Producto";
-
-  const productoMatch = text.match(/producto\s*:\s*(.+)/i);
-  if (productoMatch?.[1]) {
-    return cleanText(productoMatch[1]);
-  }
-
-  const firstLine = text.split("\n").map(cleanText).find(Boolean);
-  return firstLine || "Producto";
+  return `${match[1].replace(/,/g, ".")} Gs`;
 }
 
 function buildConfirmedOrderMessage(order) {
@@ -357,7 +436,8 @@ function buildConfirmedOrderMessage(order) {
 
 ¡Gracias por elegir Mega Todo Store! 💜✨
 
-🔗 Te invito a revisar nuestro catálogo oficial: https://cat-logomegatodo-com.vercel.app/`;
+🔗 Catálogo oficial:
+https://cat-logomegatodo-com.vercel.app/`;
 }
 
 // ============================================
@@ -371,20 +451,49 @@ async function getIAConfig(userId) {
       .eq("user_id", userId)
       .single();
 
-    if (error || !data) {
-      console.error("❌ No hay configuración IA:", error);
-      return null;
-    }
-
-    if (!data.is_active || !cleanText(data.api_key)) {
-      console.error("❌ IA inactiva o sin api_key");
-      return null;
-    }
+    if (error || !data) return null;
+    if (!data.is_active || !cleanText(data.api_key)) return null;
 
     return data;
   } catch (error) {
     console.error("❌ Error cargando config IA:", error);
     return null;
+  }
+}
+
+// ============================================
+// CONTEXTO
+// ============================================
+async function getChatContext(userId, fromNumber) {
+  try {
+    const { data, error } = await supabase
+      .from("chat_context")
+      .select("last_topic, last_trigger, updated_at")
+      .eq("user_id", userId)
+      .eq("from_number", fromNumber)
+      .maybeSingle();
+
+    if (error) return null;
+    return data || null;
+  } catch {
+    return null;
+  }
+}
+
+async function saveChatContext(userId, fromNumber, payload = {}) {
+  try {
+    await supabase.from("chat_context").upsert(
+      {
+        user_id: userId,
+        from_number: fromNumber,
+        last_topic: payload.last_topic || null, // PRODUCTO ACTIVO
+        last_trigger: payload.last_trigger || null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id,from_number" }
+    );
+  } catch (error) {
+    console.error("Error en saveChatContext:", error);
   }
 }
 
@@ -401,10 +510,7 @@ async function getRecentConversation(userId, fromNumber) {
       .order("created_at", { ascending: false })
       .limit(4);
 
-    if (error) {
-      console.error("Error obteniendo historial:", error);
-      return [];
-    }
+    if (error) return [];
 
     return [...(data || [])]
       .reverse()
@@ -416,56 +522,8 @@ async function getRecentConversation(userId, fromNumber) {
         content: String(msg.message || "").slice(0, 180),
       }))
       .filter((item) => cleanText(item.content));
-  } catch (error) {
-    console.error("Error obteniendo historial reciente:", error);
+  } catch {
     return [];
-  }
-}
-
-// ============================================
-// CONTEXTO
-// ============================================
-async function getChatContext(userId, fromNumber) {
-  try {
-    const { data, error } = await supabase
-      .from("chat_context")
-      .select("last_topic, last_trigger, updated_at")
-      .eq("user_id", userId)
-      .eq("from_number", fromNumber)
-      .maybeSingle();
-
-    if (error) {
-      console.error("Error obteniendo contexto del chat:", error);
-      return null;
-    }
-
-    return data || null;
-  } catch (error) {
-    console.error("Error obteniendo chat_context:", error);
-    return null;
-  }
-}
-
-async function saveChatContext(userId, fromNumber, payload = {}) {
-  try {
-    const { error } = await supabase.from("chat_context").upsert(
-      {
-        user_id: userId,
-        from_number: fromNumber,
-        last_topic: payload.last_topic || null,
-        last_trigger: payload.last_trigger || null,
-        updated_at: new Date().toISOString(),
-      },
-      {
-        onConflict: "user_id,from_number",
-      }
-    );
-
-    if (error) {
-      console.error("Error guardando contexto:", error);
-    }
-  } catch (error) {
-    console.error("Error en saveChatContext:", error);
   }
 }
 
@@ -484,14 +542,9 @@ async function getOpenOrder(userId, phone) {
       .limit(1)
       .maybeSingle();
 
-    if (error) {
-      console.error("Error obteniendo order abierta:", error);
-      return null;
-    }
-
+    if (error) return null;
     return data || null;
-  } catch (error) {
-    console.error("Error en getOpenOrder:", error);
+  } catch {
     return null;
   }
 }
@@ -516,14 +569,9 @@ async function createOrderDraft(userId, phone, payload = {}) {
       .select("*")
       .single();
 
-    if (error) {
-      console.error("Error creando borrador de pedido:", error);
-      return null;
-    }
-
+    if (error) return null;
     return data;
-  } catch (error) {
-    console.error("Error en createOrderDraft:", error);
+  } catch {
     return null;
   }
 }
@@ -540,14 +588,9 @@ async function updateOrder(orderId, payload = {}) {
       .select("*")
       .single();
 
-    if (error) {
-      console.error("Error actualizando pedido:", error);
-      return null;
-    }
-
+    if (error) return null;
     return data;
-  } catch (error) {
-    console.error("Error en updateOrder:", error);
+  } catch {
     return null;
   }
 }
@@ -567,14 +610,13 @@ async function startOrderFlow(userId, fromNumber, context, message) {
   const existingOrder = await getOpenOrder(userId, fromNumber);
   if (existingOrder) return existingOrder;
 
+  const product = cleanText(context?.last_topic);
+  if (!product) return null;
+
   const quantity = detectQuantity(message);
   const totalAmount =
-    extractGsAmount(context?.last_topic) ||
     extractGsAmount(context?.last_trigger) ||
     "A confirmar";
-  const product =
-    cleanText(context?.last_trigger) ||
-    simplifyProductName(context?.last_topic);
 
   return await createOrderDraft(userId, fromNumber, {
     product,
@@ -661,79 +703,8 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
 }
 
 // ============================================
-// GEMINI HELPERS
+// GEMINI
 // ============================================
-function normalizeForSearch(text) {
-  return cleanText(text)
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function tokenizeText(text) {
-  return Array.from(
-    new Set(
-      normalizeForSearch(text)
-        .split(/\s+/)
-        .map((word) => word.trim())
-        .filter((word) => word.length >= 3)
-    )
-  );
-}
-
-function scoreTrainingRow(row, currentMessage, context) {
-  const query = [
-    cleanText(currentMessage),
-    cleanText(context?.last_topic),
-    cleanText(context?.last_trigger),
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  const keywords = tokenizeText(query);
-  if (!keywords.length) return 0;
-
-  const intent = normalizeForSearch(cleanText(row.intent));
-  const response = normalizeForSearch(cleanText(row.response));
-  const examples = safeArray(row.examples)
-    .map((ex) => normalizeForSearch(cleanText(ex)))
-    .filter(Boolean);
-
-  let score = 0;
-
-  for (const keyword of keywords) {
-    if (intent.includes(keyword)) score += 5;
-    if (response.includes(keyword)) score += 3;
-    if (examples.some((ex) => ex.includes(keyword))) score += 4;
-  }
-
-  return score;
-}
-
-function selectRelevantTrainingRows(rows, currentMessage, context) {
-  if (!rows || rows.length === 0) return [];
-
-  const ranked = rows
-    .map((row, index) => ({
-      row,
-      index,
-      score: scoreTrainingRow(row, currentMessage, context),
-    }))
-    .sort((a, b) => b.score - a.score || a.index - b.index);
-
-  const relevant = ranked
-    .filter((item) => item.score > 0)
-    .slice(0, 3)
-    .map((item) => item.row);
-
-  if (relevant.length > 0) return relevant;
-
-  return rows.slice(0, 2);
-}
-
 async function getTrainingContext(userId, currentMessage, context) {
   try {
     const { data, error } = await supabase
@@ -742,18 +713,41 @@ async function getTrainingContext(userId, currentMessage, context) {
       .eq("user_id", userId)
       .eq("is_active", true);
 
-    if (error) {
-      console.error("Error cargando training_data:", error);
+    if (error || !data || data.length === 0) {
       return "Sin entrenamiento adicional.";
     }
 
-    if (!data || data.length === 0) {
-      return "Sin entrenamiento adicional.";
-    }
+    const query = normalizeForSearch(
+      [currentMessage, context?.last_topic, context?.last_trigger]
+        .filter(Boolean)
+        .join(" ")
+    );
 
-    const relevantRows = selectRelevantTrainingRows(data, currentMessage, context);
+    const scored = data
+      .map((row, index) => {
+        const haystack = normalizeForSearch(
+          `${row.intent || ""} ${(row.examples || []).join(" ")} ${row.response || ""}`
+        );
+        let score = 0;
 
-    return relevantRows
+        for (const token of query.split(/\s+/)) {
+          if (token.length < 3) continue;
+          if (haystack.includes(token)) score += 1;
+          if (normalizeForSearch(row.intent || "").includes(token)) score += 3;
+        }
+
+        return { row, index, score };
+      })
+      .sort((a, b) => b.score - a.score || a.index - b.index);
+
+    const relevant = scored
+      .filter((x) => x.score > 0)
+      .slice(0, 4)
+      .map((x) => x.row);
+
+    const finalRows = relevant.length ? relevant : data.slice(0, 2);
+
+    return finalRows
       .map((row, index) => {
         const intent = cleanText(row.intent) || `Intent ${index + 1}`;
         const response = cleanText(row.response) || "Sin respuesta definida";
@@ -771,14 +765,13 @@ async function getTrainingContext(userId, currentMessage, context) {
           .join("\n");
       })
       .join("\n\n")
-      .slice(0, 1200);
-  } catch (error) {
-    console.error("Error armando training context:", error);
+      .slice(0, 1500);
+  } catch {
     return "Sin entrenamiento adicional.";
   }
 }
 
-function buildGeminiTextContents(history, currentMessage) {
+function buildGeminiContents(history, currentMessage) {
   const contents = [];
 
   for (const item of history || []) {
@@ -800,39 +793,24 @@ function buildGeminiTextContents(history, currentMessage) {
 }
 
 function buildGeminiSystemInstruction(systemInstruction, trainingContext, context) {
-  const contextBlock = [
-    context?.last_topic
-      ? `Producto o tema actual: ${cleanText(context.last_topic).slice(0, 160)}`
-      : null,
-    context?.last_trigger
-      ? `Último disparador activado: ${cleanText(context.last_trigger).slice(0, 120)}`
-      : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const productActive = cleanText(context?.last_topic);
 
   return `
 ${cleanText(systemInstruction) || "Eres un asistente de ventas para una tienda online."}
 
 REGLAS:
 - Responde siempre en español.
-- Mantén continuidad total con el historial del chat.
-- Si el cliente viene hablando de un producto, no cambies de producto.
-- Si hay contexto actual del chat, úsalo como prioridad.
-- Si hubo disparador, continúa vendiendo ese producto.
-- No saludes de nuevo si la conversación ya está iniciada.
-- No respondas genérico si ya hay contexto.
-- Responde claro, útil y con intención de cierre.
-- Si el cliente quiere comprar, guía el pedido de forma concreta.
-- Pedí solo el siguiente dato necesario.
-- No inventes precios, stock ni beneficios.
-- Basate primero en el entrenamiento relevante.
+- PRODUCTO ACTIVO: ${productActive || "ninguno"}.
+- Si ya existe producto activo, NO cambies a otro producto.
+- Si el cliente dice "quiero", "si", "sí", "1", "2", "ok", "dale", seguí con el producto activo.
+- No inventes productos.
+- No inventes precios.
+- Basate primero en el entrenamiento.
+- Mantené continuidad total del chat.
+- Pedí solo el siguiente dato necesario para cerrar la venta.
 
 ENTRENAMIENTO RELEVANTE:
 ${trainingContext || "Sin entrenamiento adicional."}
-
-CONTEXTO ACTUAL:
-${contextBlock || "Sin contexto guardado."}
   `.trim();
 }
 
@@ -898,9 +876,6 @@ async function urlToInlineData(url, defaultMimeType) {
   };
 }
 
-// ============================================
-// IA TEXTO
-// ============================================
 async function generateAIReply(userId, message, fromNumber) {
   try {
     const iaConfig = await getIAConfig(userId);
@@ -918,16 +893,16 @@ async function generateAIReply(userId, message, fromNumber) {
     const temperature =
       typeof iaConfig.temperature === "number" ? iaConfig.temperature : 0.4;
     const maxOutputTokens =
-      typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 180;
+      typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 300;
 
-    const contents = buildGeminiTextContents(history, message);
+    const contents = buildGeminiContents(history, message);
     const finalSystemInstruction = buildGeminiSystemInstruction(
       systemInstruction,
       trainingContext,
       context
     );
 
-    const botResponse = await callGeminiText({
+    return await callGeminiText({
       apiKey: cleanText(iaConfig.api_key),
       model,
       systemInstruction: finalSystemInstruction,
@@ -935,20 +910,12 @@ async function generateAIReply(userId, message, fromNumber) {
       temperature,
       maxOutputTokens,
     });
-
-    if (!botResponse) return null;
-
-    console.log("✅ Gemini generó respuesta:", botResponse.slice(0, 120));
-    return botResponse;
   } catch (error) {
     console.error("❌ Error generando respuesta Gemini:", error);
     return null;
   }
 }
 
-// ============================================
-// IA IMAGEN
-// ============================================
 async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
   try {
     const iaConfig = await getIAConfig(userId);
@@ -956,11 +923,6 @@ async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
 
     const context = await getChatContext(userId, fromNumber);
     const trainingContext = await getTrainingContext(userId, "[imagen]", context);
-
-    const systemInstruction =
-      cleanText(iaConfig.system_instruction) ||
-      "Eres un asistente de ventas para una tienda online.";
-
     const inlineImage = await urlToInlineData(imageUrl, "image/jpeg");
 
     const response = await fetch(
@@ -969,26 +931,19 @@ async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
       )}:generateContent?key=${encodeURIComponent(cleanText(iaConfig.api_key))}`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           systemInstruction: {
             parts: [
               {
                 text: `
-${systemInstruction}
-
+Eres un asistente de ventas.
 Responde en español.
-Sé breve, útil y orientado a venta.
-Usa el contexto si aplica.
-Basate en el entrenamiento.
+No cambies de producto si ya hay uno activo.
+Producto activo: ${cleanText(context?.last_topic) || "ninguno"}
 
 Entrenamiento:
-${String(trainingContext).slice(0, 300)}
-
-Contexto:
-${context?.last_topic ? cleanText(context.last_topic).slice(0, 100) : "Sin contexto"}
+${String(trainingContext).slice(0, 400)}
                 `.trim(),
               },
             ],
@@ -998,7 +953,7 @@ ${context?.last_topic ? cleanText(context.last_topic).slice(0, 100) : "Sin conte
               role: "user",
               parts: [
                 {
-                  text: "Analiza la imagen enviada por el cliente. Si muestra un producto, descríbelo y responde como vendedor. Si no se entiende bien, pedí otra foto más clara.",
+                  text: "Analiza la imagen enviada por el cliente. Si muestra un producto, describilo y respondé como vendedor. Si no se entiende, pedí otra foto.",
                 },
                 {
                   inlineData: inlineImage,
@@ -1008,7 +963,7 @@ ${context?.last_topic ? cleanText(context.last_topic).slice(0, 100) : "Sin conte
           ],
           generationConfig: {
             temperature: 0.3,
-            maxOutputTokens: 120,
+            maxOutputTokens: 140,
           },
         }),
       }
@@ -1034,9 +989,6 @@ ${context?.last_topic ? cleanText(context.last_topic).slice(0, 100) : "Sin conte
   }
 }
 
-// ============================================
-// TRANSCRIBIR AUDIO CON GEMINI
-// ============================================
 async function transcribeAudioFromUrl(audioUrl, userId, fromNumber) {
   try {
     const iaConfig = await getIAConfig(userId);
@@ -1050,19 +1002,14 @@ async function transcribeAudioFromUrl(audioUrl, userId, fromNumber) {
       )}:generateContent?key=${encodeURIComponent(cleanText(iaConfig.api_key))}`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           systemInstruction: {
             parts: [
               {
                 text: `
 Eres un asistente que transcribe audios en español.
-Devuelve solamente la transcripción en texto plano.
-No resumas.
-No expliques.
-No agregues comentarios.
+Devuelve solo la transcripción en texto plano.
                 `.trim(),
               },
             ],
@@ -1071,12 +1018,8 @@ No agregues comentarios.
             {
               role: "user",
               parts: [
-                {
-                  text: "Transcribí este audio en español.",
-                },
-                {
-                  inlineData: inlineAudio,
-                },
+                { text: "Transcribí este audio en español." },
+                { inlineData: inlineAudio },
               ],
             },
           ],
@@ -1109,7 +1052,7 @@ No agregues comentarios.
 }
 
 // ============================================
-// ENVIAR WHATSAPP
+// WHATSAPP
 // ============================================
 async function sendWhatsAppMessage(userId, to, message) {
   try {
@@ -1119,13 +1062,7 @@ async function sendWhatsAppMessage(userId, to, message) {
       .eq("user_id", userId)
       .single();
 
-    if (configError) {
-      console.error("Error cargando whatsapp_config:", configError);
-      return null;
-    }
-
-    if (!config?.phone_number_id || !config?.permanent_token) {
-      console.error("Falta phone_number_id o permanent_token");
+    if (configError || !config?.phone_number_id || !config?.permanent_token) {
       return null;
     }
 
@@ -1171,7 +1108,7 @@ async function sendWhatsAppMessage(userId, to, message) {
 }
 
 // ============================================
-// DISPARADORES
+// TRIGGERS
 // ============================================
 async function procesarDisparadores(userId, fromNumber, message) {
   try {
@@ -1181,12 +1118,7 @@ async function procesarDisparadores(userId, fromNumber, message) {
       .eq("user_id", userId)
       .eq("active", true);
 
-    if (error) {
-      console.error("Error cargando triggers:", error);
-      return null;
-    }
-
-    if (!triggers || triggers.length === 0) return null;
+    if (error || !triggers || triggers.length === 0) return null;
 
     const messageLower = normalizeText(message);
 
@@ -1195,39 +1127,34 @@ async function procesarDisparadores(userId, fromNumber, message) {
       if (!condition) continue;
 
       if (messageLower.includes(condition)) {
-        console.log(`🎯 Disparador encontrado: ${trigger.name}`);
-
         let responseText = trigger.response || "";
 
         if (trigger.template && trigger.template !== "Ninguna") {
-          const { data: template, error: tplError } = await supabase
+          const { data: template } = await supabase
             .from("templates")
             .select("content")
             .eq("name", trigger.template)
             .eq("user_id", userId)
             .single();
 
-          if (tplError) {
-            console.error("Error cargando plantilla del trigger:", tplError);
-          }
-
-          if (template?.content) {
-            responseText = template.content;
-          }
+          if (template?.content) responseText = template.content;
         }
 
         if (responseText) {
           await sendWhatsAppMessage(userId, fromNumber, responseText);
         }
 
+        const productFromTrigger = buildTopicFromTrigger(trigger, responseText);
+
         await saveChatContext(userId, fromNumber, {
-          last_topic: buildTopicFromTrigger(trigger, responseText),
+          last_topic: productFromTrigger,
           last_trigger: trigger.name || null,
         });
 
         return {
           ...trigger,
           responseText,
+          productFromTrigger,
         };
       }
     }
@@ -1240,7 +1167,7 @@ async function procesarDisparadores(userId, fromNumber, message) {
 }
 
 // ============================================
-// DESCARGAR MEDIA
+// STORAGE
 // ============================================
 async function downloadAndUploadMedia(mediaId, token) {
   try {
@@ -1290,18 +1217,14 @@ async function downloadAndUploadMedia(mediaId, token) {
         upsert: false,
       });
 
-    if (uploadError) {
-      console.error("Error subiendo media a storage:", uploadError);
-      return null;
-    }
+    if (uploadError) return null;
 
     const {
       data: { publicUrl },
     } = supabase.storage.from("templates-media").getPublicUrl(fileName);
 
     return { url: publicUrl, type: mediaType };
-  } catch (error) {
-    console.error("Error en downloadAndUploadMedia:", error);
+  } catch {
     return null;
   }
 }
@@ -1320,7 +1243,6 @@ async function procesarMensaje(message, token, userId, fromNumber) {
 
     if (type === "text") {
       contenido = cleanText(message.text?.body || "");
-      console.log("🔥 WEBHOOK RECIBIÓ MENSAJE:", contenido, "de", fromNumber);
     } else if (type === "image") {
       mediaId = message.image?.id;
       contenido = "[Imagen]";
@@ -1354,11 +1276,8 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       created_at: now,
     });
 
-    console.log(`📝 Mensaje guardado de ${fromNumber}: ${contenido.substring(0, 80)}`);
-
     if (type === "image" && mediaUrl) {
       const imageReply = await analyzeImageWithAI(userId, mediaUrl, fromNumber);
-
       if (imageReply) {
         await sendWhatsAppMessage(userId, fromNumber, imageReply);
       } else {
@@ -1368,7 +1287,6 @@ async function procesarMensaje(message, token, userId, fromNumber) {
           "Recibí tu imagen 📸, pero no pude analizarla bien. Probá mandarme otra foto más clara."
         );
       }
-
       return;
     }
 
@@ -1384,8 +1302,6 @@ async function procesarMensaje(message, token, userId, fromNumber) {
         return;
       }
 
-      console.log(`🎙️ Audio transcripto con Gemini: ${transcript}`);
-
       await supabase.from("received_messages").insert({
         user_id: userId,
         platform: "whatsapp",
@@ -1396,15 +1312,23 @@ async function procesarMensaje(message, token, userId, fromNumber) {
         created_at: new Date().toISOString(),
       });
 
+      const existingContextFromAudio = await getChatContext(userId, fromNumber);
+      const detectedProductFromAudio =
+        detectProductFromText(transcript) || cleanText(existingContextFromAudio?.last_topic);
+
+      if (detectedProductFromAudio) {
+        await saveChatContext(userId, fromNumber, {
+          last_topic: detectedProductFromAudio,
+          last_trigger: existingContextFromAudio?.last_trigger || null,
+        });
+      }
+
       const handledOrderFromAudio = await handleOrderDataCollection(
         userId,
         fromNumber,
         transcript
       );
       if (handledOrderFromAudio) return;
-
-      const existingContextFromAudio = await getChatContext(userId, fromNumber);
-      const followUpFromAudio = isFollowUpMessage(transcript);
 
       const triggerFromAudio = await procesarDisparadores(userId, fromNumber, transcript);
       if (triggerFromAudio) return;
@@ -1417,12 +1341,6 @@ async function procesarMensaje(message, token, userId, fromNumber) {
 
       if (cityDetectionAudio?.type === "coverage") {
         const cityName = formatCityName(cityDetectionAudio.value);
-
-        await saveChatContext(userId, fromNumber, {
-          last_topic: existingContextFromAudio?.last_topic || cityName,
-          last_trigger: "ciudad_cobertura",
-        });
-
         await sendWhatsAppMessage(
           userId,
           fromNumber,
@@ -1437,11 +1355,14 @@ https://cat-logomegatodo-com.vercel.app/`
         return;
       }
 
-      if (followUpFromAudio && existingContextFromAudio?.last_topic) {
+      const followUpFromAudio = isFollowUpMessage(transcript);
+      const freshContextAudio = await getChatContext(userId, fromNumber);
+
+      if (followUpFromAudio && freshContextAudio?.last_topic) {
         const order = await startOrderFlow(
           userId,
           fromNumber,
-          existingContextFromAudio,
+          freshContextAudio,
           transcript
         );
 
@@ -1449,37 +1370,39 @@ https://cat-logomegatodo-com.vercel.app/`
           await sendWhatsAppMessage(
             userId,
             fromNumber,
-            `¡Genial! 😊 Para confirmar tu pedido de *${cleanText(order.product) || "tu producto"}* pasame tu *nombre completo*.`
+            `¡Genial! 😊 Para confirmar tu pedido de *${cleanText(order.product)}* pasame tu *nombre completo*.`
           );
           return;
         }
       }
 
       const audioReply = await generateAIReply(userId, transcript, fromNumber);
-
       if (audioReply) {
         await sendWhatsAppMessage(userId, fromNumber, audioReply);
       }
-
       return;
     }
 
     if (type !== "text" || !contenido) return;
 
-    const handledOrder = await handleOrderDataCollection(userId, fromNumber, contenido);
-    if (handledOrder) {
-      console.log(`🧾 Mensaje usado para completar pedido de ${fromNumber}`);
-      return;
+    const existingContext = await getChatContext(userId, fromNumber);
+
+    // ANCLAR PRODUCTO ACTIVO
+    const detectedProduct =
+      detectProductFromText(contenido) || cleanText(existingContext?.last_topic);
+
+    if (detectedProduct) {
+      await saveChatContext(userId, fromNumber, {
+        last_topic: detectedProduct,
+        last_trigger: existingContext?.last_trigger || null,
+      });
     }
 
-    const existingContext = await getChatContext(userId, fromNumber);
-    const followUp = isFollowUpMessage(contenido);
+    const handledOrder = await handleOrderDataCollection(userId, fromNumber, contenido);
+    if (handledOrder) return;
 
     const triggerResult = await procesarDisparadores(userId, fromNumber, contenido);
-    if (triggerResult) {
-      console.log(`✅ Respuesta enviada por trigger: ${triggerResult.name}`);
-      return;
-    }
+    if (triggerResult) return;
 
     const cityDetection = detectCoverageCity(contenido);
 
@@ -1490,12 +1413,6 @@ https://cat-logomegatodo-com.vercel.app/`
 
     if (cityDetection?.type === "coverage") {
       const cityName = formatCityName(cityDetection.value);
-
-      await saveChatContext(userId, fromNumber, {
-        last_topic: existingContext?.last_topic || cityName,
-        last_trigger: "ciudad_cobertura",
-      });
-
       await sendWhatsAppMessage(
         userId,
         fromNumber,
@@ -1510,40 +1427,36 @@ https://cat-logomegatodo-com.vercel.app/`
       return;
     }
 
-    if (followUp && existingContext?.last_topic) {
-      const order = await startOrderFlow(userId, fromNumber, existingContext, contenido);
+    const freshContext = await getChatContext(userId, fromNumber);
+    const followUp = isFollowUpMessage(contenido);
+
+    if (followUp && freshContext?.last_topic) {
+      const order = await startOrderFlow(userId, fromNumber, freshContext, contenido);
 
       if (order) {
         await sendWhatsAppMessage(
           userId,
           fromNumber,
-          `¡Genial! 😊 Para confirmar tu pedido de *${cleanText(order.product) || "tu producto"}* pasame tu *nombre completo*.`
+          `¡Genial! 😊 Para confirmar tu pedido de *${cleanText(order.product)}* pasame tu *nombre completo*.`
         );
         return;
       }
     }
 
     const iaConfig = await getIAConfig(userId);
-    if (!iaConfig) {
-      console.log(`⚠️ IA inactiva o sin api_key para user ${userId}`);
-      return;
-    }
-
-    console.log(`🤖 Gemini activo, respondiendo a ${fromNumber}`);
+    if (!iaConfig) return;
 
     const aiResponse = await generateAIReply(userId, contenido, fromNumber);
 
-    if (!aiResponse) {
-      console.log(`⚠️ Gemini no devolvió respuesta para ${fromNumber}`);
-      return;
-    }
+    if (!aiResponse) return;
 
     const sendResult = await sendWhatsAppMessage(userId, fromNumber, aiResponse);
 
     if (sendResult) {
+      // IMPORTANTE: JAMÁS guardar contenido crudo como producto
       await saveChatContext(userId, fromNumber, {
-        last_topic: existingContext?.last_topic || contenido,
-        last_trigger: existingContext?.last_trigger || null,
+        last_topic: detectedProduct || cleanText(freshContext?.last_topic) || null,
+        last_trigger: cleanText(freshContext?.last_trigger) || null,
       });
     }
   } catch (err) {
@@ -1589,10 +1502,7 @@ export default async function handler(req, res) {
           const value = change.value;
           const phoneNumberId = value?.metadata?.phone_number_id;
 
-          if (!phoneNumberId) {
-            console.error("❌ No llegó phone_number_id en metadata");
-            continue;
-          }
+          if (!phoneNumberId) continue;
 
           const { data: config, error: configError } = await supabase
             .from("whatsapp_config")
@@ -1600,13 +1510,7 @@ export default async function handler(req, res) {
             .eq("phone_number_id", phoneNumberId)
             .single();
 
-          if (configError || !config?.user_id) {
-            console.error(
-              "❌ No se encontró configuración para ese phone_number_id",
-              configError
-            );
-            continue;
-          }
+          if (configError || !config?.user_id) continue;
 
           const userId = config.user_id;
           const token = config.permanent_token;
