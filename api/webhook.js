@@ -40,6 +40,53 @@ function normalizeLocationText(text) {
   return normalizeForSearch(text).replace(/@/g, "a");
 }
 
+function normalizePyPhone(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "";
+
+  let d = digits;
+
+  if (d.startsWith("595")) d = d.slice(3);
+  if (d.startsWith("0")) d = d.slice(1);
+
+  if (d.length > 9) d = d.slice(-9);
+
+  return d;
+}
+
+function looksLikeGoogleMaps(text) {
+  const t = String(text || "").toLowerCase();
+  return (
+    t.includes("google.com/maps") ||
+    t.includes("maps.app.goo.gl") ||
+    t.includes("goo.gl/maps") ||
+    t.includes("https://maps") ||
+    t.includes("ubicacion:") ||
+    t.includes("ubicación:")
+  );
+}
+
+function isDetailedAddress(text) {
+  const raw = cleanText(text);
+  const normalized = normalizeForSearch(raw);
+
+  if (!raw) return false;
+  if (looksLikeGoogleMaps(raw)) return true;
+
+  const words = normalized.split(" ").filter(Boolean);
+  const hasNumber = /\d/.test(raw);
+  const hasReferenceWords =
+    normalized.includes("casi") ||
+    normalized.includes("frente") ||
+    normalized.includes("esquina") ||
+    normalized.includes("al lado") ||
+    normalized.includes("cerca") ||
+    normalized.includes("entre") ||
+    normalized.includes("referencia");
+
+  return words.length >= 4 && (hasNumber || hasReferenceWords);
+}
+
 // ============================================
 // PRODUCTOS ACTIVOS
 // ============================================
@@ -494,7 +541,6 @@ function extractGsAmount(text) {
 
 function extractCustomerDataFromText(text, fallbackPhone = "") {
   const raw = cleanText(text);
-  const normalized = normalizeForSearch(raw);
 
   const cityDetection = detectCoverageCity(raw);
   const city =
@@ -509,26 +555,29 @@ function extractCustomerDataFromText(text, fallbackPhone = "") {
   let address = null;
 
   if (city) {
-    const cityNormalized = normalizeForSearch(city);
-    const idx = normalized.indexOf(cityNormalized);
+    const rawLower = raw.toLowerCase();
+    const cityLower = city.toLowerCase();
+    const idx = rawLower.indexOf(cityLower);
 
     if (idx >= 0) {
       const beforeCity = raw.slice(0, idx).trim();
       const afterCity = raw.slice(idx + city.length).trim();
 
-      customerName = cleanText(
-        beforeCity
-          .replace(phone || "", "")
-          .replace(/\bcantidad\b.*$/i, "")
-          .trim()
-      ) || null;
+      customerName =
+        cleanText(
+          beforeCity
+            .replace(phone || "", "")
+            .replace(/\bcantidad\b.*$/i, "")
+            .trim()
+        ) || null;
 
-      address = cleanText(
-        afterCity
-          .replace(phone || "", "")
-          .replace(/\bcantidad\b[:\s-]*\d+\b/i, "")
-          .trim()
-      ) || null;
+      address =
+        cleanText(
+          afterCity
+            .replace(phone || "", "")
+            .replace(/\bcantidad\b[:\s-]*\d+\b/i, "")
+            .trim()
+        ) || null;
     }
   }
 
@@ -538,6 +587,7 @@ function extractCustomerDataFromText(text, fallbackPhone = "") {
       .split(/\s{2,}|,/)
       .map((x) => cleanText(x))
       .filter(Boolean);
+
     if (parts.length) customerName = parts[0];
   }
 
@@ -668,18 +718,30 @@ async function getRecentConversation(userId, fromNumber) {
 // ============================================
 async function getOpenOrder(userId, phone) {
   try {
+    const normalizedIncoming = normalizePyPhone(phone);
+
     const { data, error } = await supabase
       .from("orders")
       .select("*")
       .eq("user_id", userId)
-      .eq("phone", phone)
-      .in("status", ["draft", "collecting_name", "collecting_city", "collecting_address"])
+      .in("status", [
+        "draft",
+        "collecting_name",
+        "collecting_city",
+        "collecting_address",
+        "waiting_exact_address",
+      ])
       .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(20);
 
     if (error) return null;
-    return data || null;
+    if (!data?.length) return null;
+
+    const exact = data.find(
+      (row) => normalizePyPhone(row.phone) === normalizedIncoming
+    );
+
+    return exact || data[0] || null;
   } catch {
     return null;
   }
@@ -771,18 +833,21 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
 
   const extracted = extractCustomerDataFromText(text, fromNumber);
 
+  const merged = {
+    customer_name: extracted.customer_name || openOrder.customer_name || null,
+    city: extracted.city || openOrder.city || null,
+    address: extracted.address || openOrder.address || null,
+    phone: extracted.phone || openOrder.phone || cleanText(fromNumber),
+    quantity: extracted.quantity || openOrder.quantity || 1,
+  };
+
   if (
-    extracted.customer_name &&
-    extracted.city &&
-    extracted.address &&
-    extracted.phone
+    openOrder.status === "waiting_exact_address" &&
+    (isDetailedAddress(text) || looksLikeGoogleMaps(text))
   ) {
     const updated = await updateOrder(openOrder.id, {
-      customer_name: extracted.customer_name,
-      city: extracted.city,
-      address: extracted.address,
-      phone: extracted.phone,
-      quantity: extracted.quantity || openOrder.quantity || 1,
+      address: text,
+      phone: merged.phone,
       status: "draft",
     });
 
@@ -793,10 +858,68 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
       const sent = await sendWhatsAppMessage(userId, fromNumber, confirmationText);
 
       if (sent) {
-        await updateOrder(updated.id, {
-          status: "confirmed",
-        });
+        await updateOrder(updated.id, { status: "confirmed" });
+        await sendWhatsAppMessage(
+          userId,
+          fromNumber,
+          `¡Gracias por tu compra, ${cleanText(updated.customer_name) || "cliente"}! 💜`
+        );
+      }
+    }
 
+    return true;
+  }
+
+  if (
+    merged.customer_name &&
+    merged.city &&
+    merged.phone &&
+    merged.address
+  ) {
+    if (!isDetailedAddress(merged.address) && !looksLikeGoogleMaps(merged.address)) {
+      const updated = await updateOrder(openOrder.id, {
+        customer_name: merged.customer_name,
+        city: merged.city,
+        phone: merged.phone,
+        quantity: merged.quantity,
+        address: merged.address,
+        status: "waiting_exact_address",
+      });
+
+      if (updated) {
+        await sendWhatsAppMessage(
+          userId,
+          fromNumber,
+          `Perfecto 🙌 Ya tengo casi todo.
+
+✅ Nombre: ${cleanText(updated.customer_name)}
+✅ Ciudad: ${cleanText(updated.city)}
+✅ Teléfono: ${cleanText(updated.phone)}
+
+Ahora pasame por favor tu *calle exacta* o tu *ubicación de Google Maps* 📍 para cerrar el pedido.`
+        );
+      }
+
+      return true;
+    }
+
+    const updated = await updateOrder(openOrder.id, {
+      customer_name: merged.customer_name,
+      city: merged.city,
+      address: merged.address,
+      phone: merged.phone,
+      quantity: merged.quantity,
+      status: "draft",
+    });
+
+    if (!updated) return true;
+
+    if (isOrderComplete(updated)) {
+      const confirmationText = buildConfirmedOrderMessage(updated);
+      const sent = await sendWhatsAppMessage(userId, fromNumber, confirmationText);
+
+      if (sent) {
+        await updateOrder(updated.id, { status: "confirmed" });
         await sendWhatsAppMessage(
           userId,
           fromNumber,
@@ -811,6 +934,7 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
   if (openOrder.status === "collecting_name") {
     const updated = await updateOrder(openOrder.id, {
       customer_name: text,
+      phone: merged.phone,
       status: "collecting_city",
     });
 
@@ -832,6 +956,7 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
 
     const updated = await updateOrder(openOrder.id, {
       city: finalCity,
+      phone: merged.phone,
       status: "collecting_address",
     });
 
@@ -839,7 +964,7 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
       await sendWhatsAppMessage(
         userId,
         fromNumber,
-        "Genial 😊 Ahora pasame tu dirección exacta."
+        "Genial 😊 Ahora pasame tu dirección exacta o tu ubicación de Google Maps 📍."
       );
     }
 
@@ -847,9 +972,27 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
   }
 
   if (openOrder.status === "collecting_address") {
+    if (!isDetailedAddress(text) && !looksLikeGoogleMaps(text)) {
+      const updated = await updateOrder(openOrder.id, {
+        address: text,
+        phone: merged.phone,
+        status: "waiting_exact_address",
+      });
+
+      if (updated) {
+        await sendWhatsAppMessage(
+          userId,
+          fromNumber,
+          "Te entendí 👍 pero para cerrar bien el pedido pasame por favor tu *calle exacta* o tu *ubicación de Google Maps* 📍."
+        );
+      }
+
+      return true;
+    }
+
     const updated = await updateOrder(openOrder.id, {
       address: text,
-      phone: cleanText(openOrder.phone) || cleanText(fromNumber),
+      phone: merged.phone,
       status: "draft",
     });
 
@@ -860,10 +1003,7 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
       const sent = await sendWhatsAppMessage(userId, fromNumber, confirmationText);
 
       if (sent) {
-        await updateOrder(updated.id, {
-          status: "confirmed",
-        });
-
+        await updateOrder(updated.id, { status: "confirmed" });
         await sendWhatsAppMessage(
           userId,
           fromNumber,
