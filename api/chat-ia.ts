@@ -37,6 +37,11 @@ type IAConfigRow = {
   max_tokens?: number | null;
 };
 
+type GeminiContent = {
+  role: "user" | "model";
+  parts: Array<{ text: string }>;
+};
+
 function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
 }
@@ -163,15 +168,34 @@ function buildTrainingContext(rows: TrainingRow[] = []): string {
     .slice(0, 220);
 }
 
-function buildMessages(params: {
-  systemInstruction: string;
-  trainingContext: string;
+function buildGeminiContents(params: {
   history: Array<{ role: "user" | "assistant"; content: string }>;
   currentMessage: string;
+}): GeminiContent[] {
+  const { history, currentMessage } = params;
+  const contents: GeminiContent[] = [];
+
+  for (const item of history) {
+    contents.push({
+      role: item.role === "assistant" ? "model" : "user",
+      parts: [{ text: item.content }],
+    });
+  }
+
+  contents.push({
+    role: "user",
+    parts: [{ text: normalizeText(currentMessage).slice(0, 120) }],
+  });
+
+  return contents;
+}
+
+function buildSystemInstruction(params: {
+  systemInstruction: string;
+  trainingContext: string;
   context: IncomingContext | null;
-}): Array<{ role: ChatRole; content: string }> {
-  const { systemInstruction, trainingContext, history, currentMessage, context } =
-    params;
+}): string {
+  const { systemInstruction, trainingContext, context } = params;
 
   const contextBlock = [
     context?.last_topic
@@ -184,7 +208,7 @@ function buildMessages(params: {
     .filter(Boolean)
     .join("\n");
 
-  const systemPrompt = `
+  return `
 ${normalizeText(systemInstruction).slice(0, 160) || "Eres un asistente de ventas."}
 Reglas:
 - Responde en español.
@@ -199,24 +223,57 @@ ${trainingContext || "Sin entrenamiento."}
 Contexto:
 ${contextBlock || "Sin contexto."}
   `.trim();
+}
 
-  const messages: Array<{ role: ChatRole; content: string }> = [
-    { role: "system", content: systemPrompt },
-  ];
+async function callGemini(params: {
+  apiKey: string;
+  model: string;
+  systemInstruction: string;
+  contents: GeminiContent[];
+  temperature: number;
+  maxOutputTokens: number;
+}): Promise<string> {
+  const { apiKey, model, systemInstruction, contents, temperature, maxOutputTokens } =
+    params;
 
-  for (const item of history) {
-    messages.push({
-      role: item.role,
-      content: item.content,
-    });
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      model
+    )}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: systemInstruction }],
+        },
+        contents,
+        generationConfig: {
+          temperature,
+          maxOutputTokens,
+        },
+      }),
+    }
+  );
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    console.error("❌ Error Gemini:", data);
+    throw new Error(
+      data?.error?.message || data?.message || "Error con Gemini API"
+    );
   }
 
-  messages.push({
-    role: "user",
-    content: normalizeText(currentMessage).slice(0, 120),
-  });
+  const text =
+    data?.candidates?.[0]?.content?.parts
+      ?.map((part: any) => normalizeText(part?.text))
+      .filter(Boolean)
+      .join("\n") || "";
 
-  return messages;
+  return normalizeText(text);
 }
 
 export default async function handler(req, res) {
@@ -253,7 +310,7 @@ export default async function handler(req, res) {
     }
 
     console.log(
-      "📨 Chat IA:",
+      "📨 Chat IA Gemini:",
       JSON.stringify({
         user_id: cleanUserId,
         from_number: cleanFromNumber,
@@ -316,44 +373,31 @@ export default async function handler(req, res) {
       normalizeText(config.system_instruction) ||
       "Eres un asistente de ventas para una tienda online.";
 
-    const model = normalizeText(config.model) || "openai/gpt-4o-mini";
+    const model = normalizeText(config.model) || "gemini-2.5-flash";
     const temperature =
       typeof config.temperature === "number" ? config.temperature : 0.4;
-    const maxTokens =
-      typeof config.max_tokens === "number" ? config.max_tokens : 30;
+    const maxOutputTokens =
+      typeof config.max_tokens === "number" ? config.max_tokens : 80;
 
-    const messages = buildMessages({
-      systemInstruction,
-      trainingContext,
+    const contents = buildGeminiContents({
       history: sanitizedHistory,
       currentMessage: cleanMessage,
+    });
+
+    const finalSystemInstruction = buildSystemInstruction({
+      systemInstruction,
+      trainingContext,
       context,
     });
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.api_key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature,
-        max_tokens: maxTokens,
-      }),
+    const botResponse = await callGemini({
+      apiKey: normalizeText(config.api_key),
+      model,
+      systemInstruction: finalSystemInstruction,
+      contents,
+      temperature,
+      maxOutputTokens,
     });
-
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      console.error("❌ Error OpenRouter:", data);
-      return res.status(500).json({
-        error: data?.error?.message || "Error con OpenRouter",
-      });
-    }
-
-    const botResponse = normalizeText(data?.choices?.[0]?.message?.content);
 
     if (!botResponse) {
       return res.status(500).json({
@@ -361,13 +405,13 @@ export default async function handler(req, res) {
       });
     }
 
-    console.log("✅ Respuesta IA generada:", botResponse.slice(0, 120));
+    console.log("✅ Respuesta Gemini generada:", botResponse.slice(0, 120));
 
     return res.status(200).json({
       response: botResponse,
     });
   } catch (error: any) {
-    console.error("❌ Error en chat-ia:", error);
+    console.error("❌ Error en chat-ia Gemini:", error);
     return res.status(500).json({
       error: "Error interno: " + (error?.message || "desconocido"),
     });
