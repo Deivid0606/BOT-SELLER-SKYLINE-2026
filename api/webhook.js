@@ -196,7 +196,7 @@ async function getRecentConversation(userId, fromNumber) {
       .eq("user_id", userId)
       .eq("from_number", fromNumber)
       .order("created_at", { ascending: false })
-      .limit(12);
+      .limit(4);
 
     if (error) {
       console.error("Error obteniendo historial:", error);
@@ -210,7 +210,7 @@ async function getRecentConversation(userId, fromNumber) {
           msg.message_type && String(msg.message_type).startsWith("out_")
             ? "assistant"
             : "user",
-        content: msg.message || "",
+        content: String(msg.message || "").slice(0, 120),
       }))
       .filter((item) => cleanText(item.content));
   } catch (error) {
@@ -463,7 +463,8 @@ async function getTrainingContext(userId) {
       .from("training_data")
       .select("intent, examples, response")
       .eq("user_id", userId)
-      .eq("is_active", true);
+      .eq("is_active", true)
+      .limit(3);
 
     if (error) {
       console.error("Error cargando training_data:", error);
@@ -480,11 +481,12 @@ async function getTrainingContext(userId) {
         const response = cleanText(row.response) || "Sin respuesta definida";
         const examples = safeArray(row.examples)
           .map((ex) => cleanText(ex))
-          .filter(Boolean);
+          .filter(Boolean)
+          .slice(0, 1);
 
         return [
           `Intent: ${intent}`,
-          examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
+          examples.length ? `Ejemplo: ${examples.join(" | ")}` : null,
           `Respuesta ideal: ${response}`,
         ]
           .filter(Boolean)
@@ -508,36 +510,31 @@ function buildAIMessages({
   context,
 }) {
   const contextBlock = [
-    context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : null,
-    context?.last_trigger ? `Último disparador activado: ${context.last_trigger}` : null,
+    context?.last_topic ? `Producto o tema actual: ${cleanText(context.last_topic).slice(0, 120)}` : null,
+    context?.last_trigger ? `Último disparador activado: ${cleanText(context.last_trigger).slice(0, 80)}` : null,
   ]
     .filter(Boolean)
     .join("\n");
 
+  const compactInstruction = cleanText(systemInstruction).slice(0, 280);
+  const compactTraining = String(trainingContext || "").slice(0, 500);
+
   const systemPrompt = `
-${systemInstruction || "Eres un asistente de ventas para una tienda online."}
+${compactInstruction || "Eres un asistente de ventas para una tienda online."}
 
-REGLAS OBLIGATORIAS:
+Reglas:
 - Responde siempre en español.
-- Mantén continuidad total con el historial del chat.
-- Si el cliente viene hablando de un producto, NO cambies de producto ni reinicies la conversación.
-- Si el cliente dice "quiero", "quiero comprar", "sí", "como hago", "cómo hago", "precio", "me interesa", "dame más info", asume que sigue hablando del último producto activo.
-- Si existe CONTEXTO ACTUAL DEL CHAT, úsalo como prioridad.
-- Si hubo disparador, continúa vendiendo ESE producto.
-- No saludes de nuevo si la conversación ya está iniciada.
-- No respondas genérico tipo "¿en qué producto estás interesado?" si ya hay contexto.
-- Responde corto, claro y con intención de cierre.
-- Si el cliente quiere comprar, guía el pedido de forma concreta.
-- Pedí solo el siguiente dato necesario para avanzar.
-- No inventes precios, stock ni beneficios que no estén en historial, entrenamiento o contexto.
+- Mantén continuidad con el historial.
+- Si hay producto o contexto activo, continúa sobre eso.
+- No reinicies la conversación ni saludes otra vez.
+- Responde breve, clara y orientada a venta.
+- Pide solo el siguiente dato necesario.
+- No inventes precios, stock ni beneficios.
 
-OBJETIVO:
-Cerrar la venta o avanzar la conversación comercial sin perder el hilo.
+Entrenamiento:
+${compactTraining || "Sin entrenamiento adicional."}
 
-ENTRENAMIENTO DISPONIBLE:
-${trainingContext}
-
-CONTEXTO ACTUAL DEL CHAT:
+Contexto actual:
 ${contextBlock || "Sin contexto guardado."}
   `.trim();
 
@@ -549,13 +546,13 @@ ${contextBlock || "Sin contexto guardado."}
 
     messages.push({
       role: item.role,
-      content: item.content,
+      content: String(item.content).slice(0, 120),
     });
   }
 
   messages.push({
     role: "user",
-    content: currentMessage,
+    content: cleanText(currentMessage).slice(0, 180),
   });
 
   return messages;
@@ -577,9 +574,11 @@ async function generateAIReply(userId, message, fromNumber) {
       cleanText(iaConfig.system_instruction) ||
       "Eres un asistente de ventas para una tienda online. Responde como vendedor profesional, amable, persuasivo y manteniendo el contexto.";
 
-    const model = cleanText(iaConfig.model) || "openai/gpt-3.5-turbo";
+    const model = cleanText(iaConfig.model) || "openai/gpt-4o-mini";
     const temperature =
       typeof iaConfig.temperature === "number" ? iaConfig.temperature : 0.4;
+    const maxTokens =
+      typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 50;
 
     const messages = buildAIMessages({
       systemInstruction,
@@ -599,7 +598,7 @@ async function generateAIReply(userId, message, fromNumber) {
         model,
         messages,
         temperature,
-        max_tokens: 350,
+        max_tokens: maxTokens,
       }),
     });
 
@@ -636,21 +635,27 @@ async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
       cleanText(iaConfig.system_instruction) ||
       "Eres un asistente de ventas para una tienda online.";
 
+    const compactInstruction = systemInstruction.slice(0, 220);
+    const compactTraining = trainingContext.slice(0, 300);
+    const compactContext = context?.last_topic
+      ? cleanText(context.last_topic).slice(0, 100)
+      : "Sin contexto guardado.";
+
     const prompt = `
-${systemInstruction}
+${compactInstruction}
 
 Analiza la imagen enviada por el cliente.
 - Si la imagen muestra un producto, descríbelo y responde como vendedor.
 - Si la imagen parece relacionada con el producto actual del chat, continúa sobre ese producto.
 - Si no se entiende bien la imagen, pide otra foto más clara.
 - Responde siempre en español.
-- Sé breve, útil y orientado a venta.
+- Sé breve y útil.
 
-ENTRENAMIENTO:
-${trainingContext}
+Entrenamiento:
+${compactTraining}
 
-CONTEXTO ACTUAL:
-${context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : "Sin contexto guardado."}
+Contexto actual:
+${compactContext}
     `.trim();
 
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -671,7 +676,7 @@ ${context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : "Sin c
           },
         ],
         temperature: 0.3,
-        max_tokens: 300,
+        max_tokens: 50,
       }),
     });
 
@@ -1075,7 +1080,6 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     // Solo texto desde acá
     if (type !== "text" || !contenido) return;
 
-    // 0. Si ya hay pedido abierto, continuar captura de datos
     const handledOrder = await handleOrderDataCollection(userId, fromNumber, contenido);
     if (handledOrder) {
       console.log(`🧾 Mensaje usado para completar pedido de ${fromNumber}`);
@@ -1085,16 +1089,13 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     const existingContext = await getChatContext(userId, fromNumber);
     const followUp = isFollowUpMessage(contenido);
 
-    // 1. Intentar trigger primero
     const triggerResult = await procesarDisparadores(userId, fromNumber, contenido);
 
-    // 2. Si hubo trigger, termina este turno
     if (triggerResult) {
       console.log(`✅ Respuesta enviada por trigger: ${triggerResult.name}`);
       return;
     }
 
-    // 3. Si el cliente muestra intención de compra y ya hay contexto, iniciar pedido
     if (followUp && existingContext?.last_topic) {
       const order = await startOrderFlow(userId, fromNumber, existingContext, contenido);
 
@@ -1108,7 +1109,6 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       }
     }
 
-    // 4. IA directa
     const iaConfig = await getIAConfig(userId);
     if (!iaConfig) {
       console.log(`⚠️ IA inactiva o sin api_key para user ${userId}`);
