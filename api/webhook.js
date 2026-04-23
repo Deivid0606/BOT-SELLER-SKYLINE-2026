@@ -27,73 +27,208 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function getKeywords(text) {
-  return Array.from(
-    new Set(
-      normalizeText(text)
-        .replace(/[^\p{L}\p{N}\s]/gu, " ")
-        .split(/\s+/)
-        .map((word) => word.trim())
-        .filter((word) => word.length >= 3)
-    )
-  );
+function normalizeLocationText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/@/g, "a")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function scoreTrainingRow(row, query) {
-  const keywords = getKeywords(query);
-  if (!keywords.length) return 0;
+const CIUDADES_COBERTURA = [
+  "asuncion",
+  "asun",
+  "hernandarias",
+  "hernadarias",
+  "ernadaria",
+  "ita",
+  "ciudad del este",
+  "cuidad del este",
+  "ciudad del es",
+  "ciudad del",
+  "cde",
+  "fdo de la mora",
+  "fernando de la mora",
+  "fdm",
+  "lambare",
+  "lambaree",
+  "luque",
+  "lque",
+  "santa rita",
+  "san alberto",
+  "nemby",
+  "presidente franco",
+  "pte franco",
+  "pdte franco",
+  "ypane",
+  "ypanee",
+  "villa hayes",
+  "capiata",
+  "capita",
+  "capia",
+  "capiataa",
+  "altos",
+  "caacupe",
+  "ypacarai",
+  "san lorenzo",
+  "sanlo",
+  "slz",
+  "villa elisa",
+  "mariano roque alonso",
+  "mra",
+  "limpio",
+  "aregua",
+  "itaugua",
+  "itauguaa",
+  "nueva italia",
+  "villeta",
+  "j augusto saldivar",
+  "jas",
+  "saldivar",
+  "san antonio",
+  "san anotonio",
+  "san antoni",
+  "loma pyta",
+  "sajonia",
+  "minga guazu",
+  "minga",
+  "colonia yguazu",
+  "juan leon mallorquin",
+  "encarnacion",
+  "concepcion",
+  "san estanislao",
+  "santani",
+  "coronel oviedo",
+  "caaguazu",
+  "paraguari",
+  "yaguaron",
+  "atyra",
+  "piribebuy",
+  "tobati",
+  "emboscada",
+  "loma grande",
+  "benjamin aceval",
+  "remansito"
+];
 
-  const haystack = [
-    cleanText(row.intent),
-    ...safeArray(row.examples).map((ex) => cleanText(ex)),
-    cleanText(row.response),
-  ]
-    .join(" \n ")
-    .toLowerCase();
+const ZONAS_AMBIGUAS = {
+  central:
+    "📍 ¿De qué ciudad de Central sos? 😊\nPodés decirme por ejemplo: San Lorenzo, Luque, Capiatá, Areguá, Itá, Itauguá, Ñemby, Villa Elisa, Mariano Roque Alonso o Limpio.",
+  "alto parana":
+    "📍 ¿Ciudad del Este, Presidente Franco o Hernandarias? 😊",
+  "presidente hayes":
+    "📍 ¿Villa Hayes, Benjamín Aceval o Remansito? 😊",
+};
 
-  let score = 0;
+const NO_CIUDADES = ["km 10", "monday", "multiplaza"];
 
-  for (const keyword of keywords) {
-    if (!haystack.includes(keyword)) continue;
+function detectCoverageCity(text) {
+  const normalized = normalizeLocationText(text);
 
-    score += 1;
-
-    if (cleanText(row.intent).toLowerCase().includes(keyword)) score += 3;
-    if (cleanText(row.response).toLowerCase().includes(keyword)) score += 2;
-
-    const examples = safeArray(row.examples).map((ex) =>
-      cleanText(ex).toLowerCase()
-    );
-    if (examples.some((ex) => ex.includes(keyword))) score += 2;
+  for (const bad of NO_CIUDADES) {
+    if (normalized.includes(bad)) {
+      return { type: "ignore", value: bad };
+    }
   }
 
-  return score;
+  for (const [zone, reply] of Object.entries(ZONAS_AMBIGUAS)) {
+    if (normalized.includes(zone)) {
+      return { type: "ambiguous", value: zone, reply };
+    }
+  }
+
+  const sorted = [...CIUDADES_COBERTURA].sort((a, b) => b.length - a.length);
+
+  for (const city of sorted) {
+    if (normalized.includes(city)) {
+      return { type: "coverage", value: city };
+    }
+  }
+
+  return null;
 }
 
-function pickRelevantTrainingRows(rows, currentMessage, context) {
-  if (!rows || rows.length === 0) return [];
+function formatCityName(city) {
+  const map = {
+    asuncion: "Asunción",
+    asun: "Asunción",
+    hernandarias: "Hernandarias",
+    hernadarias: "Hernandarias",
+    ernadaria: "Hernandarias",
+    ita: "Itá",
+    "ciudad del este": "Ciudad del Este",
+    "cuidad del este": "Ciudad del Este",
+    "ciudad del es": "Ciudad del Este",
+    "ciudad del": "Ciudad del Este",
+    cde: "Ciudad del Este",
+    "fdo de la mora": "Fernando de la Mora",
+    fdm: "Fernando de la Mora",
+    "fernando de la mora": "Fernando de la Mora",
+    lambare: "Lambaré",
+    lambaree: "Lambaré",
+    luque: "Luque",
+    lque: "Luque",
+    "santa rita": "Santa Rita",
+    "san alberto": "San Alberto",
+    nemby: "Ñemby",
+    "presidente franco": "Presidente Franco",
+    "pte franco": "Presidente Franco",
+    "pdte franco": "Presidente Franco",
+    ypane: "Ypané",
+    ypanee: "Ypané",
+    "villa hayes": "Villa Hayes",
+    capiata: "Capiatá",
+    capita: "Capiatá",
+    capia: "Capiatá",
+    capiataa: "Capiatá",
+    altos: "Altos",
+    caacupe: "Caacupé",
+    ypacarai: "Ypacaraí",
+    "san lorenzo": "San Lorenzo",
+    sanlo: "San Lorenzo",
+    slz: "San Lorenzo",
+    "villa elisa": "Villa Elisa",
+    "mariano roque alonso": "Mariano Roque Alonso",
+    mra: "Mariano Roque Alonso",
+    limpio: "Limpio",
+    aregua: "Areguá",
+    itaugua: "Itauguá",
+    itauguaa: "Itauguá",
+    "nueva italia": "Nueva Italia",
+    villeta: "Villeta",
+    "j augusto saldivar": "J. Augusto Saldívar",
+    jas: "J. Augusto Saldívar",
+    saldivar: "J. Augusto Saldívar",
+    "san antonio": "San Antonio",
+    "san anotonio": "San Antonio",
+    "san antoni": "San Antonio",
+    "loma pyta": "Loma Pytá",
+    sajonia: "Asunción",
+    "minga guazu": "Minga Guazú",
+    minga: "Minga Guazú",
+    "colonia yguazu": "Colonia Yguazú",
+    "juan leon mallorquin": "Juan León Mallorquín",
+    encarnacion: "Encarnación",
+    concepcion: "Concepción",
+    "san estanislao": "San Estanislao (Santaní)",
+    santani: "San Estanislao (Santaní)",
+    "coronel oviedo": "Coronel Oviedo",
+    caaguazu: "Caaguazú",
+    paraguari: "Paraguarí",
+    yaguaron: "Yaguarón",
+    atyra: "Atyrá",
+    piribebuy: "Piribebuy",
+    tobati: "Tobatí",
+    emboscada: "Emboscada",
+    "loma grande": "Loma Grande",
+    "benjamin aceval": "Benjamín Aceval",
+    remansito: "Remansito",
+  };
 
-  const query = [
-    cleanText(currentMessage),
-    cleanText(context?.last_topic),
-    cleanText(context?.last_trigger),
-  ]
-    .filter(Boolean)
-    .join(" \n ");
-
-  const scored = rows
-    .map((row, index) => ({
-      row,
-      index,
-      score: scoreTrainingRow(row, query),
-    }))
-    .sort((a, b) => b.score - a.score || a.index - b.index);
-
-  const relevant = scored.filter((item) => item.score > 0).slice(0, 4).map((item) => item.row);
-
-  if (relevant.length > 0) return relevant;
-
-  return rows.slice(0, 2);
+  return map[city] || city;
 }
 
 function buildTopicFromTrigger(trigger, responseText) {
@@ -265,7 +400,7 @@ async function getRecentConversation(userId, fromNumber) {
       .eq("user_id", userId)
       .eq("from_number", fromNumber)
       .order("created_at", { ascending: false })
-      .limit(4);
+      .limit(2);
 
     if (error) {
       console.error("Error obteniendo historial:", error);
@@ -279,7 +414,7 @@ async function getRecentConversation(userId, fromNumber) {
           msg.message_type && String(msg.message_type).startsWith("out_")
             ? "assistant"
             : "user",
-        content: String(msg.message || "").slice(0, 120),
+        content: String(msg.message || "").slice(0, 100),
       }))
       .filter((item) => cleanText(item.content));
   } catch (error) {
@@ -475,8 +610,12 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
   }
 
   if (openOrder.status === "collecting_city") {
+    const detection = detectCoverageCity(text);
+    const finalCity =
+      detection?.type === "coverage" ? formatCityName(detection.value) : text;
+
     const updated = await updateOrder(openOrder.id, {
-      city: text,
+      city: finalCity,
       status: "collecting_address",
     });
 
@@ -523,8 +662,73 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
 }
 
 // ============================================
-// TRAINING
+// TRAINING / IA
 // ============================================
+function tokenizeText(text) {
+  return Array.from(
+    new Set(
+      cleanText(text)
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .split(/\s+/)
+        .map((word) => word.trim())
+        .filter((word) => word.length >= 3)
+    )
+  );
+}
+
+function scoreTrainingRow(row, currentMessage, context) {
+  const query = [
+    cleanText(currentMessage),
+    cleanText(context?.last_topic),
+    cleanText(context?.last_trigger),
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const keywords = tokenizeText(query);
+  if (!keywords.length) return 0;
+
+  const intent = cleanText(row.intent).toLowerCase();
+  const response = cleanText(row.response).toLowerCase();
+  const examples = safeArray(row.examples)
+    .map((ex) => cleanText(ex).toLowerCase())
+    .filter(Boolean);
+
+  let score = 0;
+
+  for (const keyword of keywords) {
+    if (intent.includes(keyword)) score += 4;
+    if (response.includes(keyword)) score += 2;
+    if (examples.some((ex) => ex.includes(keyword))) score += 3;
+  }
+
+  return score;
+}
+
+function selectRelevantTrainingRows(rows, currentMessage, context) {
+  if (!rows || rows.length === 0) return [];
+
+  const ranked = rows
+    .map((row, index) => ({
+      row,
+      index,
+      score: scoreTrainingRow(row, currentMessage, context),
+    }))
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+
+  const relevant = ranked
+    .filter((item) => item.score > 0)
+    .slice(0, 2)
+    .map((item) => item.row);
+
+  if (relevant.length > 0) return relevant;
+
+  return rows.slice(0, 1);
+}
+
 async function getTrainingContext(userId, currentMessage, context) {
   try {
     const { data, error } = await supabase
@@ -535,14 +739,14 @@ async function getTrainingContext(userId, currentMessage, context) {
 
     if (error) {
       console.error("Error cargando training_data:", error);
-      return "No hay entrenamiento adicional cargado.";
+      return "Sin entrenamiento adicional.";
     }
 
     if (!data || data.length === 0) {
-      return "No hay entrenamiento adicional cargado.";
+      return "Sin entrenamiento adicional.";
     }
 
-    const relevantRows = pickRelevantTrainingRows(data, currentMessage, context);
+    const relevantRows = selectRelevantTrainingRows(data, currentMessage, context);
 
     return relevantRows
       .map((row, index) => {
@@ -551,27 +755,24 @@ async function getTrainingContext(userId, currentMessage, context) {
         const examples = safeArray(row.examples)
           .map((ex) => cleanText(ex))
           .filter(Boolean)
-          .slice(0, 2);
+          .slice(0, 1);
 
         return [
           `Intent: ${intent}`,
-          examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
+          examples.length ? `Ejemplo: ${examples[0]}` : null,
           `Respuesta ideal: ${response}`,
         ]
           .filter(Boolean)
           .join("\n");
       })
       .join("\n\n")
-      .slice(0, 900);
+      .slice(0, 220);
   } catch (error) {
     console.error("Error armando training context:", error);
-    return "No hay entrenamiento adicional cargado.";
+    return "Sin entrenamiento adicional.";
   }
 }
 
-// ============================================
-// ARMAR MENSAJES IA
-// ============================================
 function buildAIMessages({
   systemInstruction,
   trainingContext,
@@ -580,35 +781,26 @@ function buildAIMessages({
   context,
 }) {
   const contextBlock = [
-    context?.last_topic
-      ? `Producto o tema actual: ${cleanText(context.last_topic).slice(0, 120)}`
-      : null,
-    context?.last_trigger
-      ? `Último disparador activado: ${cleanText(context.last_trigger).slice(0, 80)}`
-      : null,
+    context?.last_topic ? `Tema: ${cleanText(context.last_topic).slice(0, 80)}` : null,
+    context?.last_trigger ? `Trigger: ${cleanText(context.last_trigger).slice(0, 50)}` : null,
   ]
     .filter(Boolean)
     .join("\n");
 
-  const compactInstruction = cleanText(systemInstruction).slice(0, 280);
-
   const systemPrompt = `
-${compactInstruction || "Eres un asistente de ventas para una tienda online."}
-
+${cleanText(systemInstruction).slice(0, 160) || "Eres un asistente de ventas."}
 Reglas:
-- Responde siempre en español.
-- Mantén continuidad con el historial.
-- Si hay producto o contexto activo, continúa sobre eso.
-- No reinicies la conversación ni saludes otra vez.
-- Responde breve, clara y orientada a venta.
-- Pide solo el siguiente dato necesario.
-- No inventes precios, stock ni beneficios.
+- Responde en español.
+- Sé breve y clara.
+- Mantén el contexto.
+- No inventes precios ni stock.
+- Si ya hay producto activo, seguí sobre ese producto.
 
-Entrenamiento relevante:
-${String(trainingContext || "").slice(0, 900)}
+Entrenamiento:
+${trainingContext || "Sin entrenamiento."}
 
-Contexto actual:
-${contextBlock || "Sin contexto guardado."}
+Contexto:
+${contextBlock || "Sin contexto."}
   `.trim();
 
   const messages = [{ role: "system", content: systemPrompt }];
@@ -619,21 +811,18 @@ ${contextBlock || "Sin contexto guardado."}
 
     messages.push({
       role: item.role,
-      content: String(item.content).slice(0, 120),
+      content: String(item.content).slice(0, 100),
     });
   }
 
   messages.push({
     role: "user",
-    content: cleanText(currentMessage).slice(0, 180),
+    content: cleanText(currentMessage).slice(0, 120),
   });
 
   return messages;
 }
 
-// ============================================
-// IA TEXTO
-// ============================================
 async function generateAIReply(userId, message, fromNumber) {
   try {
     const iaConfig = await getIAConfig(userId);
@@ -645,13 +834,13 @@ async function generateAIReply(userId, message, fromNumber) {
 
     const systemInstruction =
       cleanText(iaConfig.system_instruction) ||
-      "Eres un asistente de ventas para una tienda online. Responde como vendedor profesional, amable, persuasivo y manteniendo el contexto.";
+      "Eres un asistente de ventas para una tienda online.";
 
     const model = cleanText(iaConfig.model) || "openai/gpt-4o-mini";
     const temperature =
       typeof iaConfig.temperature === "number" ? iaConfig.temperature : 0.4;
     const maxTokens =
-      typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 50;
+      typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 30;
 
     const messages = buildAIMessages({
       systemInstruction,
@@ -693,9 +882,6 @@ async function generateAIReply(userId, message, fromNumber) {
   }
 }
 
-// ============================================
-// IA IMAGEN
-// ============================================
 async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
   try {
     const iaConfig = await getIAConfig(userId);
@@ -708,27 +894,19 @@ async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
       cleanText(iaConfig.system_instruction) ||
       "Eres un asistente de ventas para una tienda online.";
 
-    const compactInstruction = systemInstruction.slice(0, 220);
-    const compactTraining = String(trainingContext || "").slice(0, 300);
-    const compactContext = context?.last_topic
-      ? cleanText(context.last_topic).slice(0, 100)
-      : "Sin contexto guardado.";
-
     const prompt = `
-${compactInstruction}
+${cleanText(systemInstruction).slice(0, 120)}
 
 Analiza la imagen enviada por el cliente.
-- Si la imagen muestra un producto, descríbelo y responde como vendedor.
-- Si la imagen parece relacionada con el producto actual del chat, continúa sobre ese producto.
-- Si no se entiende bien la imagen, pide otra foto más clara.
-- Responde siempre en español.
-- Sé breve y útil.
+- Responde en español.
+- Sé breve y orientado a venta.
+- Si no se entiende, pedí otra foto.
 
 Entrenamiento:
-${compactTraining}
+${String(trainingContext).slice(0, 120)}
 
-Contexto actual:
-${compactContext}
+Contexto:
+${context?.last_topic ? cleanText(context.last_topic).slice(0, 60) : "Sin contexto"}
     `.trim();
 
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -749,7 +927,7 @@ ${compactContext}
           },
         ],
         temperature: 0.3,
-        max_tokens: 50,
+        max_tokens: 30,
       }),
     });
 
@@ -1116,6 +1294,12 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       const triggerFromAudio = await procesarDisparadores(userId, fromNumber, transcript);
       if (triggerFromAudio) return;
 
+      const cityDetectionAudio = detectCoverageCity(transcript);
+      if (cityDetectionAudio?.type === "ambiguous") {
+        await sendWhatsAppMessage(userId, fromNumber, cityDetectionAudio.reply);
+        return;
+      }
+
       if (followUpFromAudio && existingContextFromAudio?.last_topic) {
         const order = await startOrderFlow(
           userId,
@@ -1155,9 +1339,37 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     const followUp = isFollowUpMessage(contenido);
 
     const triggerResult = await procesarDisparadores(userId, fromNumber, contenido);
-
     if (triggerResult) {
       console.log(`✅ Respuesta enviada por trigger: ${triggerResult.name}`);
+      return;
+    }
+
+    const cityDetection = detectCoverageCity(contenido);
+
+    if (cityDetection?.type === "ambiguous") {
+      await sendWhatsAppMessage(userId, fromNumber, cityDetection.reply);
+      return;
+    }
+
+    if (cityDetection?.type === "coverage") {
+      const cityName = formatCityName(cityDetection.value);
+
+      await saveChatContext(userId, fromNumber, {
+        last_topic: existingContext?.last_topic || cityName,
+        last_trigger: "ciudad_cobertura",
+      });
+
+      await sendWhatsAppMessage(
+        userId,
+        fromNumber,
+        `✅ Perfecto 😊 ${cityName} tiene ENVÍO GRATIS contra-entrega 🚚
+💵 Pagás al recibir SIN moverte de casa
+
+¿Te parece si te agendo ahora mismo? ¿Nombre y teléfono? 📝
+
+📋 Catálogo:
+https://cat-logomegatodo-com.vercel.app/`
+      );
       return;
     }
 
