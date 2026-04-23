@@ -44,7 +44,9 @@ function safeArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-function sanitizeHistory(history: unknown): Array<{ role: "user" | "assistant"; content: string }> {
+function sanitizeHistory(
+  history: unknown
+): Array<{ role: "user" | "assistant"; content: string }> {
   const items = safeArray<IncomingHistoryItem>(history);
 
   return items
@@ -76,7 +78,7 @@ function buildTrainingContext(rows: TrainingRow[] = []): string {
       return [
         `Intent: ${intent}`,
         examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
-        `Respuesta sugerida: ${response}`,
+        `Respuesta ideal: ${response}`,
       ]
         .filter(Boolean)
         .join("\n");
@@ -91,36 +93,43 @@ function buildMessages(params: {
   currentMessage: string;
   context: IncomingContext | null;
 }): Array<{ role: ChatRole; content: string }> {
-  const { systemInstruction, trainingContext, history, currentMessage, context } = params;
+  const { systemInstruction, trainingContext, history, currentMessage, context } =
+    params;
 
   const contextBlock = [
-    context?.last_topic ? `Tema actual del chat: ${context.last_topic}` : null,
-    context?.last_trigger ? `Último disparador activado: ${context.last_trigger}` : null,
+    context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : null,
+    context?.last_trigger
+      ? `Último disparador activado: ${context.last_trigger}`
+      : null,
   ]
     .filter(Boolean)
     .join("\n");
 
   const systemPrompt = `
-${systemInstruction || "Eres un asistente de ventas para una tienda online. Responde de manera amable, clara, persuasiva y útil."}
+${systemInstruction || "Eres un asistente de ventas para una tienda online."}
 
-REGLAS IMPORTANTES:
-- Responde SIEMPRE en español.
-- Mantén continuidad total con el historial.
-- Si el usuario viene hablando de un producto, NO cambies de producto ni reinicies la conversación.
-- Si el usuario dice cosas como "quiero", "sí", "como hago", "precio", "me interesa", "dame más info", asumí que sigue hablando del último producto o tema activo.
-- Si hubo un disparador antes, continúa desde ese producto.
-- Responde breve, útil y orientado a cerrar la venta.
-- Si falta un dato importante para cerrar pedido, pide solo el siguiente dato necesario.
-- No inventes políticas, stock ni precios si no aparecen en el contexto.
-- No saludes de nuevo innecesariamente si la conversación ya está en curso.
-- Si el usuario ya mostró intención de compra, guía el cierre del pedido.
-- Evita respuestas genéricas como "¿en qué producto estás interesado?" cuando el contexto ya indica el producto.
+REGLAS OBLIGATORIAS:
+- Responde siempre en español.
+- Mantén continuidad total con el historial del chat.
+- Si el cliente viene hablando de un producto, NO cambies de producto ni reinicies la conversación.
+- Si el cliente dice "quiero", "quiero comprar", "sí", "como hago", "cómo hago", "precio", "me interesa", "dame más info", asume que sigue hablando del último producto activo.
+- Si existe CONTEXTO ACTUAL DEL CHAT, úsalo como prioridad.
+- Si hubo disparador, continúa vendiendo ESE producto.
+- No saludes de nuevo si la conversación ya está iniciada.
+- No respondas genérico tipo "¿en qué producto estás interesado?" si ya hay contexto.
+- Responde corto, claro y con intención de cierre.
+- Si el cliente quiere comprar, guía el pedido de forma concreta.
+- Pedí solo el siguiente dato necesario para avanzar.
+- No inventes precios, stock ni beneficios que no estén en historial, entrenamiento o contexto.
 
-CONTEXTO DE ENTRENAMIENTO:
+OBJETIVO:
+Cerrar la venta o avanzar la conversación comercial sin perder el hilo.
+
+ENTRENAMIENTO DISPONIBLE:
 ${trainingContext}
 
 CONTEXTO ACTUAL DEL CHAT:
-${contextBlock || "Sin contexto explícito guardado."}
+${contextBlock || "Sin contexto guardado."}
   `.trim();
 
   const messages: Array<{ role: ChatRole; content: string }> = [
@@ -169,6 +178,12 @@ export default async function handler(req, res) {
     const cleanMessage = normalizeText(message);
     const cleanFromNumber = normalizeText(from_number);
 
+    if (!cleanUserId || !cleanMessage) {
+      return res.status(400).json({
+        error: "Faltan user_id o message",
+      });
+    }
+
     console.log(
       "📨 Chat IA:",
       JSON.stringify({
@@ -177,12 +192,6 @@ export default async function handler(req, res) {
         message: cleanMessage.slice(0, 80),
       })
     );
-
-    if (!cleanUserId || !cleanMessage) {
-      return res.status(400).json({
-        error: "Faltan user_id o message",
-      });
-    }
 
     const { data: iaConfig, error: iaError } = await supabase
       .from("chat_ia_gemini")
@@ -217,11 +226,6 @@ export default async function handler(req, res) {
         ? incomingContext
         : null;
 
-    console.log("📚 Historial recibido:", sanitizedHistory.length, "mensajes");
-    if (context?.last_topic || context?.last_trigger) {
-      console.log("🧠 Contexto:", context);
-    }
-
     const { data: trainingData, error: trainingError } = await supabase
       .from("training_data")
       .select("intent, examples, response")
@@ -236,11 +240,11 @@ export default async function handler(req, res) {
 
     const systemInstruction =
       normalizeText(config.system_instruction) ||
-      "Eres un asistente de ventas para una tienda online. Responde de forma amable, profesional, persuasiva y manteniendo siempre el contexto del chat.";
+      "Eres un asistente de ventas para una tienda online. Responde como vendedor profesional, amable, persuasivo y manteniendo el contexto.";
 
     const model = normalizeText(config.model) || "openai/gpt-3.5-turbo";
     const temperature =
-      typeof config.temperature === "number" ? config.temperature : 0.5;
+      typeof config.temperature === "number" ? config.temperature : 0.4;
 
     const messages = buildMessages({
       systemInstruction,
@@ -260,7 +264,7 @@ export default async function handler(req, res) {
         model,
         messages,
         temperature,
-        max_tokens: 500,
+        max_tokens: 350,
       }),
     });
 
