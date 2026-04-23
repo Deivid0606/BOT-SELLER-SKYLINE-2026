@@ -27,6 +27,75 @@ function safeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function getKeywords(text) {
+  return Array.from(
+    new Set(
+      normalizeText(text)
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .split(/\s+/)
+        .map((word) => word.trim())
+        .filter((word) => word.length >= 3)
+    )
+  );
+}
+
+function scoreTrainingRow(row, query) {
+  const keywords = getKeywords(query);
+  if (!keywords.length) return 0;
+
+  const haystack = [
+    cleanText(row.intent),
+    ...safeArray(row.examples).map((ex) => cleanText(ex)),
+    cleanText(row.response),
+  ]
+    .join(" \n ")
+    .toLowerCase();
+
+  let score = 0;
+
+  for (const keyword of keywords) {
+    if (!haystack.includes(keyword)) continue;
+
+    score += 1;
+
+    if (cleanText(row.intent).toLowerCase().includes(keyword)) score += 3;
+    if (cleanText(row.response).toLowerCase().includes(keyword)) score += 2;
+
+    const examples = safeArray(row.examples).map((ex) =>
+      cleanText(ex).toLowerCase()
+    );
+    if (examples.some((ex) => ex.includes(keyword))) score += 2;
+  }
+
+  return score;
+}
+
+function pickRelevantTrainingRows(rows, currentMessage, context) {
+  if (!rows || rows.length === 0) return [];
+
+  const query = [
+    cleanText(currentMessage),
+    cleanText(context?.last_topic),
+    cleanText(context?.last_trigger),
+  ]
+    .filter(Boolean)
+    .join(" \n ");
+
+  const scored = rows
+    .map((row, index) => ({
+      row,
+      index,
+      score: scoreTrainingRow(row, query),
+    }))
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+
+  const relevant = scored.filter((item) => item.score > 0).slice(0, 4).map((item) => item.row);
+
+  if (relevant.length > 0) return relevant;
+
+  return rows.slice(0, 2);
+}
+
 function buildTopicFromTrigger(trigger, responseText) {
   return (
     cleanText(trigger?.template) ||
@@ -268,7 +337,6 @@ async function saveChatContext(userId, fromNumber, payload = {}) {
 
 // ============================================
 // ORDERS
-// Usa columna phone
 // ============================================
 async function getOpenOrder(userId, phone) {
   try {
@@ -457,14 +525,13 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
 // ============================================
 // TRAINING
 // ============================================
-async function getTrainingContext(userId) {
+async function getTrainingContext(userId, currentMessage, context) {
   try {
     const { data, error } = await supabase
       .from("training_data")
       .select("intent, examples, response")
       .eq("user_id", userId)
-      .eq("is_active", true)
-      .limit(3);
+      .eq("is_active", true);
 
     if (error) {
       console.error("Error cargando training_data:", error);
@@ -475,24 +542,27 @@ async function getTrainingContext(userId) {
       return "No hay entrenamiento adicional cargado.";
     }
 
-    return data
+    const relevantRows = pickRelevantTrainingRows(data, currentMessage, context);
+
+    return relevantRows
       .map((row, index) => {
         const intent = cleanText(row.intent) || `Intent ${index + 1}`;
         const response = cleanText(row.response) || "Sin respuesta definida";
         const examples = safeArray(row.examples)
           .map((ex) => cleanText(ex))
           .filter(Boolean)
-          .slice(0, 1);
+          .slice(0, 2);
 
         return [
           `Intent: ${intent}`,
-          examples.length ? `Ejemplo: ${examples.join(" | ")}` : null,
+          examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
           `Respuesta ideal: ${response}`,
         ]
           .filter(Boolean)
           .join("\n");
       })
-      .join("\n\n");
+      .join("\n\n")
+      .slice(0, 900);
   } catch (error) {
     console.error("Error armando training context:", error);
     return "No hay entrenamiento adicional cargado.";
@@ -510,14 +580,17 @@ function buildAIMessages({
   context,
 }) {
   const contextBlock = [
-    context?.last_topic ? `Producto o tema actual: ${cleanText(context.last_topic).slice(0, 120)}` : null,
-    context?.last_trigger ? `Último disparador activado: ${cleanText(context.last_trigger).slice(0, 80)}` : null,
+    context?.last_topic
+      ? `Producto o tema actual: ${cleanText(context.last_topic).slice(0, 120)}`
+      : null,
+    context?.last_trigger
+      ? `Último disparador activado: ${cleanText(context.last_trigger).slice(0, 80)}`
+      : null,
   ]
     .filter(Boolean)
     .join("\n");
 
   const compactInstruction = cleanText(systemInstruction).slice(0, 280);
-  const compactTraining = String(trainingContext || "").slice(0, 500);
 
   const systemPrompt = `
 ${compactInstruction || "Eres un asistente de ventas para una tienda online."}
@@ -531,8 +604,8 @@ Reglas:
 - Pide solo el siguiente dato necesario.
 - No inventes precios, stock ni beneficios.
 
-Entrenamiento:
-${compactTraining || "Sin entrenamiento adicional."}
+Entrenamiento relevante:
+${String(trainingContext || "").slice(0, 900)}
 
 Contexto actual:
 ${contextBlock || "Sin contexto guardado."}
@@ -568,7 +641,7 @@ async function generateAIReply(userId, message, fromNumber) {
 
     const history = await getRecentConversation(userId, fromNumber);
     const context = await getChatContext(userId, fromNumber);
-    const trainingContext = await getTrainingContext(userId);
+    const trainingContext = await getTrainingContext(userId, message, context);
 
     const systemInstruction =
       cleanText(iaConfig.system_instruction) ||
@@ -629,14 +702,14 @@ async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
     if (!iaConfig) return null;
 
     const context = await getChatContext(userId, fromNumber);
-    const trainingContext = await getTrainingContext(userId);
+    const trainingContext = await getTrainingContext(userId, "[imagen]", context);
 
     const systemInstruction =
       cleanText(iaConfig.system_instruction) ||
       "Eres un asistente de ventas para una tienda online.";
 
     const compactInstruction = systemInstruction.slice(0, 220);
-    const compactTraining = trainingContext.slice(0, 300);
+    const compactTraining = String(trainingContext || "").slice(0, 300);
     const compactContext = context?.last_topic
       ? cleanText(context.last_topic).slice(0, 100)
       : "Sin contexto guardado.";
@@ -696,7 +769,6 @@ ${compactContext}
 
 // ============================================
 // TRANSCRIBIR AUDIO
-// Requiere OPENAI_API_KEY en Vercel
 // ============================================
 async function transcribeAudioFromUrl(audioUrl) {
   try {
@@ -989,9 +1061,6 @@ async function procesarMensaje(message, token, userId, fromNumber) {
 
     console.log(`📝 Mensaje guardado de ${fromNumber}: ${contenido.substring(0, 80)}`);
 
-    // ============================================
-    // IMAGEN
-    // ============================================
     if (type === "image" && mediaUrl) {
       const imageReply = await analyzeImageWithAI(userId, mediaUrl, fromNumber);
 
@@ -1008,9 +1077,6 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       return;
     }
 
-    // ============================================
-    // AUDIO
-    // ============================================
     if (type === "audio" && mediaUrl) {
       const transcript = await transcribeAudioFromUrl(mediaUrl);
 
@@ -1077,7 +1143,6 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       return;
     }
 
-    // Solo texto desde acá
     if (type !== "text" || !contenido) return;
 
     const handledOrder = await handleOrderDataCollection(userId, fromNumber, contenido);
