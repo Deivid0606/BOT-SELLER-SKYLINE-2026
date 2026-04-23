@@ -2,6 +2,11 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!supabaseUrl || !supabaseKey) {
+  throw new Error("Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY");
+}
+
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const VERIFY_TOKEN = "miTokenSeguro2026";
@@ -17,9 +22,22 @@ function getBaseUrl() {
 }
 
 function normalizeText(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase();
+  return String(value || "").trim().toLowerCase();
+}
+
+function cleanText(value) {
+  return String(value || "").trim();
+}
+
+function buildTopicFromTrigger(trigger, responseText) {
+  return (
+    cleanText(trigger?.template) ||
+    cleanText(responseText) ||
+    cleanText(trigger?.response) ||
+    cleanText(trigger?.name) ||
+    cleanText(trigger?.condition) ||
+    null
+  );
 }
 
 // ============================================
@@ -49,7 +67,7 @@ async function getRecentConversation(userId, fromNumber) {
             : "user",
         content: msg.message || "",
       }))
-      .filter((item) => item.content.trim());
+      .filter((item) => cleanText(item.content));
   } catch (error) {
     console.error("Error obteniendo historial reciente:", error);
     return [];
@@ -256,11 +274,14 @@ async function procesarDisparadores(userId, fromNumber, message) {
         }
 
         await saveChatContext(userId, fromNumber, {
-          last_topic: trigger.template || trigger.name || trigger.condition || null,
+          last_topic: buildTopicFromTrigger(trigger, responseText),
           last_trigger: trigger.name || null,
         });
 
-        return trigger;
+        return {
+          ...trigger,
+          responseText,
+        };
       }
     }
 
@@ -276,9 +297,12 @@ async function procesarDisparadores(userId, fromNumber, message) {
 // ============================================
 async function downloadAndUploadMedia(mediaId, token) {
   try {
-    const mediaUrlResponse = await fetch(`https://graph.facebook.com/v22.0/${mediaId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const mediaUrlResponse = await fetch(
+      `https://graph.facebook.com/v22.0/${mediaId}`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
 
     if (!mediaUrlResponse.ok) return null;
 
@@ -314,7 +338,9 @@ async function downloadAndUploadMedia(mediaId, token) {
 
     const { error: uploadError } = await supabase.storage
       .from("templates-media")
-      .upload(fileName, Buffer.from(fileBuffer), { contentType: mimeType });
+      .upload(fileName, Buffer.from(fileBuffer), {
+        contentType: mimeType,
+      });
 
     if (uploadError) {
       console.error("Error subiendo media a storage:", uploadError);
@@ -357,6 +383,11 @@ function isFollowUpMessage(text) {
     "mas info",
     "más info",
     "disponible",
+    "ok",
+    "dale",
+    "uno",
+    "dos",
+    "promo",
   ];
 
   return followUps.some((item) => normalized.includes(item));
@@ -375,7 +406,7 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     const now = new Date().toISOString();
 
     if (type === "text") {
-      contenido = message.text?.body || "";
+      contenido = cleanText(message.text?.body || "");
       console.log("🔥 WEBHOOK RECIBIÓ MENSAJE:", contenido, "de", fromNumber);
     } else if (type === "image") {
       mediaId = message.image?.id;
@@ -412,12 +443,15 @@ async function procesarMensaje(message, token, userId, fromNumber) {
 
     console.log(`📝 Mensaje guardado de ${fromNumber}: ${contenido.substring(0, 80)}`);
 
-    if (type !== "text" || !contenido.trim()) return;
+    if (type !== "text" || !contenido) return;
 
-    // 1. Primero intentar trigger
+    const existingContext = await getChatContext(userId, fromNumber);
+    const followUp = isFollowUpMessage(contenido);
+
+    // 1. Intentar trigger
     const triggerResult = await procesarDisparadores(userId, fromNumber, contenido);
 
-    // 2. Si hubo trigger, ya respondió. Terminamos.
+    // 2. Si hubo trigger, terminamos este turno
     if (triggerResult) {
       console.log(`✅ Respuesta enviada por trigger: ${triggerResult.name}`);
       return;
@@ -440,6 +474,11 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       return;
     }
 
+    // Si el cliente sigue en continuidad comercial, preservamos contexto
+    if (followUp && existingContext?.last_topic) {
+      console.log(`🧠 Follow-up detectado para ${fromNumber} sobre tema: ${existingContext.last_topic}`);
+    }
+
     console.log(`🤖 IA activa, respondiendo a ${fromNumber}`);
 
     const aiResponse = await getAIResponse(userId, contenido, fromNumber);
@@ -452,9 +491,6 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     const sendResult = await sendWhatsAppMessage(userId, fromNumber, aiResponse);
 
     if (sendResult) {
-      const existingContext = await getChatContext(userId, fromNumber);
-
-      // Mantener el tema previo si existe, o usar el último mensaje
       await saveChatContext(userId, fromNumber, {
         last_topic: existingContext?.last_topic || contenido,
         last_trigger: existingContext?.last_trigger || null,
@@ -501,7 +537,6 @@ export default async function handler(req, res) {
       for (const entry of body.entry || []) {
         for (const change of entry.changes || []) {
           const value = change.value;
-
           const phoneNumberId = value?.metadata?.phone_number_id;
 
           if (!phoneNumberId) {
@@ -516,7 +551,10 @@ export default async function handler(req, res) {
             .single();
 
           if (configError || !config?.user_id) {
-            console.error("❌ No se encontró configuración para ese phone_number_id", configError);
+            console.error(
+              "❌ No se encontró configuración para ese phone_number_id",
+              configError
+            );
             continue;
           }
 
