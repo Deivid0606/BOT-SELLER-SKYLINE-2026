@@ -51,10 +51,10 @@ function sanitizeHistory(
   const items = safeArray<IncomingHistoryItem>(history);
 
   return items
-    .slice(-4)
+    .slice(-2)
     .map((item) => {
       const role = item?.role;
-      const content = normalizeText(item?.content).slice(0, 120);
+      const content = normalizeText(item?.content).slice(0, 100);
 
       if (!content) return null;
       if (role !== "user" && role !== "assistant") return null;
@@ -64,11 +64,13 @@ function sanitizeHistory(
     .filter(Boolean) as Array<{ role: "user" | "assistant"; content: string }>;
 }
 
-function getKeywords(text: string): string[] {
+function tokenizeText(text: string): string[] {
   return Array.from(
     new Set(
       normalizeText(text)
         .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
         .replace(/[^\p{L}\p{N}\s]/gu, " ")
         .split(/\s+/)
         .map((word) => word.trim())
@@ -77,70 +79,67 @@ function getKeywords(text: string): string[] {
   );
 }
 
-function scoreTrainingRow(row: TrainingRow, query: string): number {
-  const keywords = getKeywords(query);
-  if (!keywords.length) return 0;
-
-  const haystack = [
-    normalizeText(row.intent),
-    ...safeArray<string>(row.examples).map((ex) => normalizeText(ex)),
-    normalizeText(row.response),
-  ]
-    .join(" \n ")
-    .toLowerCase();
-
-  let score = 0;
-
-  for (const keyword of keywords) {
-    if (!haystack.includes(keyword)) continue;
-
-    score += 1;
-
-    if (normalizeText(row.intent).toLowerCase().includes(keyword)) score += 3;
-    if (normalizeText(row.response).toLowerCase().includes(keyword)) score += 2;
-
-    const examples = safeArray<string>(row.examples).map((ex) =>
-      normalizeText(ex).toLowerCase()
-    );
-    if (examples.some((ex) => ex.includes(keyword))) score += 2;
-  }
-
-  return score;
-}
-
-function pickRelevantTrainingRows(
-  rows: TrainingRow[],
+function scoreTrainingRow(
+  row: TrainingRow,
   currentMessage: string,
   context: IncomingContext | null
-): TrainingRow[] {
-  if (!rows.length) return [];
-
+): number {
   const query = [
     normalizeText(currentMessage),
     normalizeText(context?.last_topic),
     normalizeText(context?.last_trigger),
   ]
     .filter(Boolean)
-    .join(" \n ");
+    .join(" ");
 
-  const scored = rows
+  const keywords = tokenizeText(query);
+  if (!keywords.length) return 0;
+
+  const intent = normalizeText(row.intent).toLowerCase();
+  const response = normalizeText(row.response).toLowerCase();
+  const examples = safeArray<string>(row.examples)
+    .map((ex) => normalizeText(ex).toLowerCase())
+    .filter(Boolean);
+
+  let score = 0;
+
+  for (const keyword of keywords) {
+    if (intent.includes(keyword)) score += 4;
+    if (response.includes(keyword)) score += 2;
+    if (examples.some((ex) => ex.includes(keyword))) score += 3;
+  }
+
+  return score;
+}
+
+function selectRelevantTrainingRows(
+  rows: TrainingRow[],
+  currentMessage: string,
+  context: IncomingContext | null
+): TrainingRow[] {
+  if (!rows.length) return [];
+
+  const ranked = rows
     .map((row, index) => ({
       row,
       index,
-      score: scoreTrainingRow(row, query),
+      score: scoreTrainingRow(row, currentMessage, context),
     }))
     .sort((a, b) => b.score - a.score || a.index - b.index);
 
-  const relevant = scored.filter((item) => item.score > 0).slice(0, 4).map((item) => item.row);
+  const relevant = ranked
+    .filter((item) => item.score > 0)
+    .slice(0, 2)
+    .map((item) => item.row);
 
   if (relevant.length > 0) return relevant;
 
-  return rows.slice(0, 2);
+  return rows.slice(0, 1);
 }
 
 function buildTrainingContext(rows: TrainingRow[] = []): string {
   if (!rows.length) {
-    return "No hay entrenamiento adicional cargado.";
+    return "Sin entrenamiento adicional.";
   }
 
   return rows
@@ -150,18 +149,18 @@ function buildTrainingContext(rows: TrainingRow[] = []): string {
       const examples = safeArray<string>(row.examples)
         .map((ex) => normalizeText(ex))
         .filter(Boolean)
-        .slice(0, 2);
+        .slice(0, 1);
 
       return [
         `Intent: ${intent}`,
-        examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
+        examples.length ? `Ejemplo: ${examples[0]}` : null,
         `Respuesta ideal: ${response}`,
       ]
         .filter(Boolean)
         .join("\n");
     })
     .join("\n\n")
-    .slice(0, 900);
+    .slice(0, 220);
 }
 
 function buildMessages(params: {
@@ -176,34 +175,29 @@ function buildMessages(params: {
 
   const contextBlock = [
     context?.last_topic
-      ? `Producto o tema actual: ${normalizeText(context.last_topic).slice(0, 120)}`
+      ? `Tema: ${normalizeText(context.last_topic).slice(0, 80)}`
       : null,
     context?.last_trigger
-      ? `Último disparador activado: ${normalizeText(context.last_trigger).slice(0, 80)}`
+      ? `Trigger: ${normalizeText(context.last_trigger).slice(0, 50)}`
       : null,
   ]
     .filter(Boolean)
     .join("\n");
 
-  const compactInstruction = normalizeText(systemInstruction).slice(0, 280);
-
   const systemPrompt = `
-${compactInstruction || "Eres un asistente de ventas para una tienda online."}
-
+${normalizeText(systemInstruction).slice(0, 160) || "Eres un asistente de ventas."}
 Reglas:
-- Responde siempre en español.
-- Mantén continuidad con el historial.
-- Si hay producto o contexto activo, continúa sobre eso.
-- No reinicies la conversación ni saludes otra vez.
-- Responde breve, clara y orientada a venta.
-- Pide solo el siguiente dato necesario.
-- No inventes precios, stock ni beneficios.
+- Responde en español.
+- Sé breve y clara.
+- Mantén el contexto.
+- No inventes precios ni stock.
+- Si ya hay producto activo, seguí sobre ese producto.
 
-Entrenamiento relevante:
-${trainingContext || "Sin entrenamiento adicional."}
+Entrenamiento:
+${trainingContext || "Sin entrenamiento."}
 
-Contexto actual:
-${contextBlock || "Sin contexto guardado."}
+Contexto:
+${contextBlock || "Sin contexto."}
   `.trim();
 
   const messages: Array<{ role: ChatRole; content: string }> = [
@@ -219,7 +213,7 @@ ${contextBlock || "Sin contexto guardado."}
 
   messages.push({
     role: "user",
-    content: normalizeText(currentMessage).slice(0, 180),
+    content: normalizeText(currentMessage).slice(0, 120),
   });
 
   return messages;
@@ -310,23 +304,23 @@ export default async function handler(req, res) {
       console.error("⚠️ Error cargando training_data:", trainingError);
     }
 
-    const relevantTrainingRows = pickRelevantTrainingRows(
+    const relevantRows = selectRelevantTrainingRows(
       (trainingData || []) as TrainingRow[],
       cleanMessage,
       context
     );
 
-    const trainingContext = buildTrainingContext(relevantTrainingRows);
+    const trainingContext = buildTrainingContext(relevantRows);
 
     const systemInstruction =
       normalizeText(config.system_instruction) ||
-      "Eres un asistente de ventas para una tienda online. Responde como vendedor profesional, amable, persuasivo y manteniendo el contexto.";
+      "Eres un asistente de ventas para una tienda online.";
 
     const model = normalizeText(config.model) || "openai/gpt-4o-mini";
     const temperature =
       typeof config.temperature === "number" ? config.temperature : 0.4;
     const maxTokens =
-      typeof config.max_tokens === "number" ? config.max_tokens : 50;
+      typeof config.max_tokens === "number" ? config.max_tokens : 30;
 
     const messages = buildMessages({
       systemInstruction,
