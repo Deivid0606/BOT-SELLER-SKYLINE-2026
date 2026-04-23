@@ -66,11 +66,11 @@ const PRODUCT_CATALOG = [
   },
   {
     name: "Mini Aspiradora",
-    aliases: ["mini aspiradora", "aspiradora pequeña"],
+    aliases: ["mini aspiradora", "aspiradora pequeña", "aspiradora"],
   },
   {
     name: "Procesador de Alimentos RAF PRO",
-    aliases: ["raf pro", "procesador raf", "procesador de alimentos"],
+    aliases: ["raf pro", "procesador raf", "procesador de alimentos", "raf"],
   },
   {
     name: "Plantillas Ortopiex 5D",
@@ -83,7 +83,7 @@ const PRODUCT_CATALOG = [
   },
   {
     name: "Medias Terapéuticas",
-    aliases: ["medias terapeuticas", "medias compresion"],
+    aliases: ["medias terapeuticas", "medias compresion", "pack bienestar"],
   },
   {
     name: "Rodillera de Compresión",
@@ -99,7 +99,67 @@ const PRODUCT_CATALOG = [
   },
   {
     name: "Cocedor de Huevos Automático",
-    aliases: ["cocedor de huevos", "huevos automatico"],
+    aliases: ["cocedor de huevos", "huevos automatico", "cocedor"],
+  },
+  {
+    name: "Plumero LimpiaFlex",
+    aliases: ["plumero", "plumero limpiaflex", "limpiaflex"],
+  },
+  {
+    name: "Niveladoras Lavarropas",
+    aliases: [
+      "niveladora lavarropas",
+      "niveladoras lavarropas",
+      "soporte de lavarropas",
+      "patita lavarropas",
+      "patitas lavarropas",
+      "niveladora",
+      "lavarropas",
+    ],
+  },
+  {
+    name: "Aspirador portátil Powerson",
+    aliases: ["powerson", "aspirador portatil", "aspirador portátil"],
+  },
+  {
+    name: "Alarma Antirrobo",
+    aliases: ["alarma antirrobo", "alarma"],
+  },
+  {
+    name: "Intercomunicador para Casco",
+    aliases: ["intercomunicador", "intercomunicador casco"],
+  },
+  {
+    name: "Clip Nasal Anti-Ronquidos",
+    aliases: ["clip nasal", "anti ronquidos", "antironquidos", "ronquidos"],
+  },
+  {
+    name: "Huevera en forma de Gallinita",
+    aliases: ["huevera", "gallinita"],
+  },
+  {
+    name: "WILD TORNADO",
+    aliases: ["wild tornado", "destapador"],
+  },
+  {
+    name: "Base Flexible p/ Muebles",
+    aliases: ["base flexible", "muebles"],
+  },
+  {
+    name: "Hongo Antihongos Pro+",
+    aliases: ["hongo antihongos", "antihongos"],
+  },
+  {
+    name: "StrikeForce Encendedor eterno",
+    aliases: ["strikeforce", "encendedor eterno"],
+  },
+  {
+    name: "RoyalBee Wax",
+    aliases: ["royalbee", "royalbee wax"],
+  },
+  {
+    name: "Intercomunicador para Casco",
+    aliases: ["intercomunicador para casco"],
   },
 ];
 
@@ -809,17 +869,17 @@ ${cleanText(systemInstruction) || "Eres un asistente de ventas para una tienda o
 
 REGLAS:
 - Responde siempre en español.
-- PRODUCTO ACTIVO: ${productActive || "ninguno"}.
-- Si ya existe producto activo, NO cambies a otro producto.
-- Si el cliente dice "quiero", "si", "sí", "1", "2", "ok", "dale", seguí con el producto activo.
+- PRODUCTO ACTUAL: ${productActive || "ninguno"}.
+- Si el mensaje menciona OTRO producto, cambiá al nuevo producto.
+- Si el mensaje NO menciona producto y dice "quiero", "si", "sí", "1", "2", "ok", "dale", seguí con el producto actual.
+- Nunca te quedes bloqueado en un producto viejo.
 - No inventes productos.
 - No inventes precios.
-- Basate primero en el entrenamiento.
+- Usá el entrenamiento como base principal.
 - Mantené continuidad total del chat.
 - Pedí solo el siguiente dato necesario para cerrar la venta.
-- Nunca cambies de producto por tu cuenta.
 
-ENTRENAMIENTO RELEVANTE:
+ENTRENAMIENTO:
 ${trainingContext || "Sin entrenamiento adicional."}
   `.trim();
 }
@@ -1137,7 +1197,6 @@ async function procesarDisparadores(userId, fromNumber, message) {
     for (const trigger of triggers) {
       const condition = normalizeText(trigger.condition);
       if (!condition) continue;
-
       if (!messageLower.includes(condition)) continue;
 
       let responseText = trigger.response || "";
@@ -1161,10 +1220,6 @@ async function procesarDisparadores(userId, fromNumber, message) {
 
       const productFromTrigger = buildTopicFromTrigger(trigger, responseText);
 
-      // REGLA CLAVE:
-      // 1) si el mensaje actual menciona un producto, ese manda
-      // 2) si no menciona producto y ya había uno activo, se conserva
-      // 3) recién si no hay nada, usar el producto del trigger
       const finalProduct =
         detectedProductInMessage ||
         cleanText(existingContext?.last_topic) ||
@@ -1416,8 +1471,6 @@ https://cat-logomegatodo-com.vercel.app/`
     if (type !== "text" || !contenido) return;
 
     const existingContext = await getChatContext(userId, fromNumber);
-
-    // SOLO anclar producto si realmente se detecta en el mensaje.
     const explicitProductInMessage = detectProductFromText(contenido);
 
     if (explicitProductInMessage) {
@@ -1481,7 +1534,6 @@ https://cat-logomegatodo-com.vercel.app/`
     const sendResult = await sendWhatsAppMessage(userId, fromNumber, aiResponse);
 
     if (sendResult) {
-      // Nunca guardar contenido crudo como producto
       await saveChatContext(userId, fromNumber, {
         last_topic:
           explicitProductInMessage ||
