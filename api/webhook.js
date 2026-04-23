@@ -196,7 +196,7 @@ async function getRecentConversation(userId, fromNumber) {
       .eq("user_id", userId)
       .eq("from_number", fromNumber)
       .order("created_at", { ascending: false })
-      .limit(12);
+      .limit(6);
 
     if (error) {
       console.error("Error obteniendo historial:", error);
@@ -210,7 +210,7 @@ async function getRecentConversation(userId, fromNumber) {
           msg.message_type && String(msg.message_type).startsWith("out_")
             ? "assistant"
             : "user",
-        content: msg.message || "",
+        content: String(msg.message || "").slice(0, 300),
       }))
       .filter((item) => cleanText(item.content));
   } catch (error) {
@@ -463,7 +463,8 @@ async function getTrainingContext(userId) {
       .from("training_data")
       .select("intent, examples, response")
       .eq("user_id", userId)
-      .eq("is_active", true);
+      .eq("is_active", true)
+      .limit(5);
 
     if (error) {
       console.error("Error cargando training_data:", error);
@@ -475,12 +476,14 @@ async function getTrainingContext(userId) {
     }
 
     return data
+      .slice(0, 5)
       .map((row, index) => {
         const intent = cleanText(row.intent) || `Intent ${index + 1}`;
         const response = cleanText(row.response) || "Sin respuesta definida";
         const examples = safeArray(row.examples)
           .map((ex) => cleanText(ex))
-          .filter(Boolean);
+          .filter(Boolean)
+          .slice(0, 2);
 
         return [
           `Intent: ${intent}`,
@@ -514,31 +517,31 @@ function buildAIMessages({
     .filter(Boolean)
     .join("\n");
 
+  const compactTraining =
+    trainingContext.length > 1200
+      ? `${trainingContext.slice(0, 1200)}\n[Entrenamiento resumido por límite]`
+      : trainingContext;
+
   const systemPrompt = `
 ${systemInstruction || "Eres un asistente de ventas para una tienda online."}
 
-REGLAS OBLIGATORIAS:
+Reglas:
 - Responde siempre en español.
-- Mantén continuidad total con el historial del chat.
-- Si el cliente viene hablando de un producto, NO cambies de producto ni reinicies la conversación.
-- Si el cliente dice "quiero", "quiero comprar", "sí", "como hago", "cómo hago", "precio", "me interesa", "dame más info", asume que sigue hablando del último producto activo.
-- Si existe CONTEXTO ACTUAL DEL CHAT, úsalo como prioridad.
-- Si hubo disparador, continúa vendiendo ESE producto.
-- No saludes de nuevo si la conversación ya está iniciada.
-- No respondas genérico tipo "¿en qué producto estás interesado?" si ya hay contexto.
-- Responde corto, claro y con intención de cierre.
-- Si el cliente quiere comprar, guía el pedido de forma concreta.
-- Pedí solo el siguiente dato necesario para avanzar.
-- No inventes precios, stock ni beneficios que no estén en historial, entrenamiento o contexto.
+- Mantén continuidad con el historial.
+- Si hay producto o contexto activo, continúa sobre eso.
+- No reinicies la conversación ni saludes otra vez si ya empezó.
+- Responde breve, clara y orientada a cerrar venta.
+- Pide solo el siguiente dato necesario.
+- No inventes precios, stock ni beneficios.
 
-OBJETIVO:
+Objetivo:
 Cerrar la venta o avanzar la conversación comercial sin perder el hilo.
 
-ENTRENAMIENTO DISPONIBLE:
-${trainingContext}
+Contexto actual:
+${contextBlock || "Sin contexto."}
 
-CONTEXTO ACTUAL DEL CHAT:
-${contextBlock || "Sin contexto guardado."}
+Entrenamiento:
+${compactTraining || "Sin entrenamiento adicional."}
   `.trim();
 
   const messages = [{ role: "system", content: systemPrompt }];
@@ -549,13 +552,13 @@ ${contextBlock || "Sin contexto guardado."}
 
     messages.push({
       role: item.role,
-      content: item.content,
+      content: String(item.content).slice(0, 300),
     });
   }
 
   messages.push({
     role: "user",
-    content: currentMessage,
+    content: cleanText(currentMessage).slice(0, 500),
   });
 
   return messages;
@@ -599,7 +602,7 @@ async function generateAIReply(userId, message, fromNumber) {
         model,
         messages,
         temperature,
-        max_tokens: 350,
+        max_tokens: 250,
       }),
     });
 
@@ -632,6 +635,11 @@ async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
     const context = await getChatContext(userId, fromNumber);
     const trainingContext = await getTrainingContext(userId);
 
+    const compactTraining =
+      trainingContext.length > 800
+        ? `${trainingContext.slice(0, 800)}\n[Entrenamiento resumido]`
+        : trainingContext;
+
     const systemInstruction =
       cleanText(iaConfig.system_instruction) ||
       "Eres un asistente de ventas para una tienda online.";
@@ -646,10 +654,10 @@ Analiza la imagen enviada por el cliente.
 - Responde siempre en español.
 - Sé breve, útil y orientado a venta.
 
-ENTRENAMIENTO:
-${trainingContext}
+Entrenamiento:
+${compactTraining}
 
-CONTEXTO ACTUAL:
+Contexto actual:
 ${context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : "Sin contexto guardado."}
     `.trim();
 
@@ -671,7 +679,7 @@ ${context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : "Sin c
           },
         ],
         temperature: 0.3,
-        max_tokens: 300,
+        max_tokens: 220,
       }),
     });
 
