@@ -580,6 +580,8 @@ async function generateAIReply(userId, message, fromNumber) {
     const model = cleanText(iaConfig.model) || "openai/gpt-3.5-turbo";
     const temperature =
       typeof iaConfig.temperature === "number" ? iaConfig.temperature : 0.4;
+    const maxTokens =
+      typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 2048;
 
     const messages = buildAIMessages({
       systemInstruction,
@@ -599,7 +601,7 @@ async function generateAIReply(userId, message, fromNumber) {
         model,
         messages,
         temperature,
-        max_tokens: 350,
+        max_tokens: maxTokens,
       }),
     });
 
