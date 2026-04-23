@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const openAiApiKey = process.env.OPENAI_API_KEY || "";
 
 if (!supabaseUrl || !supabaseKey) {
   throw new Error("Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY");
@@ -157,6 +158,34 @@ function buildConfirmedOrderMessage(order) {
 }
 
 // ============================================
+// CONFIG IA
+// ============================================
+async function getIAConfig(userId) {
+  try {
+    const { data, error } = await supabase
+      .from("chat_ia_gemini")
+      .select("*")
+      .eq("user_id", userId)
+      .single();
+
+    if (error || !data) {
+      console.error("❌ No hay configuración IA:", error);
+      return null;
+    }
+
+    if (!data.is_active || !cleanText(data.api_key)) {
+      console.error("❌ IA inactiva o sin api_key");
+      return null;
+    }
+
+    return data;
+  } catch (error) {
+    console.error("❌ Error cargando config IA:", error);
+    return null;
+  }
+}
+
+// ============================================
 // HISTORIAL
 // ============================================
 async function getRecentConversation(userId, fromNumber) {
@@ -239,7 +268,7 @@ async function saveChatContext(userId, fromNumber, payload = {}) {
 
 // ============================================
 // ORDERS
-// Usa columna phone, NO from_number
+// Usa columna phone
 // ============================================
 async function getOpenOrder(userId, phone) {
   try {
@@ -480,9 +509,7 @@ function buildAIMessages({
 }) {
   const contextBlock = [
     context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : null,
-    context?.last_trigger
-      ? `Último disparador activado: ${context.last_trigger}`
-      : null,
+    context?.last_trigger ? `Último disparador activado: ${context.last_trigger}` : null,
   ]
     .filter(Boolean)
     .join("\n");
@@ -535,25 +562,12 @@ ${contextBlock || "Sin contexto guardado."}
 }
 
 // ============================================
-// RESPUESTA IA DIRECTA EN WEBHOOK
+// IA TEXTO
 // ============================================
 async function generateAIReply(userId, message, fromNumber) {
   try {
-    const { data: iaConfig, error: iaError } = await supabase
-      .from("chat_ia_gemini")
-      .select("*")
-      .eq("user_id", userId)
-      .single();
-
-    if (iaError || !iaConfig) {
-      console.error("❌ No hay configuración IA:", iaError);
-      return null;
-    }
-
-    if (!iaConfig.is_active || !cleanText(iaConfig.api_key)) {
-      console.error("❌ IA inactiva o sin api_key");
-      return null;
-    }
+    const iaConfig = await getIAConfig(userId);
+    if (!iaConfig) return null;
 
     const history = await getRecentConversation(userId, fromNumber);
     const context = await getChatContext(userId, fromNumber);
@@ -592,21 +606,132 @@ async function generateAIReply(userId, message, fromNumber) {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      console.error("❌ Error OpenRouter desde webhook:", data);
+      console.error("❌ Error OpenRouter texto:", data);
       return null;
     }
 
     const botResponse = cleanText(data?.choices?.[0]?.message?.content);
-
-    if (!botResponse) {
-      console.error("❌ La IA no devolvió contenido");
-      return null;
-    }
+    if (!botResponse) return null;
 
     console.log("✅ IA generó respuesta:", botResponse.slice(0, 120));
     return botResponse;
   } catch (error) {
     console.error("❌ Error generando respuesta IA:", error);
+    return null;
+  }
+}
+
+// ============================================
+// IA IMAGEN
+// ============================================
+async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
+  try {
+    const iaConfig = await getIAConfig(userId);
+    if (!iaConfig) return null;
+
+    const context = await getChatContext(userId, fromNumber);
+    const trainingContext = await getTrainingContext(userId);
+
+    const systemInstruction =
+      cleanText(iaConfig.system_instruction) ||
+      "Eres un asistente de ventas para una tienda online.";
+
+    const prompt = `
+${systemInstruction}
+
+Analiza la imagen enviada por el cliente.
+- Si la imagen muestra un producto, descríbelo y responde como vendedor.
+- Si la imagen parece relacionada con el producto actual del chat, continúa sobre ese producto.
+- Si no se entiende bien la imagen, pide otra foto más clara.
+- Responde siempre en español.
+- Sé breve, útil y orientado a venta.
+
+ENTRENAMIENTO:
+${trainingContext}
+
+CONTEXTO ACTUAL:
+${context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : "Sin contexto guardado."}
+    `.trim();
+
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${iaConfig.api_key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-4o-mini",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: imageUrl } },
+            ],
+          },
+        ],
+        temperature: 0.3,
+        max_tokens: 300,
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      console.error("❌ Error OpenRouter imagen:", data);
+      return null;
+    }
+
+    return cleanText(data?.choices?.[0]?.message?.content) || null;
+  } catch (error) {
+    console.error("❌ Error analizando imagen:", error);
+    return null;
+  }
+}
+
+// ============================================
+// TRANSCRIBIR AUDIO
+// Requiere OPENAI_API_KEY en Vercel
+// ============================================
+async function transcribeAudioFromUrl(audioUrl) {
+  try {
+    if (!openAiApiKey) {
+      console.error("❌ Falta OPENAI_API_KEY para transcripción");
+      return null;
+    }
+
+    const audioResponse = await fetch(audioUrl);
+    if (!audioResponse.ok) {
+      console.error("❌ No se pudo descargar audio para transcribir");
+      return null;
+    }
+
+    const audioBuffer = await audioResponse.arrayBuffer();
+    const blob = new Blob([audioBuffer], { type: "audio/mpeg" });
+
+    const formData = new FormData();
+    formData.append("file", blob, "audio.mp3");
+    formData.append("model", "whisper-1");
+    formData.append("language", "es");
+
+    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${openAiApiKey}`,
+      },
+      body: formData,
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      console.error("❌ Error transcribiendo audio:", data);
+      return null;
+    }
+
+    return cleanText(data?.text) || null;
+  } catch (error) {
+    console.error("❌ Error en transcribeAudioFromUrl:", error);
     return null;
   }
 }
@@ -695,7 +820,6 @@ async function procesarDisparadores(userId, fromNumber, message) {
 
     for (const trigger of triggers) {
       const condition = normalizeText(trigger.condition);
-
       if (!condition) continue;
 
       if (messageLower.includes(condition)) {
@@ -791,6 +915,7 @@ async function downloadAndUploadMedia(mediaId, token) {
       .from("templates-media")
       .upload(fileName, Buffer.from(fileBuffer), {
         contentType: mimeType,
+        upsert: false,
       });
 
     if (uploadError) {
@@ -859,6 +984,95 @@ async function procesarMensaje(message, token, userId, fromNumber) {
 
     console.log(`📝 Mensaje guardado de ${fromNumber}: ${contenido.substring(0, 80)}`);
 
+    // ============================================
+    // IMAGEN
+    // ============================================
+    if (type === "image" && mediaUrl) {
+      const imageReply = await analyzeImageWithAI(userId, mediaUrl, fromNumber);
+
+      if (imageReply) {
+        await sendWhatsAppMessage(userId, fromNumber, imageReply);
+      } else {
+        await sendWhatsAppMessage(
+          userId,
+          fromNumber,
+          "Recibí tu imagen 📸, pero no pude analizarla bien. Probá mandarme otra foto más clara."
+        );
+      }
+
+      return;
+    }
+
+    // ============================================
+    // AUDIO
+    // ============================================
+    if (type === "audio" && mediaUrl) {
+      const transcript = await transcribeAudioFromUrl(mediaUrl);
+
+      if (!transcript) {
+        await sendWhatsAppMessage(
+          userId,
+          fromNumber,
+          openAiApiKey
+            ? "Recibí tu audio 🎙️, pero no pude transcribirlo. Probá mandarlo otra vez."
+            : "Recibí tu audio 🎙️, pero la transcripción todavía no está configurada en el servidor."
+        );
+        return;
+      }
+
+      console.log(`🎙️ Audio transcripto: ${transcript}`);
+
+      await supabase.from("received_messages").insert({
+        user_id: userId,
+        platform: "whatsapp",
+        from_number: fromNumber,
+        message: `[Transcripción de audio] ${transcript}`,
+        message_type: "audio_transcript",
+        is_processed: true,
+        created_at: new Date().toISOString(),
+      });
+
+      const handledOrderFromAudio = await handleOrderDataCollection(
+        userId,
+        fromNumber,
+        transcript
+      );
+      if (handledOrderFromAudio) return;
+
+      const existingContextFromAudio = await getChatContext(userId, fromNumber);
+      const followUpFromAudio = isFollowUpMessage(transcript);
+
+      const triggerFromAudio = await procesarDisparadores(userId, fromNumber, transcript);
+      if (triggerFromAudio) return;
+
+      if (followUpFromAudio && existingContextFromAudio?.last_topic) {
+        const order = await startOrderFlow(
+          userId,
+          fromNumber,
+          existingContextFromAudio,
+          transcript
+        );
+
+        if (order) {
+          await sendWhatsAppMessage(
+            userId,
+            fromNumber,
+            `¡Genial! 😊 Para confirmar tu pedido de *${cleanText(order.product) || "tu producto"}* pasame tu *nombre completo*.`
+          );
+          return;
+        }
+      }
+
+      const audioReply = await generateAIReply(userId, transcript, fromNumber);
+
+      if (audioReply) {
+        await sendWhatsAppMessage(userId, fromNumber, audioReply);
+      }
+
+      return;
+    }
+
+    // Solo texto desde acá
     if (type !== "text" || !contenido) return;
 
     // 0. Si ya hay pedido abierto, continuar captura de datos
@@ -895,18 +1109,8 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     }
 
     // 4. IA directa
-    const { data: iaConfig, error: iaError } = await supabase
-      .from("chat_ia_gemini")
-      .select("is_active, api_key")
-      .eq("user_id", userId)
-      .single();
-
-    if (iaError) {
-      console.error("❌ Error consultando configuración IA:", iaError);
-      return;
-    }
-
-    if (!iaConfig?.is_active || !iaConfig?.api_key) {
+    const iaConfig = await getIAConfig(userId);
+    if (!iaConfig) {
       console.log(`⚠️ IA inactiva o sin api_key para user ${userId}`);
       return;
     }
