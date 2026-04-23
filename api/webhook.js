@@ -2,12 +2,6 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const openAiApiKey = process.env.OPENAI_API_KEY || "";
-
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error("Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY");
-}
-
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const VERIFY_TOKEN = "miTokenSeguro2026";
@@ -15,178 +9,21 @@ const VERIFY_TOKEN = "miTokenSeguro2026";
 // ============================================
 // HELPERS
 // ============================================
+function getBaseUrl() {
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  return "https://bot-seller-skyline-2026.vercel.app";
+}
+
 function normalizeText(value) {
-  return String(value || "").trim().toLowerCase();
-}
-
-function cleanText(value) {
-  return String(value || "").trim();
-}
-
-function safeArray(value) {
-  return Array.isArray(value) ? value : [];
-}
-
-function buildTopicFromTrigger(trigger, responseText) {
-  return (
-    cleanText(trigger?.template) ||
-    cleanText(responseText) ||
-    cleanText(trigger?.response) ||
-    cleanText(trigger?.name) ||
-    cleanText(trigger?.condition) ||
-    null
-  );
-}
-
-function isFollowUpMessage(text) {
-  const normalized = normalizeText(text);
-
-  const followUps = [
-    "quiero",
-    "si",
-    "sí",
-    "como hago",
-    "cómo hago",
-    "precio",
-    "cuanto",
-    "cuánto",
-    "me interesa",
-    "quiero comprar",
-    "como compro",
-    "cómo compro",
-    "pedido",
-    "comprar",
-    "info",
-    "mas info",
-    "más info",
-    "disponible",
-    "ok",
-    "dale",
-    "uno",
-    "dos",
-    "promo",
-    "confirmo",
-    "envíame",
-    "me quedo",
-  ];
-
-  return followUps.some((item) => normalized.includes(item));
-}
-
-function detectQuantity(text) {
-  const normalized = normalizeText(text);
-
-  if (
-    normalized.includes(" 5 ") ||
-    normalized.includes("cinco") ||
-    normalized.startsWith("5")
-  ) return 5;
-
-  if (
-    normalized.includes(" 4 ") ||
-    normalized.includes("cuatro") ||
-    normalized.startsWith("4")
-  ) return 4;
-
-  if (
-    normalized.includes(" 3 ") ||
-    normalized.includes("tres") ||
-    normalized.startsWith("3")
-  ) return 3;
-
-  if (
-    normalized.includes(" 2 ") ||
-    normalized.includes("dos") ||
-    normalized.startsWith("2")
-  ) return 2;
-
-  return 1;
-}
-
-function extractGsAmount(text) {
-  const value = cleanText(text);
-  if (!value) return null;
-
-  const match = value.match(/(\d{1,3}(?:[.,]\d{3})+|\d+)\s*gs/i);
-  if (!match) return null;
-
-  let amount = match[1].replace(/,/g, ".");
-  if (!amount.toLowerCase().includes("gs")) {
-    amount = `${amount} Gs`;
-  }
-
-  return amount;
-}
-
-function simplifyProductName(context) {
-  const text = cleanText(context);
-  if (!text) return "Producto";
-
-  const productoMatch = text.match(/producto\s*:\s*(.+)/i);
-  if (productoMatch?.[1]) {
-    return cleanText(productoMatch[1]);
-  }
-
-  const firstLine = text.split("\n").map(cleanText).find(Boolean);
-  return firstLine || "Producto";
-}
-
-function buildConfirmedOrderMessage(order) {
-  const product = cleanText(order?.product) || "Producto";
-  const customerName = cleanText(order?.customer_name) || "Cliente";
-  const city = cleanText(order?.city) || "Ciudad";
-  const address = cleanText(order?.address) || "Dirección";
-  const phone = cleanText(order?.phone) || "Sin teléfono";
-  const quantity = Number(order?.quantity || 1);
-  const total = cleanText(order?.total_amount) || "A confirmar";
-
-  return `✅ PEDIDO CONFIRMADO
-━━━━━━━━━━━━━━━━━━━━━━
-✅ Producto: ${product}
-✅ Cliente: ${customerName}
-✅ Ubicación: ${city} — ${address}
-✅ Contacto: ${phone}
-✅ Cantidad: ${quantity} u.
-
-💰 Total: ${total}
-🚚 Envío GRATIS · Pagás al recibir
-⏰ Oferta válida hoy
-
-¡Gracias por elegir Mega Todo Store! 💜✨
-
-🔗 Te invito a revisar nuestro catálogo oficial: https://cat-logomegatodo-com.vercel.app/`;
+  return String(value || "")
+    .trim()
+    .toLowerCase();
 }
 
 // ============================================
-// CONFIG IA
-// ============================================
-async function getIAConfig(userId) {
-  try {
-    const { data, error } = await supabase
-      .from("chat_ia_gemini")
-      .select("*")
-      .eq("user_id", userId)
-      .single();
-
-    if (error || !data) {
-      console.error("❌ No hay configuración IA:", error);
-      return null;
-    }
-
-    if (!data.is_active || !cleanText(data.api_key)) {
-      console.error("❌ IA inactiva o sin api_key");
-      return null;
-    }
-
-    return data;
-  } catch (error) {
-    console.error("❌ Error cargando config IA:", error);
-    return null;
-  }
-}
-
-// ============================================
-// HISTORIAL
+// FUNCIÓN: Obtener historial reciente
 // ============================================
 async function getRecentConversation(userId, fromNumber) {
   try {
@@ -212,7 +49,7 @@ async function getRecentConversation(userId, fromNumber) {
             : "user",
         content: msg.message || "",
       }))
-      .filter((item) => cleanText(item.content));
+      .filter((item) => item.content.trim());
   } catch (error) {
     console.error("Error obteniendo historial reciente:", error);
     return [];
@@ -220,7 +57,7 @@ async function getRecentConversation(userId, fromNumber) {
 }
 
 // ============================================
-// CONTEXTO
+// FUNCIÓN: Obtener contexto del chat
 // ============================================
 async function getChatContext(userId, fromNumber) {
   try {
@@ -243,6 +80,9 @@ async function getChatContext(userId, fromNumber) {
   }
 }
 
+// ============================================
+// FUNCIÓN: Guardar contexto del chat
+// ============================================
 async function saveChatContext(userId, fromNumber, payload = {}) {
   try {
     const { error } = await supabase.from("chat_context").upsert(
@@ -267,477 +107,43 @@ async function saveChatContext(userId, fromNumber, payload = {}) {
 }
 
 // ============================================
-// ORDERS
-// Usa columna phone
+// FUNCIÓN: Obtener respuesta de IA
 // ============================================
-async function getOpenOrder(userId, phone) {
+async function getAIResponse(userId, message, fromNumber) {
   try {
-    const { data, error } = await supabase
-      .from("orders")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("phone", phone)
-      .in("status", ["draft", "collecting_name", "collecting_city", "collecting_address"])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) {
-      console.error("Error obteniendo order abierta:", error);
-      return null;
-    }
-
-    return data || null;
-  } catch (error) {
-    console.error("Error en getOpenOrder:", error);
-    return null;
-  }
-}
-
-async function createOrderDraft(userId, phone, payload = {}) {
-  try {
-    const { data, error } = await supabase
-      .from("orders")
-      .insert({
-        user_id: userId,
-        phone,
-        product: payload.product || null,
-        customer_name: payload.customer_name || null,
-        city: payload.city || null,
-        address: payload.address || null,
-        quantity: payload.quantity || 1,
-        total_amount: payload.total_amount || null,
-        status: payload.status || "collecting_name",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select("*")
-      .single();
-
-    if (error) {
-      console.error("Error creando borrador de pedido:", error);
-      return null;
-    }
-
-    return data;
-  } catch (error) {
-    console.error("Error en createOrderDraft:", error);
-    return null;
-  }
-}
-
-async function updateOrder(orderId, payload = {}) {
-  try {
-    const { data, error } = await supabase
-      .from("orders")
-      .update({
-        ...payload,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", orderId)
-      .select("*")
-      .single();
-
-    if (error) {
-      console.error("Error actualizando pedido:", error);
-      return null;
-    }
-
-    return data;
-  } catch (error) {
-    console.error("Error en updateOrder:", error);
-    return null;
-  }
-}
-
-function isOrderComplete(order) {
-  return !!(
-    cleanText(order?.product) &&
-    cleanText(order?.customer_name) &&
-    cleanText(order?.city) &&
-    cleanText(order?.address) &&
-    cleanText(order?.phone) &&
-    Number(order?.quantity || 0) > 0
-  );
-}
-
-async function startOrderFlow(userId, fromNumber, context, message) {
-  const existingOrder = await getOpenOrder(userId, fromNumber);
-  if (existingOrder) return existingOrder;
-
-  const quantity = detectQuantity(message);
-  const totalAmount =
-    extractGsAmount(context?.last_topic) ||
-    extractGsAmount(context?.last_trigger) ||
-    "A confirmar";
-  const product =
-    cleanText(context?.last_trigger) ||
-    simplifyProductName(context?.last_topic);
-
-  return await createOrderDraft(userId, fromNumber, {
-    product,
-    quantity,
-    total_amount: totalAmount,
-    status: "collecting_name",
-  });
-}
-
-async function handleOrderDataCollection(userId, fromNumber, incomingText) {
-  const openOrder = await getOpenOrder(userId, fromNumber);
-  if (!openOrder) return false;
-
-  const text = cleanText(incomingText);
-  if (!text) return true;
-
-  if (openOrder.status === "collecting_name") {
-    const updated = await updateOrder(openOrder.id, {
-      customer_name: text,
-      status: "collecting_city",
-    });
-
-    if (updated) {
-      await sendWhatsAppMessage(
-        userId,
-        fromNumber,
-        "Perfecto 🙌 Ahora pasame tu ciudad."
-      );
-    }
-
-    return true;
-  }
-
-  if (openOrder.status === "collecting_city") {
-    const updated = await updateOrder(openOrder.id, {
-      city: text,
-      status: "collecting_address",
-    });
-
-    if (updated) {
-      await sendWhatsAppMessage(
-        userId,
-        fromNumber,
-        "Genial 😊 Ahora pasame tu dirección exacta."
-      );
-    }
-
-    return true;
-  }
-
-  if (openOrder.status === "collecting_address") {
-    const updated = await updateOrder(openOrder.id, {
-      address: text,
-      status: "draft",
-    });
-
-    if (!updated) return true;
-
-    if (isOrderComplete(updated)) {
-      const confirmationText = buildConfirmedOrderMessage(updated);
-      const sent = await sendWhatsAppMessage(userId, fromNumber, confirmationText);
-
-      if (sent) {
-        await updateOrder(updated.id, {
-          status: "confirmed",
-        });
-      }
-    } else {
-      await sendWhatsAppMessage(
-        userId,
-        fromNumber,
-        "Me faltan algunos datos para confirmar tu pedido."
-      );
-    }
-
-    return true;
-  }
-
-  return false;
-}
-
-// ============================================
-// TRAINING
-// ============================================
-async function getTrainingContext(userId) {
-  try {
-    const { data, error } = await supabase
-      .from("training_data")
-      .select("intent, examples, response")
-      .eq("user_id", userId)
-      .eq("is_active", true);
-
-    if (error) {
-      console.error("Error cargando training_data:", error);
-      return "No hay entrenamiento adicional cargado.";
-    }
-
-    if (!data || data.length === 0) {
-      return "No hay entrenamiento adicional cargado.";
-    }
-
-    return data
-      .map((row, index) => {
-        const intent = cleanText(row.intent) || `Intent ${index + 1}`;
-        const response = cleanText(row.response) || "Sin respuesta definida";
-        const examples = safeArray(row.examples)
-          .map((ex) => cleanText(ex))
-          .filter(Boolean);
-
-        return [
-          `Intent: ${intent}`,
-          examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
-          `Respuesta ideal: ${response}`,
-        ]
-          .filter(Boolean)
-          .join("\n");
-      })
-      .join("\n\n");
-  } catch (error) {
-    console.error("Error armando training context:", error);
-    return "No hay entrenamiento adicional cargado.";
-  }
-}
-
-// ============================================
-// ARMAR MENSAJES IA
-// ============================================
-function buildAIMessages({
-  systemInstruction,
-  trainingContext,
-  history,
-  currentMessage,
-  context,
-}) {
-  const contextBlock = [
-    context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : null,
-    context?.last_trigger ? `Último disparador activado: ${context.last_trigger}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  const systemPrompt = `
-${systemInstruction || "Eres un asistente de ventas para una tienda online."}
-
-REGLAS OBLIGATORIAS:
-- Responde siempre en español.
-- Mantén continuidad total con el historial del chat.
-- Si el cliente viene hablando de un producto, NO cambies de producto ni reinicies la conversación.
-- Si el cliente dice "quiero", "quiero comprar", "sí", "como hago", "cómo hago", "precio", "me interesa", "dame más info", asume que sigue hablando del último producto activo.
-- Si existe CONTEXTO ACTUAL DEL CHAT, úsalo como prioridad.
-- Si hubo disparador, continúa vendiendo ESE producto.
-- No saludes de nuevo si la conversación ya está iniciada.
-- No respondas genérico tipo "¿en qué producto estás interesado?" si ya hay contexto.
-- Responde corto, claro y con intención de cierre.
-- Si el cliente quiere comprar, guía el pedido de forma concreta.
-- Pedí solo el siguiente dato necesario para avanzar.
-- No inventes precios, stock ni beneficios que no estén en historial, entrenamiento o contexto.
-
-OBJETIVO:
-Cerrar la venta o avanzar la conversación comercial sin perder el hilo.
-
-ENTRENAMIENTO DISPONIBLE:
-${trainingContext}
-
-CONTEXTO ACTUAL DEL CHAT:
-${contextBlock || "Sin contexto guardado."}
-  `.trim();
-
-  const messages = [{ role: "system", content: systemPrompt }];
-
-  for (const item of history || []) {
-    if (!item?.content) continue;
-    if (item.role !== "user" && item.role !== "assistant") continue;
-
-    messages.push({
-      role: item.role,
-      content: item.content,
-    });
-  }
-
-  messages.push({
-    role: "user",
-    content: currentMessage,
-  });
-
-  return messages;
-}
-
-// ============================================
-// IA TEXTO
-// ============================================
-async function generateAIReply(userId, message, fromNumber) {
-  try {
-    const iaConfig = await getIAConfig(userId);
-    if (!iaConfig) return null;
-
     const history = await getRecentConversation(userId, fromNumber);
     const context = await getChatContext(userId, fromNumber);
-    const trainingContext = await getTrainingContext(userId);
 
-    const systemInstruction =
-      cleanText(iaConfig.system_instruction) ||
-      "Eres un asistente de ventas para una tienda online. Responde como vendedor profesional, amable, persuasivo y manteniendo el contexto.";
+    const apiUrl = `${getBaseUrl()}/api/chat-ia`;
 
-    const model = cleanText(iaConfig.model) || "openai/gpt-3.5-turbo";
-    const temperature =
-      typeof iaConfig.temperature === "number" ? iaConfig.temperature : 0.4;
-
-    const messages = buildAIMessages({
-      systemInstruction,
-      trainingContext,
-      history,
-      currentMessage: cleanText(message),
-      context,
-    });
-
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const response = await fetch(apiUrl, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${iaConfig.api_key}`,
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model,
-        messages,
-        temperature,
-        max_tokens: 350,
+        user_id: userId,
+        message,
+        from_number: fromNumber,
+        history,
+        context,
       }),
     });
 
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      console.error("❌ Error OpenRouter texto:", data);
+      console.error("Error /api/chat-ia:", data);
       return null;
     }
 
-    const botResponse = cleanText(data?.choices?.[0]?.message?.content);
-    if (!botResponse) return null;
-
-    console.log("✅ IA generó respuesta:", botResponse.slice(0, 120));
-    return botResponse;
+    return data.response || null;
   } catch (error) {
-    console.error("❌ Error generando respuesta IA:", error);
+    console.error("Error obteniendo respuesta IA:", error);
     return null;
   }
 }
 
 // ============================================
-// IA IMAGEN
-// ============================================
-async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
-  try {
-    const iaConfig = await getIAConfig(userId);
-    if (!iaConfig) return null;
-
-    const context = await getChatContext(userId, fromNumber);
-    const trainingContext = await getTrainingContext(userId);
-
-    const systemInstruction =
-      cleanText(iaConfig.system_instruction) ||
-      "Eres un asistente de ventas para una tienda online.";
-
-    const prompt = `
-${systemInstruction}
-
-Analiza la imagen enviada por el cliente.
-- Si la imagen muestra un producto, descríbelo y responde como vendedor.
-- Si la imagen parece relacionada con el producto actual del chat, continúa sobre ese producto.
-- Si no se entiende bien la imagen, pide otra foto más clara.
-- Responde siempre en español.
-- Sé breve, útil y orientado a venta.
-
-ENTRENAMIENTO:
-${trainingContext}
-
-CONTEXTO ACTUAL:
-${context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : "Sin contexto guardado."}
-    `.trim();
-
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${iaConfig.api_key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-4o-mini",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: prompt },
-              { type: "image_url", image_url: { url: imageUrl } },
-            ],
-          },
-        ],
-        temperature: 0.3,
-        max_tokens: 300,
-      }),
-    });
-
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      console.error("❌ Error OpenRouter imagen:", data);
-      return null;
-    }
-
-    return cleanText(data?.choices?.[0]?.message?.content) || null;
-  } catch (error) {
-    console.error("❌ Error analizando imagen:", error);
-    return null;
-  }
-}
-
-// ============================================
-// TRANSCRIBIR AUDIO
-// Requiere OPENAI_API_KEY en Vercel
-// ============================================
-async function transcribeAudioFromUrl(audioUrl) {
-  try {
-    if (!openAiApiKey) {
-      console.error("❌ Falta OPENAI_API_KEY para transcripción");
-      return null;
-    }
-
-    const audioResponse = await fetch(audioUrl);
-    if (!audioResponse.ok) {
-      console.error("❌ No se pudo descargar audio para transcribir");
-      return null;
-    }
-
-    const audioBuffer = await audioResponse.arrayBuffer();
-    const blob = new Blob([audioBuffer], { type: "audio/mpeg" });
-
-    const formData = new FormData();
-    formData.append("file", blob, "audio.mp3");
-    formData.append("model", "whisper-1");
-    formData.append("language", "es");
-
-    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${openAiApiKey}`,
-      },
-      body: formData,
-    });
-
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      console.error("❌ Error transcribiendo audio:", data);
-      return null;
-    }
-
-    return cleanText(data?.text) || null;
-  } catch (error) {
-    console.error("❌ Error en transcribeAudioFromUrl:", error);
-    return null;
-  }
-}
-
-// ============================================
-// ENVIAR WHATSAPP
+// FUNCIÓN: Enviar mensaje por WhatsApp
 // ============================================
 async function sendWhatsAppMessage(userId, to, message) {
   try {
@@ -799,7 +205,7 @@ async function sendWhatsAppMessage(userId, to, message) {
 }
 
 // ============================================
-// DISPARADORES
+// FUNCIÓN: Procesar disparadores por palabras clave
 // ============================================
 async function procesarDisparadores(userId, fromNumber, message) {
   try {
@@ -820,6 +226,7 @@ async function procesarDisparadores(userId, fromNumber, message) {
 
     for (const trigger of triggers) {
       const condition = normalizeText(trigger.condition);
+
       if (!condition) continue;
 
       if (messageLower.includes(condition)) {
@@ -849,14 +256,11 @@ async function procesarDisparadores(userId, fromNumber, message) {
         }
 
         await saveChatContext(userId, fromNumber, {
-          last_topic: buildTopicFromTrigger(trigger, responseText),
+          last_topic: trigger.template || trigger.name || trigger.condition || null,
           last_trigger: trigger.name || null,
         });
 
-        return {
-          ...trigger,
-          responseText,
-        };
+        return trigger;
       }
     }
 
@@ -868,16 +272,13 @@ async function procesarDisparadores(userId, fromNumber, message) {
 }
 
 // ============================================
-// DESCARGAR MEDIA
+// FUNCIÓN: Descargar multimedia y subir a Supabase Storage
 // ============================================
 async function downloadAndUploadMedia(mediaId, token) {
   try {
-    const mediaUrlResponse = await fetch(
-      `https://graph.facebook.com/v22.0/${mediaId}`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-      }
-    );
+    const mediaUrlResponse = await fetch(`https://graph.facebook.com/v22.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
 
     if (!mediaUrlResponse.ok) return null;
 
@@ -913,10 +314,7 @@ async function downloadAndUploadMedia(mediaId, token) {
 
     const { error: uploadError } = await supabase.storage
       .from("templates-media")
-      .upload(fileName, Buffer.from(fileBuffer), {
-        contentType: mimeType,
-        upsert: false,
-      });
+      .upload(fileName, Buffer.from(fileBuffer), { contentType: mimeType });
 
     if (uploadError) {
       console.error("Error subiendo media a storage:", uploadError);
@@ -935,7 +333,37 @@ async function downloadAndUploadMedia(mediaId, token) {
 }
 
 // ============================================
-// PROCESAR MENSAJE
+// FUNCIÓN: Detectar si mensaje debe seguir contexto
+// ============================================
+function isFollowUpMessage(text) {
+  const normalized = normalizeText(text);
+
+  const followUps = [
+    "quiero",
+    "si",
+    "sí",
+    "como hago",
+    "cómo hago",
+    "precio",
+    "cuanto",
+    "cuánto",
+    "me interesa",
+    "quiero comprar",
+    "como compro",
+    "cómo compro",
+    "pedido",
+    "comprar",
+    "info",
+    "mas info",
+    "más info",
+    "disponible",
+  ];
+
+  return followUps.some((item) => normalized.includes(item));
+}
+
+// ============================================
+// FUNCIÓN: Procesar mensaje entrante
 // ============================================
 async function procesarMensaje(message, token, userId, fromNumber) {
   try {
@@ -947,7 +375,7 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     const now = new Date().toISOString();
 
     if (type === "text") {
-      contenido = cleanText(message.text?.body || "");
+      contenido = message.text?.body || "";
       console.log("🔥 WEBHOOK RECIBIÓ MENSAJE:", contenido, "de", fromNumber);
     } else if (type === "image") {
       mediaId = message.image?.id;
@@ -984,140 +412,37 @@ async function procesarMensaje(message, token, userId, fromNumber) {
 
     console.log(`📝 Mensaje guardado de ${fromNumber}: ${contenido.substring(0, 80)}`);
 
-    // ============================================
-    // IMAGEN
-    // ============================================
-    if (type === "image" && mediaUrl) {
-      const imageReply = await analyzeImageWithAI(userId, mediaUrl, fromNumber);
+    if (type !== "text" || !contenido.trim()) return;
 
-      if (imageReply) {
-        await sendWhatsAppMessage(userId, fromNumber, imageReply);
-      } else {
-        await sendWhatsAppMessage(
-          userId,
-          fromNumber,
-          "Recibí tu imagen 📸, pero no pude analizarla bien. Probá mandarme otra foto más clara."
-        );
-      }
-
-      return;
-    }
-
-    // ============================================
-    // AUDIO
-    // ============================================
-    if (type === "audio" && mediaUrl) {
-      const transcript = await transcribeAudioFromUrl(mediaUrl);
-
-      if (!transcript) {
-        await sendWhatsAppMessage(
-          userId,
-          fromNumber,
-          openAiApiKey
-            ? "Recibí tu audio 🎙️, pero no pude transcribirlo. Probá mandarlo otra vez."
-            : "Recibí tu audio 🎙️, pero la transcripción todavía no está configurada en el servidor."
-        );
-        return;
-      }
-
-      console.log(`🎙️ Audio transcripto: ${transcript}`);
-
-      await supabase.from("received_messages").insert({
-        user_id: userId,
-        platform: "whatsapp",
-        from_number: fromNumber,
-        message: `[Transcripción de audio] ${transcript}`,
-        message_type: "audio_transcript",
-        is_processed: true,
-        created_at: new Date().toISOString(),
-      });
-
-      const handledOrderFromAudio = await handleOrderDataCollection(
-        userId,
-        fromNumber,
-        transcript
-      );
-      if (handledOrderFromAudio) return;
-
-      const existingContextFromAudio = await getChatContext(userId, fromNumber);
-      const followUpFromAudio = isFollowUpMessage(transcript);
-
-      const triggerFromAudio = await procesarDisparadores(userId, fromNumber, transcript);
-      if (triggerFromAudio) return;
-
-      if (followUpFromAudio && existingContextFromAudio?.last_topic) {
-        const order = await startOrderFlow(
-          userId,
-          fromNumber,
-          existingContextFromAudio,
-          transcript
-        );
-
-        if (order) {
-          await sendWhatsAppMessage(
-            userId,
-            fromNumber,
-            `¡Genial! 😊 Para confirmar tu pedido de *${cleanText(order.product) || "tu producto"}* pasame tu *nombre completo*.`
-          );
-          return;
-        }
-      }
-
-      const audioReply = await generateAIReply(userId, transcript, fromNumber);
-
-      if (audioReply) {
-        await sendWhatsAppMessage(userId, fromNumber, audioReply);
-      }
-
-      return;
-    }
-
-    // Solo texto desde acá
-    if (type !== "text" || !contenido) return;
-
-    // 0. Si ya hay pedido abierto, continuar captura de datos
-    const handledOrder = await handleOrderDataCollection(userId, fromNumber, contenido);
-    if (handledOrder) {
-      console.log(`🧾 Mensaje usado para completar pedido de ${fromNumber}`);
-      return;
-    }
-
-    const existingContext = await getChatContext(userId, fromNumber);
-    const followUp = isFollowUpMessage(contenido);
-
-    // 1. Intentar trigger primero
+    // 1. Primero intentar trigger
     const triggerResult = await procesarDisparadores(userId, fromNumber, contenido);
 
-    // 2. Si hubo trigger, termina este turno
+    // 2. Si hubo trigger, ya respondió. Terminamos.
     if (triggerResult) {
       console.log(`✅ Respuesta enviada por trigger: ${triggerResult.name}`);
       return;
     }
 
-    // 3. Si el cliente muestra intención de compra y ya hay contexto, iniciar pedido
-    if (followUp && existingContext?.last_topic) {
-      const order = await startOrderFlow(userId, fromNumber, existingContext, contenido);
+    // 3. Si no hubo trigger, usar IA
+    const { data: iaConfig, error: iaError } = await supabase
+      .from("chat_ia_gemini")
+      .select("is_active, api_key")
+      .eq("user_id", userId)
+      .single();
 
-      if (order) {
-        await sendWhatsAppMessage(
-          userId,
-          fromNumber,
-          `¡Genial! 😊 Para confirmar tu pedido de *${cleanText(order.product) || "tu producto"}* pasame tu *nombre completo*.`
-        );
-        return;
-      }
+    if (iaError) {
+      console.error("❌ Error consultando configuración IA:", iaError);
+      return;
     }
 
-    // 4. IA directa
-    const iaConfig = await getIAConfig(userId);
-    if (!iaConfig) {
+    if (!iaConfig?.is_active || !iaConfig?.api_key) {
       console.log(`⚠️ IA inactiva o sin api_key para user ${userId}`);
       return;
     }
 
     console.log(`🤖 IA activa, respondiendo a ${fromNumber}`);
 
-    const aiResponse = await generateAIReply(userId, contenido, fromNumber);
+    const aiResponse = await getAIResponse(userId, contenido, fromNumber);
 
     if (!aiResponse) {
       console.log(`⚠️ La IA no devolvió respuesta para ${fromNumber}`);
@@ -1127,6 +452,9 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     const sendResult = await sendWhatsAppMessage(userId, fromNumber, aiResponse);
 
     if (sendResult) {
+      const existingContext = await getChatContext(userId, fromNumber);
+
+      // Mantener el tema previo si existe, o usar el último mensaje
       await saveChatContext(userId, fromNumber, {
         last_topic: existingContext?.last_topic || contenido,
         last_trigger: existingContext?.last_trigger || null,
@@ -1138,7 +466,7 @@ async function procesarMensaje(message, token, userId, fromNumber) {
 }
 
 // ============================================
-// HANDLER
+// HANDLER PRINCIPAL
 // ============================================
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Credentials", true);
@@ -1173,6 +501,7 @@ export default async function handler(req, res) {
       for (const entry of body.entry || []) {
         for (const change of entry.changes || []) {
           const value = change.value;
+
           const phoneNumberId = value?.metadata?.phone_number_id;
 
           if (!phoneNumberId) {
@@ -1187,10 +516,7 @@ export default async function handler(req, res) {
             .single();
 
           if (configError || !config?.user_id) {
-            console.error(
-              "❌ No se encontró configuración para ese phone_number_id",
-              configError
-            );
+            console.error("❌ No se encontró configuración para ese phone_number_id", configError);
             continue;
           }
 
