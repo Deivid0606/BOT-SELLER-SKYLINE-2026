@@ -2,7 +2,6 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const openAiApiKey = process.env.OPENAI_API_KEY || "";
 
 if (!supabaseUrl || !supabaseKey) {
   throw new Error("Faltan SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY");
@@ -111,7 +110,7 @@ const CIUDADES_COBERTURA = [
   "emboscada",
   "loma grande",
   "benjamin aceval",
-  "remansito"
+  "remansito",
 ];
 
 const ZONAS_AMBIGUAS = {
@@ -662,7 +661,7 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
 }
 
 // ============================================
-// TRAINING / IA
+// GEMINI HELPERS
 // ============================================
 function tokenizeText(text) {
   return Array.from(
@@ -773,13 +772,28 @@ async function getTrainingContext(userId, currentMessage, context) {
   }
 }
 
-function buildAIMessages({
-  systemInstruction,
-  trainingContext,
-  history,
-  currentMessage,
-  context,
-}) {
+function buildGeminiTextContents(history, currentMessage) {
+  const contents = [];
+
+  for (const item of history || []) {
+    if (!item?.content) continue;
+    if (item.role !== "user" && item.role !== "assistant") continue;
+
+    contents.push({
+      role: item.role === "assistant" ? "model" : "user",
+      parts: [{ text: String(item.content).slice(0, 100) }],
+    });
+  }
+
+  contents.push({
+    role: "user",
+    parts: [{ text: cleanText(currentMessage).slice(0, 120) }],
+  });
+
+  return contents;
+}
+
+function buildGeminiSystemInstruction(systemInstruction, trainingContext, context) {
   const contextBlock = [
     context?.last_topic ? `Tema: ${cleanText(context.last_topic).slice(0, 80)}` : null,
     context?.last_trigger ? `Trigger: ${cleanText(context.last_trigger).slice(0, 50)}` : null,
@@ -787,7 +801,7 @@ function buildAIMessages({
     .filter(Boolean)
     .join("\n");
 
-  const systemPrompt = `
+  return `
 ${cleanText(systemInstruction).slice(0, 160) || "Eres un asistente de ventas."}
 Reglas:
 - Responde en español.
@@ -802,27 +816,73 @@ ${trainingContext || "Sin entrenamiento."}
 Contexto:
 ${contextBlock || "Sin contexto."}
   `.trim();
-
-  const messages = [{ role: "system", content: systemPrompt }];
-
-  for (const item of history || []) {
-    if (!item?.content) continue;
-    if (item.role !== "user" && item.role !== "assistant") continue;
-
-    messages.push({
-      role: item.role,
-      content: String(item.content).slice(0, 100),
-    });
-  }
-
-  messages.push({
-    role: "user",
-    content: cleanText(currentMessage).slice(0, 120),
-  });
-
-  return messages;
 }
 
+async function callGeminiText({
+  apiKey,
+  model,
+  systemInstruction,
+  contents,
+  temperature,
+  maxOutputTokens,
+}) {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      model
+    )}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: systemInstruction }],
+        },
+        contents,
+        generationConfig: {
+          temperature,
+          maxOutputTokens,
+        },
+      }),
+    }
+  );
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    console.error("❌ Error Gemini texto:", data);
+    return null;
+  }
+
+  const text =
+    data?.candidates?.[0]?.content?.parts
+      ?.map((part) => cleanText(part?.text))
+      .filter(Boolean)
+      .join("\n") || "";
+
+  return cleanText(text) || null;
+}
+
+async function urlToInlineData(url, defaultMimeType) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error("No se pudo descargar el archivo para Gemini.");
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  const base64 = Buffer.from(arrayBuffer).toString("base64");
+  const mimeType = response.headers.get("content-type") || defaultMimeType;
+
+  return {
+    mimeType,
+    data: base64,
+  };
+}
+
+// ============================================
+// IA TEXTO
+// ============================================
 async function generateAIReply(userId, message, fromNumber) {
   try {
     const iaConfig = await getIAConfig(userId);
@@ -836,52 +896,41 @@ async function generateAIReply(userId, message, fromNumber) {
       cleanText(iaConfig.system_instruction) ||
       "Eres un asistente de ventas para una tienda online.";
 
-    const model = cleanText(iaConfig.model) || "openai/gpt-4o-mini";
+    const model = cleanText(iaConfig.model) || "gemini-2.5-flash";
     const temperature =
       typeof iaConfig.temperature === "number" ? iaConfig.temperature : 0.4;
-    const maxTokens =
-      typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 30;
+    const maxOutputTokens =
+      typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 80;
 
-    const messages = buildAIMessages({
+    const contents = buildGeminiTextContents(history, message);
+    const finalSystemInstruction = buildGeminiSystemInstruction(
       systemInstruction,
       trainingContext,
-      history,
-      currentMessage: cleanText(message),
-      context,
+      context
+    );
+
+    const botResponse = await callGeminiText({
+      apiKey: cleanText(iaConfig.api_key),
+      model,
+      systemInstruction: finalSystemInstruction,
+      contents,
+      temperature,
+      maxOutputTokens,
     });
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${iaConfig.api_key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature,
-        max_tokens: maxTokens,
-      }),
-    });
-
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      console.error("❌ Error OpenRouter texto:", data);
-      return null;
-    }
-
-    const botResponse = cleanText(data?.choices?.[0]?.message?.content);
     if (!botResponse) return null;
 
-    console.log("✅ IA generó respuesta:", botResponse.slice(0, 120));
+    console.log("✅ Gemini generó respuesta:", botResponse.slice(0, 120));
     return botResponse;
   } catch (error) {
-    console.error("❌ Error generando respuesta IA:", error);
+    console.error("❌ Error generando respuesta Gemini:", error);
     return null;
   }
 }
 
+// ============================================
+// IA IMAGEN
+// ============================================
 async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
   try {
     const iaConfig = await getIAConfig(userId);
@@ -894,99 +943,153 @@ async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
       cleanText(iaConfig.system_instruction) ||
       "Eres un asistente de ventas para una tienda online.";
 
-    const prompt = `
-${cleanText(systemInstruction).slice(0, 120)}
+    const inlineImage = await urlToInlineData(imageUrl, "image/jpeg");
 
-Analiza la imagen enviada por el cliente.
-- Responde en español.
-- Sé breve y orientado a venta.
-- Si no se entiende, pedí otra foto.
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+        cleanText(iaConfig.model) || "gemini-2.5-flash"
+      )}:generateContent?key=${encodeURIComponent(cleanText(iaConfig.api_key))}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [
+              {
+                text: `
+${systemInstruction}
+
+Responde en español.
+Sé breve, útil y orientado a venta.
+Usa el contexto si aplica.
 
 Entrenamiento:
-${String(trainingContext).slice(0, 120)}
+${String(trainingContext).slice(0, 140)}
 
 Contexto:
 ${context?.last_topic ? cleanText(context.last_topic).slice(0, 60) : "Sin contexto"}
-    `.trim();
-
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${iaConfig.api_key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-4o-mini",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: prompt },
-              { type: "image_url", image_url: { url: imageUrl } },
+                `.trim(),
+              },
             ],
           },
-        ],
-        temperature: 0.3,
-        max_tokens: 30,
-      }),
-    });
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: "Analiza la imagen enviada por el cliente. Si muestra un producto, descríbelo y responde como vendedor. Si no se entiende bien, pedí otra foto más clara.",
+                },
+                {
+                  inlineData: inlineImage,
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 80,
+          },
+        }),
+      }
+    );
 
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      console.error("❌ Error OpenRouter imagen:", data);
+      console.error("❌ Error Gemini imagen:", data);
       return null;
     }
 
-    return cleanText(data?.choices?.[0]?.message?.content) || null;
+    const text =
+      data?.candidates?.[0]?.content?.parts
+        ?.map((part) => cleanText(part?.text))
+        .filter(Boolean)
+        .join("\n") || "";
+
+    return cleanText(text) || null;
   } catch (error) {
-    console.error("❌ Error analizando imagen:", error);
+    console.error("❌ Error analizando imagen con Gemini:", error);
     return null;
   }
 }
 
 // ============================================
-// TRANSCRIBIR AUDIO
+// TRANSCRIBIR AUDIO CON GEMINI
 // ============================================
-async function transcribeAudioFromUrl(audioUrl) {
+async function transcribeAudioFromUrl(audioUrl, userId, fromNumber) {
   try {
-    if (!openAiApiKey) {
-      console.error("❌ Falta OPENAI_API_KEY para transcripción");
-      return null;
-    }
+    const iaConfig = await getIAConfig(userId);
+    if (!iaConfig) return null;
 
-    const audioResponse = await fetch(audioUrl);
-    if (!audioResponse.ok) {
-      console.error("❌ No se pudo descargar audio para transcribir");
-      return null;
-    }
+    const context = await getChatContext(userId, fromNumber);
+    const trainingContext = await getTrainingContext(userId, "[audio]", context);
 
-    const audioBuffer = await audioResponse.arrayBuffer();
-    const blob = new Blob([audioBuffer], { type: "audio/mpeg" });
+    const inlineAudio = await urlToInlineData(audioUrl, "audio/ogg");
 
-    const formData = new FormData();
-    formData.append("file", blob, "audio.mp3");
-    formData.append("model", "whisper-1");
-    formData.append("language", "es");
-
-    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${openAiApiKey}`,
-      },
-      body: formData,
-    });
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+        cleanText(iaConfig.model) || "gemini-2.5-flash"
+      )}:generateContent?key=${encodeURIComponent(cleanText(iaConfig.api_key))}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [
+              {
+                text: `
+Eres un asistente que transcribe audios en español.
+Devuelve solamente la transcripción en texto plano.
+No resumas.
+No expliques.
+No agregues comentarios.
+                `.trim(),
+              },
+            ],
+          },
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: `Transcribí este audio. Contexto opcional: ${String(
+                    trainingContext || ""
+                  ).slice(0, 80)}`,
+                },
+                {
+                  inlineData: inlineAudio,
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0,
+            maxOutputTokens: 160,
+          },
+        }),
+      }
+    );
 
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      console.error("❌ Error transcribiendo audio:", data);
+      console.error("❌ Error Gemini audio:", data);
       return null;
     }
 
-    return cleanText(data?.text) || null;
+    const text =
+      data?.candidates?.[0]?.content?.parts
+        ?.map((part) => cleanText(part?.text))
+        .filter(Boolean)
+        .join("\n") || "";
+
+    return cleanText(text) || null;
   } catch (error) {
-    console.error("❌ Error en transcribeAudioFromUrl:", error);
+    console.error("❌ Error en transcribeAudioFromUrl con Gemini:", error);
     return null;
   }
 }
@@ -1159,7 +1262,7 @@ async function downloadAndUploadMedia(mediaId, token) {
       fileExt = mimeType.split("/")[1] || "mp4";
     } else if (mimeType.includes("audio")) {
       mediaType = "audio";
-      fileExt = mimeType.split("/")[1] || "mp3";
+      fileExt = mimeType.split("/")[1] || "ogg";
     }
 
     const fileName = `incoming/${Date.now()}_${Math.random()
@@ -1256,20 +1359,18 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     }
 
     if (type === "audio" && mediaUrl) {
-      const transcript = await transcribeAudioFromUrl(mediaUrl);
+      const transcript = await transcribeAudioFromUrl(mediaUrl, userId, fromNumber);
 
       if (!transcript) {
         await sendWhatsAppMessage(
           userId,
           fromNumber,
-          openAiApiKey
-            ? "Recibí tu audio 🎙️, pero no pude transcribirlo. Probá mandarlo otra vez."
-            : "Recibí tu audio 🎙️, pero la transcripción todavía no está configurada en el servidor."
+          "Recibí tu audio 🎙️, pero no pude transcribirlo. Probá mandarlo otra vez."
         );
         return;
       }
 
-      console.log(`🎙️ Audio transcripto: ${transcript}`);
+      console.log(`🎙️ Audio transcripto con Gemini: ${transcript}`);
 
       await supabase.from("received_messages").insert({
         user_id: userId,
@@ -1392,12 +1493,12 @@ https://cat-logomegatodo-com.vercel.app/`
       return;
     }
 
-    console.log(`🤖 IA activa, respondiendo a ${fromNumber}`);
+    console.log(`🤖 Gemini activo, respondiendo a ${fromNumber}`);
 
     const aiResponse = await generateAIReply(userId, contenido, fromNumber);
 
     if (!aiResponse) {
-      console.log(`⚠️ La IA no devolvió respuesta para ${fromNumber}`);
+      console.log(`⚠️ Gemini no devolvió respuesta para ${fromNumber}`);
       return;
     }
 
