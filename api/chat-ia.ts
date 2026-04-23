@@ -64,30 +64,104 @@ function sanitizeHistory(
     .filter(Boolean) as Array<{ role: "user" | "assistant"; content: string }>;
 }
 
+function getKeywords(text: string): string[] {
+  return Array.from(
+    new Set(
+      normalizeText(text)
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .split(/\s+/)
+        .map((word) => word.trim())
+        .filter((word) => word.length >= 3)
+    )
+  );
+}
+
+function scoreTrainingRow(row: TrainingRow, query: string): number {
+  const keywords = getKeywords(query);
+  if (!keywords.length) return 0;
+
+  const haystack = [
+    normalizeText(row.intent),
+    ...safeArray<string>(row.examples).map((ex) => normalizeText(ex)),
+    normalizeText(row.response),
+  ]
+    .join(" \n ")
+    .toLowerCase();
+
+  let score = 0;
+
+  for (const keyword of keywords) {
+    if (!haystack.includes(keyword)) continue;
+
+    score += 1;
+
+    if (normalizeText(row.intent).toLowerCase().includes(keyword)) score += 3;
+    if (normalizeText(row.response).toLowerCase().includes(keyword)) score += 2;
+
+    const examples = safeArray<string>(row.examples).map((ex) =>
+      normalizeText(ex).toLowerCase()
+    );
+    if (examples.some((ex) => ex.includes(keyword))) score += 2;
+  }
+
+  return score;
+}
+
+function pickRelevantTrainingRows(
+  rows: TrainingRow[],
+  currentMessage: string,
+  context: IncomingContext | null
+): TrainingRow[] {
+  if (!rows.length) return [];
+
+  const query = [
+    normalizeText(currentMessage),
+    normalizeText(context?.last_topic),
+    normalizeText(context?.last_trigger),
+  ]
+    .filter(Boolean)
+    .join(" \n ");
+
+  const scored = rows
+    .map((row, index) => ({
+      row,
+      index,
+      score: scoreTrainingRow(row, query),
+    }))
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+
+  const relevant = scored.filter((item) => item.score > 0).slice(0, 4).map((item) => item.row);
+
+  if (relevant.length > 0) return relevant;
+
+  return rows.slice(0, 2);
+}
+
 function buildTrainingContext(rows: TrainingRow[] = []): string {
   if (!rows.length) {
     return "No hay entrenamiento adicional cargado.";
   }
 
   return rows
-    .slice(0, 3)
     .map((row, index) => {
       const intent = normalizeText(row.intent) || `Intent ${index + 1}`;
       const response = normalizeText(row.response) || "Sin respuesta definida";
       const examples = safeArray<string>(row.examples)
         .map((ex) => normalizeText(ex))
         .filter(Boolean)
-        .slice(0, 1);
+        .slice(0, 2);
 
       return [
         `Intent: ${intent}`,
-        examples.length ? `Ejemplo: ${examples.join(" | ")}` : null,
+        examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
         `Respuesta ideal: ${response}`,
       ]
         .filter(Boolean)
         .join("\n");
     })
-    .join("\n\n");
+    .join("\n\n")
+    .slice(0, 900);
 }
 
 function buildMessages(params: {
@@ -101,7 +175,9 @@ function buildMessages(params: {
     params;
 
   const contextBlock = [
-    context?.last_topic ? `Producto o tema actual: ${normalizeText(context.last_topic).slice(0, 120)}` : null,
+    context?.last_topic
+      ? `Producto o tema actual: ${normalizeText(context.last_topic).slice(0, 120)}`
+      : null,
     context?.last_trigger
       ? `Último disparador activado: ${normalizeText(context.last_trigger).slice(0, 80)}`
       : null,
@@ -110,7 +186,6 @@ function buildMessages(params: {
     .join("\n");
 
   const compactInstruction = normalizeText(systemInstruction).slice(0, 280);
-  const compactTraining = trainingContext.slice(0, 500);
 
   const systemPrompt = `
 ${compactInstruction || "Eres un asistente de ventas para una tienda online."}
@@ -124,8 +199,8 @@ Reglas:
 - Pide solo el siguiente dato necesario.
 - No inventes precios, stock ni beneficios.
 
-Entrenamiento:
-${compactTraining || "Sin entrenamiento adicional."}
+Entrenamiento relevante:
+${trainingContext || "Sin entrenamiento adicional."}
 
 Contexto actual:
 ${contextBlock || "Sin contexto guardado."}
@@ -229,14 +304,19 @@ export default async function handler(req, res) {
       .from("training_data")
       .select("intent, examples, response")
       .eq("user_id", cleanUserId)
-      .eq("is_active", true)
-      .limit(3);
+      .eq("is_active", true);
 
     if (trainingError) {
       console.error("⚠️ Error cargando training_data:", trainingError);
     }
 
-    const trainingContext = buildTrainingContext((trainingData || []) as TrainingRow[]);
+    const relevantTrainingRows = pickRelevantTrainingRows(
+      (trainingData || []) as TrainingRow[],
+      cleanMessage,
+      context
+    );
+
+    const trainingContext = buildTrainingContext(relevantTrainingRows);
 
     const systemInstruction =
       normalizeText(config.system_instruction) ||
