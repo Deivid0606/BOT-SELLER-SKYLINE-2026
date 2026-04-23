@@ -14,19 +14,16 @@ const VERIFY_TOKEN = "miTokenSeguro2026";
 // ============================================
 // HELPERS
 // ============================================
-function getBaseUrl() {
-  if (process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}`;
-  }
-  return "https://bot-seller-skyline-2026.vercel.app";
-}
-
 function normalizeText(value) {
   return String(value || "").trim().toLowerCase();
 }
 
 function cleanText(value) {
   return String(value || "").trim();
+}
+
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 function buildTopicFromTrigger(trigger, responseText) {
@@ -41,7 +38,7 @@ function buildTopicFromTrigger(trigger, responseText) {
 }
 
 // ============================================
-// FUNCIÓN: Obtener historial reciente
+// HISTORIAL
 // ============================================
 async function getRecentConversation(userId, fromNumber) {
   try {
@@ -75,7 +72,7 @@ async function getRecentConversation(userId, fromNumber) {
 }
 
 // ============================================
-// FUNCIÓN: Obtener contexto del chat
+// CONTEXTO
 // ============================================
 async function getChatContext(userId, fromNumber) {
   try {
@@ -98,9 +95,6 @@ async function getChatContext(userId, fromNumber) {
   }
 }
 
-// ============================================
-// FUNCIÓN: Guardar contexto del chat
-// ============================================
 async function saveChatContext(userId, fromNumber, payload = {}) {
   try {
     const { error } = await supabase.from("chat_context").upsert(
@@ -125,43 +119,193 @@ async function saveChatContext(userId, fromNumber, payload = {}) {
 }
 
 // ============================================
-// FUNCIÓN: Obtener respuesta de IA
+// TRAINING
 // ============================================
-async function getAIResponse(userId, message, fromNumber) {
+async function getTrainingContext(userId) {
   try {
+    const { data, error } = await supabase
+      .from("training_data")
+      .select("intent, examples, response")
+      .eq("user_id", userId)
+      .eq("is_active", true);
+
+    if (error) {
+      console.error("Error cargando training_data:", error);
+      return "No hay entrenamiento adicional cargado.";
+    }
+
+    if (!data || data.length === 0) {
+      return "No hay entrenamiento adicional cargado.";
+    }
+
+    return data
+      .map((row, index) => {
+        const intent = cleanText(row.intent) || `Intent ${index + 1}`;
+        const response = cleanText(row.response) || "Sin respuesta definida";
+        const examples = safeArray(row.examples)
+          .map((ex) => cleanText(ex))
+          .filter(Boolean);
+
+        return [
+          `Intent: ${intent}`,
+          examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
+          `Respuesta ideal: ${response}`,
+        ]
+          .filter(Boolean)
+          .join("\n");
+      })
+      .join("\n\n");
+  } catch (error) {
+    console.error("Error armando training context:", error);
+    return "No hay entrenamiento adicional cargado.";
+  }
+}
+
+// ============================================
+// ARMAR MENSAJES IA
+// ============================================
+function buildAIMessages({
+  systemInstruction,
+  trainingContext,
+  history,
+  currentMessage,
+  context,
+}) {
+  const contextBlock = [
+    context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : null,
+    context?.last_trigger
+      ? `Último disparador activado: ${context.last_trigger}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const systemPrompt = `
+${systemInstruction || "Eres un asistente de ventas para una tienda online."}
+
+REGLAS OBLIGATORIAS:
+- Responde siempre en español.
+- Mantén continuidad total con el historial del chat.
+- Si el cliente viene hablando de un producto, NO cambies de producto ni reinicies la conversación.
+- Si el cliente dice "quiero", "quiero comprar", "sí", "como hago", "cómo hago", "precio", "me interesa", "dame más info", asume que sigue hablando del último producto activo.
+- Si existe CONTEXTO ACTUAL DEL CHAT, úsalo como prioridad.
+- Si hubo disparador, continúa vendiendo ESE producto.
+- No saludes de nuevo si la conversación ya está iniciada.
+- No respondas genérico tipo "¿en qué producto estás interesado?" si ya hay contexto.
+- Responde corto, claro y con intención de cierre.
+- Si el cliente quiere comprar, guía el pedido de forma concreta.
+- Pedí solo el siguiente dato necesario para avanzar.
+- No inventes precios, stock ni beneficios que no estén en historial, entrenamiento o contexto.
+
+OBJETIVO:
+Cerrar la venta o avanzar la conversación comercial sin perder el hilo.
+
+ENTRENAMIENTO DISPONIBLE:
+${trainingContext}
+
+CONTEXTO ACTUAL DEL CHAT:
+${contextBlock || "Sin contexto guardado."}
+  `.trim();
+
+  const messages = [{ role: "system", content: systemPrompt }];
+
+  for (const item of history || []) {
+    if (!item?.content) continue;
+    if (item.role !== "user" && item.role !== "assistant") continue;
+
+    messages.push({
+      role: item.role,
+      content: item.content,
+    });
+  }
+
+  messages.push({
+    role: "user",
+    content: currentMessage,
+  });
+
+  return messages;
+}
+
+// ============================================
+// RESPUESTA IA DIRECTA EN WEBHOOK
+// ============================================
+async function generateAIReply(userId, message, fromNumber) {
+  try {
+    const { data: iaConfig, error: iaError } = await supabase
+      .from("chat_ia_gemini")
+      .select("*")
+      .eq("user_id", userId)
+      .single();
+
+    if (iaError || !iaConfig) {
+      console.error("❌ No hay configuración IA:", iaError);
+      return null;
+    }
+
+    if (!iaConfig.is_active || !cleanText(iaConfig.api_key)) {
+      console.error("❌ IA inactiva o sin api_key");
+      return null;
+    }
+
     const history = await getRecentConversation(userId, fromNumber);
     const context = await getChatContext(userId, fromNumber);
+    const trainingContext = await getTrainingContext(userId);
 
-    const apiUrl = `${getBaseUrl()}/api/chat-ia`;
+    const systemInstruction =
+      cleanText(iaConfig.system_instruction) ||
+      "Eres un asistente de ventas para una tienda online. Responde como vendedor profesional, amable, persuasivo y manteniendo el contexto.";
 
-    const response = await fetch(apiUrl, {
+    const model = cleanText(iaConfig.model) || "openai/gpt-3.5-turbo";
+    const temperature =
+      typeof iaConfig.temperature === "number" ? iaConfig.temperature : 0.4;
+
+    const messages = buildAIMessages({
+      systemInstruction,
+      trainingContext,
+      history,
+      currentMessage: cleanText(message),
+      context,
+    });
+
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${iaConfig.api_key}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({
-        user_id: userId,
-        message,
-        from_number: fromNumber,
-        history,
-        context,
+        model,
+        messages,
+        temperature,
+        max_tokens: 350,
       }),
     });
 
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      console.error("Error /api/chat-ia:", data);
+      console.error("❌ Error OpenRouter desde webhook:", data);
       return null;
     }
 
-    return data.response || null;
+    const botResponse = cleanText(data?.choices?.[0]?.message?.content);
+
+    if (!botResponse) {
+      console.error("❌ La IA no devolvió contenido");
+      return null;
+    }
+
+    console.log("✅ IA generó respuesta:", botResponse.slice(0, 120));
+    return botResponse;
   } catch (error) {
-    console.error("Error obteniendo respuesta IA:", error);
+    console.error("❌ Error generando respuesta IA:", error);
     return null;
   }
 }
 
 // ============================================
-// FUNCIÓN: Enviar mensaje por WhatsApp
+// ENVIAR WHATSAPP
 // ============================================
 async function sendWhatsAppMessage(userId, to, message) {
   try {
@@ -223,7 +367,7 @@ async function sendWhatsAppMessage(userId, to, message) {
 }
 
 // ============================================
-// FUNCIÓN: Procesar disparadores por palabras clave
+// DISPARADORES
 // ============================================
 async function procesarDisparadores(userId, fromNumber, message) {
   try {
@@ -293,7 +437,7 @@ async function procesarDisparadores(userId, fromNumber, message) {
 }
 
 // ============================================
-// FUNCIÓN: Descargar multimedia y subir a Supabase Storage
+// DESCARGAR MEDIA
 // ============================================
 async function downloadAndUploadMedia(mediaId, token) {
   try {
@@ -359,7 +503,7 @@ async function downloadAndUploadMedia(mediaId, token) {
 }
 
 // ============================================
-// FUNCIÓN: Detectar si mensaje debe seguir contexto
+// FOLLOW UP
 // ============================================
 function isFollowUpMessage(text) {
   const normalized = normalizeText(text);
@@ -394,7 +538,7 @@ function isFollowUpMessage(text) {
 }
 
 // ============================================
-// FUNCIÓN: Procesar mensaje entrante
+// PROCESAR MENSAJE
 // ============================================
 async function procesarMensaje(message, token, userId, fromNumber) {
   try {
@@ -448,16 +592,16 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     const existingContext = await getChatContext(userId, fromNumber);
     const followUp = isFollowUpMessage(contenido);
 
-    // 1. Intentar trigger
+    // 1. Intentar trigger primero
     const triggerResult = await procesarDisparadores(userId, fromNumber, contenido);
 
-    // 2. Si hubo trigger, terminamos este turno
+    // 2. Si hubo trigger, termina este turno
     if (triggerResult) {
       console.log(`✅ Respuesta enviada por trigger: ${triggerResult.name}`);
       return;
     }
 
-    // 3. Si no hubo trigger, usar IA
+    // 3. IA directa
     const { data: iaConfig, error: iaError } = await supabase
       .from("chat_ia_gemini")
       .select("is_active, api_key")
@@ -474,14 +618,15 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       return;
     }
 
-    // Si el cliente sigue en continuidad comercial, preservamos contexto
     if (followUp && existingContext?.last_topic) {
-      console.log(`🧠 Follow-up detectado para ${fromNumber} sobre tema: ${existingContext.last_topic}`);
+      console.log(
+        `🧠 Follow-up detectado para ${fromNumber} sobre tema: ${existingContext.last_topic}`
+      );
     }
 
     console.log(`🤖 IA activa, respondiendo a ${fromNumber}`);
 
-    const aiResponse = await getAIResponse(userId, contenido, fromNumber);
+    const aiResponse = await generateAIReply(userId, contenido, fromNumber);
 
     if (!aiResponse) {
       console.log(`⚠️ La IA no devolvió respuesta para ${fromNumber}`);
@@ -502,7 +647,7 @@ async function procesarMensaje(message, token, userId, fromNumber) {
 }
 
 // ============================================
-// HANDLER PRINCIPAL
+// HANDLER
 // ============================================
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Credentials", true);
