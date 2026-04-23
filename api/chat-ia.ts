@@ -34,7 +34,6 @@ type IAConfigRow = {
   system_instruction?: string | null;
   model?: string | null;
   temperature?: number | null;
-  max_tokens?: number | null;
 };
 
 function normalizeText(value: unknown): string {
@@ -246,8 +245,6 @@ export default async function handler(req, res) {
     const model = normalizeText(config.model) || "openai/gpt-3.5-turbo";
     const temperature =
       typeof config.temperature === "number" ? config.temperature : 0.4;
-    const maxTokens =
-      typeof config.max_tokens === "number" ? config.max_tokens : 2048;
 
     const messages = buildMessages({
       systemInstruction,
@@ -267,7 +264,7 @@ export default async function handler(req, res) {
         model,
         messages,
         temperature,
-        max_tokens: maxTokens,
+        max_tokens: 350,
       }),
     });
 
