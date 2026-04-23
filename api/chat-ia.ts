@@ -50,10 +50,9 @@ function sanitizeHistory(
   const items = safeArray<IncomingHistoryItem>(history);
 
   return items
-    .slice(-6)
     .map((item) => {
       const role = item?.role;
-      const content = normalizeText(item?.content).slice(0, 300);
+      const content = normalizeText(item?.content);
 
       if (!content) return null;
       if (role !== "user" && role !== "assistant") return null;
@@ -69,14 +68,12 @@ function buildTrainingContext(rows: TrainingRow[] = []): string {
   }
 
   return rows
-    .slice(0, 5)
     .map((row, index) => {
       const intent = normalizeText(row.intent) || `Intent ${index + 1}`;
       const response = normalizeText(row.response) || "Sin respuesta definida";
       const examples = safeArray<string>(row.examples)
         .map((ex) => normalizeText(ex))
-        .filter(Boolean)
-        .slice(0, 2);
+        .filter(Boolean);
 
       return [
         `Intent: ${intent}`,
@@ -108,31 +105,31 @@ function buildMessages(params: {
     .filter(Boolean)
     .join("\n");
 
-  const compactTraining =
-    trainingContext.length > 1200
-      ? `${trainingContext.slice(0, 1200)}\n[Entrenamiento resumido por límite]`
-      : trainingContext;
-
   const systemPrompt = `
 ${systemInstruction || "Eres un asistente de ventas para una tienda online."}
 
-Reglas:
+REGLAS OBLIGATORIAS:
 - Responde siempre en español.
-- Mantén continuidad con el historial.
-- Si hay producto o contexto activo, continúa sobre eso.
-- No reinicies la conversación ni saludes otra vez si ya empezó.
-- Responde breve, clara y orientada a cerrar venta.
-- Pide solo el siguiente dato necesario.
-- No inventes precios, stock ni beneficios.
+- Mantén continuidad total con el historial del chat.
+- Si el cliente viene hablando de un producto, NO cambies de producto ni reinicies la conversación.
+- Si el cliente dice "quiero", "quiero comprar", "sí", "como hago", "cómo hago", "precio", "me interesa", "dame más info", asume que sigue hablando del último producto activo.
+- Si existe CONTEXTO ACTUAL DEL CHAT, úsalo como prioridad.
+- Si hubo disparador, continúa vendiendo ESE producto.
+- No saludes de nuevo si la conversación ya está iniciada.
+- No respondas genérico tipo "¿en qué producto estás interesado?" si ya hay contexto.
+- Responde corto, claro y con intención de cierre.
+- Si el cliente quiere comprar, guía el pedido de forma concreta.
+- Pedí solo el siguiente dato necesario para avanzar.
+- No inventes precios, stock ni beneficios que no estén en historial, entrenamiento o contexto.
 
-Objetivo:
-Avanzar la conversación comercial sin perder el hilo.
+OBJETIVO:
+Cerrar la venta o avanzar la conversación comercial sin perder el hilo.
 
-Contexto actual:
-${contextBlock || "Sin contexto."}
+ENTRENAMIENTO DISPONIBLE:
+${trainingContext}
 
-Entrenamiento:
-${compactTraining || "Sin entrenamiento adicional."}
+CONTEXTO ACTUAL DEL CHAT:
+${contextBlock || "Sin contexto guardado."}
   `.trim();
 
   const messages: Array<{ role: ChatRole; content: string }> = [
@@ -148,7 +145,7 @@ ${compactTraining || "Sin entrenamiento adicional."}
 
   messages.push({
     role: "user",
-    content: normalizeText(currentMessage).slice(0, 500),
+    content: currentMessage,
   });
 
   return messages;
@@ -233,8 +230,7 @@ export default async function handler(req, res) {
       .from("training_data")
       .select("intent, examples, response")
       .eq("user_id", cleanUserId)
-      .eq("is_active", true)
-      .limit(5);
+      .eq("is_active", true);
 
     if (trainingError) {
       console.error("⚠️ Error cargando training_data:", trainingError);
@@ -268,7 +264,7 @@ export default async function handler(req, res) {
         model,
         messages,
         temperature,
-        max_tokens: 250,
+        max_tokens: 350,
       }),
     });
 
