@@ -64,21 +64,22 @@ function sanitizeHistory(
 
 function buildTrainingContext(rows: TrainingRow[] = []): string {
   if (!rows.length) {
-    return "No hay entrenamiento adicional cargado.";
+    return "";
   }
 
   return rows
     .map((row, index) => {
       const intent = normalizeText(row.intent) || `Intent ${index + 1}`;
-      const response = normalizeText(row.response) || "Sin respuesta definida";
+      const response = normalizeText(row.response) || "";
       const examples = safeArray<string>(row.examples)
         .map((ex) => normalizeText(ex))
-        .filter(Boolean);
+        .filter(Boolean)
+        .slice(0, 2);
 
       return [
         `Intent: ${intent}`,
         examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
-        `Respuesta ideal: ${response}`,
+        response ? `Respuesta ideal: ${response}` : null,
       ]
         .filter(Boolean)
         .join("\n");
@@ -97,39 +98,26 @@ function buildMessages(params: {
     params;
 
   const contextBlock = [
-    context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : null,
-    context?.last_trigger
-      ? `Último disparador activado: ${context.last_trigger}`
-      : null,
+    context?.last_topic ? `Tema actual: ${context.last_topic}` : null,
+    context?.last_trigger ? `Último disparador: ${context.last_trigger}` : null,
   ]
     .filter(Boolean)
     .join("\n");
 
   const systemPrompt = `
-${systemInstruction || "Eres un asistente de ventas para una tienda online."}
+${systemInstruction || "Eres un asistente de ventas."}
 
-REGLAS OBLIGATORIAS:
+Reglas:
 - Responde siempre en español.
-- Mantén continuidad total con el historial del chat.
-- Si el cliente viene hablando de un producto, NO cambies de producto ni reinicies la conversación.
-- Si el cliente dice "quiero", "quiero comprar", "sí", "como hago", "cómo hago", "precio", "me interesa", "dame más info", asume que sigue hablando del último producto activo.
-- Si existe CONTEXTO ACTUAL DEL CHAT, úsalo como prioridad.
-- Si hubo disparador, continúa vendiendo ESE producto.
-- No saludes de nuevo si la conversación ya está iniciada.
-- No respondas genérico tipo "¿en qué producto estás interesado?" si ya hay contexto.
-- Responde corto, claro y con intención de cierre.
-- Si el cliente quiere comprar, guía el pedido de forma concreta.
-- Pedí solo el siguiente dato necesario para avanzar.
-- No inventes precios, stock ni beneficios que no estén en historial, entrenamiento o contexto.
+- Mantén el contexto del chat.
+- Si ya están hablando de un producto, no cambies de tema.
+- Evita respuestas genéricas si ya hay contexto.
+- Sé breve, claro y útil.
+- No inventes precios, stock ni beneficios.
 
-OBJETIVO:
-Cerrar la venta o avanzar la conversación comercial sin perder el hilo.
+${contextBlock ? `Contexto actual:\n${contextBlock}` : ""}
 
-ENTRENAMIENTO DISPONIBLE:
-${trainingContext}
-
-CONTEXTO ACTUAL DEL CHAT:
-${contextBlock || "Sin contexto guardado."}
+${trainingContext ? `Entrenamiento:\n${trainingContext}` : ""}
   `.trim();
 
   const messages: Array<{ role: ChatRole; content: string }> = [
@@ -220,7 +208,9 @@ export default async function handler(req, res) {
       });
     }
 
-    const sanitizedHistory = sanitizeHistory(incomingHistory);
+    // 🔥 RECORTAR HISTORIAL
+    const sanitizedHistory = sanitizeHistory(incomingHistory).slice(-6);
+
     const context: IncomingContext | null =
       incomingContext && typeof incomingContext === "object"
         ? incomingContext
@@ -230,17 +220,22 @@ export default async function handler(req, res) {
       .from("training_data")
       .select("intent, examples, response")
       .eq("user_id", cleanUserId)
-      .eq("is_active", true);
+      .eq("is_active", true)
+      .limit(4);
 
     if (trainingError) {
       console.error("⚠️ Error cargando training_data:", trainingError);
     }
 
-    const trainingContext = buildTrainingContext((trainingData || []) as TrainingRow[]);
+    // 🔥 RECORTAR ENTRENAMIENTO
+    const trainingContext = buildTrainingContext(
+      ((trainingData || []).slice(0, 4)) as TrainingRow[]
+    );
 
+    // 🔥 PROMPT MÁS CORTO
     const systemInstruction =
       normalizeText(config.system_instruction) ||
-      "Eres un asistente de ventas para una tienda online. Responde como vendedor profesional, amable, persuasivo y manteniendo el contexto.";
+      "Eres un asistente de ventas. Responde en español, breve, útil y manteniendo el contexto.";
 
     const model = normalizeText(config.model) || "openai/gpt-3.5-turbo";
     const temperature =
@@ -264,7 +259,7 @@ export default async function handler(req, res) {
         model,
         messages,
         temperature,
-        max_tokens: 350,
+        max_tokens: 200,
       }),
     });
 
