@@ -250,7 +250,7 @@ function extractCustomerDataFromText(text, fallbackPhone = "") {
 }
 
 function isOrderComplete(order) {
-  return !!(cleanText(order?.product) && cleanText(order?.customer_name) && cleanText(order?.city) && cleanText(order?.address) && cleanText(order?.phone) && Number(order?.quantity || 0) > 0);
+  return !!(cleanText(order?.product) && cleanText(order?.customer_name) && cleanText(order?.city) && cleanText(order?.address) && cleanText(order?.from_number) && Number(order?.quantity || 0) > 0);
 }
 
 function buildConfirmedOrderMessage(order) {
@@ -258,7 +258,7 @@ function buildConfirmedOrderMessage(order) {
   const customerName = cleanText(order?.customer_name) || "Cliente";
   const city = cleanText(order?.city) || "Ciudad";
   const address = cleanText(order?.address) || "Dirección";
-  const phone = cleanText(order?.phone) || "Sin teléfono";
+  const phone = cleanText(order?.from_number) || "Sin teléfono";
   const quantity = Number(order?.quantity || 1);
   const total = cleanText(order?.total_amount) || "A confirmar";
 
@@ -341,23 +341,24 @@ async function extractMultipleDataFromText(text, fromNumber, userId) {
 // ============================================
 // ORDERS
 // ============================================
-async function getOpenOrder(userId, phone) {
+async function getOpenOrder(userId, fromNumber) {
   try {
-    const normalizedIncoming = normalizePyPhone(phone);
+    const normalizedIncoming = normalizePyPhone(fromNumber);
     const { data, error } = await supabase.from("orders").select("*").eq("user_id", userId)
       .in("status", ["draft", "collecting_name", "collecting_city", "collecting_address", "waiting_exact_address"])
       .order("created_at", { ascending: false }).limit(20);
     if (error || !data?.length) return null;
-    const exact = data.find(row => normalizePyPhone(row.phone) === normalizedIncoming);
+    const exact = data.find(row => normalizePyPhone(row.from_number) === normalizedIncoming);
     return exact || data[0] || null;
   } catch { return null; }
 }
 
-async function createOrderDraft(userId, phone, payload = {}) {
+async function createOrderDraft(userId, fromNumber, payload = {}) {
   try {
     const { data, error } = await supabase.from("orders").insert({
-      user_id: userId, phone, product: payload.product || null, customer_name: payload.customer_name || null,
-      city: payload.city || null, address: payload.address || null, quantity: payload.quantity || 1,
+      user_id: userId, from_number: fromNumber, product: payload.product || null,
+      customer_name: payload.customer_name || null, city: payload.city || null,
+      address: payload.address || null, quantity: payload.quantity || 1,
       total_amount: payload.total_amount || null, status: payload.status || "collecting_name",
       created_at: new Date().toISOString(), updated_at: new Date().toISOString()
     }).select("*").single();
@@ -395,6 +396,44 @@ async function getCalculatedTotal(userId, product, quantity) {
 }
 
 // ============================================
+// HISTORIAL EXTENDIDO (evita mensajes cortados)
+// ============================================
+async function getFullConversationHistory(userId, fromNumber, limit = 10) {
+  try {
+    const { data, error } = await supabase
+      .from("received_messages")
+      .select("message, message_type, created_at")
+      .eq("user_id", userId)
+      .eq("from_number", fromNumber)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (error) return [];
+
+    const sorted = [...(data || [])].reverse();
+    const history = [];
+    for (const msg of sorted) {
+      const role = msg.message_type && String(msg.message_type).startsWith("out_") ? "assistant" : "user";
+      history.push({ role: role, content: String(msg.message || "").slice(0, 300) });
+    }
+    return history;
+  } catch { return []; }
+}
+
+function compressContext(order) {
+  if (!order) return "Sin pedido activo";
+  return `Pedido actual:
+- Producto: ${order.product || "No definido"}
+- Cliente: ${order.customer_name || "No definido"}
+- Ciudad: ${order.city || "No definido"}
+- Dirección: ${order.address || "No definido"}
+- Teléfono: ${order.from_number || "No definido"}
+- Cantidad: ${order.quantity || 1}
+- Estado: ${order.status || "draft"}
+- ¿Completo?: ${isOrderComplete(order) ? "SÍ" : "NO"}`;
+}
+
+// ============================================
 // HANDLE ORDER DATA COLLECTION (MEJORADA)
 // ============================================
 async function handleOrderDataCollection(userId, fromNumber, incomingText) {
@@ -408,7 +447,7 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
     customer_name: extracted.customer_name || openOrder.customer_name || null,
     city: extracted.city || openOrder.city || null,
     address: extracted.address || openOrder.address || null,
-    phone: extracted.phone || openOrder.phone || cleanText(fromNumber),
+    phone: extracted.phone || openOrder.from_number || cleanText(fromNumber),
     quantity: extracted.quantity || openOrder.quantity || 1
   };
   
@@ -417,57 +456,56 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
   const hasNewCity = extracted.city && !openOrder.city;
   const hasNewAddress = extracted.address && !openOrder.address;
   
-  // Caso 1: Todo en un solo mensaje (nombre + ciudad + dirección)
+  // Caso 1: Todo en un solo mensaje
   if (merged.customer_name && merged.city && merged.address && openOrder.status === "collecting_name") {
-    const updated = await updateOrder(openOrder.id, { customer_name: merged.customer_name, city: merged.city, address: merged.address, phone: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "draft" });
+    const updated = await updateOrder(openOrder.id, { customer_name: merged.customer_name, city: merged.city, address: merged.address, from_number: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "draft" });
     if (updated && isOrderComplete(updated)) { await sendRobustOrderConfirmation(userId, fromNumber, updated); return true; }
   }
   
   // Caso 2: Nombre + Ciudad juntos
   if (hasNewCustomerName && hasNewCity && openOrder.status === "collecting_name") {
-    const updated = await updateOrder(openOrder.id, { customer_name: merged.customer_name, city: merged.city, phone: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "collecting_address" });
+    const updated = await updateOrder(openOrder.id, { customer_name: merged.customer_name, city: merged.city, from_number: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "collecting_address" });
     if (updated) { await sendWhatsAppMessage(userId, fromNumber, `Perfecto ${merged.customer_name}! 🙌 Ya tengo tu ciudad: ${merged.city}\n\nAhora pasame tu dirección exacta 📍`); return true; }
   }
   
   // Caso 3: Ciudad + Dirección juntos
   if (hasNewCity && hasNewAddress && openOrder.status === "collecting_city") {
-    const updated = await updateOrder(openOrder.id, { city: merged.city, address: merged.address, phone: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "draft" });
+    const updated = await updateOrder(openOrder.id, { city: merged.city, address: merged.address, from_number: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "draft" });
     if (updated && isOrderComplete(updated)) { await sendRobustOrderConfirmation(userId, fromNumber, updated); return true; }
   }
   
-  // Caso 4: Estado waiting_exact_address con dirección válida
+  // Caso 4: Estado waiting_exact_address
   if (openOrder.status === "waiting_exact_address" && (isDetailedAddress(text) || looksLikeGoogleMaps(text))) {
-    const updated = await updateOrder(openOrder.id, { address: text, phone: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "draft" });
+    const updated = await updateOrder(openOrder.id, { address: text, from_number: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "draft" });
     if (updated && isOrderComplete(updated)) { await sendRobustOrderConfirmation(userId, fromNumber, updated); return true; }
   }
   
-  // Caso 5: Si ya tenemos casi todo pero falta dirección detallada
+  // Caso 5: Dirección vaga
   if (merged.customer_name && merged.city && merged.phone && merged.address && !isDetailedAddress(merged.address) && !looksLikeGoogleMaps(merged.address)) {
-    const updated = await updateOrder(openOrder.id, { customer_name: merged.customer_name, city: merged.city, phone: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, address: merged.address, status: "waiting_exact_address" });
-    if (updated) { await sendWhatsAppMessage(userId, fromNumber, `Perfecto 🙌 Ya tengo casi todo.\n\n✅ Nombre: ${cleanText(updated.customer_name)}\n✅ Ciudad: ${cleanText(updated.city)}\n✅ Teléfono: ${cleanText(updated.phone)}\n\nAhora pasame por favor tu *calle exacta* o tu *ubicación de Google Maps* 📍 para cerrar el pedido.`); return true; }
+    const updated = await updateOrder(openOrder.id, { customer_name: merged.customer_name, city: merged.city, from_number: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, address: merged.address, status: "waiting_exact_address" });
+    if (updated) { await sendWhatsAppMessage(userId, fromNumber, `Perfecto 🙌 Ya tengo casi todo.\n\n✅ Nombre: ${cleanText(updated.customer_name)}\n✅ Ciudad: ${cleanText(updated.city)}\n✅ Teléfono: ${cleanText(updated.from_number)}\n\nAhora pasame por favor tu *calle exacta* o tu *ubicación de Google Maps* 📍 para cerrar el pedido.`); return true; }
   }
   
-  // Flujo paso a paso NORMAL
+  // Flujo paso a paso
   if (openOrder.status === "collecting_name") {
-    const updated = await updateOrder(openOrder.id, { customer_name: text, phone: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "collecting_city" });
+    const updated = await updateOrder(openOrder.id, { customer_name: text, from_number: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "collecting_city" });
     if (updated) { await sendWhatsAppMessage(userId, fromNumber, "Perfecto 🙌 Ahora pasame tu ciudad."); return true; }
   }
   
   if (openOrder.status === "collecting_city") {
     const detection = detectCoverageCity(text);
     const finalCity = detection?.type === "coverage" ? formatCityName(detection.value) : text;
-    const updated = await updateOrder(openOrder.id, { city: finalCity, phone: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "collecting_address" });
-    if (updated) { await sendWhatsAppMessage(userId, fromNumber, "Genial 😊 Ahora pasame tu dirección exacta o tu ubicación de Google Maps 📍."); return true; }
+    const updated = await updateOrder(openOrder.id, { city: finalCity, from_number: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "collecting_address" });
+    if (updated) { await sendWhatsAppMessage(userId, fromNumber, "Genial 😊 Ahora pasame tu dirección exacta 📍."); return true; }
   }
   
   if (openOrder.status === "collecting_address") {
     if (!isDetailedAddress(text) && !looksLikeGoogleMaps(text)) {
-      const updated = await updateOrder(openOrder.id, { address: text, phone: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "waiting_exact_address" });
-      if (updated) { await sendWhatsAppMessage(userId, fromNumber, "Te entendí 👍 pero para cerrar bien el pedido pasame por favor tu *calle exacta* o tu *ubicación de Google Maps* 📍."); return true; }
+      const updated = await updateOrder(openOrder.id, { address: text, from_number: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "waiting_exact_address" });
+      if (updated) { await sendWhatsAppMessage(userId, fromNumber, "Te entendí 👍 pero para cerrar bien el pedido pasame tu *calle exacta* o *ubicación de Google Maps* 📍."); return true; }
     }
-    const updated = await updateOrder(openOrder.id, { address: text, phone: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "draft" });
+    const updated = await updateOrder(openOrder.id, { address: text, from_number: merged.phone, quantity: merged.quantity, total_amount: recalculatedTotal, status: "draft" });
     if (updated && isOrderComplete(updated)) { await sendRobustOrderConfirmation(userId, fromNumber, updated); return true; }
-    else if (updated) { await sendWhatsAppMessage(userId, fromNumber, "Me faltan algunos datos para confirmar tu pedido."); return true; }
   }
   
   return false;
@@ -502,75 +540,8 @@ async function saveChatContext(userId, fromNumber, payload = {}) {
 }
 
 // ============================================
-// HISTORIAL
+// TRAINING
 // ============================================
-async function getRecentConversation(userId, fromNumber) {
-  try {
-    const { data, error } = await supabase.from("received_messages").select("message, message_type, created_at").eq("user_id", userId).eq("from_number", fromNumber).order("created_at", { ascending: false }).limit(4);
-    if (error) return [];
-    return [...(data || [])].reverse().map(msg => ({ role: msg.message_type && String(msg.message_type).startsWith("out_") ? "assistant" : "user", content: String(msg.message || "").slice(0, 180) })).filter(item => cleanText(item.content));
-  } catch { return []; }
-}
-
-// ============================================
-// SYSTEM PROMPT MEJORADO
-// ============================================
-function buildGeminiSystemInstruction(systemInstruction, trainingContext, context, orderState = null) {
-  const productActive = cleanText(context?.last_topic);
-  let currentStep = "none";
-  if (orderState) {
-    if (orderState.status === "collecting_name") currentStep = "nombre";
-    else if (orderState.status === "collecting_city") currentStep = "ciudad";
-    else if (orderState.status === "collecting_address") currentStep = "dirección";
-    else if (orderState.status === "waiting_exact_address") currentStep = "dirección exacta";
-    else if (orderState.status === "draft" && !isOrderComplete(orderState)) currentStep = "completar datos";
-    else if (orderState.status === "draft" && isOrderComplete(orderState)) currentStep = "confirmar pedido";
-  }
-  
-  return `${cleanText(systemInstruction) || "Eres un asistente de ventas profesional y persuasivo."}
-
-╔══════════════════════════════════════════════════════════════╗
-║                    REGLAS OBLIGATORIAS                       ║
-╠══════════════════════════════════════════════════════════════╣
-║ 1. RESPONDE COMO HUMANO: cálido, entusiasta, sin parecer bot║
-║ 2. MANTÉN EL FLUJO: sigue conversación, no repreguntes datos║
-║ 3. UN SOLO DATO POR VEZ: pide nombre → ciudad → dirección   ║
-║ 4. SI EL CLIENTE DA VARIOS DATOS JUNTOS → extráelos y avanza║
-║ 5. NUNCA digas "no tengo información" o respuestas genéricas ║
-║ 6. CIERRA SIEMPRE con pregunta clara de siguiente paso      ║
-╚══════════════════════════════════════════════════════════════╝
-
-📌 CONTEXTO ACTUAL:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔹 Producto activo: ${productActive || "ninguno (pregunta qué interesa)"}
-🔹 Paso actual: ${currentStep}
-🔹 Estado del pedido: ${orderState?.status || "no_order"}
-
-💰 POLÍTICA DE PRECIOS:
-- Envío GRATIS a todo Paraguay
-- Pago CONTRA ENTREGA (pagás al recibir)
-- Todos los precios son finales
-
-🎯 OBJETIVO INMEDIATO:
-${currentStep === "nombre" ? "Pregunta amablemente el NOMBRE COMPLETO del cliente." :
-  currentStep === "ciudad" ? "Pregunta la CIUDAD (solo ciudades con cobertura)." :
-  currentStep === "dirección" ? "Pide DIRECCIÓN EXACTA o ubicación de Google Maps." :
-  currentStep === "dirección exacta" ? "El cliente dio dirección vaga. Pide EXPLÍCITAMENTE calle y número." :
-  currentStep === "confirmar pedido" ? "El pedido está completo. PREGUNTA: '¿Confirmamos el pedido?' antes de enviar resumen." :
-  `Ofrece el producto ${productActive || "del catálogo"} y pregúntale si quiere comprar hoy.`}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📚 ENTRENAMIENTO PERSONALIZADO:
-${trainingContext || "Sin entrenamiento adicional."}
-
-REGLAS DE RESPUESTA:
-- Máximo 2 oraciones por mensaje (excepto confirmación)
-- Siempre termina con una pregunta que avance la venta
-- Usa emojis moderadamente (😊, ✅, 📍, 🚚)
-
-¡VENDES CON SEGUIMIENTO FLUIDO Y NATURAL!`.trim();
-}
-
 async function getTrainingContext(userId, currentMessage, context) {
   try {
     const { data, error } = await supabase.from("training_data").select("intent, examples, response").eq("user_id", userId).eq("is_active", true);
@@ -589,12 +560,85 @@ async function getTrainingContext(userId, currentMessage, context) {
 }
 
 // ============================================
+// SYSTEM PROMPT MEJORADO
+// ============================================
+function buildGeminiSystemInstruction(systemInstruction, trainingContext, context, orderState = null, orderContext = null) {
+  const productActive = cleanText(context?.last_topic);
+  
+  let currentStep = "none";
+  let nextQuestion = "";
+  
+  if (orderState) {
+    switch (orderState.status) {
+      case "collecting_name":
+        currentStep = "Esperando NOMBRE del cliente";
+        nextQuestion = "Pregunta: '¿Cuál es tu nombre completo?'";
+        break;
+      case "collecting_city":
+        currentStep = "Esperando CIUDAD del cliente";
+        nextQuestion = "Pregunta: '¿En qué ciudad vivís?'";
+        break;
+      case "collecting_address":
+        currentStep = "Esperando DIRECCIÓN del cliente";
+        nextQuestion = "Pregunta: '¿Cuál es tu dirección exacta?'";
+        break;
+      case "waiting_exact_address":
+        currentStep = "Esperando DIRECCIÓN EXACTA";
+        nextQuestion = "Pregunta: 'Necesito tu calle y número exactos 📍'";
+        break;
+      case "draft":
+        if (isOrderComplete(orderState)) {
+          currentStep = "Pedido COMPLETO - Falta confirmación";
+          nextQuestion = "Pregunta: '¿Confirmamos tu pedido? Responde SÍ'";
+        } else {
+          currentStep = "Pedido INCOMPLETO";
+          nextQuestion = "Revisa qué dato falta y pregúntalo";
+        }
+        break;
+      default:
+        currentStep = "Sin pedido activo";
+        nextQuestion = "Pregunta qué producto le interesa";
+    }
+  }
+
+  return `${cleanText(systemInstruction) || "Eres un asistente de ventas profesional."}
+
+╔══════════════════════════════════════════════════════════════╗
+║                    REGLAS OBLIGATORIAS                       ║
+╠══════════════════════════════════════════════════════════════╣
+║ 1. NUNCA preguntes "¿Te parece si te agendo?" si ya hay ciudad║
+║ 2. CONTINÚA el flujo: nombre → ciudad → dirección → confirmar║
+║ 3. Si el cliente ya dio un dato, NO se lo vuelvas a pedir   ║
+║ 4. Responde como humano, máximo 2 oraciones por mensaje     ║
+║ 5. SIEMPRE termina con la SIGUIENTE pregunta del flujo      ║
+╚══════════════════════════════════════════════════════════════╝
+
+📌 ESTADO ACTUAL:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔹 Producto activo: ${productActive || "ninguno"}
+🔹 Paso actual: ${currentStep}
+🔹 Siguiente pregunta: ${nextQuestion}
+
+📦 RESUMEN DEL PEDIDO:
+${orderContext || "No hay pedido activo"}
+
+🚫 PROHIBIDO preguntar:
+- "¿Te parece si te agendo?" después de recibir ciudad
+- "¿Querés comprar?" si ya dijo que sí
+
+✅ CONTINUÁ EL FLUJO DE VENTA SIN INTERRUMPIR!
+
+📚 ENTRENAMIENTO:
+${trainingContext || "Sin entrenamiento adicional."}`.trim();
+}
+
+// ============================================
 // GEMINI
 // ============================================
 function buildGeminiContents(history, currentMessage) {
   const contents = [];
-  for (const item of history || []) if (item?.content && (item.role === "user" || item.role === "assistant")) contents.push({ role: item.role === "assistant" ? "model" : "user", parts: [{ text: String(item.content).slice(0, 180) }] });
-  contents.push({ role: "user", parts: [{ text: cleanText(currentMessage).slice(0, 250) }] });
+  for (const item of history || []) if (item?.content && (item.role === "user" || item.role === "assistant")) contents.push({ role: item.role === "assistant" ? "model" : "user", parts: [{ text: String(item.content).slice(0, 300) }] });
+  contents.push({ role: "user", parts: [{ text: cleanText(currentMessage).slice(0, 300) }] });
   return contents;
 }
 
@@ -610,16 +654,20 @@ async function generateAIReply(userId, message, fromNumber) {
   try {
     const iaConfig = await getIAConfig(userId);
     if (!iaConfig) return null;
-    const history = await getRecentConversation(userId, fromNumber);
+
+    const history = await getFullConversationHistory(userId, fromNumber, 10);
     const context = await getChatContext(userId, fromNumber);
     const openOrder = await getOpenOrder(userId, fromNumber);
+    const orderContext = compressContext(openOrder);
     const trainingContext = await getTrainingContext(userId, message, context);
+    
     const systemInstruction = cleanText(iaConfig.system_instruction) || "Eres un asistente de ventas para una tienda online.";
     const model = cleanText(iaConfig.model) || "gemini-2.5-flash";
     const temperature = typeof iaConfig.temperature === "number" ? iaConfig.temperature : 0.4;
-    const maxOutputTokens = typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 300;
+    const maxOutputTokens = typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 400;
     const contents = buildGeminiContents(history, message);
-    const finalSystemInstruction = buildGeminiSystemInstruction(systemInstruction, trainingContext, context, openOrder);
+    const finalSystemInstruction = buildGeminiSystemInstruction(systemInstruction, trainingContext, context, openOrder, orderContext);
+    
     return await callGeminiText({ apiKey: cleanText(iaConfig.api_key), model, systemInstruction: finalSystemInstruction, contents, temperature, maxOutputTokens });
   } catch (error) { console.error("❌ Error generando respuesta Gemini:", error); return null; }
 }
@@ -633,12 +681,12 @@ async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
     const arrayBuffer = await response.arrayBuffer();
     const base64 = Buffer.from(arrayBuffer).toString("base64");
     const mimeType = response.headers.get("content-type") || "image/jpeg";
-    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanText(iaConfig.model) || "gemini-2.5-flash")}:generateContent?key=${encodeURIComponent(cleanText(iaConfig.api_key))}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: `Analiza la imagen y responde como vendedor. Si es un producto, descríbelo y ofrece ayuda para comprarlo. Responde en español de forma cálida y breve.` }] }, contents: [{ role: "user", parts: [{ text: "¿Qué producto es este y cómo puedo ayudar al cliente a comprarlo?" }, { inlineData: { mimeType, data: base64 } }] }], generationConfig: { temperature: 0.3, maxOutputTokens: 150 } }) });
+    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanText(iaConfig.model) || "gemini-2.5-flash")}:generateContent?key=${encodeURIComponent(cleanText(iaConfig.api_key))}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: `Analiza la imagen. Si es un producto, ayuda a comprarlo. Respuesta corta y cálida.` }] }, contents: [{ role: "user", parts: [{ text: "¿Qué producto es y cómo ayudo al cliente a comprarlo?" }, { inlineData: { mimeType, data: base64 } }] }], generationConfig: { temperature: 0.3, maxOutputTokens: 150 } }) });
     const data = await geminiResponse.json().catch(() => ({}));
     if (!geminiResponse.ok) { console.error("❌ Error Gemini imagen:", data); return null; }
     const text = data?.candidates?.[0]?.content?.parts?.map(part => cleanText(part?.text)).filter(Boolean).join("\n") || "";
     return cleanText(text) || null;
-  } catch (error) { console.error("❌ Error analizando imagen con Gemini:", error); return null; }
+  } catch (error) { console.error("❌ Error analizando imagen:", error); return null; }
 }
 
 async function transcribeAudioFromUrl(audioUrl, userId, fromNumber) {
@@ -650,12 +698,12 @@ async function transcribeAudioFromUrl(audioUrl, userId, fromNumber) {
     const arrayBuffer = await response.arrayBuffer();
     const base64 = Buffer.from(arrayBuffer).toString("base64");
     const mimeType = response.headers.get("content-type") || "audio/ogg";
-    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanText(iaConfig.model) || "gemini-2.5-flash")}:generateContent?key=${encodeURIComponent(cleanText(iaConfig.api_key))}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "Transcribe el audio al español exactamente como lo dice el cliente. Devuelve SOLO la transcripción en texto plano, sin comentarios adicionales." }] }, contents: [{ role: "user", parts: [{ text: "Transcribe este audio:" }, { inlineData: { mimeType, data: base64 } }] }], generationConfig: { temperature: 0, maxOutputTokens: 300 } }) });
+    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanText(iaConfig.model) || "gemini-2.5-flash")}:generateContent?key=${encodeURIComponent(cleanText(iaConfig.api_key))}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "Transcribe el audio al español exactamente. Devuelve SOLO la transcripción." }] }, contents: [{ role: "user", parts: [{ text: "Transcribe este audio:" }, { inlineData: { mimeType, data: base64 } }] }], generationConfig: { temperature: 0, maxOutputTokens: 300 } }) });
     const data = await geminiResponse.json().catch(() => ({}));
     if (!geminiResponse.ok) { console.error("❌ Error Gemini audio:", data); return null; }
     const text = data?.candidates?.[0]?.content?.parts?.map(part => cleanText(part?.text)).filter(Boolean).join("\n") || "";
     return cleanText(text) || null;
-  } catch (error) { console.error("❌ Error en transcribeAudioFromUrl:", error); return null; }
+  } catch (error) { console.error("❌ Error transcribiendo audio:", error); return null; }
 }
 
 // ============================================
@@ -697,7 +745,7 @@ async function sendWhatsAppMessage(userId, to, message) {
 }
 
 // ============================================
-// PROCESAR MENSAJE
+// PROCESAR MENSAJE PRINCIPAL
 // ============================================
 async function procesarMensaje(message, token, userId, fromNumber) {
   try {
@@ -745,37 +793,42 @@ async function procesarMensaje(message, token, userId, fromNumber) {
 
     if (type === "image" && mediaUrl) {
       const imageReply = await analyzeImageWithAI(userId, mediaUrl, fromNumber);
-      await sendWhatsAppMessage(userId, fromNumber, imageReply || "Recibí tu imagen 📸, pero no pude analizarla bien. Probá mandarme otra foto más clara.");
+      await sendWhatsAppMessage(userId, fromNumber, imageReply || "Recibí tu imagen 📸, pero no pude analizarla bien.");
       return;
     }
 
     if (type === "audio" && mediaUrl) {
       const transcript = await transcribeAudioFromUrl(mediaUrl, userId, fromNumber);
-      if (!transcript) { await sendWhatsAppMessage(userId, fromNumber, "Recibí tu audio 🎙️, pero no pude transcribirlo. Probá mandarlo otra vez."); return; }
-      await supabase.from("received_messages").insert({ user_id: userId, platform: "whatsapp", from_number: fromNumber, message: `[Transcripción de audio] ${transcript}`, message_type: "audio_transcript", is_processed: true, created_at: new Date().toISOString() });
-      const existingContextFromAudio = await getChatContext(userId, fromNumber);
-      const detectedProductFromAudio = detectProductFromText(transcript) || cleanText(existingContextFromAudio?.last_topic);
-      if (detectedProductFromAudio) await saveChatContext(userId, fromNumber, { last_topic: detectedProductFromAudio, last_trigger: existingContextFromAudio?.last_trigger || null });
-      const handledOrderFromAudio = await handleOrderDataCollection(userId, fromNumber, transcript);
-      if (handledOrderFromAudio) return;
-      const triggerFromAudio = await procesarDisparadores(userId, fromNumber, transcript);
-      if (triggerFromAudio) return;
-      const cityDetectionAudio = detectCoverageCity(transcript);
-      if (cityDetectionAudio?.type === "ambiguous") { await sendWhatsAppMessage(userId, fromNumber, cityDetectionAudio.reply); return; }
-      if (cityDetectionAudio?.type === "coverage") { await sendWhatsAppMessage(userId, fromNumber, `✅ Perfecto 😊 ${formatCityName(cityDetectionAudio.value)} tiene ENVÍO GRATIS contra-entrega 🚚\n💵 Pagás al recibir SIN moverte de casa\n\n¿Te parece si te agendo ahora mismo? ¿Nombre y teléfono? 📝\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/`); return; }
-      const followUpFromAudio = isFollowUpMessage(transcript);
-      const freshContextAudio = await getChatContext(userId, fromNumber);
-      if (followUpFromAudio && freshContextAudio?.last_topic) { const order = await startOrderFlow(userId, fromNumber, freshContextAudio, transcript); if (order) { await sendWhatsAppMessage(userId, fromNumber, `¡Genial! 😊 Para confirmar tu pedido de *${cleanText(order.product)}* pasame tu *nombre completo*.`); return; } }
-      const audioReply = await generateAIReply(userId, transcript, fromNumber);
-      if (audioReply) await sendWhatsAppMessage(userId, fromNumber, audioReply);
+      if (!transcript) { await sendWhatsAppMessage(userId, fromNumber, "No pude transcribir el audio. Probá de nuevo."); return; }
+      await supabase.from("received_messages").insert({ user_id: userId, platform: "whatsapp", from_number: fromNumber, message: `[Audio] ${transcript}`, message_type: "audio_transcript", is_processed: true, created_at: new Date().toISOString() });
+      const existingContext = await getChatContext(userId, fromNumber);
+      const detectedProduct = detectProductFromText(transcript) || cleanText(existingContext?.last_topic);
+      if (detectedProduct) await saveChatContext(userId, fromNumber, { last_topic: detectedProduct, last_trigger: existingContext?.last_trigger || null });
+      const handledOrder = await handleOrderDataCollection(userId, fromNumber, transcript);
+      if (handledOrder) return;
+      const triggerResult = await procesarDisparadores(userId, fromNumber, transcript);
+      if (triggerResult) return;
+      const cityDetection = detectCoverageCity(transcript);
+      if (cityDetection?.type === "coverage") {
+        const cityName = formatCityName(cityDetection.value);
+        const existingOrder = await getOpenOrder(userId, fromNumber);
+        if (existingOrder && existingOrder.product) {
+          await sendWhatsAppMessage(userId, fromNumber, `✅ ${cityName} tiene ENVÍO GRATIS 🚚\n\nContinuemos con tu pedido de *${existingOrder.product}*. ¿Cuál es tu nombre completo? 📝`);
+        } else {
+          await sendWhatsAppMessage(userId, fromNumber, `✅ ${cityName} tiene ENVÍO GRATIS 🚚\n\n¿Qué producto te interesa? https://cat-logomegatodo-com.vercel.app/`);
+        }
+        return;
+      }
+      const aiResponse = await generateAIReply(userId, transcript, fromNumber);
+      if (aiResponse) await sendWhatsAppMessage(userId, fromNumber, aiResponse);
       return;
     }
 
     if (type !== "text" || !contenido) return;
 
     const existingContext = await getChatContext(userId, fromNumber);
-    const explicitProductInMessage = detectProductFromText(contenido);
-    if (explicitProductInMessage) await saveChatContext(userId, fromNumber, { last_topic: explicitProductInMessage, last_trigger: existingContext?.last_trigger || null });
+    const explicitProduct = detectProductFromText(contenido);
+    if (explicitProduct) await saveChatContext(userId, fromNumber, { last_topic: explicitProduct, last_trigger: existingContext?.last_trigger || null });
 
     const handledOrder = await handleOrderDataCollection(userId, fromNumber, contenido);
     if (handledOrder) return;
@@ -784,19 +837,33 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     if (triggerResult) return;
 
     const cityDetection = detectCoverageCity(contenido);
-    if (cityDetection?.type === "ambiguous") { await sendWhatsAppMessage(userId, fromNumber, cityDetection.reply); return; }
-    if (cityDetection?.type === "coverage") { await sendWhatsAppMessage(userId, fromNumber, `✅ Perfecto 😊 ${formatCityName(cityDetection.value)} tiene ENVÍO GRATIS contra-entrega 🚚\n💵 Pagás al recibir SIN moverte de casa\n\n¿Te parece si te agendo ahora mismo? ¿Nombre y teléfono? 📝\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/`); return; }
+    if (cityDetection?.type === "coverage") {
+      const cityName = formatCityName(cityDetection.value);
+      const existingOrder = await getOpenOrder(userId, fromNumber);
+      if (existingOrder && existingOrder.product) {
+        await sendWhatsAppMessage(userId, fromNumber, `✅ ${cityName} tiene ENVÍO GRATIS 🚚\n\nContinuemos con tu pedido de *${existingOrder.product}*. ¿Cuál es tu nombre completo? 📝`);
+      } else {
+        await sendWhatsAppMessage(userId, fromNumber, `✅ ${cityName} tiene ENVÍO GRATIS 🚚\n\n¿Qué producto te interesa? https://cat-logomegatodo-com.vercel.app/`);
+      }
+      return;
+    }
 
     const freshContext = await getChatContext(userId, fromNumber);
     const followUp = isFollowUpMessage(contenido);
-    if (followUp && freshContext?.last_topic) { const order = await startOrderFlow(userId, fromNumber, freshContext, contenido); if (order) { await sendWhatsAppMessage(userId, fromNumber, `¡Genial! 😊 Para confirmar tu pedido de *${cleanText(order.product)}* pasame tu *nombre completo*.`); return; } }
+    if (followUp && freshContext?.last_topic) {
+      const order = await startOrderFlow(userId, fromNumber, freshContext, contenido);
+      if (order) {
+        await sendWhatsAppMessage(userId, fromNumber, `¡Genial! 😊 Para tu pedido de *${cleanText(order.product)}* pasame tu *nombre completo*.`);
+        return;
+      }
+    }
 
     const iaConfig = await getIAConfig(userId);
     if (!iaConfig) return;
     const aiResponse = await generateAIReply(userId, contenido, fromNumber);
     if (!aiResponse) return;
     const sendResult = await sendWhatsAppMessage(userId, fromNumber, aiResponse);
-    if (sendResult) await saveChatContext(userId, fromNumber, { last_topic: explicitProductInMessage || cleanText(freshContext?.last_topic) || null, last_trigger: cleanText(freshContext?.last_trigger) || null });
+    if (sendResult) await saveChatContext(userId, fromNumber, { last_topic: explicitProduct || cleanText(freshContext?.last_topic) || null, last_trigger: cleanText(freshContext?.last_trigger) || null });
   } catch (err) { console.error("❌ Error procesando mensaje:", err); }
 }
 
@@ -810,14 +877,41 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method === "GET") { const mode = req.query["hub.mode"]; const token = req.query["hub.verify_token"]; const challenge = req.query["hub.challenge"]; if (mode === "subscribe" && token === VERIFY_TOKEN) return res.status(200).send(challenge); return res.status(403).send("Token inválido"); }
+  
+  if (req.method === "GET") {
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+    if (mode === "subscribe" && token === VERIFY_TOKEN) return res.status(200).send(challenge);
+    return res.status(403).send("Token inválido");
+  }
+  
   if (req.method === "POST") {
     try {
       const body = req.body;
       if (body.object !== "whatsapp_business_account") return res.status(404).send("Not WhatsApp event");
-      for (const entry of body.entry || []) for (const change of entry.changes || []) { const value = change.value; const phoneNumberId = value?.metadata?.phone_number_id; if (!phoneNumberId) continue; const { data: config, error: configError } = await supabase.from("whatsapp_config").select("user_id, permanent_token, phone_number_id").eq("phone_number_id", phoneNumberId).single(); if (configError || !config?.user_id) continue; const userId = config.user_id; const token = config.permanent_token; if (value.messages) for (const message of value.messages) await procesarMensaje(message, token, userId, message.from); }
+      for (const entry of body.entry || []) {
+        for (const change of entry.changes || []) {
+          const value = change.value;
+          const phoneNumberId = value?.metadata?.phone_number_id;
+          if (!phoneNumberId) continue;
+          const { data: config, error: configError } = await supabase.from("whatsapp_config").select("user_id, permanent_token, phone_number_id").eq("phone_number_id", phoneNumberId).single();
+          if (configError || !config?.user_id) continue;
+          const userId = config.user_id;
+          const token = config.permanent_token;
+          if (value.messages) {
+            for (const message of value.messages) {
+              await procesarMensaje(message, token, userId, message.from);
+            }
+          }
+        }
+      }
       return res.status(200).send("EVENT_RECEIVED");
-    } catch (error) { console.error("❌ Error en webhook:", error); return res.status(500).json({ error: "Internal Server Error" }); }
+    } catch (error) {
+      console.error("❌ Error en webhook:", error);
+      return res.status(500).json({ error: "Internal Server Error" });
+    }
   }
+  
   return res.status(405).send("Method Not Allowed");
 }
