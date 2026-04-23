@@ -38,135 +38,12 @@ function buildTopicFromTrigger(trigger, responseText) {
   );
 }
 
-function isFollowUpMessage(text) {
-  const normalized = normalizeText(text);
-
-  const followUps = [
-    "quiero",
-    "si",
-    "sí",
-    "como hago",
-    "cómo hago",
-    "precio",
-    "cuanto",
-    "cuánto",
-    "me interesa",
-    "quiero comprar",
-    "como compro",
-    "cómo compro",
-    "pedido",
-    "comprar",
-    "info",
-    "mas info",
-    "más info",
-    "disponible",
-    "ok",
-    "dale",
-    "uno",
-    "dos",
-    "promo",
-    "confirmo",
-    "envíame",
-    "me quedo",
-  ];
-
-  return followUps.some((item) => normalized.includes(item));
-}
-
-function detectQuantity(text) {
-  const normalized = normalizeText(text);
-
-  if (
-    normalized.includes(" 5 ") ||
-    normalized.includes("cinco") ||
-    normalized.startsWith("5")
-  ) return 5;
-
-  if (
-    normalized.includes(" 4 ") ||
-    normalized.includes("cuatro") ||
-    normalized.startsWith("4")
-  ) return 4;
-
-  if (
-    normalized.includes(" 3 ") ||
-    normalized.includes("tres") ||
-    normalized.startsWith("3")
-  ) return 3;
-
-  if (
-    normalized.includes(" 2 ") ||
-    normalized.includes("dos") ||
-    normalized.startsWith("2")
-  ) return 2;
-
-  return 1;
-}
-
-function extractGsAmount(text) {
-  const value = cleanText(text);
-  if (!value) return null;
-
-  const match = value.match(/(\d{1,3}(?:[.,]\d{3})+|\d+)\s*gs/i);
-  if (!match) return null;
-
-  let amount = match[1].replace(/,/g, ".");
-  if (!amount.toLowerCase().includes("gs")) {
-    amount = `${amount} Gs`;
-  }
-
-  return amount;
-}
-
-function simplifyProductName(context) {
-  const text = cleanText(context);
-  if (!text) return "Producto";
-
-  const productoMatch = text.match(/producto\s*:\s*(.+)/i);
-  if (productoMatch?.[1]) {
-    return cleanText(productoMatch[1]);
-  }
-
-  const firstLine = text.split("\n").map(cleanText).find(Boolean);
-  return firstLine || "Producto";
-}
-
-function buildConfirmedOrderMessage(order) {
-  const product = cleanText(order?.product) || "Producto";
-  const customerName = cleanText(order?.customer_name) || "Cliente";
-  const city = cleanText(order?.city) || "Ciudad";
-  const address = cleanText(order?.address) || "Dirección";
-  const phone = cleanText(order?.phone) || "Sin teléfono";
-  const quantity = Number(order?.quantity || 1);
-  const total = cleanText(order?.total_amount) || "A confirmar";
-
-  return `✅ PEDIDO CONFIRMADO
-━━━━━━━━━━━━━━━━━━━━━━
-✅ Producto: ${product}
-✅ Cliente: ${customerName}
-✅ Ubicación: ${city} — ${address}
-✅ Contacto: ${phone}
-✅ Cantidad: ${quantity} u.
-
-💰 Total: ${total}
-🚚 Envío GRATIS · Pagás al recibir
-⏰ Oferta válida hoy
-
-¡Gracias por elegir Mega Todo Store! 💜✨
-
-🔗 Te invito a revisar nuestro catálogo oficial: https://cat-logomegatodo-com.vercel.app/`;
-}
-
 function messageLooksLikeConfirmedOrder(message) {
   const normalized = normalizeText(message);
-  return (
-    normalized.includes("pedido confirmado") ||
-    normalized.includes("🎉 ¡pedido confirmado") ||
-    normalized.includes("🎉 pedido confirmado")
-  );
+  return normalized.includes("pedido confirmado");
 }
 
-function parseConfirmedOrderMessage(message, phone) {
+function parseConfirmedOrderMessage(message, fallbackPhone) {
   const text = cleanText(message);
 
   const productMatch = text.match(/Producto:\s*(.+)/i);
@@ -191,7 +68,7 @@ function parseConfirmedOrderMessage(message, phone) {
     customer_name: cleanText(clientMatch?.[1]) || "Cliente",
     city: city || "Ciudad",
     address: address || "Dirección",
-    phone: cleanText(phoneMatch?.[1]) || cleanText(phone) || "Sin teléfono",
+    phone: cleanText(phoneMatch?.[1]) || cleanText(fallbackPhone) || "Sin teléfono",
     quantity: Number(quantityMatch?.[1] || 1),
     total_amount: cleanText(totalMatch?.[1]) || "A confirmar",
   };
@@ -308,37 +185,8 @@ async function saveChatContext(userId, fromNumber, payload = {}) {
 
 // ============================================
 // ORDERS
-// Usa columna phone
+// Solo guardar al confirmar
 // ============================================
-async function getOpenOrder(userId, phone) {
-  try {
-    const { data, error } = await supabase
-      .from("orders")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("phone", phone)
-      .in("status", [
-        "draft",
-        "collecting_name",
-        "collecting_city",
-        "collecting_address",
-      ])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) {
-      console.error("Error obteniendo order abierta:", error);
-      return null;
-    }
-
-    return data || null;
-  } catch (error) {
-    console.error("Error en getOpenOrder:", error);
-    return null;
-  }
-}
-
 async function getLastConfirmedOrder(userId, phone) {
   try {
     const { data, error } = await supabase
@@ -359,38 +207,6 @@ async function getLastConfirmedOrder(userId, phone) {
     return data || null;
   } catch (error) {
     console.error("Error en getLastConfirmedOrder:", error);
-    return null;
-  }
-}
-
-async function createOrderDraft(userId, phone, payload = {}) {
-  try {
-    const { data, error } = await supabase
-      .from("orders")
-      .insert({
-        user_id: userId,
-        phone,
-        product: payload.product || null,
-        customer_name: payload.customer_name || null,
-        city: payload.city || null,
-        address: payload.address || null,
-        quantity: payload.quantity || 1,
-        total_amount: payload.total_amount || null,
-        status: payload.status || "collecting_name",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select("*")
-      .single();
-
-    if (error) {
-      console.error("Error creando borrador de pedido:", error);
-      return null;
-    }
-
-    return data;
-  } catch (error) {
-    console.error("Error en createOrderDraft:", error);
     return null;
   }
 }
@@ -440,134 +256,6 @@ async function createConfirmedOrderFromMessage(userId, phone, message) {
     console.error("❌ Error en createConfirmedOrderFromMessage:", error);
     return null;
   }
-}
-
-async function updateOrder(orderId, payload = {}) {
-  try {
-    const { data, error } = await supabase
-      .from("orders")
-      .update({
-        ...payload,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", orderId)
-      .select("*")
-      .single();
-
-    if (error) {
-      console.error("Error actualizando pedido:", error);
-      return null;
-    }
-
-    return data;
-  } catch (error) {
-    console.error("Error en updateOrder:", error);
-    return null;
-  }
-}
-
-function isOrderComplete(order) {
-  return !!(
-    cleanText(order?.product) &&
-    cleanText(order?.customer_name) &&
-    cleanText(order?.city) &&
-    cleanText(order?.address) &&
-    cleanText(order?.phone) &&
-    Number(order?.quantity || 0) > 0
-  );
-}
-
-async function startOrderFlow(userId, fromNumber, context, message) {
-  const existingOrder = await getOpenOrder(userId, fromNumber);
-  if (existingOrder) return existingOrder;
-
-  const quantity = detectQuantity(message);
-  const totalAmount =
-    extractGsAmount(context?.last_topic) ||
-    extractGsAmount(context?.last_trigger) ||
-    "A confirmar";
-  const product =
-    cleanText(context?.last_trigger) ||
-    simplifyProductName(context?.last_topic);
-
-  return await createOrderDraft(userId, fromNumber, {
-    product,
-    quantity,
-    total_amount: totalAmount,
-    status: "collecting_name",
-  });
-}
-
-async function handleOrderDataCollection(userId, fromNumber, incomingText) {
-  const openOrder = await getOpenOrder(userId, fromNumber);
-  if (!openOrder) return false;
-
-  const text = cleanText(incomingText);
-  if (!text) return true;
-
-  if (openOrder.status === "collecting_name") {
-    const updated = await updateOrder(openOrder.id, {
-      customer_name: text,
-      status: "collecting_city",
-    });
-
-    if (updated) {
-      await sendWhatsAppMessage(
-        userId,
-        fromNumber,
-        "Perfecto 🙌 Ahora pasame tu ciudad."
-      );
-    }
-
-    return true;
-  }
-
-  if (openOrder.status === "collecting_city") {
-    const updated = await updateOrder(openOrder.id, {
-      city: text,
-      status: "collecting_address",
-    });
-
-    if (updated) {
-      await sendWhatsAppMessage(
-        userId,
-        fromNumber,
-        "Genial 😊 Ahora pasame tu dirección exacta."
-      );
-    }
-
-    return true;
-  }
-
-  if (openOrder.status === "collecting_address") {
-    const updated = await updateOrder(openOrder.id, {
-      address: text,
-      status: "draft",
-    });
-
-    if (!updated) return true;
-
-    if (isOrderComplete(updated)) {
-      const confirmationText = buildConfirmedOrderMessage(updated);
-      const sent = await sendWhatsAppMessage(userId, fromNumber, confirmationText);
-
-      if (sent) {
-        await updateOrder(updated.id, {
-          status: "confirmed",
-        });
-      }
-    } else {
-      await sendWhatsAppMessage(
-        userId,
-        fromNumber,
-        "Me faltan algunos datos para confirmar tu pedido."
-      );
-    }
-
-    return true;
-  }
-
-  return false;
 }
 
 // ============================================
@@ -639,18 +327,16 @@ REGLAS OBLIGATORIAS:
 - Responde siempre en español.
 - Mantén continuidad total con el historial del chat.
 - Si el cliente viene hablando de un producto, NO cambies de producto ni reinicies la conversación.
-- Si el cliente dice "quiero", "quiero comprar", "sí", "como hago", "cómo hago", "precio", "me interesa", "dame más info", asume que sigue hablando del último producto activo.
 - Si existe CONTEXTO ACTUAL DEL CHAT, úsalo como prioridad.
 - Si hubo disparador, continúa vendiendo ESE producto.
 - No saludes de nuevo si la conversación ya está iniciada.
 - No respondas genérico tipo "¿en qué producto estás interesado?" si ya hay contexto.
-- Responde corto, claro y con intención de cierre.
-- Si el cliente quiere comprar, guía el pedido de forma concreta.
-- Pedí solo el siguiente dato necesario para avanzar.
+- Responde corto, claro y natural.
+- Ayuda a vender sin sonar robótico.
 - No inventes precios, stock ni beneficios que no estén en historial, entrenamiento o contexto.
 
 OBJETIVO:
-Cerrar la venta o avanzar la conversación comercial sin perder el hilo.
+Avanzar la conversación comercial con naturalidad.
 
 ENTRENAMIENTO DISPONIBLE:
 ${trainingContext}
@@ -908,9 +594,6 @@ async function sendWhatsAppMessage(userId, to, message) {
       created_at: new Date().toISOString(),
     });
 
-    // ============================================
-    // GUARDADO FORZADO DE PEDIDO CONFIRMADO
-    // ============================================
     if (messageLooksLikeConfirmedOrder(message)) {
       await createConfirmedOrderFromMessage(userId, to, message);
     }
@@ -1108,9 +791,6 @@ async function procesarMensaje(message, token, userId, fromNumber) {
 
     console.log(`📝 Mensaje guardado de ${fromNumber}: ${contenido.substring(0, 80)}`);
 
-    // ============================================
-    // IMAGEN
-    // ============================================
     if (type === "image" && mediaUrl) {
       const imageReply = await analyzeImageWithAI(userId, mediaUrl, fromNumber);
 
@@ -1127,9 +807,6 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       return;
     }
 
-    // ============================================
-    // AUDIO
-    // ============================================
     if (type === "audio" && mediaUrl) {
       const transcript = await transcribeAudioFromUrl(mediaUrl);
 
@@ -1156,40 +833,8 @@ async function procesarMensaje(message, token, userId, fromNumber) {
         created_at: new Date().toISOString(),
       });
 
-      const handledOrderFromAudio = await handleOrderDataCollection(
-        userId,
-        fromNumber,
-        transcript
-      );
-      if (handledOrderFromAudio) return;
-
-      const existingContextFromAudio = await getChatContext(userId, fromNumber);
-      const followUpFromAudio = isFollowUpMessage(transcript);
-
-      const triggerFromAudio = await procesarDisparadores(
-        userId,
-        fromNumber,
-        transcript
-      );
+      const triggerFromAudio = await procesarDisparadores(userId, fromNumber, transcript);
       if (triggerFromAudio) return;
-
-      if (followUpFromAudio && existingContextFromAudio?.last_topic) {
-        const order = await startOrderFlow(
-          userId,
-          fromNumber,
-          existingContextFromAudio,
-          transcript
-        );
-
-        if (order) {
-          await sendWhatsAppMessage(
-            userId,
-            fromNumber,
-            `¡Genial! 😊 Para confirmar tu pedido de *${cleanText(order.product) || "tu producto"}* pasame tu *nombre completo*.`
-          );
-          return;
-        }
-      }
 
       const audioReply = await generateAIReply(userId, transcript, fromNumber);
 
@@ -1200,43 +845,17 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       return;
     }
 
-    // Solo texto desde acá
     if (type !== "text" || !contenido) return;
 
-    // 0. Si ya hay pedido abierto, continuar captura de datos
-    const handledOrder = await handleOrderDataCollection(userId, fromNumber, contenido);
-    if (handledOrder) {
-      console.log(`🧾 Mensaje usado para completar pedido de ${fromNumber}`);
-      return;
-    }
-
-    const existingContext = await getChatContext(userId, fromNumber);
-    const followUp = isFollowUpMessage(contenido);
-
-    // 1. Intentar trigger primero
     const triggerResult = await procesarDisparadores(userId, fromNumber, contenido);
 
-    // 2. Si hubo trigger, termina este turno
     if (triggerResult) {
       console.log(`✅ Respuesta enviada por trigger: ${triggerResult.name}`);
       return;
     }
 
-    // 3. Si el cliente muestra intención de compra y ya hay contexto, iniciar pedido
-    if (followUp && existingContext?.last_topic) {
-      const order = await startOrderFlow(userId, fromNumber, existingContext, contenido);
+    const existingContext = await getChatContext(userId, fromNumber);
 
-      if (order) {
-        await sendWhatsAppMessage(
-          userId,
-          fromNumber,
-          `¡Genial! 😊 Para confirmar tu pedido de *${cleanText(order.product) || "tu producto"}* pasame tu *nombre completo*.`
-        );
-        return;
-      }
-    }
-
-    // 4. IA directa
     const iaConfig = await getIAConfig(userId);
     if (!iaConfig) {
       console.log(`⚠️ IA inactiva o sin api_key para user ${userId}`);
