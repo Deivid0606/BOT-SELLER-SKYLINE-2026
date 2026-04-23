@@ -45,10 +45,8 @@ function normalizePyPhone(value) {
   if (!digits) return "";
 
   let d = digits;
-
   if (d.startsWith("595")) d = d.slice(3);
   if (d.startsWith("0")) d = d.slice(1);
-
   if (d.length > 9) d = d.slice(-9);
 
   return d;
@@ -85,6 +83,12 @@ function isDetailedAddress(text) {
     normalized.includes("referencia");
 
   return words.length >= 4 && (hasNumber || hasReferenceWords);
+}
+
+function formatGs(value) {
+  const num = Number(value || 0);
+  if (!Number.isFinite(num) || num <= 0) return "A confirmar";
+  return `${num.toLocaleString("es-PY")} Gs`;
 }
 
 // ============================================
@@ -529,16 +533,6 @@ function detectPhoneFromText(text, fallbackPhone = "") {
   return cleanText(fallbackPhone) || null;
 }
 
-function extractGsAmount(text) {
-  const value = cleanText(text);
-  if (!value) return null;
-
-  const match = value.match(/(\d{1,3}(?:[.,]\d{3})+|\d+)\s*gs/i);
-  if (!match) return null;
-
-  return `${match[1].replace(/,/g, ".")} Gs`;
-}
-
 function extractCustomerDataFromText(text, fallbackPhone = "") {
   const raw = cleanText(text);
 
@@ -714,6 +708,48 @@ async function getRecentConversation(userId, fromNumber) {
 }
 
 // ============================================
+// PRECIOS / TOTALES
+// ============================================
+async function getCalculatedTotal(userId, product, quantity) {
+  try {
+    const q = Number(quantity || 1);
+
+    const { data, error } = await supabase.rpc("calculate_order_total", {
+      p_user_id: userId,
+      p_product: product,
+      p_quantity: q,
+    });
+
+    if (!error && data) {
+      return formatGs(data);
+    }
+
+    const { data: row, error: rowError } = await supabase
+      .from("product_prices")
+      .select("unit_price, promo_price, promo_quantity")
+      .eq("user_id", userId)
+      .eq("product", product)
+      .eq("is_active", true)
+      .limit(1)
+      .maybeSingle();
+
+    if (rowError || !row?.unit_price) return "A confirmar";
+
+    if (
+      row.promo_price &&
+      row.promo_quantity &&
+      q === Number(row.promo_quantity)
+    ) {
+      return formatGs(row.promo_price);
+    }
+
+    return formatGs(Number(row.unit_price) * Math.max(q, 1));
+  } catch {
+    return "A confirmar";
+  }
+}
+
+// ============================================
 // ORDERS
 // ============================================
 async function getOpenOrder(userId, phone) {
@@ -812,9 +848,7 @@ async function startOrderFlow(userId, fromNumber, context, message) {
   if (!product) return null;
 
   const quantity = detectQuantity(message);
-  const totalAmount =
-    extractGsAmount(context?.last_trigger) ||
-    "A confirmar";
+  const totalAmount = await getCalculatedTotal(userId, product, quantity);
 
   return await createOrderDraft(userId, fromNumber, {
     product,
@@ -841,6 +875,12 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
     quantity: extracted.quantity || openOrder.quantity || 1,
   };
 
+  const recalculatedTotal = await getCalculatedTotal(
+    userId,
+    openOrder.product,
+    merged.quantity
+  );
+
   if (
     openOrder.status === "waiting_exact_address" &&
     (isDetailedAddress(text) || looksLikeGoogleMaps(text))
@@ -848,6 +888,8 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
     const updated = await updateOrder(openOrder.id, {
       address: text,
       phone: merged.phone,
+      quantity: merged.quantity,
+      total_amount: recalculatedTotal,
       status: "draft",
     });
 
@@ -882,6 +924,7 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
         city: merged.city,
         phone: merged.phone,
         quantity: merged.quantity,
+        total_amount: recalculatedTotal,
         address: merged.address,
         status: "waiting_exact_address",
       });
@@ -909,6 +952,7 @@ Ahora pasame por favor tu *calle exacta* o tu *ubicación de Google Maps* 📍 p
       address: merged.address,
       phone: merged.phone,
       quantity: merged.quantity,
+      total_amount: recalculatedTotal,
       status: "draft",
     });
 
@@ -935,6 +979,8 @@ Ahora pasame por favor tu *calle exacta* o tu *ubicación de Google Maps* 📍 p
     const updated = await updateOrder(openOrder.id, {
       customer_name: text,
       phone: merged.phone,
+      quantity: merged.quantity,
+      total_amount: recalculatedTotal,
       status: "collecting_city",
     });
 
@@ -957,6 +1003,8 @@ Ahora pasame por favor tu *calle exacta* o tu *ubicación de Google Maps* 📍 p
     const updated = await updateOrder(openOrder.id, {
       city: finalCity,
       phone: merged.phone,
+      quantity: merged.quantity,
+      total_amount: recalculatedTotal,
       status: "collecting_address",
     });
 
@@ -976,6 +1024,8 @@ Ahora pasame por favor tu *calle exacta* o tu *ubicación de Google Maps* 📍 p
       const updated = await updateOrder(openOrder.id, {
         address: text,
         phone: merged.phone,
+        quantity: merged.quantity,
+        total_amount: recalculatedTotal,
         status: "waiting_exact_address",
       });
 
@@ -993,6 +1043,8 @@ Ahora pasame por favor tu *calle exacta* o tu *ubicación de Google Maps* 📍 p
     const updated = await updateOrder(openOrder.id, {
       address: text,
       phone: merged.phone,
+      quantity: merged.quantity,
+      total_amount: recalculatedTotal,
       status: "draft",
     });
 
