@@ -92,33 +92,74 @@ function formatGs(value) {
 }
 
 // ============================================
+// DETECCIÓN DE PREGUNTAS DE PRECIO
+// ============================================
+function isAskingForPrice(text) {
+  const normalized = normalizeText(text);
+  const priceKeywords = ["precio", "cuanto cuesta", "cuánto cuesta", "costo", "valor", "precio de", "cuesta", "sale", "cuanto vale", "cuánto vale"];
+  const isPrice = priceKeywords.some(kw => normalized.includes(kw));
+  
+  if (isPrice) {
+    const product = detectProductFromText(text);
+    return { isPrice: true, product, isOnlyPrice: !normalized.includes("quiero") && !normalized.includes("comprar") && !normalized.includes("pedido") };
+  }
+  return { isPrice: false, product: null, isOnlyPrice: false };
+}
+
+// ============================================
+// RESETEO DE CONTEXTO
+// ============================================
+async function resetCustomerContext(userId, fromNumber) {
+  try {
+    await supabase
+      .from("orders")
+      .update({ status: "abandoned" })
+      .eq("user_id", userId)
+      .eq("from_number", fromNumber)
+      .in("status", ["draft", "collecting_name", "collecting_city", "collecting_address", "waiting_exact_address"]);
+    
+    await supabase
+      .from("chat_context")
+      .delete()
+      .eq("user_id", userId)
+      .eq("from_number", fromNumber);
+    
+    console.log(`✅ Contexto reseteado para ${fromNumber}`);
+    return true;
+  } catch (error) {
+    console.error("Error reseteando contexto:", error);
+    return false;
+  }
+}
+
+// ============================================
 // PRODUCTOS ACTIVOS
 // ============================================
 const PRODUCT_CATALOG = [
-  { name: "Afilador de Cuchillos y Tijeras", aliases: ["afilador", "afilador de cuchillos", "afilador de cuchillos y tijeras"] },
-  { name: "Veneno de Abeja", aliases: ["veneno de abeja", "crema de veneno de abeja", "abeja"] },
-  { name: "DRONE", aliases: ["dron", "drone"] },
-  { name: "Linterna Potente", aliases: ["linterna", "linterna potente"] },
-  { name: "Mini Aspiradora", aliases: ["mini aspiradora", "aspiradora pequeña", "aspiradora"] },
-  { name: "Procesador de Alimentos RAF PRO", aliases: ["raf pro", "procesador raf", "procesador de alimentos", "raf"] },
-  { name: "Plantillas Ortopiex 5D", aliases: ["ortopiex", "plantillas ortopiex", "plantillas", "plantillas ortopedicas"] },
-  { name: "Medias Terapéuticas", aliases: ["medias terapeuticas", "medias compresion", "pack bienestar"] },
-  { name: "Rodillera de Compresión", aliases: ["rodillera", "rodillera de compresion"] },
-  { name: "Tobillera de Compresión", aliases: ["tobillera", "tobillera de compresion"] },
-  { name: "Karseell Collagen", aliases: ["karseell", "karseell collagen"] },
-  { name: "Cocedor de Huevos Automático", aliases: ["cocedor de huevos", "huevos automatico", "cocedor"] },
-  { name: "Plumero LimpiaFlex", aliases: ["plumero", "plumero limpiaflex", "limpiaflex"] },
-  { name: "Niveladoras Lavarropas", aliases: ["niveladora lavarropas", "niveladoras lavarropas", "soporte de lavarropas", "patita lavarropas", "patitas lavarropas", "niveladora", "lavarropas"] },
-  { name: "Aspirador portátil Powerson", aliases: ["powerson", "aspirador portatil", "aspirador portátil"] },
-  { name: "Alarma Antirrobo", aliases: ["alarma antirrobo", "alarma"] },
-  { name: "Intercomunicador para Casco", aliases: ["intercomunicador", "intercomunicador casco"] },
-  { name: "Clip Nasal Anti-Ronquidos", aliases: ["clip nasal", "anti ronquidos", "antironquidos", "ronquidos"] },
-  { name: "Huevera en forma de Gallinita", aliases: ["huevera", "gallinita"] },
-  { name: "WILD TORNADO", aliases: ["wild tornado", "destapador"] },
-  { name: "Base Flexible p/ Muebles", aliases: ["base flexible", "muebles"] },
-  { name: "Hongo Antihongos Pro+", aliases: ["hongo antihongos", "antihongos"] },
-  { name: "StrikeForce Encendedor eterno", aliases: ["strikeforce", "encendedor eterno"] },
-  { name: "RoyalBee Wax", aliases: ["royalbee", "royalbee wax"] },
+  { name: "Afilador de Cuchillos y Tijeras", price: "45,000 Gs", aliases: ["afilador", "afilador de cuchillos", "afilador de cuchillos y tijeras"] },
+  { name: "Veneno de Abeja", price: "65,000 Gs", aliases: ["veneno de abeja", "crema de veneno de abeja", "abeja"] },
+  { name: "DRONE", price: "180,000 Gs", aliases: ["dron", "drone"] },
+  { name: "Linterna Potente", price: "35,000 Gs", aliases: ["linterna", "linterna potente"] },
+  { name: "Mini Aspiradora", price: "55,000 Gs", aliases: ["mini aspiradora", "aspiradora pequeña", "aspiradora"] },
+  { name: "Procesador de Alimentos RAF PRO", price: "120,000 Gs", aliases: ["raf pro", "procesador raf", "procesador de alimentos", "raf"] },
+  { name: "Plantillas Ortopiex 5D", price: "42,000 Gs", aliases: ["ortopiex", "plantillas ortopiex", "plantillas", "plantillas ortopedicas"] },
+  { name: "Medias Terapéuticas", price: "38,000 Gs", aliases: ["medias terapeuticas", "medias compresion", "pack bienestar"] },
+  { name: "Rodillera de Compresión", price: "32,000 Gs", aliases: ["rodillera", "rodillera de compresion"] },
+  { name: "Tobillera de Compresión", price: "28,000 Gs", aliases: ["tobillera", "tobillera de compresion"] },
+  { name: "Karseell Collagen", price: "52,000 Gs", aliases: ["karseell", "karseell collagen"] },
+  { name: "Cocedor de Huevos Automático", price: "48,000 Gs", aliases: ["cocedor de huevos", "huevos automatico", "cocedor"] },
+  { name: "Plumero LimpiaFlex", price: "25,000 Gs", aliases: ["plumero", "plumero limpiaflex", "limpiaflex"] },
+  { name: "Niveladoras Lavarropas", price: "22,000 Gs", aliases: ["niveladora lavarropas", "niveladoras lavarropas", "soporte de lavarropas", "patita lavarropas", "niveladora"] },
+  { name: "Aspirador portátil Powerson", price: "78,000 Gs", aliases: ["powerson", "aspirador portatil", "aspirador portátil"] },
+  { name: "Alarma Antirrobo", price: "42,000 Gs", aliases: ["alarma antirrobo", "alarma"] },
+  { name: "Intercomunicador para Casco", price: "95,000 Gs", aliases: ["intercomunicador", "intercomunicador casco"] },
+  { name: "Clip Nasal Anti-Ronquidos", price: "18,000 Gs", aliases: ["clip nasal", "anti ronquidos", "antironquidos", "ronquidos"] },
+  { name: "Huevera en forma de Gallinita", price: "15,000 Gs", aliases: ["huevera", "gallinita"] },
+  { name: "WILD TORNADO", price: "62,000 Gs", aliases: ["wild tornado", "destapador"] },
+  { name: "Base Flexible p/ Muebles", price: "20,000 Gs", aliases: ["base flexible", "muebles"] },
+  { name: "Hongo Antihongos Pro+", price: "35,000 Gs", aliases: ["hongo antihongos", "antihongos"] },
+  { name: "StrikeForce Encendedor eterno", price: "25,000 Gs", aliases: ["strikeforce", "encendedor eterno"] },
+  { name: "RoyalBee Wax", price: "48,000 Gs", aliases: ["royalbee", "royalbee wax"] },
 ];
 
 function detectProductFromText(text) {
@@ -133,6 +174,11 @@ function detectProductFromText(text) {
     }
   }
   return null;
+}
+
+function getProductPrice(productName) {
+  const product = PRODUCT_CATALOG.find(p => p.name === productName);
+  return product ? product.price : null;
 }
 
 // ============================================
@@ -196,9 +242,7 @@ function formatCityName(city) {
 // ============================================
 function isFollowUpMessage(text) {
   const normalized = normalizeText(text);
-  const followUps = ["quiero", "si", "sí", "como hago", "cómo hago", "precio", "cuanto", "cuánto", "me interesa",
-    "quiero comprar", "como compro", "cómo compro", "pedido", "comprar", "info", "mas info", "más info",
-    "disponible", "ok", "dale", "uno", "dos", "promo", "confirmo", "enviame", "envíame", "me quedo", "1 unidad", "2 unidades"];
+  const followUps = ["quiero", "si", "sí", "comprar", "pedido", "me interesa", "ok", "dale", "confirmo", "1", "2", "3", "una unidad", "dos unidades"];
   return followUps.some(item => normalized.includes(item));
 }
 
@@ -346,10 +390,21 @@ async function getOpenOrder(userId, fromNumber) {
     const normalizedIncoming = normalizePyPhone(fromNumber);
     const { data, error } = await supabase.from("orders").select("*").eq("user_id", userId)
       .in("status", ["draft", "collecting_name", "collecting_city", "collecting_address", "waiting_exact_address"])
-      .order("created_at", { ascending: false }).limit(20);
+      .order("created_at", { ascending: false })
+      .limit(20);
+    
     if (error || !data?.length) return null;
-    const exact = data.find(row => normalizePyPhone(row.from_number) === normalizedIncoming);
-    return exact || data[0] || null;
+    
+    // Solo considerar pedidos de los últimos 30 minutos
+    const recentOrders = data.filter(order => {
+      const orderDate = new Date(order.created_at);
+      const now = new Date();
+      const minutesDiff = (now - orderDate) / 1000 / 60;
+      return minutesDiff < 30;
+    });
+    
+    const exact = recentOrders.find(row => normalizePyPhone(row.from_number) === normalizedIncoming);
+    return exact || recentOrders[0] || null;
   } catch { return null; }
 }
 
@@ -374,10 +429,16 @@ async function updateOrder(orderId, payload = {}) {
 }
 
 async function startOrderFlow(userId, fromNumber, context, message) {
+  // Primero, verificar que NO está preguntando precio
+  const priceCheck = isAskingForPrice(message);
+  if (priceCheck.isPrice) return null;
+  
   const existingOrder = await getOpenOrder(userId, fromNumber);
   if (existingOrder) return existingOrder;
+  
   const product = cleanText(context?.last_topic);
   if (!product) return null;
+  
   const quantity = detectQuantity(message);
   const totalAmount = await getCalculatedTotal(userId, product, quantity);
   return await createOrderDraft(userId, fromNumber, { product, quantity, total_amount: totalAmount, status: "collecting_name" });
@@ -396,45 +457,7 @@ async function getCalculatedTotal(userId, product, quantity) {
 }
 
 // ============================================
-// HISTORIAL EXTENDIDO (evita mensajes cortados)
-// ============================================
-async function getFullConversationHistory(userId, fromNumber, limit = 10) {
-  try {
-    const { data, error } = await supabase
-      .from("received_messages")
-      .select("message, message_type, created_at")
-      .eq("user_id", userId)
-      .eq("from_number", fromNumber)
-      .order("created_at", { ascending: false })
-      .limit(limit);
-
-    if (error) return [];
-
-    const sorted = [...(data || [])].reverse();
-    const history = [];
-    for (const msg of sorted) {
-      const role = msg.message_type && String(msg.message_type).startsWith("out_") ? "assistant" : "user";
-      history.push({ role: role, content: String(msg.message || "").slice(0, 300) });
-    }
-    return history;
-  } catch { return []; }
-}
-
-function compressContext(order) {
-  if (!order) return "Sin pedido activo";
-  return `Pedido actual:
-- Producto: ${order.product || "No definido"}
-- Cliente: ${order.customer_name || "No definido"}
-- Ciudad: ${order.city || "No definido"}
-- Dirección: ${order.address || "No definido"}
-- Teléfono: ${order.from_number || "No definido"}
-- Cantidad: ${order.quantity || 1}
-- Estado: ${order.status || "draft"}
-- ¿Completo?: ${isOrderComplete(order) ? "SÍ" : "NO"}`;
-}
-
-// ============================================
-// HANDLE ORDER DATA COLLECTION (MEJORADA)
+// HANDLE ORDER DATA COLLECTION
 // ============================================
 async function handleOrderDataCollection(userId, fromNumber, incomingText) {
   const openOrder = await getOpenOrder(userId, fromNumber);
@@ -512,6 +535,44 @@ async function handleOrderDataCollection(userId, fromNumber, incomingText) {
 }
 
 // ============================================
+// HISTORIAL EXTENDIDO
+// ============================================
+async function getFullConversationHistory(userId, fromNumber, limit = 10) {
+  try {
+    const { data, error } = await supabase
+      .from("received_messages")
+      .select("message, message_type, created_at")
+      .eq("user_id", userId)
+      .eq("from_number", fromNumber)
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (error) return [];
+
+    const sorted = [...(data || [])].reverse();
+    const history = [];
+    for (const msg of sorted) {
+      const role = msg.message_type && String(msg.message_type).startsWith("out_") ? "assistant" : "user";
+      history.push({ role: role, content: String(msg.message || "").slice(0, 300) });
+    }
+    return history;
+  } catch { return []; }
+}
+
+function compressContext(order) {
+  if (!order) return "Sin pedido activo";
+  return `Pedido actual:
+- Producto: ${order.product || "No definido"}
+- Cliente: ${order.customer_name || "No definido"}
+- Ciudad: ${order.city || "No definido"}
+- Dirección: ${order.address || "No definido"}
+- Teléfono: ${order.from_number || "No definido"}
+- Cantidad: ${order.quantity || 1}
+- Estado: ${order.status || "draft"}
+- ¿Completo?: ${isOrderComplete(order) ? "SÍ" : "NO"}`;
+}
+
+// ============================================
 // CONFIG IA
 // ============================================
 async function getIAConfig(userId) {
@@ -560,7 +621,7 @@ async function getTrainingContext(userId, currentMessage, context) {
 }
 
 // ============================================
-// SYSTEM PROMPT MEJORADO
+// SYSTEM PROMPT
 // ============================================
 function buildGeminiSystemInstruction(systemInstruction, trainingContext, context, orderState = null, orderContext = null) {
   const productActive = cleanText(context?.last_topic);
@@ -603,32 +664,21 @@ function buildGeminiSystemInstruction(systemInstruction, trainingContext, contex
 
   return `${cleanText(systemInstruction) || "Eres un asistente de ventas profesional."}
 
-╔══════════════════════════════════════════════════════════════╗
-║                    REGLAS OBLIGATORIAS                       ║
-╠══════════════════════════════════════════════════════════════╣
-║ 1. NUNCA preguntes "¿Te parece si te agendo?" si ya hay ciudad║
-║ 2. CONTINÚA el flujo: nombre → ciudad → dirección → confirmar║
-║ 3. Si el cliente ya dio un dato, NO se lo vuelvas a pedir   ║
-║ 4. Responde como humano, máximo 2 oraciones por mensaje     ║
-║ 5. SIEMPRE termina con la SIGUIENTE pregunta del flujo      ║
-╚══════════════════════════════════════════════════════════════╝
+REGLAS OBLIGATORIAS:
+1. Si el cliente pregunta PRECIO, SOLO responde el precio y pregunta si quiere comprar. NO pidas datos personales.
+2. Si el cliente dice "sí" o "quiero" después del precio, RECIÉN ahí pide nombre.
+3. NUNCA preguntes ciudad si ya la dijo.
+4. Responde como humano, máximo 2 oraciones.
 
-📌 ESTADO ACTUAL:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔹 Producto activo: ${productActive || "ninguno"}
-🔹 Paso actual: ${currentStep}
-🔹 Siguiente pregunta: ${nextQuestion}
+CONTEXTO ACTUAL:
+- Producto activo: ${productActive || "ninguno"}
+- Paso actual: ${currentStep}
+- Siguiente pregunta: ${nextQuestion}
 
-📦 RESUMEN DEL PEDIDO:
+RESUMEN DEL PEDIDO:
 ${orderContext || "No hay pedido activo"}
 
-🚫 PROHIBIDO preguntar:
-- "¿Te parece si te agendo?" después de recibir ciudad
-- "¿Querés comprar?" si ya dijo que sí
-
-✅ CONTINUÁ EL FLUJO DE VENTA SIN INTERRUMPIR!
-
-📚 ENTRENAMIENTO:
+ENTRENAMIENTO:
 ${trainingContext || "Sin entrenamiento adicional."}`.trim();
 }
 
@@ -664,7 +714,7 @@ async function generateAIReply(userId, message, fromNumber) {
     const systemInstruction = cleanText(iaConfig.system_instruction) || "Eres un asistente de ventas para una tienda online.";
     const model = cleanText(iaConfig.model) || "gemini-2.5-flash";
     const temperature = typeof iaConfig.temperature === "number" ? iaConfig.temperature : 0.4;
-    const maxOutputTokens = typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 400;
+    const maxOutputTokens = typeof iaConfig.max_tokens === "number" ? iaConfig.max_tokens : 250;
     const contents = buildGeminiContents(history, message);
     const finalSystemInstruction = buildGeminiSystemInstruction(systemInstruction, trainingContext, context, openOrder, orderContext);
     
@@ -681,7 +731,7 @@ async function analyzeImageWithAI(userId, imageUrl, fromNumber) {
     const arrayBuffer = await response.arrayBuffer();
     const base64 = Buffer.from(arrayBuffer).toString("base64");
     const mimeType = response.headers.get("content-type") || "image/jpeg";
-    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanText(iaConfig.model) || "gemini-2.5-flash")}:generateContent?key=${encodeURIComponent(cleanText(iaConfig.api_key))}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: `Analiza la imagen. Si es un producto, ayuda a comprarlo. Respuesta corta y cálida.` }] }, contents: [{ role: "user", parts: [{ text: "¿Qué producto es y cómo ayudo al cliente a comprarlo?" }, { inlineData: { mimeType, data: base64 } }] }], generationConfig: { temperature: 0.3, maxOutputTokens: 150 } }) });
+    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanText(iaConfig.model) || "gemini-2.5-flash")}:generateContent?key=${encodeURIComponent(cleanText(iaConfig.api_key))}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "Analiza la imagen. Responde de forma breve y útil." }] }, contents: [{ role: "user", parts: [{ text: "¿Qué producto es?" }, { inlineData: { mimeType, data: base64 } }] }], generationConfig: { temperature: 0.3, maxOutputTokens: 150 } }) });
     const data = await geminiResponse.json().catch(() => ({}));
     if (!geminiResponse.ok) { console.error("❌ Error Gemini imagen:", data); return null; }
     const text = data?.candidates?.[0]?.content?.parts?.map(part => cleanText(part?.text)).filter(Boolean).join("\n") || "";
@@ -698,7 +748,7 @@ async function transcribeAudioFromUrl(audioUrl, userId, fromNumber) {
     const arrayBuffer = await response.arrayBuffer();
     const base64 = Buffer.from(arrayBuffer).toString("base64");
     const mimeType = response.headers.get("content-type") || "audio/ogg";
-    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanText(iaConfig.model) || "gemini-2.5-flash")}:generateContent?key=${encodeURIComponent(cleanText(iaConfig.api_key))}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "Transcribe el audio al español exactamente. Devuelve SOLO la transcripción." }] }, contents: [{ role: "user", parts: [{ text: "Transcribe este audio:" }, { inlineData: { mimeType, data: base64 } }] }], generationConfig: { temperature: 0, maxOutputTokens: 300 } }) });
+    const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanText(iaConfig.model) || "gemini-2.5-flash")}:generateContent?key=${encodeURIComponent(cleanText(iaConfig.api_key))}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ systemInstruction: { parts: [{ text: "Transcribe el audio. Devuelve SOLO la transcripción." }] }, contents: [{ role: "user", parts: [{ text: "Transcribe:" }, { inlineData: { mimeType, data: base64 } }] }], generationConfig: { temperature: 0, maxOutputTokens: 300 } }) });
     const data = await geminiResponse.json().catch(() => ({}));
     if (!geminiResponse.ok) { console.error("❌ Error Gemini audio:", data); return null; }
     const text = data?.candidates?.[0]?.content?.parts?.map(part => cleanText(part?.text)).filter(Boolean).join("\n") || "";
@@ -793,49 +843,55 @@ async function procesarMensaje(message, token, userId, fromNumber) {
 
     if (type === "image" && mediaUrl) {
       const imageReply = await analyzeImageWithAI(userId, mediaUrl, fromNumber);
-      await sendWhatsAppMessage(userId, fromNumber, imageReply || "Recibí tu imagen 📸, pero no pude analizarla bien.");
+      await sendWhatsAppMessage(userId, fromNumber, imageReply || "Recibí tu imagen 📸");
       return;
     }
 
     if (type === "audio" && mediaUrl) {
       const transcript = await transcribeAudioFromUrl(mediaUrl, userId, fromNumber);
-      if (!transcript) { await sendWhatsAppMessage(userId, fromNumber, "No pude transcribir el audio. Probá de nuevo."); return; }
+      if (!transcript) { await sendWhatsAppMessage(userId, fromNumber, "No pude transcribir el audio."); return; }
       await supabase.from("received_messages").insert({ user_id: userId, platform: "whatsapp", from_number: fromNumber, message: `[Audio] ${transcript}`, message_type: "audio_transcript", is_processed: true, created_at: new Date().toISOString() });
-      const existingContext = await getChatContext(userId, fromNumber);
-      const detectedProduct = detectProductFromText(transcript) || cleanText(existingContext?.last_topic);
-      if (detectedProduct) await saveChatContext(userId, fromNumber, { last_topic: detectedProduct, last_trigger: existingContext?.last_trigger || null });
-      const handledOrder = await handleOrderDataCollection(userId, fromNumber, transcript);
-      if (handledOrder) return;
-      const triggerResult = await procesarDisparadores(userId, fromNumber, transcript);
-      if (triggerResult) return;
-      const cityDetection = detectCoverageCity(transcript);
-      if (cityDetection?.type === "coverage") {
-        const cityName = formatCityName(cityDetection.value);
-        const existingOrder = await getOpenOrder(userId, fromNumber);
-        if (existingOrder && existingOrder.product) {
-          await sendWhatsAppMessage(userId, fromNumber, `✅ ${cityName} tiene ENVÍO GRATIS 🚚\n\nContinuemos con tu pedido de *${existingOrder.product}*. ¿Cuál es tu nombre completo? 📝`);
-        } else {
-          await sendWhatsAppMessage(userId, fromNumber, `✅ ${cityName} tiene ENVÍO GRATIS 🚚\n\n¿Qué producto te interesa? https://cat-logomegatodo-com.vercel.app/`);
-        }
-        return;
-      }
-      const aiResponse = await generateAIReply(userId, transcript, fromNumber);
-      if (aiResponse) await sendWhatsAppMessage(userId, fromNumber, aiResponse);
-      return;
+      contenido = transcript;
+      // Continuar procesando como texto
     }
 
-    if (type !== "text" || !contenido) return;
+    if (type !== "text" && !contenido) return;
 
+    // ============================================
+    // 🔥 LÓGICA PRINCIPAL CORREGIDA
+    // ============================================
+    
+    // PRIMERO: Verificar si pregunta PRECIO
+    const priceCheck = isAskingForPrice(contenido);
+    if (priceCheck.isPrice && priceCheck.isOnlyPrice) {
+      // Solo responde precio, NO inicia flujo de pedido
+      const product = priceCheck.product;
+      if (product) {
+        const productPrice = getProductPrice(product);
+        await sendWhatsAppMessage(userId, fromNumber, `💰 *${product}* cuesta *${productPrice}* con envío gratis 🚚\n\n¿Te interesa llevarlo? 😊`);
+      } else {
+        const iaResponse = await generateAIReply(userId, contenido, fromNumber);
+        if (iaResponse) await sendWhatsAppMessage(userId, fromNumber, iaResponse);
+      }
+      return;
+    }
+    
+    // SEGUNDO: Detectar producto y guardar contexto
     const existingContext = await getChatContext(userId, fromNumber);
     const explicitProduct = detectProductFromText(contenido);
-    if (explicitProduct) await saveChatContext(userId, fromNumber, { last_topic: explicitProduct, last_trigger: existingContext?.last_trigger || null });
-
-    const handledOrder = await handleOrderDataCollection(userId, fromNumber, contenido);
-    if (handledOrder) return;
-
-    const triggerResult = await procesarDisparadores(userId, fromNumber, contenido);
-    if (triggerResult) return;
-
+    if (explicitProduct) {
+      await saveChatContext(userId, fromNumber, { last_topic: explicitProduct, last_trigger: existingContext?.last_trigger || null });
+    }
+    
+    // TERCERO: Manejar flujo de pedido SOLO si hay intención de compra
+    const hasBuyIntent = isFollowUpMessage(contenido) || explicitProduct;
+    
+    if (hasBuyIntent && !priceCheck.isPrice) {
+      const handledOrder = await handleOrderDataCollection(userId, fromNumber, contenido);
+      if (handledOrder) return;
+    }
+    
+    // CUARTO: Verificar ciudad
     const cityDetection = detectCoverageCity(contenido);
     if (cityDetection?.type === "coverage") {
       const cityName = formatCityName(cityDetection.value);
@@ -843,28 +899,31 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       if (existingOrder && existingOrder.product) {
         await sendWhatsAppMessage(userId, fromNumber, `✅ ${cityName} tiene ENVÍO GRATIS 🚚\n\nContinuemos con tu pedido de *${existingOrder.product}*. ¿Cuál es tu nombre completo? 📝`);
       } else {
-        await sendWhatsAppMessage(userId, fromNumber, `✅ ${cityName} tiene ENVÍO GRATIS 🚚\n\n¿Qué producto te interesa? https://cat-logomegatodo-com.vercel.app/`);
+        await sendWhatsAppMessage(userId, fromNumber, `✅ ${cityName} tiene ENVÍO GRATIS 🚚\n\n¿Qué producto te interesa? Te comparto nuestro catálogo:\nhttps://cat-logomegatodo-com.vercel.app/`);
       }
       return;
     }
-
-    const freshContext = await getChatContext(userId, fromNumber);
-    const followUp = isFollowUpMessage(contenido);
-    if (followUp && freshContext?.last_topic) {
-      const order = await startOrderFlow(userId, fromNumber, freshContext, contenido);
-      if (order) {
-        await sendWhatsAppMessage(userId, fromNumber, `¡Genial! 😊 Para tu pedido de *${cleanText(order.product)}* pasame tu *nombre completo*.`);
-        return;
-      }
-    }
-
+    
+    // QUINTO: Verificar triggers
+    const triggerResult = await procesarDisparadores(userId, fromNumber, contenido);
+    if (triggerResult) return;
+    
+    // SEXTO: Respuesta por IA
     const iaConfig = await getIAConfig(userId);
     if (!iaConfig) return;
+    
     const aiResponse = await generateAIReply(userId, contenido, fromNumber);
-    if (!aiResponse) return;
-    const sendResult = await sendWhatsAppMessage(userId, fromNumber, aiResponse);
-    if (sendResult) await saveChatContext(userId, fromNumber, { last_topic: explicitProduct || cleanText(freshContext?.last_topic) || null, last_trigger: cleanText(freshContext?.last_trigger) || null });
-  } catch (err) { console.error("❌ Error procesando mensaje:", err); }
+    if (aiResponse) {
+      await sendWhatsAppMessage(userId, fromNumber, aiResponse);
+      const freshContext = await getChatContext(userId, fromNumber);
+      await saveChatContext(userId, fromNumber, { 
+        last_topic: explicitProduct || cleanText(freshContext?.last_topic) || null, 
+        last_trigger: cleanText(freshContext?.last_trigger) || null 
+      });
+    }
+  } catch (err) { 
+    console.error("❌ Error procesando mensaje:", err); 
+  }
 }
 
 // ============================================
