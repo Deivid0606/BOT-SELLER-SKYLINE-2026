@@ -1,174 +1,307 @@
-// ============================================
-// PROCESO INTELIGENTE PRO
-// ============================================
+import { createClient } from "@supabase/supabase-js";
 
-// 1. GUARDAR MENSAJE
-await supabase.from("received_messages").insert({
-  user_id: userId,
-  platform: "whatsapp",
-  from_number: fromNumber,
-  message: texto,
-  message_type: "in_text",
-  created_at: new Date().toISOString(),
-});
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-// 2. CONTEXTO ACTUAL
-let contexto = await getContexto(userId, fromNumber) || {};
+const VERIFY_TOKEN = "miTokenSeguro2026";
 
-// ============================================
-// 3. DETECTAR DATOS AUTOMÁTICOS (CLAVE 🔥)
-// ============================================
-function extraerDatosPedido(texto) {
-  const nombre = texto.match(/soy\s+([a-zA-Z\s]+)/i);
-  const ciudad = texto.match(/(?:de|en)\s+([a-zA-Z\s]+)/i);
-  const direccion = texto.match(/direccion\s+(.+)/i);
+// ================= HELPERS =================
+const clean = (t) => String(t || "").trim();
+const normalize = (t) =>
+  clean(t)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 
-  return {
-    customer_name: nombre ? nombre[1].trim() : null,
-    city: ciudad ? ciudad[1].trim() : null,
-    address: direccion ? direccion[1].trim() : null,
-  };
-}
+// ================= ENVIAR =================
+async function enviarMensaje(userId, to, text) {
+  const { data: config } = await supabase
+    .from("whatsapp_config")
+    .select("phone_number_id, permanent_token")
+    .eq("user_id", userId)
+    .single();
 
-const datos = extraerDatosPedido(texto);
+  if (!config) return console.log("❌ Sin config");
 
-// ============================================
-// 4. PEDIDO ACTUAL
-// ============================================
-let order = await getOpenOrder(userId, fromNumber);
+  console.log("📤 Enviando:", text);
 
-// Crear pedido si hay producto activo
-if (!order && contexto?.current_product) {
-  const { data: newOrder } = await supabase.from("orders").insert({
-    user_id: userId,
-    phone: fromNumber,
-    product: contexto.current_product,
-    status: "draft",
-  }).select().single();
-
-  order = newOrder;
-}
-
-// Actualizar datos si el cliente envía info
-if (order && (datos.customer_name || datos.city || datos.address)) {
-  await supabase.from("orders").update({
-    ...(datos.customer_name && { customer_name: datos.customer_name }),
-    ...(datos.city && { city: datos.city }),
-    ...(datos.address && { address: datos.address }),
-  }).eq("id", order.id);
-}
-
-// ============================================
-// 5. SI PEDIDO COMPLETO → CONFIRMAR
-// ============================================
-function isComplete(o) {
-  return o?.product && o?.customer_name && o?.city && o?.address;
-}
-
-if (order && isComplete(order)) {
-  await enviarMensaje(userId, fromNumber,
-`✅ *Pedido listo*
-
-📦 Producto: ${order.product}
-👤 Nombre: ${order.customer_name}
-📍 Ciudad: ${order.city}
-🏠 Dirección: ${order.address}
-
-¿Confirmamos tu pedido? 😊`);
-
-  await supabase.from("orders").update({
-    status: "confirm_pending"
-  }).eq("id", order.id);
-
-  return;
-}
-
-// ============================================
-// 6. TRIGGERS (INICIO DE VENTA)
-// ============================================
-const trigger = await verificarTriggers(userId, fromNumber, texto);
-
-if (trigger) {
-  contexto = {
-    ...contexto,
-    current_product: trigger.name,
-    last_topic: trigger.name,
-    step: "selling"
-  };
-
-  await saveContexto(userId, fromNumber, contexto);
-  return;
-}
-
-// ============================================
-// 7. ENTRENAMIENTO (RESPUESTA EXACTA)
-// ============================================
-const trainingData = await getTrainingData(userId);
-
-function matchFuerte(msg, ejemplo) {
-  const m = normalizeText(msg);
-  const e = normalizeText(ejemplo);
-
-  return (
-    m === e ||
-    m.includes(e) ||
-    e.includes(m) ||
-    m.split(" ").some(p => e.includes(p))
+  await fetch(
+    `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.permanent_token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body: text },
+      }),
+    }
   );
 }
 
-for (const item of trainingData) {
-  for (const ejemplo of item.examples || []) {
-    if (matchFuerte(texto, ejemplo)) {
-      await enviarMensaje(userId, fromNumber, item.response);
+// ================= CONTEXTO =================
+async function getContexto(userId, from) {
+  const { data } = await supabase
+    .from("chat_context")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("from_number", from)
+    .single();
+  return data || {};
+}
 
-      await saveContexto(userId, fromNumber, {
-        ...contexto,
-        last_topic: item.intent,
-        step: "training"
-      });
+async function saveContexto(userId, from, ctx) {
+  await supabase.from("chat_context").upsert(
+    {
+      user_id: userId,
+      from_number: from,
+      ...ctx,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "user_id,from_number" }
+  );
+}
 
-      return;
+// ================= PRODUCTOS DINÁMICOS =================
+async function detectarProducto(userId, texto) {
+  const { data } = await supabase
+    .from("product_prices")
+    .select("*")
+    .eq("user_id", userId);
+
+  const t = normalize(texto);
+
+  for (const p of data || []) {
+    if (t.includes(normalize(p.name))) {
+      return p;
     }
   }
+
+  return null;
 }
 
-// ============================================
-// 8. IA CONTROLADA (GEMINI)
-// ============================================
-const iaConfig = await getIAConfig(userId);
+// ================= INTENCIÓN =================
+function detectarIntencion(texto) {
+  const palabras = ["precio", "quiero", "info", "tenes", "costo"];
+  let score = 0;
+  for (const p of palabras) {
+    if (texto.includes(p)) score++;
+  }
+  return score;
+}
 
-if (iaConfig?.api_key) {
-  const history = await getConversationHistory(userId, fromNumber, 20);
+// ================= EXTRAER DATOS =================
+function extraerDatos(texto) {
+  return {
+    name: texto.match(/soy\s+([a-zA-Z\s]+)/i)?.[1],
+    city: texto.match(/de\s+([a-zA-Z\s]+)/i)?.[1],
+    address: texto.match(/direccion\s+(.+)/i)?.[1],
+  };
+}
 
-  const respuestaIA = await callGemini(
-    iaConfig.api_key,
-    iaConfig.model || "gemini-2.0-flash",
-    trainingData,
-    texto + `\n\nProducto actual: ${contexto?.current_product || "ninguno"}`,
-    history
+// ================= PEDIDOS =================
+async function getOrder(userId, phone) {
+  const { data } = await supabase
+    .from("orders")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("phone", phone)
+    .in("status", ["draft", "collecting"])
+    .limit(1)
+    .single();
+
+  return data;
+}
+
+// ================= IA =================
+async function callIA(apiKey, message, product) {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: `
+Sos un vendedor.
+
+Producto actual: ${product || "ninguno"}
+
+Mensaje cliente: ${message}
+
+Reglas:
+- vender
+- cerrar venta
+- no cambiar producto
+- responder corto
+- terminar con pregunta
+`,
+              },
+            ],
+          },
+        ],
+      }),
+    }
   );
 
-  if (respuestaIA) {
-    await enviarMensaje(userId, fromNumber, respuestaIA);
+  const data = await res.json();
+  return data?.candidates?.[0]?.content?.parts?.[0]?.text;
+}
 
-    await saveContexto(userId, fromNumber, {
-      ...contexto,
-      last_topic: "ia",
-      step: "selling"
-    });
+// ================= MAIN =================
+async function procesar(message, userId, from) {
+  if (message.type !== "text") return;
+
+  const texto = clean(message.text.body);
+  console.log("📩", texto);
+
+  let ctx = await getContexto(userId, from);
+
+  // ================= PRODUCTO =================
+  const producto = await detectarProducto(userId, texto);
+
+  if (producto) {
+    ctx.current_product = producto.name;
+
+    await enviarMensaje(
+      userId,
+      from,
+      `🔥 ${producto.name}
+
+💰 Precio: ${producto.price}
+🚚 Envío GRATIS
+
+¿Querés que te reserve uno?`
+    );
+
+    await saveContexto(userId, from, ctx);
+    return;
+  }
+
+  // ================= INTENCIÓN =================
+  const score = detectarIntencion(texto);
+
+  if (ctx.current_product && score >= 1) {
+    await enviarMensaje(
+      userId,
+      from,
+      `🔥 El ${ctx.current_product} está disponible
+
+🚚 Envío GRATIS
+💸 Pagás al recibir
+
+¿Te reservo uno ahora?`
+    );
+    return;
+  }
+
+  // ================= PEDIDO =================
+  let order = await getOrder(userId, from);
+
+  const datos = extraerDatos(texto);
+
+  if (order && (datos.name || datos.city || datos.address)) {
+    await supabase.from("orders").update({
+      ...(datos.name && { customer_name: datos.name }),
+      ...(datos.city && { city: datos.city }),
+      ...(datos.address && { address: datos.address }),
+    }).eq("id", order.id);
+  }
+
+  // ================= CONFIRMAR =================
+  if (
+    order &&
+    order.customer_name &&
+    order.city &&
+    order.address
+  ) {
+    await enviarMensaje(
+      userId,
+      from,
+      `✅ Pedido listo
+
+${order.product}
+${order.customer_name}
+${order.city}
+${order.address}
+
+¿Confirmamos?`
+    );
 
     return;
   }
-}
 
-// ============================================
-// 9. RESPUESTA FINAL SEGURA
-// ============================================
-await enviarMensaje(userId, fromNumber,
-`🛍️ *MEGA TODO STORE*
+  // ================= IA =================
+  const { data: ia } = await supabase
+    .from("chat_ia_gemini")
+    .select("*")
+    .eq("user_id", userId)
+    .single();
 
-Hola 😊 ¿Qué producto te interesa hoy?
+  if (ia?.api_key) {
+    const r = await callIA(ia.api_key, texto, ctx.current_product);
+    if (r) {
+      await enviarMensaje(userId, from, r);
+      return;
+    }
+  }
+
+  // ================= FALLBACK =================
+  await enviarMensaje(
+    userId,
+    from,
+    `👋 Hola!
+
+¿Buscás algún producto?
 
 📋 Catálogo:
-https://cat-logomegatodo-com.vercel.app/`);
+https://cat-logomegatodo-com.vercel.app/`
+  );
+}
+
+// ================= WEBHOOK =================
+export default async function handler(req, res) {
+  if (req.method === "GET") {
+    if (
+      req.query["hub.verify_token"] === VERIFY_TOKEN
+    ) {
+      return res.send(req.query["hub.challenge"]);
+    }
+    return res.sendStatus(403);
+  }
+
+  if (req.method === "POST") {
+    const body = req.body;
+
+    for (const entry of body.entry || []) {
+      for (const change of entry.changes || []) {
+        const value = change.value;
+        const phoneId = value?.metadata?.phone_number_id;
+
+        const { data: config } = await supabase
+          .from("whatsapp_config")
+          .select("user_id")
+          .eq("phone_number_id", phoneId)
+          .single();
+
+        if (!config) continue;
+
+        for (const msg of value.messages || []) {
+          await procesar(msg, config.user_id, msg.from);
+        }
+      }
+    }
+
+    return res.sendStatus(200);
+  }
+}
