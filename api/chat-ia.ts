@@ -19,7 +19,6 @@ type IncomingHistoryItem = {
 type IncomingContext = {
   last_topic?: string | null;
   last_trigger?: string | null;
-  updated_at?: string | null;
 };
 
 type TrainingRow = {
@@ -44,6 +43,11 @@ function safeArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
+function limitText(value: unknown, max = 220): string {
+  const text = normalizeText(value);
+  return text.length > max ? text.slice(0, max) : text;
+}
+
 function sanitizeHistory(
   history: unknown
 ): Array<{ role: "user" | "assistant"; content: string }> {
@@ -52,7 +56,7 @@ function sanitizeHistory(
   return items
     .map((item) => {
       const role = item?.role;
-      const content = normalizeText(item?.content);
+      const content = limitText(item?.content, 180);
 
       if (!content) return null;
       if (role !== "user" && role !== "assistant") return null;
@@ -63,23 +67,22 @@ function sanitizeHistory(
 }
 
 function buildTrainingContext(rows: TrainingRow[] = []): string {
-  if (!rows.length) {
-    return "";
-  }
+  if (!rows.length) return "";
 
   return rows
+    .slice(0, 2)
     .map((row, index) => {
-      const intent = normalizeText(row.intent) || `Intent ${index + 1}`;
-      const response = normalizeText(row.response) || "";
+      const intent = limitText(row.intent, 60) || `Intent ${index + 1}`;
+      const response = limitText(row.response, 160) || "";
       const examples = safeArray<string>(row.examples)
-        .map((ex) => normalizeText(ex))
+        .map((ex) => limitText(ex, 60))
         .filter(Boolean)
-        .slice(0, 2);
+        .slice(0, 1);
 
       return [
         `Intent: ${intent}`,
-        examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
-        response ? `Respuesta ideal: ${response}` : null,
+        examples.length ? `Ejemplo: ${examples[0]}` : null,
+        response ? `Respuesta: ${response}` : null,
       ]
         .filter(Boolean)
         .join("\n");
@@ -88,52 +91,38 @@ function buildTrainingContext(rows: TrainingRow[] = []): string {
 }
 
 function buildMessages(params: {
-  systemInstruction: string;
   trainingContext: string;
   history: Array<{ role: "user" | "assistant"; content: string }>;
   currentMessage: string;
   context: IncomingContext | null;
 }): Array<{ role: ChatRole; content: string }> {
-  const { systemInstruction, trainingContext, history, currentMessage, context } =
-    params;
+  const { trainingContext, history, currentMessage, context } = params;
 
-  const contextBlock = [
-    context?.last_topic ? `Tema actual: ${context.last_topic}` : null,
-    context?.last_trigger ? `Último disparador: ${context.last_trigger}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  const systemPrompt = `
-${systemInstruction || "Eres un asistente de ventas."}
-
-Reglas:
-- Responde siempre en español.
-- Mantén el contexto del chat.
-- Si ya están hablando de un producto, no cambies de tema.
-- Evita respuestas genéricas si ya hay contexto.
-- Sé breve, claro y útil.
-- No inventes precios, stock ni beneficios.
-
-${contextBlock ? `Contexto actual:\n${contextBlock}` : ""}
-
-${trainingContext ? `Entrenamiento:\n${trainingContext}` : ""}
-  `.trim();
+  const systemLines = [
+    "Eres un asistente de ventas.",
+    "Responde en español.",
+    "Sé breve, claro y útil.",
+    "Mantén el contexto.",
+    "No cambies de producto si ya hay uno en conversación.",
+    context?.last_topic ? `Tema actual: ${limitText(context.last_topic, 120)}` : "",
+    context?.last_trigger ? `Disparador: ${limitText(context.last_trigger, 80)}` : "",
+    trainingContext ? `Entrenamiento:\n${trainingContext}` : "",
+  ].filter(Boolean);
 
   const messages: Array<{ role: ChatRole; content: string }> = [
-    { role: "system", content: systemPrompt },
+    { role: "system", content: systemLines.join("\n") },
   ];
 
-  for (const item of history) {
+  for (const item of history.slice(-3)) {
     messages.push({
       role: item.role,
-      content: item.content,
+      content: limitText(item.content, 160),
     });
   }
 
   messages.push({
     role: "user",
-    content: currentMessage,
+    content: limitText(currentMessage, 220),
   });
 
   return messages;
@@ -208,8 +197,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 🔥 RECORTAR HISTORIAL
-    const sanitizedHistory = sanitizeHistory(incomingHistory).slice(-6);
+    const sanitizedHistory = sanitizeHistory(incomingHistory).slice(-3);
 
     const context: IncomingContext | null =
       incomingContext && typeof incomingContext === "object"
@@ -221,28 +209,21 @@ export default async function handler(req, res) {
       .select("intent, examples, response")
       .eq("user_id", cleanUserId)
       .eq("is_active", true)
-      .limit(4);
+      .limit(2);
 
     if (trainingError) {
       console.error("⚠️ Error cargando training_data:", trainingError);
     }
 
-    // 🔥 RECORTAR ENTRENAMIENTO
     const trainingContext = buildTrainingContext(
-      ((trainingData || []).slice(0, 4)) as TrainingRow[]
+      ((trainingData || []).slice(0, 2)) as TrainingRow[]
     );
-
-    // 🔥 PROMPT MÁS CORTO
-    const systemInstruction =
-      normalizeText(config.system_instruction) ||
-      "Eres un asistente de ventas. Responde en español, breve, útil y manteniendo el contexto.";
 
     const model = normalizeText(config.model) || "openai/gpt-3.5-turbo";
     const temperature =
-      typeof config.temperature === "number" ? config.temperature : 0.4;
+      typeof config.temperature === "number" ? config.temperature : 0.3;
 
     const messages = buildMessages({
-      systemInstruction,
       trainingContext,
       history: sanitizedHistory,
       currentMessage: cleanMessage,
@@ -259,7 +240,7 @@ export default async function handler(req, res) {
         model,
         messages,
         temperature,
-        max_tokens: 200,
+        max_tokens: 120,
       }),
     });
 
