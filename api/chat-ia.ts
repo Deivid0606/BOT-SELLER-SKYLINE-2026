@@ -34,6 +34,7 @@ type IAConfigRow = {
   system_instruction?: string | null;
   model?: string | null;
   temperature?: number | null;
+  max_tokens?: number | null;
 };
 
 function normalizeText(value: unknown): string {
@@ -50,9 +51,10 @@ function sanitizeHistory(
   const items = safeArray<IncomingHistoryItem>(history);
 
   return items
+    .slice(-4)
     .map((item) => {
       const role = item?.role;
-      const content = normalizeText(item?.content);
+      const content = normalizeText(item?.content).slice(0, 120);
 
       if (!content) return null;
       if (role !== "user" && role !== "assistant") return null;
@@ -68,16 +70,18 @@ function buildTrainingContext(rows: TrainingRow[] = []): string {
   }
 
   return rows
+    .slice(0, 3)
     .map((row, index) => {
       const intent = normalizeText(row.intent) || `Intent ${index + 1}`;
       const response = normalizeText(row.response) || "Sin respuesta definida";
       const examples = safeArray<string>(row.examples)
         .map((ex) => normalizeText(ex))
-        .filter(Boolean);
+        .filter(Boolean)
+        .slice(0, 1);
 
       return [
         `Intent: ${intent}`,
-        examples.length ? `Ejemplos: ${examples.join(" | ")}` : null,
+        examples.length ? `Ejemplo: ${examples.join(" | ")}` : null,
         `Respuesta ideal: ${response}`,
       ]
         .filter(Boolean)
@@ -97,38 +101,33 @@ function buildMessages(params: {
     params;
 
   const contextBlock = [
-    context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : null,
+    context?.last_topic ? `Producto o tema actual: ${normalizeText(context.last_topic).slice(0, 120)}` : null,
     context?.last_trigger
-      ? `Último disparador activado: ${context.last_trigger}`
+      ? `Último disparador activado: ${normalizeText(context.last_trigger).slice(0, 80)}`
       : null,
   ]
     .filter(Boolean)
     .join("\n");
 
+  const compactInstruction = normalizeText(systemInstruction).slice(0, 280);
+  const compactTraining = trainingContext.slice(0, 500);
+
   const systemPrompt = `
-${systemInstruction || "Eres un asistente de ventas para una tienda online."}
+${compactInstruction || "Eres un asistente de ventas para una tienda online."}
 
-REGLAS OBLIGATORIAS:
+Reglas:
 - Responde siempre en español.
-- Mantén continuidad total con el historial del chat.
-- Si el cliente viene hablando de un producto, NO cambies de producto ni reinicies la conversación.
-- Si el cliente dice "quiero", "quiero comprar", "sí", "como hago", "cómo hago", "precio", "me interesa", "dame más info", asume que sigue hablando del último producto activo.
-- Si existe CONTEXTO ACTUAL DEL CHAT, úsalo como prioridad.
-- Si hubo disparador, continúa vendiendo ESE producto.
-- No saludes de nuevo si la conversación ya está iniciada.
-- No respondas genérico tipo "¿en qué producto estás interesado?" si ya hay contexto.
-- Responde corto, claro y con intención de cierre.
-- Si el cliente quiere comprar, guía el pedido de forma concreta.
-- Pedí solo el siguiente dato necesario para avanzar.
-- No inventes precios, stock ni beneficios que no estén en historial, entrenamiento o contexto.
+- Mantén continuidad con el historial.
+- Si hay producto o contexto activo, continúa sobre eso.
+- No reinicies la conversación ni saludes otra vez.
+- Responde breve, clara y orientada a venta.
+- Pide solo el siguiente dato necesario.
+- No inventes precios, stock ni beneficios.
 
-OBJETIVO:
-Cerrar la venta o avanzar la conversación comercial sin perder el hilo.
+Entrenamiento:
+${compactTraining || "Sin entrenamiento adicional."}
 
-ENTRENAMIENTO DISPONIBLE:
-${trainingContext}
-
-CONTEXTO ACTUAL DEL CHAT:
+Contexto actual:
 ${contextBlock || "Sin contexto guardado."}
   `.trim();
 
@@ -145,7 +144,7 @@ ${contextBlock || "Sin contexto guardado."}
 
   messages.push({
     role: "user",
-    content: currentMessage,
+    content: normalizeText(currentMessage).slice(0, 180),
   });
 
   return messages;
@@ -230,7 +229,8 @@ export default async function handler(req, res) {
       .from("training_data")
       .select("intent, examples, response")
       .eq("user_id", cleanUserId)
-      .eq("is_active", true);
+      .eq("is_active", true)
+      .limit(3);
 
     if (trainingError) {
       console.error("⚠️ Error cargando training_data:", trainingError);
@@ -242,9 +242,11 @@ export default async function handler(req, res) {
       normalizeText(config.system_instruction) ||
       "Eres un asistente de ventas para una tienda online. Responde como vendedor profesional, amable, persuasivo y manteniendo el contexto.";
 
-    const model = normalizeText(config.model) || "openai/gpt-3.5-turbo";
+    const model = normalizeText(config.model) || "openai/gpt-4o-mini";
     const temperature =
       typeof config.temperature === "number" ? config.temperature : 0.4;
+    const maxTokens =
+      typeof config.max_tokens === "number" ? config.max_tokens : 50;
 
     const messages = buildMessages({
       systemInstruction,
@@ -264,7 +266,7 @@ export default async function handler(req, res) {
         model,
         messages,
         temperature,
-        max_tokens: 350,
+        max_tokens: maxTokens,
       }),
     });
 
