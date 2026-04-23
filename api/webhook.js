@@ -12,6 +12,23 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const VERIFY_TOKEN = "miTokenSeguro2026";
 
 // ============================================
+// CATÁLOGO DE PRECIOS
+// ============================================
+const PRODUCTOS = {
+  "afilador": { nombre: "Afilador de Cuchillos y Tijeras", precio: 99000, promo2x: 129900 },
+  "plumero": { nombre: "Plumero LimpiaFlex", precio: 99000, promo2x: 129900 },
+  "limpiaflex": { nombre: "Plumero LimpiaFlex", precio: 99000, promo2x: 129900 },
+  "niveladora": { nombre: "Niveladoras Lavarropas", precio: 98000 },
+  "cocedor": { nombre: "Cocedor de Huevos Automático", precio: 127900 },
+  "karseell": { nombre: "Karseell Collagen", precio: 109000 },
+  "veneno": { nombre: "Veneno de Abeja", precio: 145000, promo2x: 249900 },
+  "linterna": { nombre: "Linterna Potente", precio: 189000 },
+  "drone": { nombre: "DRONE", precio: 279900 },
+  "rodillera": { nombre: "Rodillera de Compresión", precio: 109000, promo2x: 159900 },
+  "ortopiex": { nombre: "Plantilla Ortopiex 5D", precio: 159000 },
+};
+
+// ============================================
 // HELPERS
 // ============================================
 function cleanText(text) {
@@ -20,6 +37,44 @@ function cleanText(text) {
 
 function normalizeText(text) {
   return cleanText(text).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function formatGs(value) {
+  if (!value) return "Consultar";
+  return `${value.toLocaleString("es-PY")} Gs`;
+}
+
+function detectarProducto(text) {
+  const lower = normalizeText(text);
+  for (const [key, data] of Object.entries(PRODUCTOS)) {
+    if (lower.includes(normalizeText(key))) {
+      return { ...data, key };
+    }
+  }
+  return null;
+}
+
+function detectarCiudad(text) {
+  const ciudades = {
+    "asuncion": "Asunción", "asun": "Asunción",
+    "capiatá": "Capiatá", "capiata": "Capiatá",
+    "luque": "Luque", "lque": "Luque",
+    "san lorenzo": "San Lorenzo", "sanlo": "San Lorenzo",
+    "lambaré": "Lambaré",
+    "fernando de la mora": "Fernando de la Mora", "fdm": "Fernando de la Mora",
+    "ciudad del este": "Ciudad del Este", "cde": "Ciudad del Este",
+    "presidente franco": "Presidente Franco", "pte franco": "Presidente Franco",
+    "hernandarias": "Hernandarias",
+    "limpio": "Limpio",
+  };
+  
+  const lower = normalizeText(text);
+  for (const [alias, ciudad] of Object.entries(ciudades)) {
+    if (lower.includes(alias)) {
+      return ciudad;
+    }
+  }
+  return null;
 }
 
 // ============================================
@@ -76,167 +131,37 @@ async function enviarMensaje(userId, to, message) {
 }
 
 // ============================================
-// OBTENER ENTRENAMIENTO (PRIORIDAD #1)
+// CONTEXTO DEL CHAT (MEMORIA)
 // ============================================
-async function getTrainingData(userId) {
+async function getContexto(userId, fromNumber) {
   const { data } = await supabase
-    .from("training_data")
+    .from("chat_context")
     .select("*")
     .eq("user_id", userId)
-    .eq("is_active", true);
-  
-  return data || [];
-}
-
-// ============================================
-// BUSCAR RESPUESTA EN ENTRENAMIENTO (MATCH EXACTO)
-// ============================================
-function buscarRespuestaEnEntrenamiento(trainingData, mensaje) {
-  if (!trainingData || trainingData.length === 0) return null;
-  
-  const mensajeNorm = normalizeText(mensaje);
-  
-  for (const item of trainingData) {
-    // Verificar ejemplos
-    if (item.examples && Array.isArray(item.examples)) {
-      for (const ejemplo of item.examples) {
-        const ejemploNorm = normalizeText(ejemplo);
-        // Buscar coincidencia parcial o exacta
-        if (mensajeNorm.includes(ejemploNorm) || ejemploNorm.includes(mensajeNorm)) {
-          console.log(`✅ Entrenamiento匹配: "${item.intent}" -> "${ejemplo}"`);
-          return item.response;
-        }
-      }
-    }
-    
-    // Verificar intent directamente
-    const intentNorm = normalizeText(item.intent || "");
-    if (intentNorm && mensajeNorm.includes(intentNorm)) {
-      console.log(`✅ Entrenamiento匹配 por intent: "${item.intent}"`);
-      return item.response;
-    }
-  }
-  
-  return null;
-}
-
-// ============================================
-// OBTENER TRIGGERS
-// ============================================
-async function getTriggers(userId) {
-  const { data } = await supabase
-    .from("triggers")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("active", true);
-  return data || [];
-}
-
-// ============================================
-// VERIFICAR TRIGGERS
-// ============================================
-async function verificarTriggers(userId, fromNumber, mensaje) {
-  const triggers = await getTriggers(userId);
-  const mensajeNorm = normalizeText(mensaje);
-  
-  for (const trigger of triggers) {
-    const condition = normalizeText(trigger.condition);
-    if (mensajeNorm.includes(condition)) {
-      console.log(`🎯 Trigger activado: "${trigger.name}"`);
-      await enviarMensaje(userId, fromNumber, trigger.response);
-      return true;
-    }
-  }
-  return false;
-}
-
-// ============================================
-// OBTENER CONFIG IA
-// ============================================
-async function getIAConfig(userId) {
-  const { data } = await supabase
-    .from("chat_ia_gemini")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("is_active", true)
+    .eq("from_number", fromNumber)
     .single();
+  
   return data;
 }
 
-// ============================================
-// OBTENER HISTORIAL
-// ============================================
-async function getConversationHistory(userId, fromNumber, limit = 6) {
-  const { data } = await supabase
-    .from("received_messages")
-    .select("message, message_type, created_at")
-    .eq("user_id", userId)
-    .eq("from_number", fromNumber)
-    .order("created_at", { ascending: false })
-    .limit(limit);
+async function saveContexto(userId, fromNumber, datos) {
+  const { error } = await supabase
+    .from("chat_context")
+    .upsert({
+      user_id: userId,
+      from_number: fromNumber,
+      last_topic: datos.last_topic,
+      last_trigger: datos.last_trigger,
+      current_product: datos.current_product,
+      waiting_for: datos.waiting_for,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "user_id,from_number" });
   
-  if (!data || data.length === 0) return [];
-  
-  const history = data.reverse();
-  const formatted = [];
-  for (const msg of history) {
-    const role = msg.message_type && msg.message_type.startsWith("out_") ? "assistant" : "user";
-    formatted.push({ role: role, content: cleanText(msg.message || "").substring(0, 300) });
-  }
-  return formatted;
+  if (error) console.error("Error guardando contexto:", error);
 }
 
 // ============================================
-// LLAMAR A GEMINI CON ENTRENAMIENTO
-// ============================================
-async function callGemini(apiKey, model, trainingData, message, history) {
-  // Construir system prompt CON el entrenamiento
-  let trainingSection = "INSTRUCCIONES PRIORITARIAS (RESPONDER EXACTAMENTE ASÍ):\n\n";
-  
-  for (const item of trainingData) {
-    trainingSection += `Si el cliente dice algo como: "${item.examples?.join('", "') || item.intent}"\n`;
-    trainingSection += `Debes responder EXACTAMENTE: "${item.response}"\n\n`;
-  }
-  
-  trainingSection += `REGLAS OBLIGATORIAS:
-1. PRIORIZA LAS RESPUESTAS DEL ENTRENAMIENTO SOBRE TODO
-2. Si el mensaje del cliente coincide con algún ejemplo, usa ESA respuesta exacta
-3. NO inventes respuestas, usa el entrenamiento
-4. Sé amable y profesional
-5. Catálogo: https://cat-logomegatodo-com.vercel.app/`;
-
-  const contents = [];
-  for (const msg of history) {
-    contents.push({
-      role: msg.role === "assistant" ? "model" : "user",
-      parts: [{ text: msg.content }]
-    });
-  }
-  contents.push({ role: "user", parts: [{ text: message }] });
-  
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: trainingSection }] },
-        contents: contents,
-        generationConfig: { temperature: 0.5, maxOutputTokens: 300 },
-      }),
-    }
-  );
-  
-  const data = await response.json();
-  if (!response.ok) {
-    console.error("Error Gemini:", data);
-    return null;
-  }
-  return cleanText(data?.candidates?.[0]?.content?.parts?.[0]?.text || "");
-}
-
-// ============================================
-// PROCESAR MENSAJE PRINCIPAL
+// PROCESAR MENSAJE PRINCIPAL (CON MEMORIA)
 // ============================================
 async function procesarMensaje(message, token, userId, fromNumber) {
   try {
@@ -250,63 +175,132 @@ async function procesarMensaje(message, token, userId, fromNumber) {
     
     console.log(`📩 ${fromNumber}: "${texto}"`);
     
-    // Guardar mensaje
-    await supabase.from("received_messages").insert({
-      user_id: userId,
-      platform: "whatsapp",
-      from_number: fromNumber,
-      message: texto,
-      message_type: "in_text",
-      created_at: new Date().toISOString(),
-    });
+    // OBTENER CONTEXTO ACTUAL
+    let contexto = await getContexto(userId, fromNumber);
+    console.log(`📋 Contexto actual:`, contexto);
     
     // ============================================
-    // 1. VERIFICAR TRIGGERS (prioridad 1)
+    // 1. DETECTAR SI ES RESPUESTA "SI" O "NO"
     // ============================================
-    const triggerActivado = await verificarTriggers(userId, fromNumber, texto);
-    if (triggerActivado) return;
+    const esSi = /^(si|sí|sii|siii|ok|dale|confirmo|quiero)$/i.test(texto);
+    const esNo = /^(no|nop|nada|no quiero)$/i.test(texto);
     
-    // ============================================
-    // 2. CARGAR ENTRENAMIENTO (prioridad 2)
-    // ============================================
-    const trainingData = await getTrainingData(userId);
-    console.log(`📚 Entrenamiento cargado: ${trainingData.length} reglas`);
-    
-    // 3. BUSCAR RESPUESTA EXACTA EN ENTRENAMIENTO
-    const respuestaEntrenamiento = buscarRespuestaEnEntrenamiento(trainingData, texto);
-    if (respuestaEntrenamiento) {
-      console.log(`✅ Usando respuesta de entrenamiento`);
-      await enviarMensaje(userId, fromNumber, respuestaEntrenamiento);
-      return;
-    }
-    
-    // ============================================
-    // 4. SI HAY ENTRENAMIENTO PERO NO MATCH, USAR IA
-    // ============================================
-    const iaConfig = await getIAConfig(userId);
-    
-    if (iaConfig?.api_key && trainingData.length > 0) {
-      console.log(`🤖 Llamando a Gemini con entrenamiento (${trainingData.length} reglas)`);
-      const history = await getConversationHistory(userId, fromNumber, 6);
-      const respuestaIA = await callGemini(
-        iaConfig.api_key,
-        iaConfig.model || "gemini-2.0-flash",
-        trainingData,
-        texto,
-        history
-      );
-      
-      if (respuestaIA) {
-        await enviarMensaje(userId, fromNumber, respuestaIA);
+    // Si está esperando confirmación y dice SI
+    if (contexto?.waiting_for === "confirmacion_compra" && esSi) {
+      const producto = contexto.current_product;
+      if (producto) {
+        const precio = PRODUCTOS[normalizeText(producto)]?.precio || 99000;
+        await enviarMensaje(userId, fromNumber, 
+          `🎉 *Excelente!* 🎉\n\n✅ *${producto}* - ${formatGs(precio)} Gs\n🚚 Envío GRATIS contra-entrega\n\n📝 Para agendar tu pedido, pasame tu *nombre completo*.`);
+        
+        // Actualizar contexto: ahora esperando nombre
+        await saveContexto(userId, fromNumber, {
+          last_topic: producto,
+          current_product: producto,
+          waiting_for: "nombre",
+          last_trigger: null
+        });
         return;
       }
     }
     
+    // Si esperando nombre
+    if (contexto?.waiting_for === "nombre" && texto.length > 2 && !detectarProducto(texto)) {
+      await saveContexto(userId, fromNumber, {
+        ...contexto,
+        customer_name: texto,
+        waiting_for: "ciudad"
+      });
+      await enviarMensaje(userId, fromNumber, `🙌 Gracias *${texto}*!\n\nAhora pasame tu *ciudad* 📍`);
+      return;
+    }
+    
+    // Si esperando ciudad
+    if (contexto?.waiting_for === "ciudad") {
+      const ciudad = detectarCiudad(texto);
+      if (ciudad) {
+        await saveContexto(userId, fromNumber, {
+          ...contexto,
+          city: ciudad,
+          waiting_for: "direccion"
+        });
+        await enviarMensaje(userId, fromNumber, `✅ *${ciudad}* tiene envío gratis 🚚\n\nAhora pasame tu *dirección exacta* 📍`);
+        return;
+      } else {
+        await enviarMensaje(userId, fromNumber, `📍 ¿Podés decirme tu ciudad? Ej: "San Lorenzo", "Luque", "Capiatá"`);
+        return;
+      }
+    }
+    
+    // Si esperando dirección
+    if (contexto?.waiting_for === "direccion" && texto.length > 5) {
+      await enviarMensaje(userId, fromNumber, 
+        `✅ *PEDIDO CONFIRMADO* ✅
+━━━━━━━━━━━━━━━━━━━━━━
+✅ Producto: ${contexto.current_product}
+✅ Cliente: ${contexto.customer_name}
+✅ Ciudad: ${contexto.city}
+✅ Dirección: ${texto}
+
+💰 Total: ${formatGs(PRODUCTOS[normalizeText(contexto.current_product)]?.precio || 99000)} Gs
+🚚 Envío GRATIS · Pagás al recibir
+
+¡Gracias por elegir Mega Todo Store! 💜✨`);
+      
+      // Limpiar contexto después de confirmar
+      await saveContexto(userId, fromNumber, {
+        last_topic: null,
+        current_product: null,
+        waiting_for: null
+      });
+      return;
+    }
+    
     // ============================================
-    // 5. MENSAJE POR DEFECTO (si nada funciona)
+    // 2. DETECTAR PRODUCTO Y PRECIO
+    // ============================================
+    const producto = detectarProducto(texto);
+    const preguntaPrecio = /precio|cuanto|cuesta|costo|valor/i.test(texto);
+    
+    if (preguntaPrecio && producto) {
+      let respuesta = `💰 *${producto.nombre}*\n\n✅ 1 unidad: ${formatGs(producto.precio)}`;
+      if (producto.promo2x) respuesta += `\n🔥 2 unidades: ${formatGs(producto.promo2x)}`;
+      respuesta += `\n\n🚚 *ENVÍO GRATIS* contra-entrega\n💵 Pagás al recibir\n\n¿Te interesa llevarlo? 😊`;
+      
+      await enviarMensaje(userId, fromNumber, respuesta);
+      
+      // Guardar contexto: esperando respuesta SI/NO
+      await saveContexto(userId, fromNumber, {
+        last_topic: producto.nombre,
+        current_product: producto.nombre,
+        waiting_for: "confirmacion_compra",
+        last_trigger: null
+      });
+      return;
+    }
+    
+    // ============================================
+    // 3. SALUDO INICIAL O RESET
+    // ============================================
+    const esSaludo = /^(hola|buenas|hey|que tal|buen día|buenas tardes|buenas noches)$/i.test(texto);
+    
+    if (esSaludo || !contexto) {
+      await enviarMensaje(userId, fromNumber, 
+        `🛍️ *MEGA TODO STORE*\n\n¡Hola! Soy Araceli 😊\n\n¿De qué ciudad sos? 📍\nAsí te confirmo si tenemos *envío GRATIS* contra-entrega.\n\n📋 Catálogo: https://cat-logomegatodo-com.vercel.app/`);
+      
+      await saveContexto(userId, fromNumber, {
+        last_topic: null,
+        current_product: null,
+        waiting_for: null
+      });
+      return;
+    }
+    
+    // ============================================
+    // 4. MENSAJE POR DEFECTO
     // ============================================
     await enviarMensaje(userId, fromNumber, 
-      `🛍️ *MEGA TODO STORE*\n\n¡Hola! Soy Araceli 😊\n\n¿De qué ciudad sos? 📍\n\n📋 Catálogo: https://cat-logomegatodo-com.vercel.app/`);
+      `🛍️ *MEGA TODO STORE*\n\n¿En qué puedo ayudarte? 😊\n\nPodés preguntarme:\n💰 Precios de productos\n🚚 Envío gratis\n📝 Cómo comprar\n\n📋 Catálogo: https://cat-logomegatodo-com.vercel.app/`);
     
   } catch (error) {
     console.error("❌ Error:", error);
