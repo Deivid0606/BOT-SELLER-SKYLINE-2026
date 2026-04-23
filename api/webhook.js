@@ -157,6 +157,46 @@ function buildConfirmedOrderMessage(order) {
 🔗 Te invito a revisar nuestro catálogo oficial: https://cat-logomegatodo-com.vercel.app/`;
 }
 
+function messageLooksLikeConfirmedOrder(message) {
+  const normalized = normalizeText(message);
+  return (
+    normalized.includes("pedido confirmado") ||
+    normalized.includes("🎉 ¡pedido confirmado") ||
+    normalized.includes("🎉 pedido confirmado")
+  );
+}
+
+function parseConfirmedOrderMessage(message, phone) {
+  const text = cleanText(message);
+
+  const productMatch = text.match(/Producto:\s*(.+)/i);
+  const clientMatch = text.match(/Cliente:\s*(.+)/i);
+  const locationMatch = text.match(/Ubicación:\s*(.+)/i);
+  const phoneMatch = text.match(/Contacto:\s*(.+)/i);
+  const quantityMatch = text.match(/Cantidad:\s*(\d+)/i);
+  const totalMatch = text.match(/Total:\s*(.+)/i);
+
+  let city = "";
+  let address = "";
+
+  if (locationMatch?.[1]) {
+    const location = cleanText(locationMatch[1]);
+    const parts = location.split("—").map((p) => cleanText(p));
+    city = parts[0] || "";
+    address = parts.slice(1).join(" — ") || "";
+  }
+
+  return {
+    product: cleanText(productMatch?.[1]) || "Producto",
+    customer_name: cleanText(clientMatch?.[1]) || "Cliente",
+    city: city || "Ciudad",
+    address: address || "Dirección",
+    phone: cleanText(phoneMatch?.[1]) || cleanText(phone) || "Sin teléfono",
+    quantity: Number(quantityMatch?.[1] || 1),
+    total_amount: cleanText(totalMatch?.[1]) || "A confirmar",
+  };
+}
+
 // ============================================
 // CONFIG IA
 // ============================================
@@ -277,7 +317,12 @@ async function getOpenOrder(userId, phone) {
       .select("*")
       .eq("user_id", userId)
       .eq("phone", phone)
-      .in("status", ["draft", "collecting_name", "collecting_city", "collecting_address"])
+      .in("status", [
+        "draft",
+        "collecting_name",
+        "collecting_city",
+        "collecting_address",
+      ])
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -290,6 +335,30 @@ async function getOpenOrder(userId, phone) {
     return data || null;
   } catch (error) {
     console.error("Error en getOpenOrder:", error);
+    return null;
+  }
+}
+
+async function getLastConfirmedOrder(userId, phone) {
+  try {
+    const { data, error } = await supabase
+      .from("orders")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("phone", phone)
+      .eq("status", "confirmed")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Error obteniendo último pedido confirmado:", error);
+      return null;
+    }
+
+    return data || null;
+  } catch (error) {
+    console.error("Error en getLastConfirmedOrder:", error);
     return null;
   }
 }
@@ -322,6 +391,53 @@ async function createOrderDraft(userId, phone, payload = {}) {
     return data;
   } catch (error) {
     console.error("Error en createOrderDraft:", error);
+    return null;
+  }
+}
+
+async function createConfirmedOrderFromMessage(userId, phone, message) {
+  try {
+    const parsed = parseConfirmedOrderMessage(message, phone);
+
+    const lastConfirmed = await getLastConfirmedOrder(userId, parsed.phone);
+    if (
+      lastConfirmed &&
+      cleanText(lastConfirmed.product) === cleanText(parsed.product) &&
+      cleanText(lastConfirmed.customer_name) === cleanText(parsed.customer_name) &&
+      cleanText(lastConfirmed.address) === cleanText(parsed.address) &&
+      cleanText(lastConfirmed.total_amount) === cleanText(parsed.total_amount)
+    ) {
+      console.log("ℹ️ Pedido confirmado ya existía, no se duplica");
+      return lastConfirmed;
+    }
+
+    const { data, error } = await supabase
+      .from("orders")
+      .insert({
+        user_id: userId,
+        phone: parsed.phone,
+        product: parsed.product,
+        customer_name: parsed.customer_name,
+        city: parsed.city,
+        address: parsed.address,
+        quantity: parsed.quantity,
+        total_amount: parsed.total_amount,
+        status: "confirmed",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .select("*")
+      .single();
+
+    if (error) {
+      console.error("❌ Error creando pedido confirmado automático:", error);
+      return null;
+    }
+
+    console.log("✅ Pedido confirmado guardado automáticamente");
+    return data;
+  } catch (error) {
+    console.error("❌ Error en createConfirmedOrderFromMessage:", error);
     return null;
   }
 }
@@ -509,7 +625,9 @@ function buildAIMessages({
 }) {
   const contextBlock = [
     context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : null,
-    context?.last_trigger ? `Último disparador activado: ${context.last_trigger}` : null,
+    context?.last_trigger
+      ? `Último disparador activado: ${context.last_trigger}`
+      : null,
   ]
     .filter(Boolean)
     .join("\n");
@@ -691,7 +809,6 @@ ${context?.last_topic ? `Producto o tema actual: ${context.last_topic}` : "Sin c
 
 // ============================================
 // TRANSCRIBIR AUDIO
-// Requiere OPENAI_API_KEY en Vercel
 // ============================================
 async function transcribeAudioFromUrl(audioUrl) {
   try {
@@ -790,6 +907,13 @@ async function sendWhatsAppMessage(userId, to, message) {
       is_processed: true,
       created_at: new Date().toISOString(),
     });
+
+    // ============================================
+    // GUARDADO FORZADO DE PEDIDO CONFIRMADO
+    // ============================================
+    if (messageLooksLikeConfirmedOrder(message)) {
+      await createConfirmedOrderFromMessage(userId, to, message);
+    }
 
     return result;
   } catch (error) {
@@ -1042,7 +1166,11 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       const existingContextFromAudio = await getChatContext(userId, fromNumber);
       const followUpFromAudio = isFollowUpMessage(transcript);
 
-      const triggerFromAudio = await procesarDisparadores(userId, fromNumber, transcript);
+      const triggerFromAudio = await procesarDisparadores(
+        userId,
+        fromNumber,
+        transcript
+      );
       if (triggerFromAudio) return;
 
       if (followUpFromAudio && existingContextFromAudio?.last_topic) {
