@@ -46,7 +46,11 @@ function normalizeLocationText(text) {
 const PRODUCT_CATALOG = [
   {
     name: "Afilador de Cuchillos y Tijeras",
-    aliases: ["afilador", "afilador de cuchillos", "afilador de cuchillos y tijeras"],
+    aliases: [
+      "afilador",
+      "afilador de cuchillos",
+      "afilador de cuchillos y tijeras",
+    ],
   },
   {
     name: "Veneno de Abeja",
@@ -70,7 +74,12 @@ const PRODUCT_CATALOG = [
   },
   {
     name: "Plantillas Ortopiex 5D",
-    aliases: ["ortopiex", "plantillas ortopiex", "plantillas", "plantillas ortopedicas"],
+    aliases: [
+      "ortopiex",
+      "plantillas ortopiex",
+      "plantillas",
+      "plantillas ortopedicas",
+    ],
   },
   {
     name: "Medias Terapéuticas",
@@ -486,7 +495,7 @@ async function saveChatContext(userId, fromNumber, payload = {}) {
       {
         user_id: userId,
         from_number: fromNumber,
-        last_topic: payload.last_topic || null, // PRODUCTO ACTIVO
+        last_topic: payload.last_topic || null,
         last_trigger: payload.last_trigger || null,
         updated_at: new Date().toISOString(),
       },
@@ -726,7 +735,7 @@ async function getTrainingContext(userId, currentMessage, context) {
     const scored = data
       .map((row, index) => {
         const haystack = normalizeForSearch(
-          `${row.intent || ""} ${(row.examples || []).join(" ")} ${row.response || ""}`
+          `${row.intent || ""} ${safeArray(row.examples).join(" ")} ${row.response || ""}`
         );
         let score = 0;
 
@@ -808,6 +817,7 @@ REGLAS:
 - Basate primero en el entrenamiento.
 - Mantené continuidad total del chat.
 - Pedí solo el siguiente dato necesario para cerrar la venta.
+- Nunca cambies de producto por tu cuenta.
 
 ENTRENAMIENTO RELEVANTE:
 ${trainingContext || "Sin entrenamiento adicional."}
@@ -953,7 +963,7 @@ ${String(trainingContext).slice(0, 400)}
               role: "user",
               parts: [
                 {
-                  text: "Analiza la imagen enviada por el cliente. Si muestra un producto, describilo y respondé como vendedor. Si no se entiende, pedí otra foto.",
+                  text: "Analiza la imagen enviada por el cliente. Si muestra un producto, descríbelo y responde como vendedor. Si no se entiende, pedí otra foto.",
                 },
                 {
                   inlineData: inlineImage,
@@ -1121,42 +1131,57 @@ async function procesarDisparadores(userId, fromNumber, message) {
     if (error || !triggers || triggers.length === 0) return null;
 
     const messageLower = normalizeText(message);
+    const existingContext = await getChatContext(userId, fromNumber);
+    const detectedProductInMessage = detectProductFromText(message);
 
     for (const trigger of triggers) {
       const condition = normalizeText(trigger.condition);
       if (!condition) continue;
 
-      if (messageLower.includes(condition)) {
-        let responseText = trigger.response || "";
+      if (!messageLower.includes(condition)) continue;
 
-        if (trigger.template && trigger.template !== "Ninguna") {
-          const { data: template } = await supabase
-            .from("templates")
-            .select("content")
-            .eq("name", trigger.template)
-            .eq("user_id", userId)
-            .single();
+      let responseText = trigger.response || "";
 
-          if (template?.content) responseText = template.content;
+      if (trigger.template && trigger.template !== "Ninguna") {
+        const { data: template } = await supabase
+          .from("templates")
+          .select("content")
+          .eq("name", trigger.template)
+          .eq("user_id", userId)
+          .single();
+
+        if (template?.content) {
+          responseText = template.content;
         }
-
-        if (responseText) {
-          await sendWhatsAppMessage(userId, fromNumber, responseText);
-        }
-
-        const productFromTrigger = buildTopicFromTrigger(trigger, responseText);
-
-        await saveChatContext(userId, fromNumber, {
-          last_topic: productFromTrigger,
-          last_trigger: trigger.name || null,
-        });
-
-        return {
-          ...trigger,
-          responseText,
-          productFromTrigger,
-        };
       }
+
+      if (responseText) {
+        await sendWhatsAppMessage(userId, fromNumber, responseText);
+      }
+
+      const productFromTrigger = buildTopicFromTrigger(trigger, responseText);
+
+      // REGLA CLAVE:
+      // 1) si el mensaje actual menciona un producto, ese manda
+      // 2) si no menciona producto y ya había uno activo, se conserva
+      // 3) recién si no hay nada, usar el producto del trigger
+      const finalProduct =
+        detectedProductInMessage ||
+        cleanText(existingContext?.last_topic) ||
+        productFromTrigger ||
+        null;
+
+      await saveChatContext(userId, fromNumber, {
+        last_topic: finalProduct,
+        last_trigger: trigger.name || null,
+      });
+
+      return {
+        ...trigger,
+        responseText,
+        productFromTrigger,
+        finalProduct,
+      };
     }
 
     return null;
@@ -1314,7 +1339,8 @@ async function procesarMensaje(message, token, userId, fromNumber) {
 
       const existingContextFromAudio = await getChatContext(userId, fromNumber);
       const detectedProductFromAudio =
-        detectProductFromText(transcript) || cleanText(existingContextFromAudio?.last_topic);
+        detectProductFromText(transcript) ||
+        cleanText(existingContextFromAudio?.last_topic);
 
       if (detectedProductFromAudio) {
         await saveChatContext(userId, fromNumber, {
@@ -1330,7 +1356,11 @@ async function procesarMensaje(message, token, userId, fromNumber) {
       );
       if (handledOrderFromAudio) return;
 
-      const triggerFromAudio = await procesarDisparadores(userId, fromNumber, transcript);
+      const triggerFromAudio = await procesarDisparadores(
+        userId,
+        fromNumber,
+        transcript
+      );
       if (triggerFromAudio) return;
 
       const cityDetectionAudio = detectCoverageCity(transcript);
@@ -1387,13 +1417,12 @@ https://cat-logomegatodo-com.vercel.app/`
 
     const existingContext = await getChatContext(userId, fromNumber);
 
-    // ANCLAR PRODUCTO ACTIVO
-    const detectedProduct =
-      detectProductFromText(contenido) || cleanText(existingContext?.last_topic);
+    // SOLO anclar producto si realmente se detecta en el mensaje.
+    const explicitProductInMessage = detectProductFromText(contenido);
 
-    if (detectedProduct) {
+    if (explicitProductInMessage) {
       await saveChatContext(userId, fromNumber, {
-        last_topic: detectedProduct,
+        last_topic: explicitProductInMessage,
         last_trigger: existingContext?.last_trigger || null,
       });
     }
@@ -1447,15 +1476,17 @@ https://cat-logomegatodo-com.vercel.app/`
     if (!iaConfig) return;
 
     const aiResponse = await generateAIReply(userId, contenido, fromNumber);
-
     if (!aiResponse) return;
 
     const sendResult = await sendWhatsAppMessage(userId, fromNumber, aiResponse);
 
     if (sendResult) {
-      // IMPORTANTE: JAMÁS guardar contenido crudo como producto
+      // Nunca guardar contenido crudo como producto
       await saveChatContext(userId, fromNumber, {
-        last_topic: detectedProduct || cleanText(freshContext?.last_topic) || null,
+        last_topic:
+          explicitProductInMessage ||
+          cleanText(freshContext?.last_topic) ||
+          null,
         last_trigger: cleanText(freshContext?.last_trigger) || null,
       });
     }
