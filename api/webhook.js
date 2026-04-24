@@ -9,11 +9,6 @@ const VERIFY_TOKEN = "miTokenSeguro2026";
 
 // ================= HELPERS =================
 const clean = (t) => String(t || "").trim();
-const normalize = (t) =>
-  clean(t)
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
 
 // ================= ENVIAR =================
 async function enviarMensaje(userId, to, text) {
@@ -23,26 +18,37 @@ async function enviarMensaje(userId, to, text) {
     .eq("user_id", userId)
     .single();
 
-  if (!config) return console.log("❌ Sin config");
+  if (!config?.phone_number_id || !config?.permanent_token) {
+    console.log("❌ Sin config WhatsApp");
+    return;
+  }
 
-  console.log("📤 Enviando:", text);
+  // dividir mensajes largos (WhatsApp corta)
+  const partes = [];
+  const max = 900;
+  const msg = clean(text);
+  for (let i = 0; i < msg.length; i += max) {
+    partes.push(msg.substring(i, i + max));
+  }
 
-  await fetch(
-    `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.permanent_token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: { body: text },
-      }),
-    }
-  );
+  for (const p of partes) {
+    await fetch(
+      `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.permanent_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to,
+          type: "text",
+          text: { body: p },
+        }),
+      }
+    );
+  }
 }
 
 // ================= CONTEXTO =================
@@ -53,6 +59,7 @@ async function getContexto(userId, from) {
     .eq("user_id", userId)
     .eq("from_number", from)
     .single();
+
   return data || {};
 }
 
@@ -68,240 +75,131 @@ async function saveContexto(userId, from, ctx) {
   );
 }
 
-// ================= PRODUCTOS DINÁMICOS =================
-async function detectarProducto(userId, texto) {
+// ================= HISTORIAL =================
+async function getHistory(userId, from) {
   const { data } = await supabase
-    .from("product_prices")
-    .select("*")
-    .eq("user_id", userId);
-
-  const t = normalize(texto);
-
-  for (const p of data || []) {
-    if (t.includes(normalize(p.name))) {
-      return p;
-    }
-  }
-
-  return null;
-}
-
-// ================= INTENCIÓN =================
-function detectarIntencion(texto) {
-  const palabras = ["precio", "quiero", "info", "tenes", "costo"];
-  let score = 0;
-  for (const p of palabras) {
-    if (texto.includes(p)) score++;
-  }
-  return score;
-}
-
-// ================= EXTRAER DATOS =================
-function extraerDatos(texto) {
-  return {
-    name: texto.match(/soy\s+([a-zA-Z\s]+)/i)?.[1],
-    city: texto.match(/de\s+([a-zA-Z\s]+)/i)?.[1],
-    address: texto.match(/direccion\s+(.+)/i)?.[1],
-  };
-}
-
-// ================= PEDIDOS =================
-async function getOrder(userId, phone) {
-  const { data } = await supabase
-    .from("orders")
-    .select("*")
+    .from("inbox_messages")
+    .select("message, created_at, source")
     .eq("user_id", userId)
-    .eq("phone", phone)
-    .in("status", ["draft", "collecting"])
-    .limit(1)
-    .single();
+    .eq("sender_id", from)
+    .order("created_at", { ascending: false })
+    .limit(12);
 
-  return data;
-}
-
-// ================= IA =================
-async function callIA(apiKey, message, product) {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: `
-Sos un vendedor.
-
-Producto actual: ${product || "ninguno"}
-
-Mensaje cliente: ${message}
-
-Reglas:
-- vender
-- cerrar venta
-- no cambiar producto
-- responder corto
-- terminar con pregunta
-`,
-              },
-            ],
-          },
-        ],
-      }),
-    }
-  );
-
-  const data = await res.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  return (data || [])
+    .reverse()
+    .map((m) => ({
+      role: m.source === "out" ? "assistant" : "user",
+      content: clean(m.message).slice(0, 200),
+    }));
 }
 
 // ================= MAIN =================
 async function procesar(message, userId, from) {
   if (message.type !== "text") return;
 
-  const texto = clean(message.text.body);
-  console.log("📩", texto);
+  const texto = clean(message.text.body || "");
+  if (!texto) return;
 
-  let ctx = await getContexto(userId, from);
+  console.log("📩", from, "→", texto);
 
-  // ================= PRODUCTO =================
-  const producto = await detectarProducto(userId, texto);
+  // guardar en inbox (entrada)
+  await supabase.from("inbox_messages").insert({
+    user_id: userId,
+    source: "in",
+    sender_id: from,
+    message: texto,
+  });
 
-  if (producto) {
-    ctx.current_product = producto.name;
+  // contexto + historial
+  const ctx = await getContexto(userId, from);
+  const history = await getHistory(userId, from);
 
-    await enviarMensaje(
-      userId,
-      from,
-      `🔥 ${producto.name}
+  // ======== LLAMADA AL CEREBRO (chat-ia) ========
+  const resIA = await fetch(`${process.env.BASE_URL}/api/chat-ia`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      user_id: userId,
+      message: texto,
+      from_number: from,
+      context: ctx,
+      history,
+    }),
+  });
 
-💰 Precio: ${producto.price}
-🚚 Envío GRATIS
+  const data = await resIA.json();
 
-¿Querés que te reserve uno?`
-    );
+  if (data?.response) {
+    await enviarMensaje(userId, from, data.response);
 
-    await saveContexto(userId, from, ctx);
-    return;
-  }
+    // guardar salida en inbox
+    await supabase.from("inbox_messages").insert({
+      user_id: userId,
+      source: "out",
+      sender_id: from,
+      message: data.response,
+    });
 
-  // ================= INTENCIÓN =================
-  const score = detectarIntencion(texto);
-
-  if (ctx.current_product && score >= 1) {
-    await enviarMensaje(
-      userId,
-      from,
-      `🔥 El ${ctx.current_product} está disponible
-
-🚚 Envío GRATIS
-💸 Pagás al recibir
-
-¿Te reservo uno ahora?`
-    );
-    return;
-  }
-
-  // ================= PEDIDO =================
-  let order = await getOrder(userId, from);
-
-  const datos = extraerDatos(texto);
-
-  if (order && (datos.name || datos.city || datos.address)) {
-    await supabase.from("orders").update({
-      ...(datos.name && { customer_name: datos.name }),
-      ...(datos.city && { city: datos.city }),
-      ...(datos.address && { address: datos.address }),
-    }).eq("id", order.id);
-  }
-
-  // ================= CONFIRMAR =================
-  if (
-    order &&
-    order.customer_name &&
-    order.city &&
-    order.address
-  ) {
-    await enviarMensaje(
-      userId,
-      from,
-      `✅ Pedido listo
-
-${order.product}
-${order.customer_name}
-${order.city}
-${order.address}
-
-¿Confirmamos?`
-    );
-
-    return;
-  }
-
-  // ================= IA =================
-  const { data: ia } = await supabase
-    .from("chat_ia_gemini")
-    .select("*")
-    .eq("user_id", userId)
-    .single();
-
-  if (ia?.api_key) {
-    const r = await callIA(ia.api_key, texto, ctx.current_product);
-    if (r) {
-      await enviarMensaje(userId, from, r);
-      return;
+    // guardar contexto actualizado si vino
+    if (data.context) {
+      await saveContexto(userId, from, data.context);
     }
+
+    return;
   }
 
-  // ================= FALLBACK =================
+  // fallback duro
   await enviarMensaje(
     userId,
     from,
-    `👋 Hola!
-
-¿Buscás algún producto?
-
-📋 Catálogo:
-https://cat-logomegatodo-com.vercel.app/`
+    "👋 Hola! ¿En qué puedo ayudarte hoy?"
   );
 }
 
 // ================= WEBHOOK =================
 export default async function handler(req, res) {
+  // verificación
   if (req.method === "GET") {
-    if (
-      req.query["hub.verify_token"] === VERIFY_TOKEN
-    ) {
-      return res.send(req.query["hub.challenge"]);
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+
+    if (mode === "subscribe" && token === VERIFY_TOKEN) {
+      return res.status(200).send(challenge);
     }
     return res.sendStatus(403);
   }
 
+  // eventos
   if (req.method === "POST") {
-    const body = req.body;
+    try {
+      const body = req.body;
 
-    for (const entry of body.entry || []) {
-      for (const change of entry.changes || []) {
-        const value = change.value;
-        const phoneId = value?.metadata?.phone_number_id;
+      for (const entry of body.entry || []) {
+        for (const change of entry.changes || []) {
+          const value = change.value;
+          const phoneId = value?.metadata?.phone_number_id;
 
-        const { data: config } = await supabase
-          .from("whatsapp_config")
-          .select("user_id")
-          .eq("phone_number_id", phoneId)
-          .single();
+          const { data: config } = await supabase
+            .from("whatsapp_config")
+            .select("user_id")
+            .eq("phone_number_id", phoneId)
+            .single();
 
-        if (!config) continue;
+          if (!config?.user_id) continue;
 
-        for (const msg of value.messages || []) {
-          await procesar(msg, config.user_id, msg.from);
+          for (const msg of value.messages || []) {
+            await procesar(msg, config.user_id, msg.from);
+          }
         }
       }
-    }
 
-    return res.sendStatus(200);
+      return res.sendStatus(200);
+    } catch (e) {
+      console.error("❌ webhook error:", e);
+      return res.sendStatus(500);
+    }
   }
+
+  return res.sendStatus(405);
 }
