@@ -9,6 +9,29 @@ const VERIFY_TOKEN = "miTokenSeguro2026";
 
 const clean = (t) => String(t || "").trim();
 
+// ✅ Parte mensajes largos respetando saltos de línea y espacios (no corta palabras)
+function splitMessage(text, max = 3500) {
+  const msg = clean(text);
+  if (msg.length <= max) return [msg];
+
+  const parts = [];
+  let remaining = msg;
+
+  while (remaining.length > max) {
+    let cut = remaining.lastIndexOf("\n\n", max);
+    if (cut < max * 0.5) cut = remaining.lastIndexOf("\n", max);
+    if (cut < max * 0.5) cut = remaining.lastIndexOf(". ", max);
+    if (cut < max * 0.5) cut = remaining.lastIndexOf(" ", max);
+    if (cut <= 0) cut = max;
+
+    parts.push(remaining.substring(0, cut).trim());
+    remaining = remaining.substring(cut).trim();
+  }
+
+  if (remaining) parts.push(remaining);
+  return parts.filter((p) => p.length > 0);
+}
+
 async function enviarMensaje(userId, to, text) {
   try {
     const { data: config, error } = await supabase
@@ -25,12 +48,8 @@ async function enviarMensaje(userId, to, text) {
     const msg = clean(text);
     if (!msg) return false;
 
-    const partes = [];
-    const max = 900;
-
-    for (let i = 0; i < msg.length; i += max) {
-      partes.push(msg.substring(i, i + max));
-    }
+    const partes = splitMessage(msg, 3500);
+    console.log(`📤 Enviando ${partes.length} parte(s), total ${msg.length} chars`);
 
     for (const parte of partes) {
       const response = await fetch(
@@ -45,16 +64,17 @@ async function enviarMensaje(userId, to, text) {
             messaging_product: "whatsapp",
             to,
             type: "text",
-            text: { body: parte },
+            text: { body: parte, preview_url: false },
           }),
         }
       );
 
       const raw = await response.text();
       console.log("📤 Meta status:", response.status);
-      console.log("📤 Meta response:", raw);
-
-      if (!response.ok) return false;
+      if (!response.ok) {
+        console.log("📤 Meta response:", raw);
+        return false;
+      }
     }
 
     return true;
@@ -77,7 +97,6 @@ async function getContexto(userId, from) {
       console.log("❌ Error leyendo contexto:", error);
       return {};
     }
-
     return data || {};
   } catch (err) {
     console.error("❌ getContexto error:", err);
@@ -128,7 +147,7 @@ async function getHistory(userId, from) {
       .reverse()
       .map((m) => ({
         role: m.source === "out" ? "assistant" : "user",
-        content: clean(m.message).slice(0, 500),
+        content: clean(m.message), // ✅ sin recortar a 500
       }))
       .filter((m) => m.content);
   } catch (err) {
@@ -139,7 +158,6 @@ async function getHistory(userId, from) {
 
 async function isDuplicateMessage(messageId) {
   if (!messageId) return false;
-
   try {
     const { data, error } = await supabase
       .from("inbox_messages")
@@ -151,7 +169,6 @@ async function isDuplicateMessage(messageId) {
       console.log("⚠️ No se pudo verificar duplicado:", error);
       return false;
     }
-
     return !!data;
   } catch (err) {
     console.error("❌ isDuplicateMessage error:", err);
@@ -159,13 +176,7 @@ async function isDuplicateMessage(messageId) {
   }
 }
 
-async function saveInboxMessage({
-  userId,
-  source,
-  from,
-  message,
-  waMessageId = null,
-}) {
+async function saveInboxMessage({ userId, source, from, message, waMessageId = null }) {
   try {
     const payload = {
       user_id: userId,
@@ -181,7 +192,6 @@ async function saveInboxMessage({
       console.log("❌ Error guardando inbox:", error);
       return false;
     }
-
     return true;
   } catch (err) {
     console.error("❌ saveInboxMessage error:", err);
@@ -193,20 +203,14 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
   const host = req.headers.host;
   const protocol = req.headers["x-forwarded-proto"] || "https";
 
-  if (!host) {
-    throw new Error("No se detectó host para construir URL");
-  }
+  if (!host) throw new Error("No se detectó host para construir URL");
 
   const url = `${protocol}://${host}/api/chat-ia`;
-
-  console.log("🌐 URL CHAT-IA FINAL:", url);
-  console.log("📡 Llamando chat-ia con:", texto);
+  console.log("🌐 URL CHAT-IA:", url);
 
   const resIA = await fetch(url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       user_id: userId,
       message: texto,
@@ -217,12 +221,9 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
   });
 
   const raw = await resIA.text();
-
-  console.log("🧠 chat-ia status:", resIA.status);
-  console.log("🧠 chat-ia raw:", raw);
+  console.log("🧠 chat-ia status:", resIA.status, "len:", raw.length);
 
   let data = {};
-
   try {
     data = JSON.parse(raw);
   } catch {
@@ -248,7 +249,6 @@ async function procesar(req, message, userId, from) {
 
     console.log("━━━━━━━━━━━━━━━━━━━━━━");
     console.log("📩 WhatsApp recibido:", from, texto);
-    console.log("🆔 WA message id:", message.id || "sin id");
 
     if (await isDuplicateMessage(message.id)) {
       console.log("⚠️ Mensaje duplicado ignorado:", message.id);
@@ -269,23 +269,14 @@ async function procesar(req, message, userId, from) {
     let data = {};
 
     try {
-      data = await llamarChatIA({
-        req,
-        userId,
-        texto,
-        from,
-        ctx,
-        history,
-      });
+      data = await llamarChatIA({ req, userId, texto, from, ctx, history });
     } catch (err) {
       console.error("❌ Error llamando chat-ia:", err);
-
       await enviarMensaje(
         userId,
         from,
         "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente por favor."
       );
-
       return;
     }
 
@@ -295,7 +286,6 @@ async function procesar(req, message, userId, from) {
 
     if (data?.response) {
       const sent = await enviarMensaje(userId, from, data.response);
-
       if (sent) {
         await saveInboxMessage({
           userId,
@@ -304,24 +294,15 @@ async function procesar(req, message, userId, from) {
           message: data.response,
         });
       }
-
       return;
     }
 
     const fallback =
       "👋 Hola! ¿En qué puedo ayudarte hoy?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
-
     await enviarMensaje(userId, from, fallback);
-
-    await saveInboxMessage({
-      userId,
-      source: "out",
-      from,
-      message: fallback,
-    });
+    await saveInboxMessage({ userId, source: "out", from, message: fallback });
   } catch (err) {
     console.error("❌ procesar error:", err);
-
     await enviarMensaje(
       userId,
       from,
@@ -335,9 +316,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
 
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
@@ -348,15 +327,13 @@ export default async function handler(req, res) {
       console.log("✅ Webhook verificado");
       return res.status(200).send(challenge);
     }
-
     return res.status(403).send("Token inválido");
   }
 
   if (req.method === "POST") {
     try {
       const body = req.body;
-
-      console.log("📥 WEBHOOK BODY:", JSON.stringify(body).slice(0, 2500));
+      console.log("📥 WEBHOOK BODY:", JSON.stringify(body).slice(0, 1500));
 
       if (body.object !== "whatsapp_business_account") {
         return res.status(404).send("Not WhatsApp");
