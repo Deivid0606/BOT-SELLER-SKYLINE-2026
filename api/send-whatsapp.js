@@ -12,11 +12,23 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    const { to, message, userId, imageUrls = [], videoUrl, gifUrl } = req.body;
+    const body = req.body || {};
 
-    if (!to || !userId) return res.status(400).json({ error: 'Missing to or userId' });
+    // ✅ Aceptar to/To/number y userId/userid/user_id (frontend a veces manda en otra forma)
+    const to = body.to || body.To || body.number || body.phone;
+    const userId = body.userId || body.userid || body.user_id;
+    const message = body.message || body.text || '';
+    const imageUrls = body.imageUrls || body.images || [];
+    const videoUrl = body.videoUrl || null;
+    const gifUrl = body.gifUrl || null;
+
+    if (!to || !userId) {
+      console.log('❌ send-whatsapp payload inválido:', JSON.stringify(body).slice(0, 300));
+      return res.status(400).json({ error: 'Missing to or userId', received: { to, userId } });
+    }
 
     const cleanTo = String(to).replace(/[^0-9]/g, '');
+    if (!cleanTo) return res.status(400).json({ error: 'Invalid phone number' });
 
     // Enviar todas las imágenes
     for (const url of imageUrls) {
@@ -57,10 +69,11 @@ export default async function handler(req, res) {
       source: 'outbound',
       platform: 'whatsapp',
       sender_id: cleanTo,
+      sender_name: cleanTo,
       from_number: cleanTo,
       message: message || '',
-      media_url: imageUrls.length > 0 ? imageUrls : null,
-      message_type: imageUrls.length > 0 ? 'image' : (videoUrl ? 'video' : (gifUrl ? 'gif' : 'text')),
+      media_url_text: imageUrls.length > 0 ? imageUrls[0] : (videoUrl || gifUrl || null),
+      message_type: imageUrls.length > 0 ? 'out_image' : (videoUrl ? 'out_video' : (gifUrl ? 'out_gif' : 'out_text')),
       is_read: true,
       is_processed: true,
     });
