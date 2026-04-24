@@ -6,8 +6,17 @@ const supabase = createClient(
 );
 
 const VERIFY_TOKEN = "miTokenSeguro2026";
-const clean = (t) => String(t || "").trim();
 
+const clean = (t) => String(t || "").trim();
+const norm = (t) =>
+  clean(t)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+// =================== UTIL ===================
 function splitMessage(text, max = 3500) {
   const msg = clean(text);
   if (msg.length <= max) return [msg];
@@ -26,6 +35,7 @@ function splitMessage(text, max = 3500) {
   return parts.filter((p) => p.length > 0);
 }
 
+// =================== ENVÍO TEXTO ===================
 async function enviarMensaje(userId, to, text) {
   try {
     const { data: config, error } = await supabase
@@ -43,7 +53,7 @@ async function enviarMensaje(userId, to, text) {
     if (!msg) return false;
 
     const partes = splitMessage(msg, 3500);
-    console.log(`📤 Enviando ${partes.length} parte(s)`);
+    console.log(`📤 Enviando ${partes.length} parte(s) de texto`);
 
     for (const parte of partes) {
       const r = await fetch(
@@ -76,6 +86,299 @@ async function enviarMensaje(userId, to, text) {
   }
 }
 
+// =================== ENVÍO MEDIA ===================
+async function enviarMedia(userId, to, mediaUrl, mediaType, caption = "") {
+  try {
+    const { data: config } = await supabase
+      .from("whatsapp_config")
+      .select("phone_number_id, permanent_token")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (!config?.phone_number_id || !config?.permanent_token) {
+      console.log("❌ Sin config WhatsApp para media");
+      return false;
+    }
+
+    // gif → se envía como video en WhatsApp
+    let waType = "image";
+    if (mediaType === "video" || mediaType === "gif") waType = "video";
+
+    const mediaPayload = { link: mediaUrl };
+    if (caption && (waType === "image" || waType === "video")) {
+      mediaPayload.caption = clean(caption).slice(0, 1024);
+    }
+
+    const body = {
+      messaging_product: "whatsapp",
+      to,
+      type: waType,
+      [waType]: mediaPayload,
+    };
+
+    console.log(`📤 Enviando ${waType}:`, mediaUrl);
+
+    const r = await fetch(
+      `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.permanent_token.trim()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }
+    );
+
+    const raw = await r.text();
+    console.log("📤 Meta media status:", r.status);
+    if (!r.ok) {
+      console.log("📤 Meta media resp:", raw);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error("❌ enviarMedia:", err);
+    return false;
+  }
+}
+
+// =================== ENVIAR PLANTILLA ===================
+async function enviarPlantilla(userId, to, template) {
+  try {
+    const texto = clean(template?.content || template?.message || "");
+    const variables = template?.variables || {};
+    const media = variables?.media || {};
+
+    const imageUrls = Array.isArray(media.imageUrls) ? media.imageUrls : [];
+    const videoUrl = media.videoUrl || null;
+    const gifUrl = media.gifUrl || null;
+    const legacyUrl = template?.media_url || null;
+    const legacyType = template?.media_type || null;
+
+    const tieneMedia =
+      imageUrls.length > 0 || !!videoUrl || !!gifUrl || !!legacyUrl;
+
+    if (tieneMedia) {
+      let primeraEnviada = false;
+      let okAlguna = false;
+
+      if (imageUrls.length > 0) {
+        for (let i = 0; i < imageUrls.length; i++) {
+          const cap = i === 0 ? texto : "";
+          const ok = await enviarMedia(userId, to, imageUrls[i], "image", cap);
+          if (ok) okAlguna = true;
+          primeraEnviada = true;
+        }
+      }
+      if (videoUrl) {
+        const cap = !primeraEnviada ? texto : "";
+        const ok = await enviarMedia(userId, to, videoUrl, "video", cap);
+        if (ok) okAlguna = true;
+        primeraEnviada = true;
+      }
+      if (gifUrl) {
+        const cap = !primeraEnviada ? texto : "";
+        const ok = await enviarMedia(userId, to, gifUrl, "gif", cap);
+        if (ok) okAlguna = true;
+        primeraEnviada = true;
+      }
+      if (!imageUrls.length && !videoUrl && !gifUrl && legacyUrl) {
+        const ok = await enviarMedia(
+          userId,
+          to,
+          legacyUrl,
+          legacyType || "image",
+          texto
+        );
+        if (ok) okAlguna = true;
+        primeraEnviada = true;
+      }
+
+      // Caption truncado → mandar resto como texto
+      if (texto.length > 1024) {
+        await enviarMensaje(userId, to, texto);
+      }
+
+      // Si toda la media falló, al menos mandar el texto
+      if (!okAlguna && texto) {
+        return await enviarMensaje(userId, to, texto);
+      }
+      return okAlguna;
+    }
+
+    if (texto) return await enviarMensaje(userId, to, texto);
+    return false;
+  } catch (err) {
+    console.error("❌ enviarPlantilla:", err);
+    return false;
+  }
+}
+
+// =================== TRIGGERS ===================
+async function buscarTriggerYResponder(userId, from, texto) {
+  try {
+    const { data: triggers, error } = await supabase
+      .from("triggers")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("is_active", true);
+
+    if (error) {
+      console.log("❌ getTriggers:", error);
+      return false;
+    }
+    if (!triggers || triggers.length === 0) {
+      console.log("ℹ️ Sin triggers activos");
+      return false;
+    }
+
+    const msgN = norm(texto);
+    let matched = null;
+
+    for (const t of triggers) {
+      const keyword = norm(t.keyword || t.condition || "");
+      if (!keyword) continue;
+      const matchType = (t.match_type || "contains").toLowerCase();
+
+      let hit = false;
+      if (matchType === "exact") {
+        hit = msgN === keyword;
+      } else if (matchType === "starts_with" || matchType === "startswith") {
+        hit = msgN.startsWith(keyword);
+      } else {
+        const kws = keyword.split(",").map((k) => k.trim()).filter(Boolean);
+        hit = kws.some((k) => msgN.includes(k));
+      }
+
+      if (hit) {
+        matched = t;
+        break;
+      }
+    }
+
+    if (!matched) {
+      console.log("ℹ️ Ningún trigger coincide con:", msgN);
+      return false;
+    }
+
+    console.log(
+      "🎯 Trigger match:",
+      matched.name || matched.keyword || matched.condition
+    );
+
+    // Buscar plantilla por id O por nombre
+    let template = null;
+    const tplRef = clean(
+      matched.template_id || matched.template || matched.template_name || ""
+    );
+    console.log("🔎 Buscando plantilla ref:", tplRef);
+
+    if (tplRef) {
+      const isUuid =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          tplRef
+        );
+
+      if (isUuid) {
+        const { data: tpl, error: e1 } = await supabase
+          .from("templates")
+          .select("*")
+          .eq("id", tplRef)
+          .maybeSingle();
+        if (e1) console.log("❌ tpl by id:", e1);
+        template = tpl;
+      }
+
+      if (!template) {
+        const { data: tplByName, error: e2 } = await supabase
+          .from("templates")
+          .select("*")
+          .eq("user_id", userId)
+          .ilike("name", tplRef)
+          .maybeSingle();
+        if (e2) console.log("❌ tpl by name:", e2);
+        template = tplByName;
+      }
+    }
+
+    const fallbackText = clean(
+      matched.response ||
+        matched.message ||
+        template?.content ||
+        template?.message ||
+        ""
+    );
+
+    if (template) {
+      template = {
+        ...template,
+        content: clean(template.content || template.message || fallbackText),
+        variables: template.variables || {},
+        media_url: template.media_url || matched.media_url || null,
+        media_type: template.media_type || matched.media_type || null,
+      };
+      console.log(
+        "📄 Plantilla:",
+        template.name,
+        "media:",
+        !!template.media_url,
+        "imgs:",
+        template?.variables?.media?.imageUrls?.length || 0
+      );
+    } else {
+      console.log("⚠️ Sin plantilla, usando texto del trigger");
+      template = {
+        content: fallbackText,
+        variables: matched.variables || {},
+        media_url: matched.media_url || null,
+        media_type: matched.media_type || null,
+      };
+    }
+
+    let sent = await enviarPlantilla(userId, from, template);
+
+    if (!sent && fallbackText) {
+      console.log("⚠️ Falló envío, mandando solo texto");
+      sent = await enviarMensaje(userId, from, fallbackText);
+    }
+
+    if (sent) {
+      const textOut = clean(
+        template.content || template.message || fallbackText
+      );
+      const media = template?.variables?.media || {};
+      const firstMedia =
+        media.imageUrls?.[0] ||
+        media.videoUrl ||
+        media.gifUrl ||
+        template.media_url ||
+        null;
+
+      await saveInboxMessage({
+        userId,
+        from,
+        message: textOut || "[Plantilla con multimedia]",
+        source: "out",
+        mediaUrl: firstMedia,
+      });
+
+      if (template.id) {
+        await supabase
+          .from("templates")
+          .update({ usage_count: (template.usage_count || 0) + 1 })
+          .eq("id", template.id);
+      }
+    }
+
+    return sent;
+  } catch (err) {
+    console.error("❌ buscarTriggerYResponder:", err);
+    return false;
+  }
+}
+
+// =================== CONTEXTO ===================
 async function getContexto(userId, from) {
   try {
     const { data, error } = await supabase
@@ -113,7 +416,21 @@ async function saveContexto(userId, from, ctx = {}) {
   }
 }
 
-// ✅ Lee historial desde inbox_messages
+// =================== PAUSA IA ===================
+async function isAiPaused(from) {
+  try {
+    const { data } = await supabase
+      .from("conversation_settings")
+      .select("ai_paused")
+      .eq("phone", from)
+      .maybeSingle();
+    return !!data?.ai_paused;
+  } catch {
+    return false;
+  }
+}
+
+// =================== INBOX ===================
 async function getHistory(userId, from) {
   try {
     const { data, error } = await supabase
@@ -142,12 +459,11 @@ async function getHistory(userId, from) {
   }
 }
 
-// ✅ Guarda en inbox_messages (la tabla real)
 async function saveInboxMessage({
   userId,
   from,
   message,
-  source, // "in" | "out"
+  source,
   mediaUrl = null,
 }) {
   try {
@@ -169,6 +485,7 @@ async function saveInboxMessage({
   }
 }
 
+// =================== CHAT IA ===================
 async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
   const host = req.headers.host;
   const protocol = req.headers["x-forwarded-proto"] || "https";
@@ -202,6 +519,7 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
   return data;
 }
 
+// =================== PROCESAR MENSAJE ===================
 async function procesar(req, message, userId, from) {
   try {
     if (message.type !== "text") return;
@@ -211,9 +529,23 @@ async function procesar(req, message, userId, from) {
     console.log("━━━━━━━━━━━━━━");
     console.log("📩 IN:", from, texto);
 
-    // Guardar entrante
     await saveInboxMessage({ userId, from, message: texto, source: "in" });
 
+    // 1) DISPARADORES PRIMERO
+    const triggerSent = await buscarTriggerYResponder(userId, from, texto);
+    if (triggerSent) {
+      console.log("✅ Respondido por trigger");
+      return;
+    }
+
+    // 2) Pausa IA
+    const paused = await isAiPaused(from);
+    if (paused) {
+      console.log("⏸️ IA pausada para", from);
+      return;
+    }
+
+    // 3) IA
     const ctx = await getContexto(userId, from);
     const history = await getHistory(userId, from);
 
@@ -253,6 +585,7 @@ async function procesar(req, message, userId, from) {
   }
 }
 
+// =================== HANDLER ===================
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
