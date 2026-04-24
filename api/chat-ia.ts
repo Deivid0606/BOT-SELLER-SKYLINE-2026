@@ -5,7 +5,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
-// ================= HELPERS =================
 const clean = (t: any): string => String(t || "").trim();
 
 const normalize = (t: string): string =>
@@ -18,11 +17,9 @@ const normalize = (t: string): string =>
     .trim();
 
 function limitText(text: string, max = 12000): string {
-  if (!text) return "";
   return text.length > max ? text.slice(0, max) : text;
 }
 
-// ================= PARSER DE ENTRENAMIENTO =================
 function parseTraining(fullText: string) {
   const t = fullText || "";
 
@@ -44,7 +41,6 @@ function parseTraining(fullText: string) {
     prices: get("💰 LISTA DE PRECIOS", "📋 PROCESAMIENTO DE PEDIDOS"),
     orders: get("📋 PROCESAMIENTO DE PEDIDOS", "💳 FORMAS DE PAGO"),
     payments: get("💳 FORMAS DE PAGO", "🎧 MANEJO DE AUDIOS"),
-    audio: get("🎧 MANEJO DE AUDIOS", "💬 FAQ"),
     faq: get("💬 FAQ", "🔁 CIERRE OBLIGATORIO"),
     closing: get("🔁 CIERRE OBLIGATORIO", "📋 EJEMPLOS PRÁCTICOS"),
     examples: get("📋 EJEMPLOS PRÁCTICOS", "✅ REGLAS FINALES"),
@@ -63,7 +59,6 @@ function hasParsedContent(sections: any): boolean {
   );
 }
 
-// ================= CONTEXTO DINÁMICO =================
 function buildContextSections(msg: string, sections: any): string {
   const m = normalize(msg);
   let ctx = "";
@@ -153,7 +148,6 @@ function buildContextSections(msg: string, sections: any): string {
   return ctx;
 }
 
-// ================= PEDIDOS =================
 async function getOpenOrder(userId: string, phone: string) {
   try {
     const { data, error } = await supabase
@@ -208,16 +202,6 @@ function extractData(msg: string) {
   };
 }
 
-function isComplete(order: any) {
-  return Boolean(
-    clean(order?.product) &&
-    clean(order?.customer_name) &&
-    clean(order?.city) &&
-    clean(order?.address)
-  );
-}
-
-// ================= GEMINI =================
 async function callGemini({
   apiKey,
   model,
@@ -260,7 +244,6 @@ async function callGemini({
   );
 }
 
-// ================= MAIN =================
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -275,9 +258,11 @@ export default async function handler(req: any, res: any) {
 
     const texto = clean(message);
 
-    console.log("🧠 CHAT-IA RECIBIÓ:", texto);
+    console.log("━━━━━━━━━━━━━━━━━━━━━━");
+    console.log("🧠 CHAT-IA EJECUTADO");
+    console.log("🧠 MENSAJE:", texto);
+    console.log("🧠 USER:", user_id);
 
-    // ================= CONFIG IA =================
     const { data: iaConfig, error: configError } = await supabase
       .from("chat_ia_gemini")
       .select("*")
@@ -295,10 +280,9 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // ================= ENTRENAMIENTO PRINCIPAL =================
     const { data: trainingRow, error: trainingError } = await supabase
       .from("training_data")
-      .select("id, intent, response, is_active")
+      .select("id, intent, response, is_active, updated_at")
       .eq("user_id", user_id)
       .eq("is_active", true)
       .order("updated_at", { ascending: false })
@@ -310,6 +294,9 @@ export default async function handler(req: any, res: any) {
     }
 
     const fullTraining = clean(trainingRow?.response);
+
+    console.log("📚 Training ID:", trainingRow?.id || "NO HAY");
+    console.log("📚 Training length:", fullTraining.length);
 
     if (!fullTraining) {
       return res.json({
@@ -330,7 +317,6 @@ export default async function handler(req: any, res: any) {
       console.log("⚠️ Parser no detectó secciones, usando entrenamiento completo");
     }
 
-    // ================= PEDIDO ABIERTO =================
     const openOrder = from_number ? await getOpenOrder(user_id, from_number) : null;
     const extracted = extractData(texto);
 
@@ -347,7 +333,6 @@ export default async function handler(req: any, res: any) {
         .eq("id", openOrder.id);
     }
 
-    // ================= SYSTEM FINAL =================
     const system = `
 ${limitText(dynamicContext, 12000)}
 
@@ -375,7 +360,6 @@ REGLAS ABSOLUTAS DE RESPUESTA
 11. Cerrá con pregunta o siguiente paso.
 `.trim();
 
-    // ================= HISTORIAL =================
     const contents = (history || [])
       .slice(-10)
       .filter((h: any) => clean(h?.content))
@@ -397,6 +381,8 @@ REGLAS ABSOLUTAS DE RESPUESTA
       temperature: iaConfig.temperature ?? 0.25,
       maxTokens: iaConfig.max_tokens ?? 500,
     });
+
+    console.log("🤖 RESPUESTA IA:", response);
 
     if (!response) {
       return res.json({
