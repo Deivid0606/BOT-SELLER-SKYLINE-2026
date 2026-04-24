@@ -9,7 +9,7 @@ const VERIFY_TOKEN = "miTokenSeguro2026";
 
 const clean = (t) => String(t || "").trim();
 
-// ✅ Parte mensajes largos respetando saltos de línea y espacios (no corta palabras)
+// ✅ Parte mensajes largos por saltos de línea / espacios (no corta palabras)
 function splitMessage(text, max = 3500) {
   const msg = clean(text);
   if (msg.length <= max) return [msg];
@@ -128,13 +128,14 @@ async function saveContexto(userId, from, ctx = {}) {
   }
 }
 
+// ✅ Lee historial desde received_messages (la tabla que usa el frontend)
 async function getHistory(userId, from) {
   try {
     const { data, error } = await supabase
-      .from("inbox_messages")
-      .select("message, created_at, source")
+      .from("received_messages")
+      .select("message, created_at, message_type")
       .eq("user_id", userId)
-      .eq("sender_id", from)
+      .eq("from_number", from)
       .order("created_at", { ascending: false })
       .limit(14);
 
@@ -146,8 +147,8 @@ async function getHistory(userId, from) {
     return (data || [])
       .reverse()
       .map((m) => ({
-        role: m.source === "out" ? "assistant" : "user",
-        content: clean(m.message), // ✅ sin recortar a 500
+        role: (m.message_type || "").startsWith("out_") ? "assistant" : "user",
+        content: clean(m.message),
       }))
       .filter((m) => m.content);
   } catch (err) {
@@ -160,13 +161,13 @@ async function isDuplicateMessage(messageId) {
   if (!messageId) return false;
   try {
     const { data, error } = await supabase
-      .from("inbox_messages")
+      .from("received_messages")
       .select("id")
       .eq("wa_message_id", messageId)
       .maybeSingle();
 
     if (error) {
-      console.log("⚠️ No se pudo verificar duplicado:", error);
+      console.log("⚠️ No se pudo verificar duplicado:", error.message);
       return false;
     }
     return !!data;
@@ -176,25 +177,36 @@ async function isDuplicateMessage(messageId) {
   }
 }
 
-async function saveInboxMessage({ userId, source, from, message, waMessageId = null }) {
+// ✅ Guarda mensajes en received_messages con las columnas que el frontend espera
+async function saveReceivedMessage({
+  userId,
+  from,
+  message,
+  messageType, // "text", "image", "out_text", "out_image", etc.
+  mediaUrl = null,
+  waMessageId = null,
+}) {
   try {
     const payload = {
       user_id: userId,
-      source,
-      sender_id: from,
+      platform: "whatsapp",
+      from_number: from,
       message,
+      message_type: messageType,
+      media_url: mediaUrl,
+      is_processed: messageType?.startsWith("out_") ? true : false,
       ...(waMessageId ? { wa_message_id: waMessageId } : {}),
     };
 
-    const { error } = await supabase.from("inbox_messages").insert(payload);
+    const { error } = await supabase.from("received_messages").insert(payload);
 
     if (error) {
-      console.log("❌ Error guardando inbox:", error);
+      console.log("❌ Error guardando received_messages:", error);
       return false;
     }
     return true;
   } catch (err) {
-    console.error("❌ saveInboxMessage error:", err);
+    console.error("❌ saveReceivedMessage error:", err);
     return false;
   }
 }
@@ -255,11 +267,12 @@ async function procesar(req, message, userId, from) {
       return;
     }
 
-    await saveInboxMessage({
+    // ✅ Guarda mensaje entrante
+    await saveReceivedMessage({
       userId,
-      source: "in",
       from,
       message: texto,
+      messageType: "text",
       waMessageId: message.id || null,
     });
 
@@ -287,11 +300,12 @@ async function procesar(req, message, userId, from) {
     if (data?.response) {
       const sent = await enviarMensaje(userId, from, data.response);
       if (sent) {
-        await saveInboxMessage({
+        // ✅ Guarda mensaje saliente como out_text
+        await saveReceivedMessage({
           userId,
-          source: "out",
           from,
           message: data.response,
+          messageType: "out_text",
         });
       }
       return;
@@ -300,7 +314,12 @@ async function procesar(req, message, userId, from) {
     const fallback =
       "👋 Hola! ¿En qué puedo ayudarte hoy?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
     await enviarMensaje(userId, from, fallback);
-    await saveInboxMessage({ userId, source: "out", from, message: fallback });
+    await saveReceivedMessage({
+      userId,
+      from,
+      message: fallback,
+      messageType: "out_text",
+    });
   } catch (err) {
     console.error("❌ procesar error:", err);
     await enviarMensaje(
