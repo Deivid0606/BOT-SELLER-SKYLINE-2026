@@ -18,86 +18,8 @@ const normalize = (t: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
-function limitText(text: string, max = 12000): string {
-  return text.length > max ? text.slice(0, max) : text;
-}
-
-function parseTraining(fullText: string) {
-  const t = fullText || "";
-
-  const get = (start: string, end?: string) => {
-    const s = t.indexOf(start);
-    if (s === -1) return "";
-    const e = end ? t.indexOf(end, s + start.length) : -1;
-    return t.substring(s, e !== -1 ? e : t.length).trim();
-  };
-
-  return {
-    rules: get("🎯 REGLAS DE ORO", "🎯 DETECCIÓN DE CIUDADES"),
-    cities: get("🎯 DETECCIÓN DE CIUDADES", "💬 SALUDO INICIAL"),
-    greeting: get("💬 SALUDO INICIAL", "🟢 RESPUESTA DIRECTA"),
-    coverage: get("🟢 RESPUESTA DIRECTA", "🔴 RESPUESTA DIRECTA"),
-    noCoverage: get("🔴 RESPUESTA DIRECTA", "🎯 PLANTILLAS"),
-    prices: get("💰 LISTA DE PRECIOS", "📋 PROCESAMIENTO DE PEDIDOS"),
-    orders: get("📋 PROCESAMIENTO DE PEDIDOS", "💳 FORMAS DE PAGO"),
-    payments: get("💳 FORMAS DE PAGO", "🎧 MANEJO DE AUDIOS"),
-    delivery: get("🚚 TIEMPOS DE ENTREGA", "💰 LISTA DE PRECIOS"),
-    closing: get("🔁 CIERRE OBLIGATORIO", "📋 EJEMPLOS PRÁCTICOS"),
-    finalRules: get("✅ REGLAS FINALES"),
-    raw: t,
-  };
-}
-
-function buildDynamicContext(msg: string, sections: any) {
-  const m = normalize(msg);
-  let ctx = "";
-
-  ctx += `REGLAS:\n${sections.rules}\n\n`;
-
-  if (m.includes("hola") || m.includes("buenas") || m.length <= 8) {
-    ctx += `SALUDO:\n${sections.greeting}\n\n`;
-  }
-
-  if (
-    m.includes("precio") ||
-    m.includes("cuanto") ||
-    m.includes("cuesta") ||
-    m.includes("valor") ||
-    m.includes("costo")
-  ) {
-    ctx += `PRECIOS:\n${sections.prices}\n\n`;
-  }
-
-  if (
-    m.includes("de ") ||
-    m.includes("soy de") ||
-    m.includes("ciudad") ||
-    m.includes("capiata") ||
-    m.includes("luque") ||
-    m.includes("ita") ||
-    m.includes("asuncion") ||
-    m.includes("cde") ||
-    m.includes("central")
-  ) {
-    ctx += `CIUDADES:\n${sections.cities}\n\n`;
-    ctx += `CON COBERTURA:\n${sections.coverage}\n\n`;
-    ctx += `SIN COBERTURA:\n${sections.noCoverage}\n\n`;
-  }
-
-  ctx += `PEDIDOS:\n${sections.orders}\n\n`;
-  ctx += `PAGOS:\n${sections.payments}\n\n`;
-  ctx += `ENTREGA:\n${sections.delivery}\n\n`;
-  ctx += `CIERRE:\n${sections.closing}\n\n`;
-  ctx += `REGLAS FINALES:\n${sections.finalRules}\n\n`;
-
-  const finalCtx = ctx.trim();
-  return finalCtx || sections.raw || "";
-}
-
 function getPriceLines(training: string): string[] {
-  const sections = parseTraining(training);
-  const prices = sections.prices || training;
-  return prices
+  return training
     .split("\n")
     .map((line) => clean(line))
     .filter((line) => line.length > 3);
@@ -106,9 +28,8 @@ function getPriceLines(training: string): string[] {
 function extractProductNameFromLine(line: string): string {
   const cleaned = line
     .replace(/^[-•\s]+/, "")
-    .replace(/[💙🦶🎯]/g, "")
+    .replace(/[💙🦶🎯💰🔥✨]/g, "")
     .trim();
-
   const parts = cleaned.split(/—|-{2,}|–/);
   return clean(parts[0] || cleaned);
 }
@@ -123,13 +44,12 @@ function detectProduct(text: string, training: string, previousProduct?: string)
   for (const line of lines) {
     const name = extractProductNameFromLine(line);
     const n = normalize(name);
-    if (!n) continue;
+    if (!n || n.length < 3) continue;
 
     const words = n.split(" ").filter((w) => w.length >= 4);
     let score = 0;
 
     if (msg.includes(n)) score += 20;
-
     for (const w of words) {
       if (msg.includes(w)) score += 4;
     }
@@ -141,7 +61,6 @@ function detectProduct(text: string, training: string, previousProduct?: string)
   }
 
   if (bestScore >= 4) return bestProduct;
-
   return clean(previousProduct || "");
 }
 
@@ -173,8 +92,8 @@ function extractData(msg: string) {
   let quantity = 0;
   const q1 = norm.match(/\b(\d+)\s*(unidad|unidades|u)\b/);
   if (q1) quantity = Number(q1[1]);
-  if (!quantity && /\buno\b|\buna\b|\b1\b/.test(norm)) quantity = 1;
-  if (!quantity && /\bdos\b|\b2\b/.test(norm)) quantity = 2;
+  if (!quantity && /\buno\b|\buna\b/.test(norm)) quantity = 1;
+  if (!quantity && /\bdos\b/.test(norm)) quantity = 2;
 
   const cityAliases: Record<string, string> = {
     asuncion: "Asunción",
@@ -213,9 +132,7 @@ function extractData(msg: string) {
     text.match(/(?:soy|me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i)?.[1];
 
   if (nameMatch) {
-    name = clean(nameMatch)
-      .replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "")
-      .trim();
+    name = clean(nameMatch).replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "").trim();
   } else if (
     /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,60}$/.test(text) &&
     !city &&
@@ -227,13 +144,7 @@ function extractData(msg: string) {
     name = text;
   }
 
-  return {
-    quantity,
-    city,
-    name,
-    phone,
-    address: clean(address),
-  };
+  return { quantity, city, name, phone, address: clean(address) };
 }
 
 function mergeOrderData(oldData: any, extracted: any, product: string) {
@@ -254,26 +165,6 @@ function nextStep(order: any) {
   if (!order.phone) return "collecting_phone";
   if (!order.address) return "collecting_address";
   return "confirm_order";
-}
-
-function missingQuestion(step: string, product: string) {
-  if (step === "collecting_city") {
-    return `Perfecto 😊 Para avanzar con tu pedido de ${product}, ¿de qué ciudad sos? 📍`;
-  }
-
-  if (step === "collecting_name") {
-    return `Excelente 😊 ${product} queda disponible. ¿Me pasás tu nombre completo para agendar? 📝`;
-  }
-
-  if (step === "collecting_phone") {
-    return `Genial 🙌 Ahora pasame tu número de teléfono para coordinar la entrega 📲`;
-  }
-
-  if (step === "collecting_address") {
-    return `Perfecto 😊 Solo me falta tu dirección exacta para completar el pedido 🏠`;
-  }
-
-  return "";
 }
 
 async function safeUpsertOrder(userId: string, from: string, order: any) {
@@ -336,37 +227,57 @@ async function safeUpsertOrder(userId: string, from: string, order: any) {
 
     return data?.id || null;
   } catch (e) {
-    console.error("❌ safeUpsertOrder falló, sigo respondiendo:", e);
+    console.error("❌ safeUpsertOrder falló:", e);
     return null;
   }
 }
 
 async function callGemini({ apiKey, model, system, contents, temperature, maxTokens }: any) {
+  const body: any = {
+    systemInstruction: { parts: [{ text: system }] },
+    contents,
+    generationConfig: {
+      temperature,
+      maxOutputTokens: maxTokens,
+      topP: 0.95,
+      topK: 40,
+    },
+  };
+
+  // Para Gemini 2.5: desactivar "thinking" para no gastar tokens pensando
+  if (String(model).includes("2.5")) {
+    body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
+  }
+
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: system }] },
-        contents,
-        generationConfig: { temperature, maxOutputTokens: maxTokens },
-      }),
+      body: JSON.stringify(body),
     }
   );
 
   const data = await response.json();
 
   if (!response.ok) {
-    console.error("❌ Gemini error:", data);
+    console.error("❌ Gemini error:", JSON.stringify(data).slice(0, 1000));
     return "";
   }
 
-  return clean(
-    data?.candidates?.[0]?.content?.parts
-      ?.map((p: any) => p.text || "")
-      .join("\n") || ""
+  const candidate = data?.candidates?.[0];
+  const finishReason = candidate?.finishReason;
+  const text = clean(
+    candidate?.content?.parts?.map((p: any) => p.text || "").join("") || ""
   );
+
+  console.log("🧠 Gemini finishReason:", finishReason, "| len:", text.length);
+
+  if (finishReason === "MAX_TOKENS") {
+    console.warn("⚠️ Respuesta truncada por MAX_TOKENS");
+  }
+
+  return text;
 }
 
 export default async function handler(req: any, res: any) {
@@ -411,9 +322,7 @@ export default async function handler(req: any, res: any) {
     const fullTraining = clean(trainingRow?.response);
 
     if (!fullTraining) {
-      return res.json({
-        response: "⚠️ No encontré entrenamiento activo.",
-      });
+      return res.json({ response: "⚠️ No encontré entrenamiento activo." });
     }
 
     const oldOrderData = context?.order_data || {};
@@ -430,88 +339,85 @@ export default async function handler(req: any, res: any) {
     const wantsToBuy = isBuyIntent(texto);
     const asksPrice = isPriceIntent(texto);
     const hasOrderData =
-      !!extracted.quantity || !!extracted.city || !!extracted.name || !!extracted.phone || !!extracted.address;
+      !!extracted.quantity ||
+      !!extracted.city ||
+      !!extracted.name ||
+      !!extracted.phone ||
+      !!extracted.address;
 
     const shouldCollectOrder =
-      !!orderData.product && (wantsToBuy || hasOrderData || context?.step?.startsWith("collecting"));
+      !!orderData.product &&
+      (wantsToBuy || hasOrderData || context?.step?.startsWith("collecting"));
 
     if (shouldCollectOrder) {
       await safeUpsertOrder(user_id, from_number, orderData);
     }
 
-    const sections = parseTraining(fullTraining);
-    const dynamicContext = buildDynamicContext(texto, sections) || fullTraining;
-
+    // ✅ ENTRENAMIENTO COMPLETO al system prompt (sin filtros por keywords)
     const system = `
-${limitText(dynamicContext, 12000)}
+Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento de abajo al pie de la letra: tono, emojis, plantillas, precios, ciudades con cobertura, formato de cierre. NO inventes precios ni datos. NO cambies el estilo del entrenamiento.
 
-MEMORIA REAL DEL CLIENTE:
-Producto actual: ${orderData.product || "ninguno"}
-Cantidad: ${orderData.quantity || 1}
-Ciudad: ${orderData.city || "pendiente"}
-Nombre: ${orderData.customer_name || "pendiente"}
-Teléfono: ${orderData.phone || "pendiente"}
-Dirección: ${orderData.address || "pendiente"}
-Paso actual: ${step}
+═══════════════════════════════════
+ENTRENAMIENTO OFICIAL (FUENTE DE VERDAD):
+═══════════════════════════════════
+${fullTraining}
+═══════════════════════════════════
 
-REGLAS:
-- Usá la memoria real del cliente antes que el historial.
-- Si el cliente solo consulta precio, respondé precio y no pidas datos todavía.
-- Si el cliente dice que quiere comprar o pasa datos, seguí el flujo de pedido.
-- Si falta un dato, pedí SOLO ese dato.
-- Si están todos los datos, confirmá el pedido.
-- No inventes precios: usá la lista del entrenamiento.
-- No cambies de producto si ya hay producto actual.
-- Cerrá con siguiente paso.
-- Catálogo oficial: ${CATALOG_URL}
+ESTADO ACTUAL DEL CLIENTE (memoria real):
+- Producto en interés: ${orderData.product || "ninguno aún"}
+- Cantidad: ${orderData.quantity || 1}
+- Ciudad: ${orderData.city || "pendiente"}
+- Nombre: ${orderData.customer_name || "pendiente"}
+- Teléfono: ${orderData.phone || "pendiente"}
+- Dirección: ${orderData.address || "pendiente"}
+- Paso del flujo: ${step}
+- Intención detectada: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
+
+REGLAS DE EJECUCIÓN:
+1. Usá EXACTAMENTE las plantillas, emojis y tono del entrenamiento.
+2. Si el cliente solo pregunta precio → respondé con el precio del entrenamiento + cierre con CTA, NO pidas datos todavía.
+3. Si el cliente quiere comprar o ya pasó datos → seguí el flujo de pedido pidiendo SOLO el dato que falta (siguiente paso: ${step}).
+4. Si están todos los datos (paso "confirm_order") → confirmá el pedido con la plantilla del entrenamiento.
+5. NO repitas el saludo si ya hubo conversación previa.
+6. NO cambies de producto si ya hay uno en interés, salvo que el cliente lo pida claramente.
+7. Cerrá SIEMPRE con el siguiente paso o CTA según el entrenamiento.
+8. Catálogo oficial (usalo cuando corresponda): ${CATALOG_URL}
+9. Respondé en español paraguayo, natural, con emojis del entrenamiento.
+10. NUNCA respondas vacío. Si no sabés algo, ofrecé el catálogo.
 `.trim();
 
-    let response = "";
+    const contents = (history || [])
+      .slice(-12)
+      .filter((h: any) => clean(h?.content))
+      .map((h: any) => ({
+        role: h.role === "assistant" ? "model" : "user",
+        parts: [{ text: clean(h.content) }],
+      }));
 
-    if (shouldCollectOrder && step !== "confirm_order") {
-      const q = missingQuestion(step, orderData.product);
-      if (q) response = q;
-    }
+    contents.push({
+      role: "user",
+      parts: [{ text: texto }],
+    });
 
-    if (shouldCollectOrder && step === "confirm_order") {
-      response = `✅ PEDIDO CONFIRMADO
-━━━━━━━━━━━━━━━━━━━━━━
-✅ Producto: ${orderData.product}
-✅ Cliente: ${orderData.customer_name}
-✅ Ubicación: ${orderData.city} — ${orderData.address}
-✅ Contacto: ${orderData.phone}
-✅ Cantidad: ${orderData.quantity || 1} u.
+    let response = await callGemini({
+      apiKey: iaConfig.api_key,
+      model: iaConfig.model || "gemini-2.5-flash",
+      system,
+      contents,
+      temperature: iaConfig.temperature ?? 0.3,
+      maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
+    });
 
-🚚 Envío GRATIS · Pagás al recibir
-⏰ Oferta válida hoy
-
-¡Gracias por elegir Mega Todo Store! 💜✨
-
-📋 Catálogo:
-${CATALOG_URL}`;
-    }
-
+    // Reintento con más tokens si vino vacío
     if (!response) {
-      const contents = (history || [])
-        .slice(-10)
-        .filter((h: any) => clean(h?.content))
-        .map((h: any) => ({
-          role: h.role === "assistant" ? "model" : "user",
-          parts: [{ text: clean(h.content).slice(0, 500) }],
-        }));
-
-      contents.push({
-        role: "user",
-        parts: [{ text: texto }],
-      });
-
+      console.warn("⚠️ Respuesta vacía, reintentando con más tokens...");
       response = await callGemini({
         apiKey: iaConfig.api_key,
         model: iaConfig.model || "gemini-2.5-flash",
         system,
         contents,
-        temperature: iaConfig.temperature ?? 0.25,
-        maxTokens: iaConfig.max_tokens ?? 500,
+        temperature: 0.3,
+        maxTokens: 3072,
       });
     }
 
