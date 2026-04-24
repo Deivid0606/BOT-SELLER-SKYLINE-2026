@@ -5,9 +5,7 @@
 //  - Recepción de mensajes
 //  - Triggers + plantillas
 //  - Reenvío a IA (chat-ia) si no hay trigger
-//  - NUEVO: Detecta "✅ PEDIDO CONFIRMADO" en respuestas (IA o manuales)
-//          y crea automáticamente la fila en la tabla `orders`
-//          + registro en `order_confirmations`.
+//  - Detecta "✅ PEDIDO CONFIRMADO" y crea fila en `orders` + `order_confirmations`
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -36,63 +34,86 @@ function splitMessage(text, max = 3500) {
 async function getCfg(userId) {
   const { data, error } = await supabase
     .from("whatsapp_config")
-    .select("phone_number_id, access_token")
+    .select("phone_number_id, permanent_token")
     .eq("user_id", userId)
     .maybeSingle();
   if (error || !data) throw new Error("whatsapp_config not found");
+  if (!data.phone_number_id || !data.permanent_token) {
+    throw new Error("whatsapp_config missing phone_number_id or permanent_token");
+  }
   return data;
 }
 
 async function enviarMensaje(userId, to, text) {
-  const cfg = await getCfg(userId);
-  const parts = splitMessage(text);
-  for (const part of parts) {
-    await fetch(
+  try {
+    const cfg = await getCfg(userId);
+    const parts = splitMessage(text);
+    for (const part of parts) {
+      const r = await fetch(
+        `https://graph.facebook.com/v20.0/${cfg.phone_number_id}/messages`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${cfg.permanent_token}`,
+          },
+          body: JSON.stringify({
+            messaging_product: "whatsapp",
+            to,
+            type: "text",
+            text: { body: part, preview_url: false },
+          }),
+        }
+      );
+      if (!r.ok) {
+        const errTxt = await r.text();
+        console.error("❌ enviarMensaje Meta error:", r.status, errTxt);
+      }
+    }
+    return true;
+  } catch (e) {
+    console.error("❌ enviarMensaje:", e.message);
+    return false;
+  }
+}
+
+async function enviarMedia(userId, to, mediaUrl, mediaType, caption = "") {
+  try {
+    const cfg = await getCfg(userId);
+    let type = (mediaType || "").toLowerCase();
+    if (type === "gif") type = "video";
+    if (!type) type = "image";
+
+    const body = {
+      messaging_product: "whatsapp",
+      to,
+      type,
+      [type]: {
+        link: mediaUrl,
+        ...(caption && type !== "audio" ? { caption: caption.slice(0, 1024) } : {}),
+      },
+    };
+
+    const r = await fetch(
       `https://graph.facebook.com/v20.0/${cfg.phone_number_id}/messages`,
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${cfg.access_token}`,
+          Authorization: `Bearer ${cfg.permanent_token}`,
         },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to,
-          type: "text",
-          text: { body: part },
-        }),
+        body: JSON.stringify(body),
       }
     );
-  }
-}
-
-async function enviarMedia(userId, to, mediaUrl, mediaType, caption = "") {
-  const cfg = await getCfg(userId);
-  let type = (mediaType || "").toLowerCase();
-  if (type === "gif") type = "video";
-  if (!type) type = "image";
-
-  const body = {
-    messaging_product: "whatsapp",
-    to,
-    type,
-    [type]: {
-      link: mediaUrl,
-      ...(caption && type !== "audio" ? { caption: caption.slice(0, 1024) } : {}),
-    },
-  };
-
-  await fetch(
-    `https://graph.facebook.com/v20.0/${cfg.phone_number_id}/messages`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.access_token}`,
-      },
-      body: JSON.stringify(body),
+    if (!r.ok) {
+      const errTxt = await r.text();
+      console.error("❌ enviarMedia Meta error:", r.status, errTxt);
     }
-  );
+    return r.ok;
+  } catch (e) {
+    console.error("❌ enviarMedia:", e.message);
+    return false;
+  }
 }
 
 async function enviarPlantilla(userId, to, template) {
@@ -115,7 +136,7 @@ async function saveInboxMessage({ userId, from, message, source, mediaUrl = null
     await supabase.from("inbox_messages").insert({
       user_id: userId,
       sender_id: from,
-      source, // "inbound" | "outbound" | "ai"
+      source,
       message: message || "",
       media_url: mediaUrl ? [mediaUrl] : null,
       is_read: source !== "inbound",
@@ -126,58 +147,61 @@ async function saveInboxMessage({ userId, from, message, source, mediaUrl = null
 }
 
 async function getContexto(userId, from) {
-  const { data } = await supabase
-    .from("chat_context")
-    .select("context")
-    .eq("user_id", userId)
-    .eq("sender_id", from)
-    .maybeSingle();
-  return data?.context || {};
+  try {
+    const { data } = await supabase
+      .from("chat_context")
+      .select("context")
+      .eq("user_id", userId)
+      .eq("sender_id", from)
+      .maybeSingle();
+    return data?.context || {};
+  } catch {
+    return {};
+  }
 }
 
 async function saveContexto(userId, from, ctx = {}) {
-  await supabase
-    .from("chat_context")
-    .upsert(
-      { user_id: userId, sender_id: from, context: ctx, updated_at: new Date().toISOString() },
-      { onConflict: "user_id,sender_id" }
-    );
+  try {
+    await supabase
+      .from("chat_context")
+      .upsert(
+        { user_id: userId, sender_id: from, context: ctx, updated_at: new Date().toISOString() },
+        { onConflict: "user_id,sender_id" }
+      );
+  } catch (e) {
+    console.error("saveContexto:", e.message);
+  }
 }
 
 async function isAiPaused(from) {
-  const { data } = await supabase
-    .from("conversation_settings")
-    .select("ai_paused")
-    .eq("sender_id", from)
-    .maybeSingle();
-  return !!data?.ai_paused;
+  try {
+    const { data } = await supabase
+      .from("conversation_settings")
+      .select("ai_paused")
+      .eq("sender_id", from)
+      .maybeSingle();
+    return !!data?.ai_paused;
+  } catch {
+    return false;
+  }
 }
 
 async function getHistory(userId, from) {
-  const { data } = await supabase
-    .from("inbox_messages")
-    .select("source, message, created_at")
-    .eq("user_id", userId)
-    .eq("sender_id", from)
-    .order("created_at", { ascending: false })
-    .limit(20);
-  return (data || []).reverse();
+  try {
+    const { data } = await supabase
+      .from("inbox_messages")
+      .select("source, message, created_at")
+      .eq("user_id", userId)
+      .eq("sender_id", from)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    return (data || []).reverse();
+  } catch {
+    return [];
+  }
 }
 
-// ======================= NUEVO: Detección y creación de pedidos =======================
-/**
- * Parsea un texto que contenga "✅ PEDIDO CONFIRMADO" (formato típico de la IA)
- * y devuelve los campos del pedido. Soporta variaciones.
- *
- * Ejemplo de texto esperado:
- *   ✅ PEDIDO CONFIRMADO
- *   Producto: Reloj X
- *   Cantidad: 2
- *   Cliente: Juan Pérez
- *   Ciudad: Bogotá
- *   Dirección: Calle 123
- *   Total: 150000
- */
+// ======================= Detección y creación de pedidos =======================
 function parseOrderFromText(text) {
   if (!text) return null;
   const t = text.replace(/\r/g, "");
@@ -229,17 +253,11 @@ function parseOrderFromText(text) {
   };
 }
 
-/**
- * Si el texto enviado al cliente es una confirmación de pedido,
- * crea la fila en `orders` y registra en `order_confirmations`.
- * Es idempotente: si ya hay un pedido reciente (< 60s) para ese número, no duplica.
- */
 async function maybeCreateOrderFromOutbound({ userId, to, text }) {
   try {
     const parsed = parseOrderFromText(text);
     if (!parsed) return;
 
-    // Evitar duplicados: si hay un pedido para este número en los últimos 60s, salir.
     const sinceIso = new Date(Date.now() - 60_000).toISOString();
     const { data: dupe } = await supabase
       .from("orders")
@@ -302,56 +320,60 @@ async function maybeCreateOrderFromOutbound({ userId, to, text }) {
 
 // ======================= Triggers =======================
 async function buscarTriggerYResponder(userId, from, texto) {
-  const nTexto = norm(texto);
-  const { data: triggers } = await supabase
-    .from("triggers")
-    .select("id, keywords, template_id, match_type, enabled")
-    .eq("user_id", userId)
-    .eq("enabled", true);
+  try {
+    const nTexto = norm(texto);
+    const { data: triggers } = await supabase
+      .from("triggers")
+      .select("id, keywords, template_id, match_type, enabled")
+      .eq("user_id", userId)
+      .eq("enabled", true);
 
-  if (!triggers || !triggers.length) return false;
+    if (!triggers || !triggers.length) return false;
 
-  let matched = null;
-  for (const tr of triggers) {
-    const kws = (tr.keywords || []).map((k) => norm(k));
-    const hit = kws.some((k) => {
-      if (!k) return false;
-      if (tr.match_type === "exact") return nTexto === k;
-      return nTexto.includes(k);
-    });
-    if (hit) {
-      matched = tr;
-      break;
+    let matched = null;
+    for (const tr of triggers) {
+      const kws = (tr.keywords || []).map((k) => norm(k));
+      const hit = kws.some((k) => {
+        if (!k) return false;
+        if (tr.match_type === "exact") return nTexto === k;
+        return nTexto.includes(k);
+      });
+      if (hit) {
+        matched = tr;
+        break;
+      }
     }
+    if (!matched) return false;
+
+    const { data: tpl } = await supabase
+      .from("templates")
+      .select("id, message, media_url, media_type, usage_count")
+      .eq("id", matched.template_id)
+      .maybeSingle();
+
+    if (!tpl) return false;
+
+    await enviarPlantilla(userId, from, tpl);
+    await supabase
+      .from("templates")
+      .update({ usage_count: (tpl.usage_count || 0) + 1 })
+      .eq("id", tpl.id);
+
+    await saveInboxMessage({
+      userId,
+      from,
+      message: tpl.message || "",
+      source: "outbound",
+      mediaUrl: tpl.media_url || null,
+    });
+
+    await maybeCreateOrderFromOutbound({ userId, to: from, text: tpl.message || "" });
+
+    return true;
+  } catch (e) {
+    console.error("buscarTriggerYResponder error:", e.message);
+    return false;
   }
-  if (!matched) return false;
-
-  const { data: tpl } = await supabase
-    .from("templates")
-    .select("id, message, media_url, media_type, usage_count")
-    .eq("id", matched.template_id)
-    .maybeSingle();
-
-  if (!tpl) return false;
-
-  await enviarPlantilla(userId, from, tpl);
-  await supabase
-    .from("templates")
-    .update({ usage_count: (tpl.usage_count || 0) + 1 })
-    .eq("id", tpl.id);
-
-  await saveInboxMessage({
-    userId,
-    from,
-    message: tpl.message || "",
-    source: "outbound",
-    mediaUrl: tpl.media_url || null,
-  });
-
-  // Detección de pedido también en plantillas
-  await maybeCreateOrderFromOutbound({ userId, to: from, text: tpl.message || "" });
-
-  return true;
 }
 
 // ======================= IA =======================
@@ -379,14 +401,11 @@ async function procesar(req, message, userId, from) {
 
   await saveInboxMessage({ userId, from, message: texto, source: "inbound" });
 
-  // 1) Trigger
   const hit = await buscarTriggerYResponder(userId, from, texto);
   if (hit) return;
 
-  // 2) IA pausada?
   if (await isAiPaused(from)) return;
 
-  // 3) Llamar IA
   const ctx = await getContexto(userId, from);
   const history = await getHistory(userId, from);
   const reply = await llamarChatIA({ req, userId, texto, from, ctx, history });
@@ -394,14 +413,12 @@ async function procesar(req, message, userId, from) {
   if (reply) {
     await enviarMensaje(userId, from, reply);
     await saveInboxMessage({ userId, from, message: reply, source: "ai" });
-    // 🆕 Si la IA confirmó pedido, lo creamos en la tabla orders
     await maybeCreateOrderFromOutbound({ userId, to: from, text: reply });
   }
 }
 
 // ======================= Handler =======================
 export default async function handler(req, res) {
-  // GET: verificación de Meta
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
@@ -424,7 +441,6 @@ export default async function handler(req, res) {
         const phoneNumberId = value.metadata?.phone_number_id;
         if (!phoneNumberId) continue;
 
-        // Mapear phone_number_id -> user_id
         const { data: cfg } = await supabase
           .from("whatsapp_config")
           .select("user_id")
