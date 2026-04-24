@@ -6,28 +6,22 @@ const supabase = createClient(
 );
 
 const VERIFY_TOKEN = "miTokenSeguro2026";
-
 const clean = (t) => String(t || "").trim();
 
-// ✅ Parte mensajes largos por saltos de línea / espacios (no corta palabras)
 function splitMessage(text, max = 3500) {
   const msg = clean(text);
   if (msg.length <= max) return [msg];
-
   const parts = [];
   let remaining = msg;
-
   while (remaining.length > max) {
     let cut = remaining.lastIndexOf("\n\n", max);
     if (cut < max * 0.5) cut = remaining.lastIndexOf("\n", max);
     if (cut < max * 0.5) cut = remaining.lastIndexOf(". ", max);
     if (cut < max * 0.5) cut = remaining.lastIndexOf(" ", max);
     if (cut <= 0) cut = max;
-
     parts.push(remaining.substring(0, cut).trim());
     remaining = remaining.substring(cut).trim();
   }
-
   if (remaining) parts.push(remaining);
   return parts.filter((p) => p.length > 0);
 }
@@ -49,10 +43,10 @@ async function enviarMensaje(userId, to, text) {
     if (!msg) return false;
 
     const partes = splitMessage(msg, 3500);
-    console.log(`📤 Enviando ${partes.length} parte(s), total ${msg.length} chars`);
+    console.log(`📤 Enviando ${partes.length} parte(s)`);
 
     for (const parte of partes) {
-      const response = await fetch(
+      const r = await fetch(
         `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
         {
           method: "POST",
@@ -68,18 +62,16 @@ async function enviarMensaje(userId, to, text) {
           }),
         }
       );
-
-      const raw = await response.text();
-      console.log("📤 Meta status:", response.status);
-      if (!response.ok) {
-        console.log("📤 Meta response:", raw);
+      const raw = await r.text();
+      console.log("📤 Meta status:", r.status);
+      if (!r.ok) {
+        console.log("📤 Meta resp:", raw);
         return false;
       }
     }
-
     return true;
   } catch (err) {
-    console.error("❌ Error enviarMensaje:", err);
+    console.error("❌ enviarMensaje:", err);
     return false;
   }
 }
@@ -92,121 +84,87 @@ async function getContexto(userId, from) {
       .eq("user_id", userId)
       .eq("from_number", from)
       .maybeSingle();
-
-    if (error) {
-      console.log("❌ Error leyendo contexto:", error);
-      return {};
-    }
+    if (error) console.log("❌ getContexto:", error);
     return data || {};
   } catch (err) {
-    console.error("❌ getContexto error:", err);
+    console.error("❌ getContexto:", err);
     return {};
   }
 }
 
 async function saveContexto(userId, from, ctx = {}) {
   try {
-    const payload = {
-      user_id: userId,
-      from_number: from,
-      last_topic: ctx?.last_topic || null,
-      last_trigger: ctx?.last_trigger || null,
-      current_product: ctx?.current_product || null,
-      step: ctx?.step || null,
-      order_data: ctx?.order_data || {},
-      updated_at: new Date().toISOString(),
-    };
-
-    const { error } = await supabase.from("chat_context").upsert(payload, {
-      onConflict: "user_id,from_number",
-    });
-
-    if (error) console.log("❌ Error guardando contexto:", error);
-    else console.log("✅ Contexto guardado");
+    const { error } = await supabase.from("chat_context").upsert(
+      {
+        user_id: userId,
+        from_number: from,
+        last_topic: ctx?.last_topic || null,
+        last_trigger: ctx?.last_trigger || null,
+        current_product: ctx?.current_product || null,
+        step: ctx?.step || null,
+        order_data: ctx?.order_data || {},
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id,from_number" }
+    );
+    if (error) console.log("❌ saveContexto:", error);
   } catch (err) {
-    console.error("❌ saveContexto error:", err);
+    console.error("❌ saveContexto:", err);
   }
 }
 
-// ✅ Lee historial desde received_messages (la tabla que usa el frontend)
+// ✅ Lee historial desde inbox_messages
 async function getHistory(userId, from) {
   try {
     const { data, error } = await supabase
-      .from("received_messages")
-      .select("message, created_at, message_type")
+      .from("inbox_messages")
+      .select("message, created_at, source")
       .eq("user_id", userId)
-      .eq("from_number", from)
+      .eq("sender_id", from)
       .order("created_at", { ascending: false })
       .limit(14);
 
     if (error) {
-      console.log("❌ Error leyendo historial:", error);
+      console.log("❌ getHistory:", error);
       return [];
     }
 
     return (data || [])
       .reverse()
       .map((m) => ({
-        role: (m.message_type || "").startsWith("out_") ? "assistant" : "user",
+        role: m.source === "out" ? "assistant" : "user",
         content: clean(m.message),
       }))
       .filter((m) => m.content);
   } catch (err) {
-    console.error("❌ getHistory error:", err);
+    console.error("❌ getHistory:", err);
     return [];
   }
 }
 
-async function isDuplicateMessage(messageId) {
-  if (!messageId) return false;
-  try {
-    const { data, error } = await supabase
-      .from("received_messages")
-      .select("id")
-      .eq("wa_message_id", messageId)
-      .maybeSingle();
-
-    if (error) {
-      console.log("⚠️ No se pudo verificar duplicado:", error.message);
-      return false;
-    }
-    return !!data;
-  } catch (err) {
-    console.error("❌ isDuplicateMessage error:", err);
-    return false;
-  }
-}
-
-// ✅ Guarda mensajes en received_messages con las columnas que el frontend espera
-async function saveReceivedMessage({
+// ✅ Guarda en inbox_messages (la tabla real)
+async function saveInboxMessage({
   userId,
   from,
   message,
-  messageType, // "text", "image", "out_text", "out_image", etc.
+  source, // "in" | "out"
   mediaUrl = null,
-  waMessageId = null,
 }) {
   try {
     const payload = {
       user_id: userId,
-      platform: "whatsapp",
-      from_number: from,
-      message,
-      message_type: messageType,
-      media_url: mediaUrl,
-      is_processed: messageType?.startsWith("out_") ? true : false,
-      ...(waMessageId ? { wa_message_id: waMessageId } : {}),
+      source,
+      sender_id: from,
+      message: message || null,
+      media_url: mediaUrl ? [mediaUrl] : null,
+      is_read: source === "out" ? true : false,
     };
 
-    const { error } = await supabase.from("received_messages").insert(payload);
-
-    if (error) {
-      console.log("❌ Error guardando received_messages:", error);
-      return false;
-    }
-    return true;
+    const { error } = await supabase.from("inbox_messages").insert(payload);
+    if (error) console.log("❌ saveInboxMessage:", error);
+    return !error;
   } catch (err) {
-    console.error("❌ saveReceivedMessage error:", err);
+    console.error("❌ saveInboxMessage:", err);
     return false;
   }
 }
@@ -214,13 +172,12 @@ async function saveReceivedMessage({
 async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
   const host = req.headers.host;
   const protocol = req.headers["x-forwarded-proto"] || "https";
-
-  if (!host) throw new Error("No se detectó host para construir URL");
+  if (!host) throw new Error("No host");
 
   const url = `${protocol}://${host}/api/chat-ia`;
-  console.log("🌐 URL CHAT-IA:", url);
+  console.log("🌐 chat-ia URL:", url);
 
-  const resIA = await fetch(url, {
+  const r = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -232,101 +189,67 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
     }),
   });
 
-  const raw = await resIA.text();
-  console.log("🧠 chat-ia status:", resIA.status, "len:", raw.length);
+  const raw = await r.text();
+  console.log("🧠 chat-ia status:", r.status, "len:", raw.length);
 
   let data = {};
   try {
     data = JSON.parse(raw);
   } catch {
-    throw new Error("chat-ia no devolvió JSON válido");
+    throw new Error("chat-ia no devolvió JSON");
   }
-
-  if (!resIA.ok) {
-    throw new Error(data?.error || `chat-ia error ${resIA.status}`);
-  }
-
+  if (!r.ok) throw new Error(data?.error || `chat-ia error ${r.status}`);
   return data;
 }
 
 async function procesar(req, message, userId, from) {
   try {
-    if (message.type !== "text") {
-      console.log("⚠️ Mensaje no texto ignorado:", message.type);
-      return;
-    }
-
+    if (message.type !== "text") return;
     const texto = clean(message.text?.body || "");
     if (!texto) return;
 
-    console.log("━━━━━━━━━━━━━━━━━━━━━━");
-    console.log("📩 WhatsApp recibido:", from, texto);
+    console.log("━━━━━━━━━━━━━━");
+    console.log("📩 IN:", from, texto);
 
-    if (await isDuplicateMessage(message.id)) {
-      console.log("⚠️ Mensaje duplicado ignorado:", message.id);
-      return;
-    }
-
-    // ✅ Guarda mensaje entrante
-    await saveReceivedMessage({
-      userId,
-      from,
-      message: texto,
-      messageType: "text",
-      waMessageId: message.id || null,
-    });
+    // Guardar entrante
+    await saveInboxMessage({ userId, from, message: texto, source: "in" });
 
     const ctx = await getContexto(userId, from);
     const history = await getHistory(userId, from);
 
     let data = {};
-
     try {
       data = await llamarChatIA({ req, userId, texto, from, ctx, history });
     } catch (err) {
-      console.error("❌ Error llamando chat-ia:", err);
-      await enviarMensaje(
-        userId,
-        from,
-        "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente por favor."
-      );
+      console.error("❌ chat-ia:", err);
+      const errMsg =
+        "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente por favor.";
+      await enviarMensaje(userId, from, errMsg);
+      await saveInboxMessage({ userId, from, message: errMsg, source: "out" });
       return;
     }
 
-    if (data?.context) {
-      await saveContexto(userId, from, data.context);
-    }
+    if (data?.context) await saveContexto(userId, from, data.context);
 
     if (data?.response) {
       const sent = await enviarMensaje(userId, from, data.response);
       if (sent) {
-        // ✅ Guarda mensaje saliente como out_text
-        await saveReceivedMessage({
+        await saveInboxMessage({
           userId,
           from,
           message: data.response,
-          messageType: "out_text",
+          source: "out",
         });
       }
       return;
     }
 
     const fallback =
-      "👋 Hola! ¿En qué puedo ayudarte hoy?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
+      "👋 Hola! ¿En qué puedo ayudarte?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
     await enviarMensaje(userId, from, fallback);
-    await saveReceivedMessage({
-      userId,
-      from,
-      message: fallback,
-      messageType: "out_text",
-    });
+    await saveInboxMessage({ userId, from, message: fallback, source: "out" });
   } catch (err) {
-    console.error("❌ procesar error:", err);
-    await enviarMensaje(
-      userId,
-      from,
-      "⚠️ Disculpá, hubo un error procesando tu mensaje. Escribime nuevamente por favor."
-    );
+    console.error("❌ procesar:", err);
   }
 }
 
@@ -334,14 +257,12 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
   if (req.method === "OPTIONS") return res.status(200).end();
 
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
-
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
       console.log("✅ Webhook verificado");
       return res.status(200).send(challenge);
@@ -352,7 +273,7 @@ export default async function handler(req, res) {
   if (req.method === "POST") {
     try {
       const body = req.body;
-      console.log("📥 WEBHOOK BODY:", JSON.stringify(body).slice(0, 1500));
+      console.log("📥 BODY:", JSON.stringify(body).slice(0, 1500));
 
       if (body.object !== "whatsapp_business_account") {
         return res.status(404).send("Not WhatsApp");
@@ -362,11 +283,7 @@ export default async function handler(req, res) {
         for (const change of entry.changes || []) {
           const value = change.value;
           const phoneId = value?.metadata?.phone_number_id;
-
-          if (!phoneId) {
-            console.log("⚠️ Sin phone_number_id");
-            continue;
-          }
+          if (!phoneId) continue;
 
           const { data: config, error } = await supabase
             .from("whatsapp_config")
@@ -375,7 +292,7 @@ export default async function handler(req, res) {
             .maybeSingle();
 
           if (error || !config?.user_id) {
-            console.log("❌ No encontré user_id para phoneId:", phoneId, error);
+            console.log("❌ Sin user_id para phoneId:", phoneId);
             continue;
           }
 
@@ -387,7 +304,7 @@ export default async function handler(req, res) {
 
       return res.status(200).send("EVENT_RECEIVED");
     } catch (e) {
-      console.error("❌ webhook error:", e);
+      console.error("❌ webhook:", e);
       return res.status(500).json({ error: "Error interno" });
     }
   }
