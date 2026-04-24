@@ -1,4 +1,4 @@
-// api/webhook.js
+// api/webhook.js — WhatsApp Cloud API (Meta)
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -6,219 +6,240 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const BAILEYS_URL = process.env.BAILEYS_SERVER_URL;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GRAPH_VERSION = 'v21.0';
 
 export default async function handler(req, res) {
+  // ============ GET: Verificación de webhook (Meta) ============
+  if (req.method === 'GET') {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    console.log('[WEBHOOK GET] mode:', mode, 'token:', token);
+
+    // Buscar el verify_token en la base (cualquier user que lo tenga configurado)
+    const { data: cfg } = await supabase
+      .from('meta_config')
+      .select('verify_token')
+      .eq('verify_token', token)
+      .maybeSingle();
+
+    if (mode === 'subscribe' && cfg) {
+      console.log('[WEBHOOK GET] ✅ Verificado');
+      return res.status(200).send(challenge);
+    }
+    console.error('[WEBHOOK GET] ❌ Token inválido');
+    return res.status(403).send('Forbidden');
+  }
+
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  // 🔍 LOG el body completo para debug
-  console.log('[WEBHOOK] Body recibido:', JSON.stringify(req.body));
+  console.log('[WEBHOOK POST] Body:', JSON.stringify(req.body));
+
+  // Responder 200 RÁPIDO a Meta (sino reintenta y desactiva el webhook)
+  res.status(200).json({ ok: true });
 
   try {
-    // Aceptar múltiples nombres de campo (Baileys/Evolution/etc usan distintos)
-    const b = req.body || {};
-    const from = b.from || b.sender || b.phone || b.number || b.remoteJid || b.key?.remoteJid;
-    const userId = b.userId || b.user_id || b.userIdSession || b.sessionId || b.session;
-    const message = b.message || b.text || b.body || b.conversation || '';
-    const messageId = b.messageId || b.id || b.key?.id;
-    const mediaUrl = b.mediaUrl || b.media_url;
-    const messageType = b.messageType || b.type || 'text';
+    const body = req.body || {};
+    if (body.object !== 'whatsapp_business_account') return;
 
-    if (!from) {
-      console.error('[WEBHOOK] Falta "from". Body:', JSON.stringify(b));
-      return res.status(400).json({ error: 'Missing from', received: Object.keys(b) });
-    }
-    if (!userId) {
-      console.error('[WEBHOOK] Falta "userId". Body:', JSON.stringify(b));
-      return res.status(400).json({ error: 'Missing userId', received: Object.keys(b) });
-    }
+    for (const entry of (body.entry || [])) {
+      for (const change of (entry.changes || [])) {
+        const value = change.value || {};
+        const phoneNumberId = value.metadata?.phone_number_id;
+        const messages = value.messages || [];
 
-    const cleanFrom = String(from).replace(/[^0-9]/g, '');
-    const text = String(message || '').trim();
+        if (!phoneNumberId || messages.length === 0) continue;
 
-    // 1) Guardar entrante
-    const { data: savedMsg, error: insertErr } = await supabase
-      .from('inbox_messages')
-      .insert({
-        user_id: userId,
-        source: 'whatsapp',
-        platform: 'whatsapp',
-        sender_id: cleanFrom,
-        from_number: cleanFrom,
-        message: text,
-        media_url_text: mediaUrl || null,
-        message_type: messageType,
-        wa_message_id: messageId || null,
-        is_read: false,
-        is_processed: false,
-      })
-      .select()
-      .single();
+        // Buscar el user dueño de este phone_number_id
+        const { data: cfg } = await supabase
+          .from('meta_config')
+          .select('user_id, access_token')
+          .eq('phone_number_id', phoneNumberId)
+          .maybeSingle();
 
-    if (insertErr) console.error('[WEBHOOK] Insert error:', insertErr);
+        if (!cfg) {
+          console.error('[WEBHOOK] No config for phone:', phoneNumberId);
+          continue;
+        }
+        const userId = cfg.user_id;
+        const accessToken = cfg.access_token;
 
-    // 2) Detectar primer mensaje
-    const { count: prevCount } = await supabase
-      .from('inbox_messages')
-      .select('id', { count: 'exact', head: true })
-      .eq('user_id', userId)
-      .eq('sender_id', cleanFrom)
-      .eq('source', 'whatsapp');
-
-    const isFirstMessage = (prevCount || 0) <= 1;
-
-    // 3) Buscar triggers activos
-    const { data: triggers } = await supabase
-      .from('triggers')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('active', true);
-
-    let matched = null;
-
-    if (triggers && triggers.length > 0) {
-      // Trigger de bienvenida
-      if (isFirstMessage) {
-        matched = triggers.find(t => 
-          (t.type || '').toLowerCase().includes('welcome') || 
-          (t.type || '').toLowerCase().includes('bienvenida')
-        );
-      }
-
-      // Match por palabra clave (campo `condition` separado por comas o espacios)
-      if (!matched && text) {
-        const lowerText = text.toLowerCase();
-        matched = triggers.find(t => {
-          if (!t.condition) return false;
-          const keywords = String(t.condition)
-            .toLowerCase()
-            .split(/[,;|\n]+/)
-            .map(k => k.trim())
-            .filter(Boolean);
-          return keywords.some(kw => lowerText.includes(kw));
-        });
+        for (const msg of messages) {
+          await processMessage(msg, userId, phoneNumberId, accessToken);
+        }
       }
     }
-
-    let replyText = null;
-    let usedTriggerId = null;
-
-    if (matched) {
-      usedTriggerId = matched.id;
-      console.log('[WEBHOOK] Trigger matched:', matched.name);
-
-      // Si tiene template asociado
-      if (matched.template) {
-        await sendTemplateByName(matched.template, cleanFrom, userId);
-      } else if (matched.response) {
-        replyText = matched.response;
-        await sendText(cleanFrom, replyText);
-      }
-
-      // Auto-tag
-      if (matched.auto_tag && savedMsg?.id) {
-        await applyAutoTag(matched.auto_tag, savedMsg.id, userId);
-      }
-
-      // Followup programado
-      if (matched.follow_up_enabled && matched.follow_up_minutes && matched.follow_up_message) {
-        const scheduledAt = new Date(Date.now() + matched.follow_up_minutes * 60000).toISOString();
-        await supabase.from('followup_queue').insert({
-          user_id: userId,
-          sender_id: cleanFrom,
-          message: matched.follow_up_message,
-          scheduled_at: scheduledAt,
-          status: 'pending',
-        });
-      }
-
-      // Log
-      await supabase.from('trigger_logs').insert({
-        user_id: userId,
-        trigger_id: matched.id,
-        sender_id: cleanFrom,
-        matched_text: text,
-      });
-    } else {
-      // Sin trigger → IA
-      replyText = await callGeminiAI(text, cleanFrom, userId);
-      if (replyText) await sendText(cleanFrom, replyText);
-    }
-
-    // 5) Guardar saliente
-    if (replyText) {
-      await supabase.from('inbox_messages').insert({
-        user_id: userId,
-        source: 'outbound',
-        platform: 'whatsapp',
-        sender_id: cleanFrom,
-        from_number: cleanFrom,
-        message: replyText,
-        message_type: 'text',
-        is_read: true,
-        is_processed: true,
-      });
-    }
-
-    if (savedMsg?.id) {
-      await supabase.from('inbox_messages').update({ is_processed: true }).eq('id', savedMsg.id);
-    }
-
-    return res.status(200).json({ ok: true, triggerId: usedTriggerId });
   } catch (err) {
     console.error('[WEBHOOK] Error:', err);
-    return res.status(500).json({ error: err.message });
   }
 }
 
-// ============== HELPERS ==============
+// ============ PROCESAR UN MENSAJE ============
+async function processMessage(msg, userId, phoneNumberId, accessToken) {
+  const from = msg.from; // ya viene sin +
+  const messageId = msg.id;
+  const messageType = msg.type;
+  let text = '';
+  let mediaUrl = null;
 
-async function sendText(to, text) {
-  try {
-    await fetch(`${BAILEYS_URL}/send-message`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, message: text }),
+  if (messageType === 'text') text = msg.text?.body || '';
+  else if (messageType === 'button') text = msg.button?.text || '';
+  else if (messageType === 'interactive') {
+    text = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || '';
+  } else if (['image','video','audio','document'].includes(messageType)) {
+    text = msg[messageType]?.caption || `[${messageType}]`;
+    mediaUrl = msg[messageType]?.id || null; // es media_id, hay que descargar aparte si querés el binario
+  }
+
+  // 1) Guardar entrante
+  const { data: savedMsg } = await supabase
+    .from('inbox_messages')
+    .insert({
+      user_id: userId,
+      source: 'whatsapp',
+      platform: 'whatsapp',
+      sender_id: from,
+      from_number: from,
+      message: text,
+      media_url_text: mediaUrl,
+      message_type: messageType,
+      wa_message_id: messageId,
+      is_read: false,
+      is_processed: false,
+    })
+    .select().single();
+
+  // 2) Detectar primer mensaje
+  const { count: prevCount } = await supabase
+    .from('inbox_messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId).eq('sender_id', from).eq('source', 'whatsapp');
+  const isFirst = (prevCount || 0) <= 1;
+
+  // 3) Buscar triggers
+  const { data: triggers } = await supabase
+    .from('triggers').select('*')
+    .eq('user_id', userId).eq('active', true);
+
+  let matched = null;
+  if (triggers?.length) {
+    if (isFirst) {
+      matched = triggers.find(t =>
+        (t.type || '').toLowerCase().includes('welcome') ||
+        (t.type || '').toLowerCase().includes('bienvenida'));
+    }
+    if (!matched && text) {
+      const lower = text.toLowerCase();
+      matched = triggers.find(t => {
+        if (!t.condition) return false;
+        const kws = String(t.condition).toLowerCase()
+          .split(/[,;|\n]+/).map(k => k.trim()).filter(Boolean);
+        return kws.some(k => lower.includes(k));
+      });
+    }
+  }
+
+  let replyText = null;
+
+  if (matched) {
+    console.log('[WEBHOOK] Trigger matched:', matched.name);
+
+    if (matched.template) {
+      await sendTemplateByName(matched.template, from, userId, phoneNumberId, accessToken);
+    } else if (matched.response) {
+      replyText = matched.response;
+      await sendText(from, replyText, phoneNumberId, accessToken);
+    }
+
+    if (matched.auto_tag && savedMsg?.id) {
+      await applyAutoTag(matched.auto_tag, savedMsg.id, userId);
+    }
+
+    if (matched.follow_up_enabled && matched.follow_up_minutes && matched.follow_up_message) {
+      const scheduledAt = new Date(Date.now() + matched.follow_up_minutes * 60000).toISOString();
+      await supabase.from('followup_queue').insert({
+        user_id: userId, sender_id: from,
+        message: matched.follow_up_message,
+        scheduled_at: scheduledAt, status: 'pending',
+      });
+    }
+
+    await supabase.from('trigger_logs').insert({
+      user_id: userId, trigger_id: matched.id,
+      sender_id: from, matched_text: text,
     });
+  } else {
+    replyText = await callGeminiAI(text, userId);
+    if (replyText) await sendText(from, replyText, phoneNumberId, accessToken);
+  }
+
+  // Guardar saliente
+  if (replyText) {
+    await supabase.from('inbox_messages').insert({
+      user_id: userId, source: 'outbound', platform: 'whatsapp',
+      sender_id: from, from_number: from, message: replyText,
+      message_type: 'text', is_read: true, is_processed: true,
+    });
+  }
+
+  if (savedMsg?.id) {
+    await supabase.from('inbox_messages').update({ is_processed: true }).eq('id', savedMsg.id);
+  }
+}
+
+// ============ ENVÍO META GRAPH API ============
+async function sendText(to, text, phoneNumberId, accessToken) {
+  try {
+    const r = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { body: text },
+      }),
+    });
+    if (!r.ok) console.error('[sendText] Meta error:', r.status, await r.text());
   } catch (e) { console.error('sendText:', e); }
 }
 
-async function sendTemplateByName(templateNameOrId, to, userId) {
+async function sendMedia(to, mediaUrl, type, phoneNumberId, accessToken, caption = null) {
   try {
-    // Buscar por id o por nombre
-    let { data: tpl } = await supabase
-      .from('templates')
-      .select('*')
-      .eq('user_id', userId)
+    const payload = {
+      messaging_product: 'whatsapp',
+      to, type,
+      [type]: { link: mediaUrl, ...(caption && type !== 'audio' ? { caption } : {}) },
+    };
+    const r = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) console.error('[sendMedia] Meta error:', r.status, await r.text());
+  } catch (e) { console.error('sendMedia:', e); }
+}
+
+async function sendTemplateByName(templateNameOrId, to, userId, phoneNumberId, accessToken) {
+  try {
+    const { data: tpl } = await supabase
+      .from('templates').select('*').eq('user_id', userId)
       .or(`id.eq.${templateNameOrId},name.eq.${templateNameOrId}`)
       .maybeSingle();
-
-    if (!tpl) {
-      console.warn('[WEBHOOK] Template not found:', templateNameOrId);
-      return;
-    }
+    if (!tpl) { console.warn('Template not found:', templateNameOrId); return; }
 
     const media = tpl.variables?.media || {};
     for (const url of (media.imageUrls || [])) {
-      await fetch(`${BAILEYS_URL}/send-media`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to, mediaUrl: url, type: 'image' }),
-      });
+      await sendMedia(to, url, 'image', phoneNumberId, accessToken);
     }
-    if (media.videoUrl) {
-      await fetch(`${BAILEYS_URL}/send-media`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to, mediaUrl: media.videoUrl, type: 'video' }),
-      });
-    }
-    if (media.gifUrl) {
-      await fetch(`${BAILEYS_URL}/send-media`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to, mediaUrl: media.gifUrl, type: 'gif' }),
-      });
-    }
-    if (tpl.content) await sendText(to, tpl.content);
+    if (media.videoUrl) await sendMedia(to, media.videoUrl, 'video', phoneNumberId, accessToken);
+    if (media.gifUrl)   await sendMedia(to, media.gifUrl, 'video', phoneNumberId, accessToken);
+    if (tpl.content)    await sendText(to, tpl.content, phoneNumberId, accessToken);
 
     await supabase.from('templates')
       .update({ usage_count: (tpl.usage_count || 0) + 1 })
@@ -228,44 +249,29 @@ async function sendTemplateByName(templateNameOrId, to, userId) {
 
 async function applyAutoTag(tagName, messageId, userId) {
   try {
-    let { data: tag } = await supabase
-      .from('tags').select('id')
+    let { data: tag } = await supabase.from('tags').select('id')
       .eq('user_id', userId).eq('name', tagName).maybeSingle();
-
     if (!tag) {
-      const { data: newTag } = await supabase
-        .from('tags')
+      const { data: newTag } = await supabase.from('tags')
         .insert({ user_id: userId, name: tagName, color: '#3b82f6' })
         .select('id').single();
       tag = newTag;
     }
-
-    if (tag) {
-      await supabase.from('message_tags').insert({
-        message_id: messageId,
-        tag_id: tag.id,
-      });
-    }
+    if (tag) await supabase.from('message_tags').insert({ message_id: messageId, tag_id: tag.id });
   } catch (e) { console.error('autoTag:', e); }
 }
 
-async function callGeminiAI(text, from, userId) {
+async function callGeminiAI(text, userId) {
   try {
     if (!GEMINI_API_KEY) return null;
-    const { data: ctx } = await supabase
-      .from('chat_context').select('*').eq('user_id', userId).maybeSingle();
+    const { data: ctx } = await supabase.from('chat_context').select('*')
+      .eq('user_id', userId).maybeSingle();
     const systemPrompt = ctx?.system_prompt || 'Sos un asistente útil de WhatsApp. Respondé breve y amable.';
-
     const r = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `${systemPrompt}\n\nUsuario: ${text}` }] }],
-        }),
-      }
-    );
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: `${systemPrompt}\n\nUsuario: ${text}` }] }] }),
+      });
     const data = await r.json();
     return data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
   } catch (e) { console.error('Gemini:', e); return null; }
