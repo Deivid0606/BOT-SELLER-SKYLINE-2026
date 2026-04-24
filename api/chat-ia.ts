@@ -17,25 +17,79 @@ const normalize = (t: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
-function match(msg: string, ex: string) {
-  const m = normalize(msg);
-  const e = normalize(ex);
-  return m === e || m.includes(e) || e.includes(m);
+// ================= LIMITADOR =================
+function limitText(text: string, max = 6000) {
+  return text.length > max ? text.slice(0, max) : text;
 }
 
-// ================= PEDIDO =================
+// ================= PARSE TRAINING =================
+function parseTraining(fullText: string) {
+  const t = fullText || "";
+
+  const get = (start: string, end?: string) => {
+    const s = t.indexOf(start);
+    if (s === -1) return "";
+    const e = end ? t.indexOf(end, s) : -1;
+    return t.substring(s, e !== -1 ? e : t.length).trim();
+  };
+
+  return {
+    rules: get("🎯 REGLAS DE ORO", "🎯 DETECCIÓN DE CIUDADES"),
+    cities: get("🎯 DETECCIÓN DE CIUDADES", "💬 SALUDO INICIAL"),
+    greeting: get("💬 SALUDO INICIAL", "🟢 RESPUESTA DIRECTA"),
+    coverage: get("🟢 RESPUESTA DIRECTA", "🔴 RESPUESTA DIRECTA"),
+    noCoverage: get("🔴 RESPUESTA DIRECTA", "🎯 PLANTILLAS"),
+    prices: get("💰 LISTA DE PRECIOS", "📋 PROCESAMIENTO DE PEDIDOS"),
+    orders: get("📋 PROCESAMIENTO DE PEDIDOS", "💳 FORMAS DE PAGO"),
+    payments: get("💳 FORMAS DE PAGO", "🎧 MANEJO DE AUDIOS"),
+    faq: get("💬 FAQ", "🔁 CIERRE OBLIGATORIO"),
+    closing: get("🔁 CIERRE OBLIGATORIO", "📋 EJEMPLOS PRÁCTICOS"),
+    raw: t,
+  };
+}
+
+// ================= CONTEXTO DINÁMICO =================
+function buildContextSections(msg: string, sections: any) {
+  const m = msg.toLowerCase();
+  let ctx = "";
+
+  ctx += `🧠 REGLAS:\n${sections.rules}\n\n`;
+
+  if (m.includes("hola") || m.length < 6) {
+    ctx += `💬 SALUDO:\n${sections.greeting}\n\n`;
+  }
+
+  if (m.includes("precio") || m.includes("cuesta")) {
+    ctx += `💰 PRECIOS:\n${sections.prices}\n\n`;
+  }
+
+  if (m.match(/\b(de|soy|ciudad|capiata|luque|cde|asuncion)\b/)) {
+    ctx += `📍 CIUDADES:\n${sections.cities}\n\n`;
+    ctx += `🟢 COBERTURA:\n${sections.coverage}\n\n`;
+    ctx += `🔴 SIN COBERTURA:\n${sections.noCoverage}\n\n`;
+  }
+
+  if (m.includes("direccion") || m.includes("pedido")) {
+    ctx += `📋 PEDIDOS:\n${sections.orders}\n\n`;
+  }
+
+  if (m.includes("pago") || m.includes("transferencia")) {
+    ctx += `💳 PAGOS:\n${sections.payments}\n\n`;
+  }
+
+  ctx += `🔁 CIERRE:\n${sections.closing}\n\n`;
+
+  return ctx;
+}
+
+// ================= PEDIDOS =================
 async function getOpenOrder(user_id: string, phone: string) {
   const { data } = await supabase
     .from("orders")
     .select("*")
     .eq("user_id", user_id)
     .eq("from_number", phone)
-    .in("status", [
-      "draft",
-      "collecting_name",
-      "collecting_city",
-      "collecting_address",
-    ])
+    .in("status", ["draft", "collecting_name", "collecting_city", "collecting_address"])
     .order("created_at", { ascending: false })
     .limit(1)
     .single();
@@ -55,15 +109,8 @@ function isComplete(o: any) {
   return o?.product && o?.customer_name && o?.city && o?.address;
 }
 
-// ================= IA =================
-async function callGemini({
-  apiKey,
-  model,
-  system,
-  contents,
-  temperature,
-  maxTokens,
-}: any) {
+// ================= GEMINI =================
+async function callGemini({ apiKey, model, system, contents, temperature, maxTokens }: any) {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
@@ -81,73 +128,55 @@ async function callGemini({
   );
 
   const data = await res.json();
-  return clean(
-    data?.candidates?.[0]?.content?.parts?.[0]?.text || ""
-  );
+  return clean(data?.candidates?.[0]?.content?.parts?.[0]?.text || "");
 }
 
 // ================= MAIN =================
 export default async function handler(req: any, res: any) {
   try {
-    const { user_id, message, from_number, context, history } =
-      req.body;
+    const { user_id, message, from_number, context, history } = req.body;
 
     const texto = clean(message);
 
-    // ================= 1. TRIGGERS =================
-    const { data: triggers } = await supabase
-      .from("triggers")
-      .select("*")
-      .eq("user_id", user_id)
-      .eq("active", true);
-
-    for (const t of triggers || []) {
-      if (normalize(texto).includes(normalize(t.condition))) {
-        return res.json({
-          response: t.response,
-          context: {
-            ...context,
-            last_trigger: t.name,
-            last_topic: t.product || null,
-          },
-        });
-      }
-    }
-
-    // ================= 2. ENTRENAMIENTO =================
-    const { data: training } = await supabase
+    // ================= CARGAR ENTRENAMIENTO =================
+    const { data: trainingRow } = await supabase
       .from("training_data")
-      .select("*")
+      .select("response")
       .eq("user_id", user_id)
-      .eq("is_active", true);
+      .eq("is_active", true)
+      .limit(1)
+      .single();
 
-    for (const t of training || []) {
-      for (const e of t.examples || []) {
-        if (match(texto, e)) {
-          return res.json({
-            response: t.response,
-            context: {
-              ...context,
-              last_topic: t.intent,
-            },
-          });
-        }
-      }
-    }
+    const fullText = trainingRow?.response || "";
 
-    // ================= 3. PEDIDOS =================
+    // ================= PARSE =================
+    const sections = parseTraining(fullText);
+
+    // ================= CONTEXTO DINÁMICO =================
+    const dynamicContext = buildContextSections(texto, sections);
+
+    // ================= SYSTEM =================
+    const system = `
+${limitText(dynamicContext)}
+
+⚠️ REGLAS CRÍTICAS:
+- RESPONDER SOLO con esta información
+- NO inventar productos ni precios
+- SIEMPRE vender
+- SIEMPRE cerrar con pregunta
+- NO responder genérico
+`;
+
+    // ================= PEDIDOS =================
     let order = await getOpenOrder(user_id, from_number);
     const data = extractData(texto);
 
     if (order && (data.name || data.city || data.address)) {
-      await supabase
-        .from("orders")
-        .update({
-          ...(data.name && { customer_name: data.name }),
-          ...(data.city && { city: data.city }),
-          ...(data.address && { address: data.address }),
-        })
-        .eq("id", order.id);
+      await supabase.from("orders").update({
+        ...(data.name && { customer_name: data.name }),
+        ...(data.city && { city: data.city }),
+        ...(data.address && { address: data.address }),
+      }).eq("id", order.id);
     }
 
     if (order && isComplete(order)) {
@@ -159,11 +188,11 @@ export default async function handler(req: any, res: any) {
 📍 ${order.city}
 🏠 ${order.address}
 
-¿Confirmamos?`,
+¿Confirmamos tu pedido?`,
       });
     }
 
-    // ================= 4. IA =================
+    // ================= IA =================
     const { data: ia } = await supabase
       .from("chat_ia_gemini")
       .select("*")
@@ -171,18 +200,6 @@ export default async function handler(req: any, res: any) {
       .single();
 
     if (ia?.api_key && ia?.is_active) {
-      const system = `
-Eres un vendedor profesional.
-
-Producto activo: ${context?.last_topic || "ninguno"}
-
-Reglas:
-- responde corto
-- vende
-- no cambies producto
-- termina con pregunta
-`;
-
       const contents = (history || []).map((h: any) => ({
         role: h.role === "assistant" ? "model" : "user",
         parts: [{ text: h.content }],
@@ -199,19 +216,18 @@ Reglas:
         system,
         contents,
         temperature: ia.temperature ?? 0.4,
-        maxTokens: ia.max_tokens ?? 250,
+        maxTokens: ia.max_tokens ?? 300,
       });
 
-      if (r) {
-        return res.json({ response: r });
-      }
+      if (r) return res.json({ response: r });
     }
 
     // ================= FALLBACK =================
     return res.json({
       response: "👋 Hola! ¿Qué producto te interesa?",
     });
-  } catch (e: any) {
+
+  } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "error interno" });
   }
