@@ -78,7 +78,7 @@ function isPriceIntent(text: string) {
 function isBuyIntent(text: string) {
   const m = normalize(text);
   return (
-    /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|ok|dale)\b/.test(m) ||
+    /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo)\b/.test(m) ||
     /\b\d+\s*(unidad|unidades|u)\b/.test(m)
   );
 }
@@ -167,7 +167,12 @@ function nextStep(order: any) {
   return "confirm_order";
 }
 
-async function safeUpsertOrder(userId: string, from: string, order: any) {
+async function safeUpsertOrder(
+  userId: string,
+  from: string,
+  order: any,
+  confirm = false
+) {
   try {
     if (!order?.product) return null;
 
@@ -175,7 +180,7 @@ async function safeUpsertOrder(userId: string, from: string, order: any) {
       .from("orders")
       .select("*")
       .eq("user_id", userId)
-      .or(`from_number.eq.${from},phone.eq.${from}`)
+      .eq("phone", from)
       .in("status", [
         "draft",
         "collecting_name",
@@ -195,21 +200,35 @@ async function safeUpsertOrder(userId: string, from: string, order: any) {
 
     const step = nextStep(order);
 
-    const payload = {
+    // ✅ Si el cliente confirmó y están todos los datos → "confirmed"
+    const finalStatus = confirm && step === "confirm_order"
+      ? "confirmed"
+      : step === "confirm_order"
+      ? "confirm_pending"
+      : step;
+
+    // ✅ Guarda con TODAS las columnas que espera el frontend (es + en)
+    const payload: any = {
       user_id: userId,
-      from_number: from,
       phone: order.phone || from,
-      product: order.product || null,
+      product: order.product || null,        // OrdersPage
+      producto: order.product || null,       // DashboardPage
       customer_name: order.customer_name || null,
-      city: order.city || null,
+      city: order.city || null,              // OrdersPage
+      ciudad: order.city || null,            // DashboardPage
       address: order.address || null,
       quantity: order.quantity || 1,
-      status: step === "confirm_order" ? "confirm_pending" : step,
+      total_amount: order.total_amount || null,
+      status: finalStatus,
+      fecha: new Date().toISOString(),       // DashboardPage
       updated_at: new Date().toISOString(),
     };
 
     if (existing?.id) {
-      const { error } = await supabase.from("orders").update(payload).eq("id", existing.id);
+      const { error } = await supabase
+        .from("orders")
+        .update(payload)
+        .eq("id", existing.id);
       if (error) console.error("❌ Error actualizando order:", error);
       return existing.id;
     }
@@ -232,7 +251,14 @@ async function safeUpsertOrder(userId: string, from: string, order: any) {
   }
 }
 
-async function callGemini({ apiKey, model, system, contents, temperature, maxTokens }: any) {
+async function callGemini({
+  apiKey,
+  model,
+  system,
+  contents,
+  temperature,
+  maxTokens,
+}: any) {
   const body: any = {
     systemInstruction: { parts: [{ text: system }] },
     contents,
@@ -349,8 +375,11 @@ export default async function handler(req: any, res: any) {
       !!orderData.product &&
       (wantsToBuy || hasOrderData || context?.step?.startsWith("collecting"));
 
+    // ✅ Confirma cuando están todos los datos + el cliente dice "sí/confirmo/dale/ok"
+    const isConfirming = step === "confirm_order" && wantsToBuy;
+
     if (shouldCollectOrder) {
-      await safeUpsertOrder(user_id, from_number, orderData);
+      await safeUpsertOrder(user_id, from_number, orderData, isConfirming);
     }
 
     // ✅ ENTRENAMIENTO COMPLETO al system prompt (sin filtros por keywords)
@@ -377,7 +406,7 @@ REGLAS DE EJECUCIÓN:
 1. Usá EXACTAMENTE las plantillas, emojis y tono del entrenamiento.
 2. Si el cliente solo pregunta precio → respondé con el precio del entrenamiento + cierre con CTA, NO pidas datos todavía.
 3. Si el cliente quiere comprar o ya pasó datos → seguí el flujo de pedido pidiendo SOLO el dato que falta (siguiente paso: ${step}).
-4. Si están todos los datos (paso "confirm_order") → confirmá el pedido con la plantilla del entrenamiento.
+4. Si están todos los datos (paso "confirm_order") → confirmá el pedido con la plantilla del entrenamiento (formato ✅ PEDIDO CONFIRMADO).
 5. NO repitas el saludo si ya hubo conversación previa.
 6. NO cambies de producto si ya hay uno en interés, salvo que el cliente lo pida claramente.
 7. Cerrá SIEMPRE con el siguiente paso o CTA según el entrenamiento.
@@ -408,7 +437,7 @@ REGLAS DE EJECUCIÓN:
       maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
     });
 
-    // Reintento con más tokens si vino vacío
+    // Reintento si vino vacío
     if (!response) {
       console.warn("⚠️ Respuesta vacía, reintentando con más tokens...");
       response = await callGemini({
