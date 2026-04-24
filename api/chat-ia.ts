@@ -163,12 +163,16 @@ async function safeUpsertOrder(
 ) {
   try {
     if (!order?.product) return null;
+    if (!from) {
+      console.error("❌ safeUpsertOrder: from_number vacío, abortando");
+      return null;
+    }
 
     const { data: existing, error: findErr } = await supabase
       .from("orders")
       .select("*")
       .eq("user_id", userId)
-      .eq("phone", from)
+      .eq("from_number", from)
       .in("status", [
         "draft",
         "collecting_name",
@@ -196,6 +200,7 @@ async function safeUpsertOrder(
 
     const payload: any = {
       user_id: userId,
+      from_number: from, // ✅ FIX: columna NOT NULL
       phone: order.phone || from,
       product: order.product || null,
       producto: order.product || null,
@@ -286,10 +291,14 @@ export default async function handler(req: any, res: any) {
   try {
     const { user_id, message, from_number, context, history } = req.body;
     const texto = clean(message);
-    console.log("🧠 CHAT-IA:", texto);
+    const fromNumber = clean(from_number);
+    console.log("🧠 CHAT-IA:", texto, "from:", fromNumber);
 
     if (!user_id || !texto)
       return res.status(400).json({ error: "Faltan user_id o message" });
+
+    if (!fromNumber)
+      return res.status(400).json({ error: "Falta from_number" });
 
     const { data: iaConfig } = await supabase
       .from("chat_ia_gemini")
@@ -341,7 +350,7 @@ export default async function handler(req: any, res: any) {
     const isConfirming = step === "confirm_order" && wantsToBuy;
 
     if (shouldCollect) {
-      await safeUpsertOrder(user_id, from_number, orderData, isConfirming);
+      await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
     }
 
     const system = `
