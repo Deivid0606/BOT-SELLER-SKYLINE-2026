@@ -10,7 +10,6 @@ const VERIFY_TOKEN = "miTokenSeguro2026";
 
 const clean = (t) => String(t || "").trim();
 
-// ✅ Normaliza texto para comparar palabras clave: minúsculas + sin tildes
 const normalize = (t) =>
   clean(t)
     .toLowerCase()
@@ -82,7 +81,6 @@ async function enviarMensaje(userId, to, text) {
   }
 }
 
-// ✅ Envía multimedia por la API oficial de WhatsApp Cloud (link)
 async function enviarMedia(userId, to, mediaUrl, mediaType = "image", caption = "") {
   try {
     const { data: config } = await supabase
@@ -93,7 +91,7 @@ async function enviarMedia(userId, to, mediaUrl, mediaType = "image", caption = 
 
     if (!config?.phone_number_id || !config?.permanent_token || !mediaUrl) return false;
 
-    const type = mediaType === "video" ? "video" : "image"; // gif → image animada
+    const type = mediaType === "video" ? "video" : "image";
     const payload = {
       messaging_product: "whatsapp",
       to,
@@ -114,9 +112,10 @@ async function enviarMedia(userId, to, mediaUrl, mediaType = "image", caption = 
     );
 
     if (!response.ok) {
-      console.log("📤 Media error:", await response.text());
+      console.log(`📤 Media error (${type}):`, await response.text());
       return false;
     }
+    console.log(`✅ Media enviado: ${type} → ${mediaUrl.slice(0, 60)}...`);
     return true;
   } catch (err) {
     console.error("❌ enviarMedia error:", err);
@@ -212,7 +211,9 @@ async function saveReceivedMessage({
       from_number: from,
       message,
       message_type: messageType || "text",
-      media_url_text: mediaUrl,
+      // ✅ FIX: media_url es ARRAY → mandar array; media_url_text es TEXT → mandar string
+      media_url: mediaUrl ? (Array.isArray(mediaUrl) ? mediaUrl : [mediaUrl]) : null,
+      media_url_text: mediaUrl ? (Array.isArray(mediaUrl) ? mediaUrl[0] : mediaUrl) : null,
       is_read: !!isOutgoing,
       is_processed: !!isOutgoing,
       ...(waMessageId ? { wa_message_id: waMessageId } : {}),
@@ -223,11 +224,41 @@ async function saveReceivedMessage({
   }
 }
 
-// ─────────────────────────────────────────────────────────
-// ✅ NUEVO: Evaluador de disparadores
-// Devuelve true si un disparador hizo match y respondió
-// (en ese caso NO se debe llamar a Gemini)
-// ─────────────────────────────────────────────────────────
+// ✅ FIX PRINCIPAL: extrae TODOS los medios de la plantilla mirando variables.media + columnas legacy
+function extraerMediosDePlantilla(plantilla) {
+  const imagenes = [];
+  let video = null;
+  let gif = null;
+
+  if (!plantilla) return { imagenes, video, gif };
+
+  // 1) variables.media (FORMATO REAL que usa tu app)
+  const m = plantilla.variables?.media;
+  if (m && typeof m === "object") {
+    if (Array.isArray(m.imageUrls)) {
+      for (const u of m.imageUrls) if (u) imagenes.push(u);
+    }
+    if (m.videoUrl) video = m.videoUrl;
+    if (m.gifUrl) gif = m.gifUrl;
+  }
+
+  // 2) Fallback: columnas legacy media_urls (array)
+  if (Array.isArray(plantilla.media_urls)) {
+    for (const u of plantilla.media_urls) {
+      if (u && !imagenes.includes(u)) imagenes.push(u);
+    }
+  }
+
+  // 3) Fallback: columna media_url (single) — solo si no hay nada todavía
+  if (imagenes.length === 0 && !video && !gif && plantilla.media_url) {
+    if (plantilla.media_type === "video") video = plantilla.media_url;
+    else if (plantilla.media_type === "gif") gif = plantilla.media_url;
+    else imagenes.push(plantilla.media_url);
+  }
+
+  return { imagenes, video, gif };
+}
+
 async function evaluarDisparadores({ userId, from, texto }) {
   try {
     const { data: triggers, error } = await supabase
@@ -251,19 +282,16 @@ async function evaluarDisparadores({ userId, from, texto }) {
 
       let match = false;
       if (tipo.includes("palabra") || tipo === "keyword" || tipo === "palabra clave") {
-        // Match si el mensaje contiene la palabra clave
         match = textoNorm.includes(cond);
       } else if (tipo === "exact" || tipo.includes("exacto")) {
         match = textoNorm === cond;
       } else {
-        // Default: contiene
         match = textoNorm.includes(cond);
       }
 
       if (!match) continue;
       console.log(`🎯 Disparador MATCH: "${trig.name}" (cond: "${trig.condition}")`);
 
-      // ─── No repetir plantilla ───
       if (trig.no_repeat) {
         const { data: yaEnviado } = await supabase
           .from("inbox_messages")
@@ -280,7 +308,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         }
       }
 
-      // ─── Límite de envíos ───
       if (trig.send_limit && trig.send_limit !== "" && trig.send_limit !== "∞") {
         const limite = parseInt(trig.send_limit, 10);
         if (!isNaN(limite) && limite > 0) {
@@ -295,7 +322,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         }
       }
 
-      // ─── Cargar plantilla asociada ───
       let plantilla = null;
       if (trig.template) {
         const { data: tpl } = await supabase
@@ -307,68 +333,82 @@ async function evaluarDisparadores({ userId, from, texto }) {
         plantilla = tpl;
       }
 
-      // Mensaje a enviar: plantilla.content o trig.response
       const mensajeFinal = clean(plantilla?.content || trig.response || "");
 
-      // ─── Delay ───
       const delayMin = parseInt(trig.delay, 10) || 0;
       if (delayMin > 0) {
-        // En serverless no podemos esperar minutos. Lo dejamos en cola si tienes tabla,
-        // si no, ignoramos el delay y enviamos ahora. Recomendado: tabla scheduled_messages.
         console.log(`⏰ Delay configurado: ${delayMin} min (enviando inmediato en serverless)`);
       }
 
-      // ─── Enviar texto ───
-      if (mensajeFinal) {
-        const sent = await enviarMensaje(userId, from, mensajeFinal);
-        if (sent) {
+      // ✅ FIX: extraer TODOS los medios y enviarlos
+      const { imagenes, video, gif } = extraerMediosDePlantilla(plantilla);
+      console.log(`📦 Plantilla "${plantilla?.name}" → ${imagenes.length} img, video: ${!!video}, gif: ${!!gif}`);
+
+      // 1) Enviar imágenes (la primera con caption del texto, las demás sin caption)
+      for (let i = 0; i < imagenes.length; i++) {
+        const url = imagenes[i];
+        const caption = i === 0 && mensajeFinal ? mensajeFinal : "";
+        const ok = await enviarMedia(userId, from, url, "image", caption);
+        if (ok) {
           await saveReceivedMessage({
             userId,
             from,
+            message: caption || `[image] ${url}`,
+            messageType: "out_image",
+            mediaUrl: url,
+          });
+        }
+      }
+
+      // 2) Si no había imágenes pero sí texto → mandar texto solo
+      if (imagenes.length === 0 && mensajeFinal) {
+        const sent = await enviarMensaje(userId, from, mensajeFinal);
+        if (sent) {
+          await saveReceivedMessage({
+            userId, from,
             message: mensajeFinal,
             messageType: "out_text",
           });
         }
       }
 
-      // ─── Enviar multimedia de la plantilla ───
-      if (plantilla) {
-        const medias = [];
-        if (Array.isArray(plantilla.media_urls)) {
-          for (const u of plantilla.media_urls) if (u) medias.push({ url: u, type: "image" });
-        }
-        if (plantilla.media_url) {
-          medias.push({ url: plantilla.media_url, type: plantilla.media_type || "image" });
-        }
-        for (const m of medias) {
-          await enviarMedia(userId, from, m.url, m.type);
+      // 3) Enviar video
+      if (video) {
+        const ok = await enviarMedia(userId, from, video, "video", "");
+        if (ok) {
           await saveReceivedMessage({
-            userId,
-            from,
-            message: `[${m.type}] ${m.url}`,
-            messageType: `out_${m.type}`,
-            mediaUrl: m.url,
+            userId, from,
+            message: `[video] ${video}`,
+            messageType: "out_video",
+            mediaUrl: video,
           });
         }
       }
 
-      // ─── Etiqueta automática ───
-      if (trig.auto_tag) {
-        try {
-          await supabase.from("contact_tags").upsert(
-            {
-              user_id: userId,
-              contact_number: from,
-              tag: trig.auto_tag,
-            },
-            { onConflict: "user_id,contact_number,tag" }
-          );
-        } catch (e) {
-          console.log("⚠️ auto_tag error (tabla puede no existir):", e.message);
+      // 4) Enviar gif (como imagen animada)
+      if (gif) {
+        const ok = await enviarMedia(userId, from, gif, "image", "");
+        if (ok) {
+          await saveReceivedMessage({
+            userId, from,
+            message: `[gif] ${gif}`,
+            messageType: "out_gif",
+            mediaUrl: gif,
+          });
         }
       }
 
-      // ─── Log del disparador (best-effort) ───
+      if (trig.auto_tag) {
+        try {
+          await supabase.from("contact_tags").upsert(
+            { user_id: userId, contact_number: from, tag: trig.auto_tag },
+            { onConflict: "user_id,contact_number,tag" }
+          );
+        } catch (e) {
+          console.log("⚠️ auto_tag error:", e.message);
+        }
+      }
+
       try {
         await supabase.from("trigger_log").insert({
           trigger_id: trig.id,
@@ -376,11 +416,8 @@ async function evaluarDisparadores({ userId, from, texto }) {
           from_number: from,
           sent_at: new Date().toISOString(),
         });
-      } catch (e) {
-        // tabla opcional
-      }
+      } catch {}
 
-      // ─── Incrementar usage_count de la plantilla ───
       if (plantilla?.id) {
         try {
           await supabase
@@ -390,10 +427,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
         } catch {}
       }
 
-      // ─── Guardar contexto ───
       await saveContexto(userId, from, { last_trigger: trig.name });
-
-      // ✅ Match procesado → cortar flujo, NO llamar a Gemini
       return true;
     }
 
@@ -444,21 +478,18 @@ async function procesar(req, message, userId, from) {
     }
 
     await saveReceivedMessage({
-      userId,
-      from,
+      userId, from,
       message: texto,
       messageType: "text",
       waMessageId: message.id || null,
     });
 
-    // ✅ 1) PRIMERO evaluar disparadores
     const disparado = await evaluarDisparadores({ userId, from, texto });
     if (disparado) {
       console.log("✅ Disparador atendió el mensaje. No se llama a Gemini.");
       return;
     }
 
-    // ✅ 2) Si nada matcheó → Gemini
     const ctx = await getContexto(userId, from);
     const history = await getHistory(userId, from);
 
