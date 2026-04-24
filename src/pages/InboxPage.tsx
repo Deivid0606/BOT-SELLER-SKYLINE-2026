@@ -1,4 +1,3 @@
-<contenido>
 
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -497,6 +496,94 @@ export default function InboxPage() {
     }
   };
 
+  // ===== HANDLERS BOTONES SUPERIORES =====
+  const handlePauseAI = async () => {
+    if (!selectedNumber) return;
+    const { data: existing } = await supabase
+      .from("conversation_settings")
+      .select("ai_paused")
+      .eq("phone", selectedNumber)
+      .maybeSingle();
+    const next = !(existing?.ai_paused ?? false);
+    const { error } = await supabase
+      .from("conversation_settings")
+      .upsert({ phone: selectedNumber, ai_paused: next }, { onConflict: "phone" });
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      return;
+    }
+    toast({ title: next ? "🔇 IA pausada" : "🔊 IA reactivada" });
+  };
+
+  const handleForceAI = async () => {
+    if (!selectedNumber) return;
+    const { error } = await supabase
+      .from("conversation_settings")
+      .upsert({ phone: selectedNumber, ai_paused: false, force_ai: true }, { onConflict: "phone" });
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      return;
+    }
+    toast({ title: "🤖 IA forzada", description: "Responderá el próximo mensaje." });
+  };
+
+  const handleDeleteChat = async () => {
+    if (!selectedNumber) return;
+    if (!window.confirm(`¿Eliminar todos los mensajes de ${selectedNumber}?`)) return;
+    const { error } = await supabase
+      .from("received_messages")
+      .delete()
+      .eq("from_number", selectedNumber);
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      return;
+    }
+    toast({ title: "🗑️ Conversación eliminada" });
+    await loadMessages();
+    setSelectedChat(0);
+  };
+
+  const handleClearChat = async () => {
+    if (!selectedNumber) return;
+    if (!window.confirm(`¿Limpiar mensajes de ${selectedNumber}? (solo borra los mensajes, mantiene el contacto)`)) return;
+    const { error } = await supabase
+      .from("received_messages")
+      .delete()
+      .eq("from_number", selectedNumber);
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      return;
+    }
+    toast({ title: "🧹 Chat limpiado" });
+    await loadMessages();
+  };
+
+  const handleMarkSale = async (saleType: "normal" | "web") => {
+    if (!selectedNumber) return;
+    const tag = saleType === "normal" ? "venta normal cargada" : "venta web cargada";
+    const { error } = await supabase
+      .from("conversation_settings")
+      .upsert({ phone: selectedNumber, tag, sale_type: saleType }, { onConflict: "phone" });
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      return;
+    }
+    toast({ title: saleType === "normal" ? "✏️ Venta Normal marcada" : "🌐 Venta Web marcada" });
+  };
+
+  const handleSetTag = async (tag: string) => {
+    if (!selectedNumber || !tag) return;
+    const { error } = await supabase
+      .from("conversation_settings")
+      .upsert({ phone: selectedNumber, tag }, { onConflict: "phone" });
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      return;
+    }
+    toast({ title: `🏷️ Etiqueta: ${tag}` });
+  };
+
+
   const renderMedia = (mediaUrl?: string, mediaType?: string, messageText?: string) => {
     if (!mediaUrl) return null;
     
@@ -581,30 +668,30 @@ export default function InboxPage() {
               </div>
             </div>
             <div className="flex items-center gap-1">
-              <button className="p-2 rounded-lg hover:bg-secondary/60 transition-all duration-200 text-muted-foreground hover:text-foreground" title="Pausar IA">
+              <button onClick={handlePauseAI} className="p-2 rounded-lg hover:bg-secondary/60 transition-all duration-200 text-muted-foreground hover:text-foreground" title="Pausar IA">
                 <Pause className="h-4 w-4" />
               </button>
-              <button className="p-2 rounded-lg hover:bg-primary/10 transition-all duration-200 text-muted-foreground hover:text-primary" title="Forzar IA">
+              <button onClick={handleForceAI} className="p-2 rounded-lg hover:bg-primary/10 transition-all duration-200 text-muted-foreground hover:text-primary" title="Forzar IA">
                 <Bot className="h-4 w-4" />
               </button>
-              <button className="p-2 rounded-lg hover:bg-destructive/10 transition-all duration-200 text-muted-foreground hover:text-destructive" title="Eliminar">
+              <button onClick={handleDeleteChat} className="p-2 rounded-lg hover:bg-destructive/10 transition-all duration-200 text-muted-foreground hover:text-destructive" title="Eliminar">
                 <Trash2 className="h-4 w-4" />
               </button>
             </div>
           </div>
 
           <div className="flex items-center gap-2 px-5 py-2.5 border-b border-border/30 bg-secondary/10">
-            <button className="text-[11px] px-3 py-1.5 rounded-lg bg-success/8 text-success border border-success/15 hover:bg-success/15 transition-all duration-200 font-medium">
+            <button onClick={() => handleMarkSale("normal")} className="text-[11px] px-3 py-1.5 rounded-lg bg-success/8 text-success border border-success/15 hover:bg-success/15 transition-all duration-200 font-medium">
               ✏️ Venta Normal
             </button>
-            <button className="text-[11px] px-3 py-1.5 rounded-lg bg-primary/8 text-primary border border-primary/15 hover:bg-primary/15 transition-all duration-200 font-medium">
+            <button onClick={() => handleMarkSale("web")} className="text-[11px] px-3 py-1.5 rounded-lg bg-primary/8 text-primary border border-primary/15 hover:bg-primary/15 transition-all duration-200 font-medium">
               🌐 Venta Web
             </button>
-            <button className="text-[11px] px-3 py-1.5 rounded-lg bg-destructive/8 text-destructive border border-destructive/15 hover:bg-destructive/15 transition-all duration-200 font-medium">
+            <button onClick={handleClearChat} className="text-[11px] px-3 py-1.5 rounded-lg bg-destructive/8 text-destructive border border-destructive/15 hover:bg-destructive/15 transition-all duration-200 font-medium">
               🧹 Limpiar
             </button>
-            <select className="ml-auto text-[11px] bg-secondary/40 border border-border/40 rounded-lg px-2.5 py-1.5 text-muted-foreground focus:outline-none focus:border-primary/30 transition-colors">
-              <option>Etiquetar...</option>
+            <select onChange={(e) => { if (e.target.value) { handleSetTag(e.target.value); e.target.value = ""; } }} defaultValue="" className="ml-auto text-[11px] bg-secondary/40 border border-border/40 rounded-lg px-2.5 py-1.5 text-muted-foreground focus:outline-none focus:border-primary/30 transition-colors">
+              <option value="">Etiquetar...</option>
               <option>venta normal cargada</option>
               <option>venta web cargada</option>
               <option>prospecto</option>
