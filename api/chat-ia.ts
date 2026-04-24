@@ -6,7 +6,6 @@ const supabase = createClient(
 );
 
 const CATALOG_URL = "https://cat-logomegatodo-com.vercel.app/";
-
 const clean = (t: any): string => String(t || "").trim();
 
 const normalize = (t: string): string =>
@@ -21,47 +20,36 @@ const normalize = (t: string): string =>
 function getPriceLines(training: string): string[] {
   return training
     .split("\n")
-    .map((line) => clean(line))
-    .filter((line) => line.length > 3);
+    .map((l) => clean(l))
+    .filter((l) => l.length > 3);
 }
 
 function extractProductNameFromLine(line: string): string {
-  const cleaned = line
-    .replace(/^[-•\s]+/, "")
-    .replace(/[💙🦶🎯💰🔥✨]/g, "")
-    .trim();
-  const parts = cleaned.split(/—|-{2,}|–/);
-  return clean(parts[0] || cleaned);
+  const c = line.replace(/^[-•\s]+/, "").replace(/[💙🦶🎯💰🔥✨]/g, "").trim();
+  const parts = c.split(/—|-{2,}|–/);
+  return clean(parts[0] || c);
 }
 
-function detectProduct(text: string, training: string, previousProduct?: string) {
+function detectProduct(text: string, training: string, prev?: string) {
   const msg = normalize(text);
   const lines = getPriceLines(training);
-
-  let bestProduct = "";
+  let best = "";
   let bestScore = 0;
-
   for (const line of lines) {
     const name = extractProductNameFromLine(line);
     const n = normalize(name);
     if (!n || n.length < 3) continue;
-
     const words = n.split(" ").filter((w) => w.length >= 4);
     let score = 0;
-
     if (msg.includes(n)) score += 20;
-    for (const w of words) {
-      if (msg.includes(w)) score += 4;
-    }
-
+    for (const w of words) if (msg.includes(w)) score += 4;
     if (score > bestScore) {
       bestScore = score;
-      bestProduct = name;
+      best = name;
     }
   }
-
-  if (bestScore >= 4) return bestProduct;
-  return clean(previousProduct || "");
+  if (bestScore >= 4) return best;
+  return clean(prev || "");
 }
 
 function isPriceIntent(text: string) {
@@ -78,17 +66,16 @@ function isPriceIntent(text: string) {
 function isBuyIntent(text: string) {
   const m = normalize(text);
   return (
-    /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo)\b/.test(m) ||
-    /\b\d+\s*(unidad|unidades|u)\b/.test(m)
+    /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo)\b/.test(
+      m
+    ) || /\b\d+\s*(unidad|unidades|u)\b/.test(m)
   );
 }
 
 function extractData(msg: string) {
   const text = clean(msg);
   const norm = normalize(text);
-
   const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
-
   let quantity = 0;
   const q1 = norm.match(/\b(\d+)\s*(unidad|unidades|u)\b/);
   if (q1) quantity = Number(q1[1]);
@@ -113,24 +100,25 @@ function extractData(msg: string) {
     hernandarias: "Hernandarias",
     "presidente franco": "Presidente Franco",
     "pte franco": "Presidente Franco",
+    aregua: "Areguá",
+    "areguá": "Areguá",
   };
 
   let city = "";
-  for (const [key, value] of Object.entries(cityAliases)) {
-    const pattern = new RegExp(`\\b${key.replace(/\s+/g, "\\s+")}\\b`, "i");
-    if (pattern.test(norm)) {
-      city = value;
+  for (const [k, v] of Object.entries(cityAliases)) {
+    if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`, "i").test(norm)) {
+      city = v;
       break;
     }
   }
 
   const address =
-    text.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1] || "";
+    text.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1] ||
+    "";
 
   let name = "";
   const nameMatch =
     text.match(/(?:soy|me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i)?.[1];
-
   if (nameMatch) {
     name = clean(nameMatch).replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "").trim();
   } else if (
@@ -147,23 +135,23 @@ function extractData(msg: string) {
   return { quantity, city, name, phone, address: clean(address) };
 }
 
-function mergeOrderData(oldData: any, extracted: any, product: string) {
+function mergeOrderData(old: any, ext: any, product: string) {
   return {
-    product: product || oldData?.product || "",
-    quantity: extracted.quantity || oldData?.quantity || 1,
-    city: extracted.city || oldData?.city || "",
-    customer_name: extracted.name || oldData?.customer_name || "",
-    phone: extracted.phone || oldData?.phone || "",
-    address: extracted.address || oldData?.address || "",
+    product: product || old?.product || "",
+    quantity: ext.quantity || old?.quantity || 1,
+    city: ext.city || old?.city || "",
+    customer_name: ext.name || old?.customer_name || "",
+    phone: ext.phone || old?.phone || "",
+    address: ext.address || old?.address || "",
   };
 }
 
-function nextStep(order: any) {
-  if (!order.product) return "selling";
-  if (!order.city) return "collecting_city";
-  if (!order.customer_name) return "collecting_name";
-  if (!order.phone) return "collecting_phone";
-  if (!order.address) return "collecting_address";
+function nextStep(o: any) {
+  if (!o.product) return "selling";
+  if (!o.city) return "collecting_city";
+  if (!o.customer_name) return "collecting_name";
+  if (!o.phone) return "collecting_phone";
+  if (!o.address) return "collecting_address";
   return "confirm_order";
 }
 
@@ -176,7 +164,7 @@ async function safeUpsertOrder(
   try {
     if (!order?.product) return null;
 
-    const { data: existing, error: findError } = await supabase
+    const { data: existing, error: findErr } = await supabase
       .from("orders")
       .select("*")
       .eq("user_id", userId)
@@ -193,34 +181,32 @@ async function safeUpsertOrder(
       .limit(1)
       .maybeSingle();
 
-    if (findError) {
-      console.error("❌ Error buscando order:", findError);
+    if (findErr) {
+      console.error("❌ findOrder:", findErr);
       return null;
     }
 
     const step = nextStep(order);
+    const finalStatus =
+      confirm && step === "confirm_order"
+        ? "confirmed"
+        : step === "confirm_order"
+        ? "confirm_pending"
+        : step;
 
-    // ✅ Si el cliente confirmó y están todos los datos → "confirmed"
-    const finalStatus = confirm && step === "confirm_order"
-      ? "confirmed"
-      : step === "confirm_order"
-      ? "confirm_pending"
-      : step;
-
-    // ✅ Guarda con TODAS las columnas que espera el frontend (es + en)
     const payload: any = {
       user_id: userId,
       phone: order.phone || from,
-      product: order.product || null,        // OrdersPage
-      producto: order.product || null,       // DashboardPage
+      product: order.product || null,
+      producto: order.product || null,
       customer_name: order.customer_name || null,
-      city: order.city || null,              // OrdersPage
-      ciudad: order.city || null,            // DashboardPage
+      city: order.city || null,
+      ciudad: order.city || null,
       address: order.address || null,
       quantity: order.quantity || 1,
       total_amount: order.total_amount || null,
       status: finalStatus,
-      fecha: new Date().toISOString(),       // DashboardPage
+      fecha: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
 
@@ -229,7 +215,7 @@ async function safeUpsertOrder(
         .from("orders")
         .update(payload)
         .eq("id", existing.id);
-      if (error) console.error("❌ Error actualizando order:", error);
+      if (error) console.error("❌ updateOrder:", error);
       return existing.id;
     }
 
@@ -240,13 +226,12 @@ async function safeUpsertOrder(
       .single();
 
     if (error) {
-      console.error("❌ Error creando order:", error);
+      console.error("❌ insertOrder:", error);
       return null;
     }
-
     return data?.id || null;
   } catch (e) {
-    console.error("❌ safeUpsertOrder falló:", e);
+    console.error("❌ safeUpsertOrder:", e);
     return null;
   }
 }
@@ -269,13 +254,11 @@ async function callGemini({
       topK: 40,
     },
   };
-
-  // Para Gemini 2.5: desactivar "thinking" para no gastar tokens pensando
   if (String(model).includes("2.5")) {
     body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
   }
 
-  const response = await fetch(
+  const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
       method: "POST",
@@ -284,57 +267,41 @@ async function callGemini({
     }
   );
 
-  const data = await response.json();
-
-  if (!response.ok) {
-    console.error("❌ Gemini error:", JSON.stringify(data).slice(0, 1000));
+  const data = await r.json();
+  if (!r.ok) {
+    console.error("❌ Gemini:", JSON.stringify(data).slice(0, 800));
     return "";
   }
 
-  const candidate = data?.candidates?.[0];
-  const finishReason = candidate?.finishReason;
-  const text = clean(
-    candidate?.content?.parts?.map((p: any) => p.text || "").join("") || ""
-  );
-
-  console.log("🧠 Gemini finishReason:", finishReason, "| len:", text.length);
-
-  if (finishReason === "MAX_TOKENS") {
-    console.warn("⚠️ Respuesta truncada por MAX_TOKENS");
-  }
-
+  const c = data?.candidates?.[0];
+  const text = clean(c?.content?.parts?.map((p: any) => p.text || "").join("") || "");
+  console.log("🧠 finishReason:", c?.finishReason, "len:", text.length);
   return text;
 }
 
 export default async function handler(req: any, res: any) {
-  if (req.method !== "POST") {
+  if (req.method !== "POST")
     return res.status(405).json({ error: "Method not allowed" });
-  }
 
   try {
     const { user_id, message, from_number, context, history } = req.body;
     const texto = clean(message);
+    console.log("🧠 CHAT-IA:", texto);
 
-    console.log("🧠 CHAT-IA EJECUTADO:", texto);
-
-    if (!user_id || !texto) {
+    if (!user_id || !texto)
       return res.status(400).json({ error: "Faltan user_id o message" });
-    }
 
-    const { data: iaConfig, error: iaError } = await supabase
+    const { data: iaConfig } = await supabase
       .from("chat_ia_gemini")
       .select("*")
       .eq("user_id", user_id)
       .eq("is_active", true)
       .maybeSingle();
 
-    if (iaError) console.error("❌ IA config error:", iaError);
+    if (!iaConfig?.api_key)
+      return res.json({ response: "⚠️ La IA no está configurada o desactivada." });
 
-    if (!iaConfig?.api_key) {
-      return res.json({ response: "⚠️ La IA no está configurada o está desactivada." });
-    }
-
-    const { data: trainingRow, error: trainingError } = await supabase
+    const { data: trainingRow } = await supabase
       .from("training_data")
       .select("id, intent, response, updated_at")
       .eq("user_id", user_id)
@@ -343,23 +310,19 @@ export default async function handler(req: any, res: any) {
       .limit(1)
       .maybeSingle();
 
-    if (trainingError) console.error("❌ Training error:", trainingError);
-
     const fullTraining = clean(trainingRow?.response);
-
-    if (!fullTraining) {
+    if (!fullTraining)
       return res.json({ response: "⚠️ No encontré entrenamiento activo." });
-    }
 
-    const oldOrderData = context?.order_data || {};
+    const oldOrder = context?.order_data || {};
     const product = detectProduct(
       texto,
       fullTraining,
-      context?.current_product || oldOrderData?.product
+      context?.current_product || oldOrder?.product
     );
 
     const extracted = extractData(texto);
-    const orderData = mergeOrderData(oldOrderData, extracted, product);
+    const orderData = mergeOrderData(oldOrder, extracted, product);
     const step = nextStep(orderData);
 
     const wantsToBuy = isBuyIntent(texto);
@@ -371,20 +334,18 @@ export default async function handler(req: any, res: any) {
       !!extracted.phone ||
       !!extracted.address;
 
-    const shouldCollectOrder =
+    const shouldCollect =
       !!orderData.product &&
       (wantsToBuy || hasOrderData || context?.step?.startsWith("collecting"));
 
-    // ✅ Confirma cuando están todos los datos + el cliente dice "sí/confirmo/dale/ok"
     const isConfirming = step === "confirm_order" && wantsToBuy;
 
-    if (shouldCollectOrder) {
+    if (shouldCollect) {
       await safeUpsertOrder(user_id, from_number, orderData, isConfirming);
     }
 
-    // ✅ ENTRENAMIENTO COMPLETO al system prompt (sin filtros por keywords)
     const system = `
-Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento de abajo al pie de la letra: tono, emojis, plantillas, precios, ciudades con cobertura, formato de cierre. NO inventes precios ni datos. NO cambies el estilo del entrenamiento.
+Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento al pie de la letra: tono, emojis, plantillas, precios, ciudades con cobertura, formato de cierre. NO inventes precios ni datos.
 
 ═══════════════════════════════════
 ENTRENAMIENTO OFICIAL (FUENTE DE VERDAD):
@@ -392,27 +353,27 @@ ENTRENAMIENTO OFICIAL (FUENTE DE VERDAD):
 ${fullTraining}
 ═══════════════════════════════════
 
-ESTADO ACTUAL DEL CLIENTE (memoria real):
-- Producto en interés: ${orderData.product || "ninguno aún"}
+ESTADO ACTUAL DEL CLIENTE:
+- Producto: ${orderData.product || "ninguno"}
 - Cantidad: ${orderData.quantity || 1}
 - Ciudad: ${orderData.city || "pendiente"}
 - Nombre: ${orderData.customer_name || "pendiente"}
 - Teléfono: ${orderData.phone || "pendiente"}
 - Dirección: ${orderData.address || "pendiente"}
-- Paso del flujo: ${step}
-- Intención detectada: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
+- Paso: ${step}
+- Intención: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
 
-REGLAS DE EJECUCIÓN:
-1. Usá EXACTAMENTE las plantillas, emojis y tono del entrenamiento.
-2. Si el cliente solo pregunta precio → respondé con el precio del entrenamiento + cierre con CTA, NO pidas datos todavía.
-3. Si el cliente quiere comprar o ya pasó datos → seguí el flujo de pedido pidiendo SOLO el dato que falta (siguiente paso: ${step}).
-4. Si están todos los datos (paso "confirm_order") → confirmá el pedido con la plantilla del entrenamiento (formato ✅ PEDIDO CONFIRMADO).
-5. NO repitas el saludo si ya hubo conversación previa.
-6. NO cambies de producto si ya hay uno en interés, salvo que el cliente lo pida claramente.
-7. Cerrá SIEMPRE con el siguiente paso o CTA según el entrenamiento.
-8. Catálogo oficial (usalo cuando corresponda): ${CATALOG_URL}
-9. Respondé en español paraguayo, natural, con emojis del entrenamiento.
-10. NUNCA respondas vacío. Si no sabés algo, ofrecé el catálogo.
+REGLAS:
+1. Usá EXACTAMENTE plantillas, emojis y tono del entrenamiento.
+2. Si solo pregunta precio → respondé con el precio + CTA, NO pidas datos todavía.
+3. Si quiere comprar o ya pasó datos → pedí SOLO el dato que falta (siguiente: ${step}).
+4. Si están todos los datos (paso "confirm_order") → confirmá con plantilla ✅ PEDIDO CONFIRMADO.
+5. NO repitas saludo si ya hubo conversación.
+6. NO cambies de producto salvo que el cliente lo pida.
+7. Cerrá SIEMPRE con siguiente paso o CTA.
+8. Catálogo: ${CATALOG_URL}
+9. Español paraguayo, natural, con emojis.
+10. NUNCA respondas vacío.
 `.trim();
 
     const contents = (history || [])
@@ -423,10 +384,7 @@ REGLAS DE EJECUCIÓN:
         parts: [{ text: clean(h.content) }],
       }));
 
-    contents.push({
-      role: "user",
-      parts: [{ text: texto }],
-    });
+    contents.push({ role: "user", parts: [{ text: texto }] });
 
     let response = await callGemini({
       apiKey: iaConfig.api_key,
@@ -437,9 +395,8 @@ REGLAS DE EJECUCIÓN:
       maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
     });
 
-    // Reintento si vino vacío
     if (!response) {
-      console.warn("⚠️ Respuesta vacía, reintentando con más tokens...");
+      console.warn("⚠️ Vacío, reintentando...");
       response = await callGemini({
         apiKey: iaConfig.api_key,
         model: iaConfig.model || "gemini-2.5-flash",
@@ -453,18 +410,19 @@ REGLAS DE EJECUCIÓN:
     const newContext = {
       ...context,
       current_product: orderData.product || context?.current_product || null,
-      step: shouldCollectOrder ? step : "selling",
+      step: shouldCollect ? step : "selling",
       order_data: orderData,
       last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
       updated_at: new Date().toISOString(),
     };
 
     return res.json({
-      response: response || `📋 Te invito a revisar nuestro catálogo oficial:\n${CATALOG_URL}`,
+      response:
+        response || `📋 Te invito a revisar nuestro catálogo:\n${CATALOG_URL}`,
       context: newContext,
     });
   } catch (error: any) {
-    console.error("❌ chat-ia error:", error);
+    console.error("❌ chat-ia:", error);
     return res.status(500).json({ error: error.message || "Error interno" });
   }
 }
