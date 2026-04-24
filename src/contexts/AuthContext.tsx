@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useRef, useCallback, ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, ReactNode } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import type { User, Session } from "@supabase/supabase-js";
 
@@ -24,18 +24,38 @@ const AuthContext = createContext<AuthContextType>({
 
 export const useAuth = () => useContext(AuthContext);
 
+// 🧹 Limpia tokens corruptos / expirados que dejan la app en pantalla negra
+function clearAuthStorage() {
+  try {
+    Object.keys(localStorage).forEach((k) => {
+      if (k.startsWith("sb-") || k.includes("supabase")) {
+        localStorage.removeItem(k);
+      }
+    });
+    Object.keys(sessionStorage).forEach((k) => {
+      if (k.startsWith("sb-") || k.includes("supabase")) {
+        sessionStorage.removeItem(k);
+      }
+    });
+  } catch (e) {
+    console.log("⚠️ No se pudo limpiar storage:", e);
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [role, setRole] = useState<Role>(null);
   const [loading, setLoading] = useState(true);
 
-  // Ref para acceder al user actual desde callbacks sin stale closure
+  // refs para evitar stale closures dentro de setInterval / listeners
   const userRef = useRef<User | null>(null);
-  userRef.current = user;
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
 
-  const fetchRole = useCallback(async (userId: string) => {
-    console.log("🔍 Fetching role for:", userId);
+  const fetchRole = async (userId: string) => {
+    console.log("🔍 FETCHING ROLE for:", userId);
     try {
       const { data, error } = await supabase
         .from("user_roles")
@@ -49,106 +69,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const nextRole = (data?.role as Role) || "pending";
-      console.log("✅ Role:", nextRole);
-      setRole(nextRole);
+      console.log("✅ ROLE VALUE:", data?.role);
+      setRole((data?.role as Role) ?? "pending");
     } catch (err) {
       console.error("❌ Exception fetching role:", err);
       setRole("pending");
     }
-  }, []);
+  };
 
-  const applySession = useCallback(
-    async (newSession: Session | null) => {
-      setSession(newSession);
-      setUser(newSession?.user ?? null);
-
-      if (newSession?.user) {
-        await fetchRole(newSession.user.id);
-      } else {
-        setRole(null);
-      }
-    },
-    [fetchRole]
-  );
-
-  const refreshSession = useCallback(async () => {
+  const refreshSession = async () => {
     console.log("🔄 Refrescando sesión...");
     try {
       const { data, error } = await supabase.auth.refreshSession();
       if (error) {
         console.error("❌ Error refrescando sesión:", error);
-        // Si el refresh falla, la sesión está muerta → forzar logout limpio
-        if (error.message?.toLowerCase().includes("refresh")) {
-          await supabase.auth.signOut();
-          setSession(null);
-          setUser(null);
-          setRole(null);
-        }
+        // Token roto → limpiar y mandar a /auth
+        clearAuthStorage();
+        setSession(null);
+        setUser(null);
+        setRole(null);
         return;
       }
       if (data.session) {
-        await applySession(data.session);
-        console.log("✅ Sesión refrescada");
+        setSession(data.session);
+        setUser(data.session.user);
+        await fetchRole(data.session.user.id);
+        console.log("✅ Sesión refrescada correctamente");
       }
     } catch (err) {
       console.error("❌ Exception refrescando sesión:", err);
     }
-  }, [applySession]);
-
-  useEffect(() => {
-    console.log("🚀 AuthProvider mounted");
-    let cancelled = false;
-
-    // 1) Listener PRIMERO (captura SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, USER_UPDATED)
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (event, newSession) => {
-      if (cancelled) return;
-      console.log("📢 Auth event:", event, "user:", newSession?.user?.email);
-      await applySession(newSession);
-      setLoading(false);
-    });
-
-    // 2) Sesión inicial DESPUÉS
-    supabase.auth
-      .getSession()
-      .then(async ({ data: { session: initial } }) => {
-        if (cancelled) return;
-        console.log("🎯 Initial session:", initial?.user?.email ?? "(none)");
-        await applySession(initial);
-        setLoading(false);
-      })
-      .catch((error) => {
-        console.error("❌ Error getting session:", error);
-        if (!cancelled) setLoading(false);
-      });
-
-    // 3) Re-validar al volver a la pestaña (token puede estar expirado)
-    const onVisibility = () => {
-      if (document.visibilityState === "visible" && userRef.current) {
-        console.log("👁️ Pestaña visible → refresh");
-        refreshSession();
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-
-    // 4) Refresh proactivo cada 25 min (Supabase JWT dura 1h por default)
-    const interval = setInterval(() => {
-      if (userRef.current) {
-        refreshSession();
-      }
-    }, 25 * 60 * 1000);
-
-    return () => {
-      console.log("🔚 AuthProvider unmounting");
-      cancelled = true;
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", onVisibility);
-      subscription.unsubscribe();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  };
 
   const signOut = async () => {
     try {
@@ -156,33 +107,126 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error("Error signing out:", error);
     }
-
     setRole(null);
     setUser(null);
     setSession(null);
     setLoading(false);
 
-    // Limpiar storage
     try {
       localStorage.clear();
       sessionStorage.clear();
-    } catch (e) {
-      console.log("No se pudo limpiar storage");
-    }
+    } catch {}
 
-    // Limpiar caché del Service Worker / navegador
     if ("caches" in window) {
       try {
         const cacheNames = await caches.keys();
         await Promise.all(cacheNames.map((name) => caches.delete(name)));
-      } catch (e) {
+      } catch {
         console.log("No se pudo limpiar caché");
       }
     }
 
-    // Hard redirect (rompe cualquier estado en memoria)
     window.location.replace("/auth");
   };
+
+  useEffect(() => {
+    console.log("🚀 AuthProvider mounted");
+
+    let cancelled = false;
+
+    // ⏱️ Failsafe: si en 4s no terminamos de cargar, soltamos la pantalla
+    const timeoutId = setTimeout(() => {
+      if (!cancelled) {
+        console.log("⚠️ Forzando fin de carga (timeout 4s)");
+        setLoading(false);
+      }
+    }, 4000);
+
+    // 1) Listener PRIMERO (evita race condition)
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, newSession) => {
+      console.log("📢 Auth event:", event, newSession?.user?.email);
+
+      setSession(newSession);
+      setUser(newSession?.user ?? null);
+
+      if (newSession?.user) {
+        // no await acá, así el loading no se queda colgado si la query tarda
+        fetchRole(newSession.user.id);
+      } else {
+        setRole(null);
+      }
+      setLoading(false);
+    });
+
+    // 2) Después chequeamos sesión existente
+    (async () => {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+
+        if (error) {
+          console.error("❌ getSession error:", error);
+          clearAuthStorage();
+          if (!cancelled) {
+            setSession(null);
+            setUser(null);
+            setRole(null);
+            setLoading(false);
+          }
+          return;
+        }
+
+        const s = data.session;
+        console.log("🎯 Initial session:", s?.user?.email ?? "(none)");
+
+        if (cancelled) return;
+
+        setSession(s);
+        setUser(s?.user ?? null);
+
+        if (s?.user) {
+          await fetchRole(s.user.id);
+        } else {
+          setRole(null);
+        }
+        setLoading(false);
+      } catch (err) {
+        console.error("❌ Exception getting session:", err);
+        clearAuthStorage();
+        if (!cancelled) {
+          setSession(null);
+          setUser(null);
+          setRole(null);
+          setLoading(false);
+        }
+      }
+    })();
+
+    // 3) Refresh cada 25 minutos (usa userRef, NO el state capturado)
+    const interval = setInterval(() => {
+      if (userRef.current) refreshSession();
+    }, 25 * 60 * 1000);
+
+    // 4) Al volver a la pestaña, refrescar
+    const onVisibility = () => {
+      if (document.visibilityState === "visible" && userRef.current) {
+        refreshSession();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      console.log("🔚 AuthProvider unmounting");
+      cancelled = true;
+      clearTimeout(timeoutId);
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  console.log("📌 state - role:", role, "loading:", loading);
 
   return (
     <AuthContext.Provider value={{ user, session, role, loading, signOut, refreshSession }}>
