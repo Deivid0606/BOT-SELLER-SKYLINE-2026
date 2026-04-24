@@ -6,10 +6,20 @@ const supabase = createClient(
 );
 
 const VERIFY_TOKEN = "miTokenSeguro2026";
-const BASE_URL =
+
+const FALLBACK_BASE_URL =
   process.env.BASE_URL || "https://bot-seller-skyline-2026.vercel.app";
 
 const clean = (t) => String(t || "").trim();
+
+function getBaseUrl(req) {
+  const host = req?.headers?.host;
+  const proto = req?.headers?.["x-forwarded-proto"] || "https";
+
+  if (host) return `${proto}://${host}`;
+
+  return FALLBACK_BASE_URL;
+}
 
 async function enviarMensaje(userId, to, text) {
   try {
@@ -192,15 +202,14 @@ async function saveInboxMessage({
   }
 }
 
-async function llamarChatIA({ userId, texto, from, ctx, history }) {
-  if (!BASE_URL) {
-    throw new Error("BASE_URL no configurado");
-  }
+async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
+  const baseUrl = getBaseUrl(req);
+  const url = `${baseUrl}/api/chat-ia`;
 
-  console.log("BASE_URL:", BASE_URL);
+  console.log("🌐 URL chat-ia:", url);
   console.log("📡 Llamando chat-ia con:", texto);
 
-  const resIA = await fetch(`${BASE_URL}/api/chat-ia`, {
+  const resIA = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -231,7 +240,7 @@ async function llamarChatIA({ userId, texto, from, ctx, history }) {
   return data;
 }
 
-async function procesar(message, userId, from) {
+async function procesar(req, message, userId, from) {
   try {
     if (message.type !== "text") {
       console.log("⚠️ Mensaje no texto ignorado:", message.type);
@@ -265,6 +274,7 @@ async function procesar(message, userId, from) {
 
     try {
       data = await llamarChatIA({
+        req,
         userId,
         texto,
         from,
@@ -378,7 +388,7 @@ export default async function handler(req, res) {
           }
 
           for (const msg of value.messages || []) {
-            await procesar(msg, config.user_id, msg.from);
+            await procesar(req, msg, config.user_id, msg.from);
           }
         }
       }
