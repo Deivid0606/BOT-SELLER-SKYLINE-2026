@@ -7,19 +7,7 @@ const supabase = createClient(
 
 const VERIFY_TOKEN = "miTokenSeguro2026";
 
-const FALLBACK_BASE_URL =
-  process.env.BASE_URL || "https://bot-seller-skyline-2026.vercel.app";
-
 const clean = (t) => String(t || "").trim();
-
-function getBaseUrl(req) {
-  const host = req?.headers?.host;
-  const proto = req?.headers?.["x-forwarded-proto"] || "https";
-
-  if (host) return `${proto}://${host}`;
-
-  return FALLBACK_BASE_URL;
-}
 
 async function enviarMensaje(userId, to, text) {
   try {
@@ -63,7 +51,6 @@ async function enviarMensaje(userId, to, text) {
       );
 
       const raw = await response.text();
-
       console.log("📤 Meta status:", response.status);
       console.log("📤 Meta response:", raw);
 
@@ -203,15 +190,23 @@ async function saveInboxMessage({
 }
 
 async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
-  const baseUrl = getBaseUrl(req);
-  const url = `${baseUrl}/api/chat-ia`;
+  const host = req.headers.host;
+  const protocol = req.headers["x-forwarded-proto"] || "https";
 
-  console.log("🌐 URL chat-ia:", url);
+  if (!host) {
+    throw new Error("No se detectó host para construir URL");
+  }
+
+  const url = `${protocol}://${host}/api/chat-ia`;
+
+  console.log("🌐 URL CHAT-IA FINAL:", url);
   console.log("📡 Llamando chat-ia con:", texto);
 
   const resIA = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
       user_id: userId,
       message: texto,
@@ -221,20 +216,21 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
     }),
   });
 
-  const rawIA = await resIA.text();
+  const raw = await resIA.text();
 
   console.log("🧠 chat-ia status:", resIA.status);
-  console.log("🧠 chat-ia raw:", rawIA);
+  console.log("🧠 chat-ia raw:", raw);
 
   let data = {};
+
   try {
-    data = JSON.parse(rawIA);
+    data = JSON.parse(raw);
   } catch {
     throw new Error("chat-ia no devolvió JSON válido");
   }
 
   if (!resIA.ok) {
-    throw new Error(data?.error || `chat-ia respondió ${resIA.status}`);
+    throw new Error(data?.error || `chat-ia error ${resIA.status}`);
   }
 
   return data;
