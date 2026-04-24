@@ -291,14 +291,19 @@ async function buscarTriggerYResponder(userId, from, texto) {
       }
 
       if (!template) {
-        const { data: tplByName, error: e2 } = await supabase
+        // Buscar por nombre (sin filtrar por user_id porque la columna puede no existir
+        // o la plantilla puede ser global). Si hay varias coincidencias, preferimos la del
+        // mismo user; si no, la primera.
+        const { data: tplsByName, error: e2 } = await supabase
           .from("templates")
           .select("*")
-          .eq("user_id", userId)
           .ilike("name", tplRef)
-          .maybeSingle();
+          .limit(5);
         if (e2) console.log("❌ tpl by name:", e2);
-        template = tplByName;
+        if (tplsByName && tplsByName.length > 0) {
+          template =
+            tplsByName.find((t) => t.user_id === userId) || tplsByName[0];
+        }
       }
     }
 
