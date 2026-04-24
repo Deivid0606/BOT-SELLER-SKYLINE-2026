@@ -1,3 +1,4 @@
+// api/webhook.js
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -128,14 +129,14 @@ async function saveContexto(userId, from, ctx = {}) {
   }
 }
 
-// ✅ Lee historial desde received_messages (la tabla que usa el frontend)
+// ✅ Lee historial desde la TABLA REAL inbox_messages
 async function getHistory(userId, from) {
   try {
     const { data, error } = await supabase
-      .from("received_messages")
+      .from("inbox_messages")
       .select("message, created_at, message_type")
       .eq("user_id", userId)
-      .eq("from_number", from)
+      .eq("sender_id", from)
       .order("created_at", { ascending: false })
       .limit(14);
 
@@ -161,7 +162,7 @@ async function isDuplicateMessage(messageId) {
   if (!messageId) return false;
   try {
     const { data, error } = await supabase
-      .from("received_messages")
+      .from("inbox_messages")
       .select("id")
       .eq("wa_message_id", messageId)
       .maybeSingle();
@@ -177,31 +178,37 @@ async function isDuplicateMessage(messageId) {
   }
 }
 
-// ✅ Guarda mensajes en received_messages con las columnas que el frontend espera
+// ✅ Guarda mensajes en la TABLA REAL inbox_messages con los nombres correctos
 async function saveReceivedMessage({
   userId,
   from,
   message,
-  messageType, // "text", "image", "out_text", "out_image", etc.
+  messageType,        // "text", "image", "out_text", "out_image", etc.
   mediaUrl = null,
   waMessageId = null,
 }) {
   try {
+    const isOutgoing = (messageType || "").startsWith("out_");
+
     const payload = {
       user_id: userId,
-      platform: "whatsapp",
-      from_number: from,
+      source: "whatsapp",          // columna real NOT NULL
+      platform: "whatsapp",        // alias amigable (lo agregamos en SQL)
+      sender_id: from,             // columna real NOT NULL
+      sender_name: from,           // requerido si NOT NULL
+      from_number: from,           // alias amigable (lo agregamos en SQL)
       message,
-      message_type: messageType,
-      media_url: mediaUrl,
-      is_processed: messageType?.startsWith("out_") ? true : false,
+      message_type: messageType || "text",
+      media_url_text: mediaUrl,    // texto plano (la vista lo expone como media_url)
+      is_read: !!isOutgoing,
+      is_processed: !!isOutgoing,
       ...(waMessageId ? { wa_message_id: waMessageId } : {}),
     };
 
-    const { error } = await supabase.from("received_messages").insert(payload);
+    const { error } = await supabase.from("inbox_messages").insert(payload);
 
     if (error) {
-      console.log("❌ Error guardando received_messages:", error);
+      console.log("❌ Error guardando inbox_messages:", error);
       return false;
     }
     return true;
