@@ -10,7 +10,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GRAPH_VERSION = 'v21.0';
 
 export default async function handler(req, res) {
-  // ============ GET: Verificación de webhook (Meta) ============
+  // ============ GET: Verificación de webhook (Meta handshake) ============
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -18,11 +18,10 @@ export default async function handler(req, res) {
 
     console.log('[WEBHOOK GET] mode:', mode, 'token:', token);
 
-    // Buscar el verify_token en la base (cualquier user que lo tenga configurado)
     const { data: cfg } = await supabase
-      .from('meta_config')
-      .select('verify_token')
-      .eq('verify_token', token)
+      .from('whatsapp_config')
+      .select('webhook_token')
+      .eq('webhook_token', token)
       .maybeSingle();
 
     if (mode === 'subscribe' && cfg) {
@@ -37,7 +36,7 @@ export default async function handler(req, res) {
 
   console.log('[WEBHOOK POST] Body:', JSON.stringify(req.body));
 
-  // Responder 200 RÁPIDO a Meta (sino reintenta y desactiva el webhook)
+  // Responder 200 INMEDIATO a Meta (sino reintenta y desactiva el webhook)
   res.status(200).json({ ok: true });
 
   try {
@@ -54,20 +53,18 @@ export default async function handler(req, res) {
 
         // Buscar el user dueño de este phone_number_id
         const { data: cfg } = await supabase
-          .from('meta_config')
-          .select('user_id, access_token')
+          .from('whatsapp_config')
+          .select('user_id, permanent_token')
           .eq('phone_number_id', phoneNumberId)
           .maybeSingle();
 
         if (!cfg) {
-          console.error('[WEBHOOK] No config for phone:', phoneNumberId);
+          console.error('[WEBHOOK] No config for phone_number_id:', phoneNumberId);
           continue;
         }
-        const userId = cfg.user_id;
-        const accessToken = cfg.access_token;
 
         for (const msg of messages) {
-          await processMessage(msg, userId, phoneNumberId, accessToken);
+          await processMessage(msg, cfg.user_id, phoneNumberId, cfg.permanent_token);
         }
       }
     }
@@ -78,11 +75,11 @@ export default async function handler(req, res) {
 
 // ============ PROCESAR UN MENSAJE ============
 async function processMessage(msg, userId, phoneNumberId, accessToken) {
-  const from = msg.from; // ya viene sin +
+  const from = msg.from;
   const messageId = msg.id;
   const messageType = msg.type;
   let text = '';
-  let mediaUrl = null;
+  let mediaRef = null;
 
   if (messageType === 'text') text = msg.text?.body || '';
   else if (messageType === 'button') text = msg.button?.text || '';
@@ -90,7 +87,7 @@ async function processMessage(msg, userId, phoneNumberId, accessToken) {
     text = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || '';
   } else if (['image','video','audio','document'].includes(messageType)) {
     text = msg[messageType]?.caption || `[${messageType}]`;
-    mediaUrl = msg[messageType]?.id || null; // es media_id, hay que descargar aparte si querés el binario
+    mediaRef = msg[messageType]?.id || null;
   }
 
   // 1) Guardar entrante
@@ -103,7 +100,7 @@ async function processMessage(msg, userId, phoneNumberId, accessToken) {
       sender_id: from,
       from_number: from,
       message: text,
-      media_url_text: mediaUrl,
+      media_url_text: mediaRef,
       message_type: messageType,
       wa_message_id: messageId,
       is_read: false,
@@ -175,7 +172,6 @@ async function processMessage(msg, userId, phoneNumberId, accessToken) {
     if (replyText) await sendText(from, replyText, phoneNumberId, accessToken);
   }
 
-  // Guardar saliente
   if (replyText) {
     await supabase.from('inbox_messages').insert({
       user_id: userId, source: 'outbound', platform: 'whatsapp',
