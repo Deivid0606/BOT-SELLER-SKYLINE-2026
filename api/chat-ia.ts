@@ -5,6 +5,8 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY as string
 );
 
+const CATALOG_URL = "https://cat-logomegatodo-com.vercel.app/";
+
 const clean = (t: any): string => String(t || "").trim();
 
 const normalize = (t: string): string =>
@@ -36,42 +38,23 @@ function parseTraining(fullText: string) {
     greeting: get("💬 SALUDO INICIAL", "🟢 RESPUESTA DIRECTA"),
     coverage: get("🟢 RESPUESTA DIRECTA", "🔴 RESPUESTA DIRECTA"),
     noCoverage: get("🔴 RESPUESTA DIRECTA", "🎯 PLANTILLAS"),
-    plantillas: get("🎯 PLANTILLAS", "🚚 TIEMPOS DE ENTREGA"),
-    delivery: get("🚚 TIEMPOS DE ENTREGA", "💰 LISTA DE PRECIOS"),
     prices: get("💰 LISTA DE PRECIOS", "📋 PROCESAMIENTO DE PEDIDOS"),
     orders: get("📋 PROCESAMIENTO DE PEDIDOS", "💳 FORMAS DE PAGO"),
     payments: get("💳 FORMAS DE PAGO", "🎧 MANEJO DE AUDIOS"),
-    faq: get("💬 FAQ", "🔁 CIERRE OBLIGATORIO"),
     closing: get("🔁 CIERRE OBLIGATORIO", "📋 EJEMPLOS PRÁCTICOS"),
-    examples: get("📋 EJEMPLOS PRÁCTICOS", "✅ REGLAS FINALES"),
     finalRules: get("✅ REGLAS FINALES"),
     raw: t,
   };
 }
 
-function hasParsedContent(sections: any): boolean {
-  return Boolean(
-    sections.rules ||
-    sections.cities ||
-    sections.prices ||
-    sections.orders ||
-    sections.finalRules
-  );
-}
-
-function buildContextSections(msg: string, sections: any): string {
+function buildDynamicContext(msg: string, sections: any) {
   const m = normalize(msg);
   let ctx = "";
 
-  ctx += `🧠 REGLAS PRINCIPALES:\n${sections.rules}\n\n`;
+  ctx += `REGLAS:\n${sections.rules}\n\n`;
 
-  if (
-    m.includes("hola") ||
-    m.includes("buenas") ||
-    m.includes("buen dia") ||
-    m.length <= 8
-  ) {
-    ctx += `💬 SALUDO:\n${sections.greeting}\n\n`;
+  if (m.includes("hola") || m.length <= 8) {
+    ctx += `SALUDO:\n${sections.greeting}\n\n`;
   }
 
   if (
@@ -79,10 +62,9 @@ function buildContextSections(msg: string, sections: any): string {
     m.includes("cuanto") ||
     m.includes("cuesta") ||
     m.includes("valor") ||
-    m.includes("costo") ||
-    m.includes("gs")
+    m.includes("costo")
   ) {
-    ctx += `💰 LISTA DE PRECIOS:\n${sections.prices}\n\n`;
+    ctx += `PRECIOS:\n${sections.prices}\n\n`;
   }
 
   if (
@@ -91,141 +73,222 @@ function buildContextSections(msg: string, sections: any): string {
     m.includes("ciudad") ||
     m.includes("capiata") ||
     m.includes("luque") ||
-    m.includes("cde") ||
+    m.includes("ita") ||
     m.includes("asuncion") ||
-    m.includes("san lorenzo") ||
-    m.includes("lambare") ||
-    m.includes("central")
+    m.includes("cde")
   ) {
-    ctx += `📍 CIUDADES Y COBERTURA:\n${sections.cities}\n\n`;
-    ctx += `🟢 CON COBERTURA:\n${sections.coverage}\n\n`;
-    ctx += `🔴 SIN COBERTURA:\n${sections.noCoverage}\n\n`;
+    ctx += `CIUDADES:\n${sections.cities}\n\n`;
+    ctx += `CON COBERTURA:\n${sections.coverage}\n\n`;
+    ctx += `SIN COBERTURA:\n${sections.noCoverage}\n\n`;
   }
 
-  if (
-    m.includes("plantilla") ||
-    m.includes("ortopiex") ||
-    m.includes("calce")
-  ) {
-    ctx += `🎯 PLANTILLAS ORTOPIEX:\n${sections.plantillas}\n\n`;
-  }
+  ctx += `PEDIDOS:\n${sections.orders}\n\n`;
+  ctx += `PAGOS:\n${sections.payments}\n\n`;
+  ctx += `CIERRE:\n${sections.closing}\n\n`;
+  ctx += `REGLAS FINALES:\n${sections.finalRules}\n\n`;
 
-  if (
-    m.includes("pedido") ||
-    m.includes("direccion") ||
-    m.includes("dirección") ||
-    m.includes("nombre") ||
-    m.includes("telefono") ||
-    m.includes("teléfono")
-  ) {
-    ctx += `📋 PEDIDOS:\n${sections.orders}\n\n`;
-  }
-
-  if (
-    m.includes("pago") ||
-    m.includes("transferencia") ||
-    m.includes("qr") ||
-    m.includes("tarjeta") ||
-    m.includes("cuota")
-  ) {
-    ctx += `💳 FORMAS DE PAGO:\n${sections.payments}\n\n`;
-  }
-
-  if (
-    m.includes("entrega") ||
-    m.includes("delivery") ||
-    m.includes("cuando llega") ||
-    m.includes("envio") ||
-    m.includes("envío")
-  ) {
-    ctx += `🚚 ENTREGA:\n${sections.delivery}\n\n`;
-  }
-
-  ctx += `💬 FAQ:\n${sections.faq}\n\n`;
-  ctx += `🔁 CIERRE OBLIGATORIO:\n${sections.closing}\n\n`;
-  ctx += `✅ REGLAS FINALES:\n${sections.finalRules}\n\n`;
-
-  return ctx;
+  return ctx.trim();
 }
 
-async function getOpenOrder(userId: string, phone: string) {
-  try {
-    const { data, error } = await supabase
-      .from("orders")
-      .select("*")
-      .eq("user_id", userId)
-      .or(`from_number.eq.${phone},phone.eq.${phone}`)
-      .in("status", [
-        "draft",
-        "collecting_name",
-        "collecting_city",
-        "collecting_address",
-        "waiting_exact_address",
-        "confirm_pending",
-      ])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+function detectProduct(text: string, training: string, previousProduct?: string) {
+  const msg = normalize(text);
 
-    if (error) {
-      console.error("❌ Error getOpenOrder:", error);
-      return null;
+  const products = [
+    "afilador de cuchillos y tijeras",
+    "afilador",
+    "plumero limpiaflex",
+    "plumero",
+    "drone",
+    "plantilla ortopiex",
+    "ortopiex",
+    "mini aspiradora",
+    "aspirador portatil",
+    "procesador de alimentos",
+    "rodillera",
+    "tobillera",
+    "veneno de abeja",
+    "linterna potente",
+    "intercomunicador",
+    "alarma antirrobo",
+    "medias terapeuticas",
+    "clip nasal",
+  ];
+
+  for (const p of products) {
+    if (msg.includes(normalize(p))) {
+      if (p === "afilador") return "Afilador de Cuchillos y Tijeras";
+      if (p === "plumero") return "Plumero LimpiaFlex";
+      if (p === "ortopiex") return "Plantilla Ortopiex 5D";
+      return p
+        .split(" ")
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(" ");
     }
-
-    return data || null;
-  } catch (e) {
-    console.error("❌ getOpenOrder catch:", e);
-    return null;
   }
+
+  return previousProduct || "";
 }
 
 function extractData(msg: string) {
   const text = clean(msg);
+  const norm = normalize(text);
 
-  const name =
-    text.match(/(?:soy|me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i)?.[1];
+  const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
 
-  const city =
-    text.match(/(?:soy de|de|ciudad)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,40})/i)?.[1];
+  let quantity = 0;
+  const q1 = norm.match(/\b(\d+)\s*(unidad|unidades|u)\b/);
+  if (q1) quantity = Number(q1[1]);
+  if (!quantity && /\buno\b|\buna\b|\b1\b/.test(norm)) quantity = 1;
+  if (!quantity && /\bdos\b|\b2\b/.test(norm)) quantity = 2;
 
-  const phone =
-    text.match(/(?:09\d{8}|\+595\d{9})/)?.[0];
+  const cityAliases: Record<string, string> = {
+    asuncion: "Asunción",
+    capiata: "Capiatá",
+    cde: "Ciudad del Este",
+    ciudad del este: "Ciudad del Este",
+    luque: "Luque",
+    ita: "Itá",
+    lambare: "Lambaré",
+    san lorenzo: "San Lorenzo",
+    fdm: "Fernando de la Mora",
+    fernando de la mora: "Fernando de la Mora",
+    ñemby: "Ñemby",
+    nemby: "Ñemby",
+    ypane: "Ypané",
+    limpio: "Limpio",
+    villa elisa: "Villa Elisa",
+    hernandarias: "Hernandarias",
+    presidente franco: "Presidente Franco",
+    pte franco: "Presidente Franco",
+  };
+
+  let city = "";
+  for (const [key, value] of Object.entries(cityAliases)) {
+    if (norm.includes(key)) {
+      city = value;
+      break;
+    }
+  }
 
   const address =
-    text.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1];
+    text.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1] || "";
+
+  let name = "";
+  const nameMatch =
+    text.match(/(?:soy|me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i)?.[1];
+
+  if (nameMatch) {
+    name = clean(nameMatch)
+      .replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "")
+      .trim();
+  } else if (
+    /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,60}$/.test(text) &&
+    !city &&
+    !phone &&
+    !norm.includes("precio") &&
+    !norm.includes("hola")
+  ) {
+    name = text;
+  }
 
   return {
-    name: clean(name),
-    city: clean(city),
-    phone: clean(phone),
+    product: "",
+    quantity,
+    city,
+    name,
+    phone,
     address: clean(address),
   };
 }
 
-async function callGemini({
-  apiKey,
-  model,
-  system,
-  contents,
-  temperature,
-  maxTokens,
-}: any) {
+function mergeOrderData(oldData: any, extracted: any, product: string) {
+  return {
+    product: product || oldData?.product || "",
+    quantity: extracted.quantity || oldData?.quantity || 1,
+    city: extracted.city || oldData?.city || "",
+    customer_name: extracted.name || oldData?.customer_name || "",
+    phone: extracted.phone || oldData?.phone || "",
+    address: extracted.address || oldData?.address || "",
+  };
+}
+
+function nextStep(order: any) {
+  if (!order.product) return "selling";
+  if (!order.city) return "collecting_city";
+  if (!order.customer_name) return "collecting_name";
+  if (!order.phone) return "collecting_phone";
+  if (!order.address) return "collecting_address";
+  return "confirm_order";
+}
+
+function missingQuestion(step: string, product: string) {
+  if (step === "collecting_city") {
+    return `Perfecto 😊 Para avanzar con tu pedido de ${product}, ¿de qué ciudad sos? 📍`;
+  }
+
+  if (step === "collecting_name") {
+    return `Excelente 😊 ${product} queda disponible. ¿Me pasás tu nombre completo para agendar? 📝`;
+  }
+
+  if (step === "collecting_phone") {
+    return `Genial 🙌 Ahora pasame tu número de teléfono para coordinar la entrega 📲`;
+  }
+
+  if (step === "collecting_address") {
+    return `Perfecto 😊 Solo me falta tu dirección exacta para completar el pedido 🏠`;
+  }
+
+  return "";
+}
+
+async function upsertOrder(userId: string, from: string, order: any) {
+  const { data: existing } = await supabase
+    .from("orders")
+    .select("*")
+    .eq("user_id", userId)
+    .or(`from_number.eq.${from},phone.eq.${from}`)
+    .in("status", ["draft", "collecting_name", "collecting_city", "collecting_address", "confirm_pending"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const payload = {
+    user_id: userId,
+    from_number: from,
+    phone: order.phone || from,
+    product: order.product || null,
+    customer_name: order.customer_name || null,
+    city: order.city || null,
+    address: order.address || null,
+    quantity: order.quantity || 1,
+    status: nextStep(order) === "confirm_order" ? "confirm_pending" : nextStep(order),
+    updated_at: new Date().toISOString(),
+  };
+
+  if (existing?.id) {
+    await supabase.from("orders").update(payload).eq("id", existing.id);
+    return existing.id;
+  }
+
+  const { data } = await supabase
+    .from("orders")
+    .insert(payload)
+    .select("id")
+    .single();
+
+  return data?.id;
+}
+
+async function callGemini({ apiKey, model, system, contents, temperature, maxTokens }: any) {
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: system }],
-        },
+        systemInstruction: { parts: [{ text: system }] },
         contents,
-        generationConfig: {
-          temperature,
-          maxOutputTokens: maxTokens,
-        },
+        generationConfig: { temperature, maxOutputTokens: maxTokens },
       }),
     }
   );
@@ -251,158 +314,136 @@ export default async function handler(req: any, res: any) {
 
   try {
     const { user_id, message, from_number, context, history } = req.body;
+    const texto = clean(message);
 
-    if (!user_id || !message) {
+    if (!user_id || !texto) {
       return res.status(400).json({ error: "Faltan user_id o message" });
     }
 
-    const texto = clean(message);
-
-    console.log("━━━━━━━━━━━━━━━━━━━━━━");
-    console.log("🧠 CHAT-IA EJECUTADO");
-    console.log("🧠 MENSAJE:", texto);
-    console.log("🧠 USER:", user_id);
-
-    const { data: iaConfig, error: configError } = await supabase
+    const { data: iaConfig } = await supabase
       .from("chat_ia_gemini")
       .select("*")
       .eq("user_id", user_id)
       .eq("is_active", true)
       .maybeSingle();
 
-    if (configError) {
-      console.error("❌ Error config IA:", configError);
-    }
-
     if (!iaConfig?.api_key) {
-      return res.json({
-        response: "⚠️ La IA no está configurada o está desactivada.",
-      });
+      return res.json({ response: "⚠️ La IA no está configurada o está desactivada." });
     }
 
-    const { data: trainingRow, error: trainingError } = await supabase
+    const { data: trainingRow } = await supabase
       .from("training_data")
-      .select("id, intent, response, is_active, updated_at")
+      .select("id, intent, response, updated_at")
       .eq("user_id", user_id)
       .eq("is_active", true)
       .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (trainingError) {
-      console.error("❌ Error training:", trainingError);
-    }
-
     const fullTraining = clean(trainingRow?.response);
-
-    console.log("📚 Training ID:", trainingRow?.id || "NO HAY");
-    console.log("📚 Training length:", fullTraining.length);
 
     if (!fullTraining) {
       return res.json({
-        response:
-          "⚠️ No encontré entrenamiento activo. Cargá el entrenamiento para que pueda responder correctamente.",
+        response: "⚠️ No encontré entrenamiento activo.",
       });
     }
 
-    const sections = parseTraining(fullTraining);
-
-    let dynamicContext = "";
-
-    if (hasParsedContent(sections)) {
-      dynamicContext = buildContextSections(texto, sections);
-      console.log("✅ Usando entrenamiento por secciones");
-    } else {
-      dynamicContext = fullTraining;
-      console.log("⚠️ Parser no detectó secciones, usando entrenamiento completo");
-    }
-
-    const openOrder = from_number ? await getOpenOrder(user_id, from_number) : null;
+    const oldOrderData = context?.order_data || {};
+    const product = detectProduct(texto, fullTraining, context?.current_product || oldOrderData?.product);
     const extracted = extractData(texto);
+    const orderData = mergeOrderData(oldOrderData, extracted, product);
 
-    if (openOrder && (extracted.name || extracted.city || extracted.address || extracted.phone)) {
-      await supabase
-        .from("orders")
-        .update({
-          ...(extracted.name && { customer_name: extracted.name }),
-          ...(extracted.city && { city: extracted.city }),
-          ...(extracted.address && { address: extracted.address }),
-          ...(extracted.phone && { phone: extracted.phone }),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", openOrder.id);
-    }
+    const step = nextStep(orderData);
+
+    await upsertOrder(user_id, from_number, orderData);
+
+    const sections = parseTraining(fullTraining);
+    const dynamicContext = buildDynamicContext(texto, sections) || fullTraining;
 
     const system = `
 ${limitText(dynamicContext, 12000)}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONTEXTO ACTUAL DEL CLIENTE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Número del cliente: ${from_number || "sin número"}
-Último tema: ${context?.last_topic || "ninguno"}
-Último disparador: ${context?.last_trigger || "ninguno"}
-Pedido abierto: ${openOrder ? JSON.stringify(openOrder) : "ninguno"}
+MEMORIA REAL DEL CLIENTE:
+Producto actual: ${orderData.product || "ninguno"}
+Cantidad: ${orderData.quantity || 1}
+Ciudad: ${orderData.city || "pendiente"}
+Nombre: ${orderData.customer_name || "pendiente"}
+Teléfono: ${orderData.phone || "pendiente"}
+Dirección: ${orderData.address || "pendiente"}
+Paso actual: ${step}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-REGLAS ABSOLUTAS DE RESPUESTA
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Tu nombre es Araceli Galeano si el entrenamiento lo indica.
-2. Respondé SOLO usando el entrenamiento activo.
-3. No inventes productos, precios, descuentos, disponibilidad ni formas de pago.
-4. Si hay precio en el entrenamiento, usalo exactamente.
-5. Si no encontrás el producto o precio, mandá el catálogo oficial.
-6. No digas "no entiendo" ni "no puedo ayudarte"; guiá la venta.
-7. Si detectás ciudad, seguí directo según cobertura.
-8. Si el cliente pasa todos los datos, confirmá pedido sin repreguntar.
-9. Si no indica cantidad, asumí 1.
-10. Respuesta corta, clara y vendedora.
-11. Cerrá con pregunta o siguiente paso.
+REGLAS:
+- Usá la memoria real del cliente antes que el historial.
+- No cambies de producto si ya hay producto actual.
+- Si falta un dato, pedí SOLO ese dato.
+- Si están todos los datos, confirmá el pedido.
+- No inventes precios: usá la lista del entrenamiento.
+- Siempre cerrá con siguiente paso.
+- Siempre que corresponda, agregá catálogo: ${CATALOG_URL}
 `.trim();
 
-    const contents = (history || [])
-      .slice(-10)
-      .filter((h: any) => clean(h?.content))
-      .map((h: any) => ({
-        role: h.role === "assistant" ? "model" : "user",
-        parts: [{ text: clean(h.content).slice(0, 500) }],
-      }));
+    let response = "";
 
-    contents.push({
-      role: "user",
-      parts: [{ text: texto }],
-    });
+    if (step !== "confirm_order" && orderData.product) {
+      const q = missingQuestion(step, orderData.product);
+      if (q) response = q;
+    }
 
-    const response = await callGemini({
-      apiKey: iaConfig.api_key,
-      model: iaConfig.model || "gemini-2.5-flash",
-      system,
-      contents,
-      temperature: iaConfig.temperature ?? 0.25,
-      maxTokens: iaConfig.max_tokens ?? 500,
-    });
+    if (step === "confirm_order") {
+      response = `✅ PEDIDO CONFIRMADO
+━━━━━━━━━━━━━━━━━━━━━━
+✅ Producto: ${orderData.product}
+✅ Cliente: ${orderData.customer_name}
+✅ Ubicación: ${orderData.city} — ${orderData.address}
+✅ Contacto: ${orderData.phone}
+✅ Cantidad: ${orderData.quantity || 1} u.
 
-    console.log("🤖 RESPUESTA IA:", response);
+🚚 Envío GRATIS · Pagás al recibir
+⏰ Oferta válida hoy
+
+¡Gracias por elegir Mega Todo Store! 💜✨
+
+📋 Catálogo:
+${CATALOG_URL}`;
+    }
 
     if (!response) {
-      return res.json({
-        response:
-          "📋 Te invito a revisar nuestro catálogo oficial con todos los productos y precios actualizados:\n\nhttps://cat-logomegatodo-com.vercel.app/",
+      const contents = (history || [])
+        .slice(-10)
+        .filter((h: any) => clean(h?.content))
+        .map((h: any) => ({
+          role: h.role === "assistant" ? "model" : "user",
+          parts: [{ text: clean(h.content).slice(0, 500) }],
+        }));
+
+      contents.push({
+        role: "user",
+        parts: [{ text: texto }],
+      });
+
+      response = await callGemini({
+        apiKey: iaConfig.api_key,
+        model: iaConfig.model || "gemini-2.5-flash",
+        system,
+        contents,
+        temperature: iaConfig.temperature ?? 0.25,
+        maxTokens: iaConfig.max_tokens ?? 500,
       });
     }
 
-    return res.status(200).json({
-      response,
+    return res.json({
+      response: response || `📋 Te invito a revisar nuestro catálogo oficial:\n${CATALOG_URL}`,
       context: {
         ...context,
-        last_topic: context?.last_topic || trainingRow?.intent || "ENTRENAMIENTO",
+        current_product: orderData.product || context?.current_product || null,
+        step,
+        order_data: orderData,
+        last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
         updated_at: new Date().toISOString(),
       },
     });
   } catch (error: any) {
     console.error("❌ chat-ia error:", error);
-    return res.status(500).json({
-      error: error.message || "Error interno",
-    });
+    return res.status(500).json({ error: error.message || "Error interno" });
   }
 }
