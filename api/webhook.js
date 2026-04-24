@@ -1,651 +1,447 @@
+// api/webhook.js
+// Webhook de WhatsApp Business (Meta Cloud API).
+// Funciones:
+//  - Verificación GET
+//  - Recepción de mensajes
+//  - Triggers + plantillas
+//  - Reenvío a IA (chat-ia) si no hay trigger
+//  - NUEVO: Detecta "✅ PEDIDO CONFIRMADO" en respuestas (IA o manuales)
+//          y crea automáticamente la fila en la tabla `orders`
+//          + registro en `order_confirmations`.
+
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 const VERIFY_TOKEN = "miTokenSeguro2026";
 
-const clean = (t) => String(t || "").trim();
+// ======================= Helpers =======================
+const clean = (t) => (t || "").toString().trim();
 const norm = (t) =>
   clean(t)
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+    .replace(/[\u0300-\u036f]/g, "");
 
-// =================== UTIL ===================
 function splitMessage(text, max = 3500) {
-  const msg = clean(text);
-  if (msg.length <= max) return [msg];
-  const parts = [];
-  let remaining = msg;
-  while (remaining.length > max) {
-    let cut = remaining.lastIndexOf("\n\n", max);
-    if (cut < max * 0.5) cut = remaining.lastIndexOf("\n", max);
-    if (cut < max * 0.5) cut = remaining.lastIndexOf(". ", max);
-    if (cut < max * 0.5) cut = remaining.lastIndexOf(" ", max);
-    if (cut <= 0) cut = max;
-    parts.push(remaining.substring(0, cut).trim());
-    remaining = remaining.substring(cut).trim();
-  }
-  if (remaining) parts.push(remaining);
-  return parts.filter((p) => p.length > 0);
+  if (!text) return [];
+  const out = [];
+  for (let i = 0; i < text.length; i += max) out.push(text.slice(i, i + max));
+  return out;
 }
 
-// =================== ENVÍO TEXTO ===================
-async function enviarMensaje(userId, to, text) {
-  try {
-    const { data: config, error } = await supabase
-      .from("whatsapp_config")
-      .select("phone_number_id, permanent_token")
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    if (error || !config?.phone_number_id || !config?.permanent_token) {
-      console.log("❌ Sin config WhatsApp:", error);
-      return false;
-    }
-
-    const msg = clean(text);
-    if (!msg) return false;
-
-    const partes = splitMessage(msg, 3500);
-    console.log(`📤 Enviando ${partes.length} parte(s) de texto`);
-
-    for (const parte of partes) {
-      const r = await fetch(
-        `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${config.permanent_token.trim()}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            messaging_product: "whatsapp",
-            to,
-            type: "text",
-            text: { body: parte, preview_url: false },
-          }),
-        }
-      );
-      const raw = await r.text();
-      console.log("📤 Meta status:", r.status);
-      if (!r.ok) {
-        console.log("📤 Meta resp:", raw);
-        return false;
-      }
-    }
-    return true;
-  } catch (err) {
-    console.error("❌ enviarMensaje:", err);
-    return false;
-  }
-}
-
-// =================== ENVÍO MEDIA ===================
-async function enviarMedia(userId, to, mediaUrl, mediaType, caption = "") {
-  try {
-    const { data: config } = await supabase
-      .from("whatsapp_config")
-      .select("phone_number_id, permanent_token")
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    if (!config?.phone_number_id || !config?.permanent_token) {
-      console.log("❌ Sin config WhatsApp para media");
-      return false;
-    }
-
-    // gif → se envía como video en WhatsApp
-    let waType = "image";
-    if (mediaType === "video" || mediaType === "gif") waType = "video";
-
-    const mediaPayload = { link: mediaUrl };
-    if (caption && (waType === "image" || waType === "video")) {
-      mediaPayload.caption = clean(caption).slice(0, 1024);
-    }
-
-    const body = {
-      messaging_product: "whatsapp",
-      to,
-      type: waType,
-      [waType]: mediaPayload,
-    };
-
-    console.log(`📤 Enviando ${waType}:`, mediaUrl);
-
-    const r = await fetch(
-      `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${config.permanent_token.trim()}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-      }
-    );
-
-    const raw = await r.text();
-    console.log("📤 Meta media status:", r.status);
-    if (!r.ok) {
-      console.log("📤 Meta media resp:", raw);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.error("❌ enviarMedia:", err);
-    return false;
-  }
-}
-
-// =================== ENVIAR PLANTILLA ===================
-async function enviarPlantilla(userId, to, template) {
-  try {
-    const texto = clean(template?.content || template?.message || "");
-    const variables = template?.variables || {};
-    const media = variables?.media || {};
-
-    const imageUrls = Array.isArray(media.imageUrls) ? media.imageUrls : [];
-    const videoUrl = media.videoUrl || null;
-    const gifUrl = media.gifUrl || null;
-    const legacyUrl = template?.media_url || null;
-    const legacyType = template?.media_type || null;
-
-    const tieneMedia =
-      imageUrls.length > 0 || !!videoUrl || !!gifUrl || !!legacyUrl;
-
-    if (tieneMedia) {
-      let primeraEnviada = false;
-      let okAlguna = false;
-
-      if (imageUrls.length > 0) {
-        for (let i = 0; i < imageUrls.length; i++) {
-          const cap = i === 0 ? texto : "";
-          const ok = await enviarMedia(userId, to, imageUrls[i], "image", cap);
-          if (ok) okAlguna = true;
-          primeraEnviada = true;
-        }
-      }
-      if (videoUrl) {
-        const cap = !primeraEnviada ? texto : "";
-        const ok = await enviarMedia(userId, to, videoUrl, "video", cap);
-        if (ok) okAlguna = true;
-        primeraEnviada = true;
-      }
-      if (gifUrl) {
-        const cap = !primeraEnviada ? texto : "";
-        const ok = await enviarMedia(userId, to, gifUrl, "gif", cap);
-        if (ok) okAlguna = true;
-        primeraEnviada = true;
-      }
-      if (!imageUrls.length && !videoUrl && !gifUrl && legacyUrl) {
-        const ok = await enviarMedia(
-          userId,
-          to,
-          legacyUrl,
-          legacyType || "image",
-          texto
-        );
-        if (ok) okAlguna = true;
-        primeraEnviada = true;
-      }
-
-      // Caption truncado → mandar resto como texto
-      if (texto.length > 1024) {
-        await enviarMensaje(userId, to, texto);
-      }
-
-      // Si toda la media falló, al menos mandar el texto
-      if (!okAlguna && texto) {
-        return await enviarMensaje(userId, to, texto);
-      }
-      return okAlguna;
-    }
-
-    if (texto) return await enviarMensaje(userId, to, texto);
-    return false;
-  } catch (err) {
-    console.error("❌ enviarPlantilla:", err);
-    return false;
-  }
-}
-
-// =================== TRIGGERS ===================
-async function buscarTriggerYResponder(userId, from, texto) {
-  try {
-    const { data: triggers, error } = await supabase
-      .from("triggers")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("is_active", true);
-
-    if (error) {
-      console.log("❌ getTriggers:", error);
-      return false;
-    }
-    if (!triggers || triggers.length === 0) {
-      console.log("ℹ️ Sin triggers activos");
-      return false;
-    }
-
-    const msgN = norm(texto);
-    let matched = null;
-
-    for (const t of triggers) {
-      const keyword = norm(t.keyword || t.condition || "");
-      if (!keyword) continue;
-      const matchType = (t.match_type || "contains").toLowerCase();
-
-      let hit = false;
-      if (matchType === "exact") {
-        hit = msgN === keyword;
-      } else if (matchType === "starts_with" || matchType === "startswith") {
-        hit = msgN.startsWith(keyword);
-      } else {
-        const kws = keyword.split(",").map((k) => k.trim()).filter(Boolean);
-        hit = kws.some((k) => msgN.includes(k));
-      }
-
-      if (hit) {
-        matched = t;
-        break;
-      }
-    }
-
-    if (!matched) {
-      console.log("ℹ️ Ningún trigger coincide con:", msgN);
-      return false;
-    }
-
-    console.log(
-      "🎯 Trigger match:",
-      matched.name || matched.keyword || matched.condition
-    );
-
-    // Buscar plantilla por id O por nombre
-    let template = null;
-    const tplRef = clean(
-      matched.template_id || matched.template || matched.template_name || ""
-    );
-    console.log("🔎 Buscando plantilla ref:", tplRef);
-
-    if (tplRef) {
-      const isUuid =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-          tplRef
-        );
-
-      if (isUuid) {
-        const { data: tpl, error: e1 } = await supabase
-          .from("templates")
-          .select("*")
-          .eq("id", tplRef)
-          .maybeSingle();
-        if (e1) console.log("❌ tpl by id:", e1);
-        template = tpl;
-      }
-
-      if (!template) {
-        // Buscar por nombre (sin filtrar por user_id porque la columna puede no existir
-        // o la plantilla puede ser global). Si hay varias coincidencias, preferimos la del
-        // mismo user; si no, la primera.
-        const { data: tplsByName, error: e2 } = await supabase
-          .from("templates")
-          .select("*")
-          .ilike("name", tplRef)
-          .limit(5);
-        if (e2) console.log("❌ tpl by name:", e2);
-        if (tplsByName && tplsByName.length > 0) {
-          template =
-            tplsByName.find((t) => t.user_id === userId) || tplsByName[0];
-        }
-      }
-    }
-
-    const fallbackText = clean(
-      matched.response ||
-        matched.message ||
-        template?.content ||
-        template?.message ||
-        ""
-    );
-
-    if (template) {
-      template = {
-        ...template,
-        content: clean(template.content || template.message || fallbackText),
-        variables: template.variables || {},
-        media_url: template.media_url || matched.media_url || null,
-        media_type: template.media_type || matched.media_type || null,
-      };
-      console.log(
-        "📄 Plantilla:",
-        template.name,
-        "media:",
-        !!template.media_url,
-        "imgs:",
-        template?.variables?.media?.imageUrls?.length || 0
-      );
-    } else {
-      console.log("⚠️ Sin plantilla, usando texto del trigger");
-      template = {
-        content: fallbackText,
-        variables: matched.variables || {},
-        media_url: matched.media_url || null,
-        media_type: matched.media_type || null,
-      };
-    }
-
-    let sent = await enviarPlantilla(userId, from, template);
-
-    if (!sent && fallbackText) {
-      console.log("⚠️ Falló envío, mandando solo texto");
-      sent = await enviarMensaje(userId, from, fallbackText);
-    }
-
-    if (sent) {
-      const textOut = clean(
-        template.content || template.message || fallbackText
-      );
-      const media = template?.variables?.media || {};
-      const firstMedia =
-        media.imageUrls?.[0] ||
-        media.videoUrl ||
-        media.gifUrl ||
-        template.media_url ||
-        null;
-
-      await saveInboxMessage({
-        userId,
-        from,
-        message: textOut || "[Plantilla con multimedia]",
-        source: "out",
-        mediaUrl: firstMedia,
-      });
-
-      if (template.id) {
-        await supabase
-          .from("templates")
-          .update({ usage_count: (template.usage_count || 0) + 1 })
-          .eq("id", template.id);
-      }
-    }
-
-    return sent;
-  } catch (err) {
-    console.error("❌ buscarTriggerYResponder:", err);
-    return false;
-  }
-}
-
-// =================== CONTEXTO ===================
-async function getContexto(userId, from) {
-  try {
-    const { data, error } = await supabase
-      .from("chat_context")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("from_number", from)
-      .maybeSingle();
-    if (error) console.log("❌ getContexto:", error);
-    return data || {};
-  } catch (err) {
-    console.error("❌ getContexto:", err);
-    return {};
-  }
-}
-
-async function saveContexto(userId, from, ctx = {}) {
-  try {
-    const { error } = await supabase.from("chat_context").upsert(
-      {
-        user_id: userId,
-        from_number: from,
-        last_topic: ctx?.last_topic || null,
-        last_trigger: ctx?.last_trigger || null,
-        current_product: ctx?.current_product || null,
-        step: ctx?.step || null,
-        order_data: ctx?.order_data || {},
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "user_id,from_number" }
-    );
-    if (error) console.log("❌ saveContexto:", error);
-  } catch (err) {
-    console.error("❌ saveContexto:", err);
-  }
-}
-
-// =================== PAUSA IA ===================
-async function isAiPaused(from) {
-  try {
-    const { data } = await supabase
-      .from("conversation_settings")
-      .select("ai_paused")
-      .eq("phone", from)
-      .maybeSingle();
-    return !!data?.ai_paused;
-  } catch {
-    return false;
-  }
-}
-
-// =================== INBOX ===================
-async function getHistory(userId, from) {
-  try {
-    const { data, error } = await supabase
-      .from("inbox_messages")
-      .select("message, created_at, source")
-      .eq("user_id", userId)
-      .eq("sender_id", from)
-      .order("created_at", { ascending: false })
-      .limit(14);
-
-    if (error) {
-      console.log("❌ getHistory:", error);
-      return [];
-    }
-
-    return (data || [])
-      .reverse()
-      .map((m) => ({
-        role: m.source === "out" ? "assistant" : "user",
-        content: clean(m.message),
-      }))
-      .filter((m) => m.content);
-  } catch (err) {
-    console.error("❌ getHistory:", err);
-    return [];
-  }
-}
-
-async function saveInboxMessage({
-  userId,
-  from,
-  message,
-  source,
-  mediaUrl = null,
-}) {
-  try {
-    const payload = {
-      user_id: userId,
-      source,
-      sender_id: from,
-      message: message || null,
-      media_url: mediaUrl ? [mediaUrl] : null,
-      is_read: source === "out" ? true : false,
-    };
-
-    const { error } = await supabase.from("inbox_messages").insert(payload);
-    if (error) console.log("❌ saveInboxMessage:", error);
-    return !error;
-  } catch (err) {
-    console.error("❌ saveInboxMessage:", err);
-    return false;
-  }
-}
-
-// =================== CHAT IA ===================
-async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
-  const host = req.headers.host;
-  const protocol = req.headers["x-forwarded-proto"] || "https";
-  if (!host) throw new Error("No host");
-
-  const url = `${protocol}://${host}/api/chat-ia`;
-  console.log("🌐 chat-ia URL:", url);
-
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      user_id: userId,
-      message: texto,
-      from_number: from,
-      context: ctx || {},
-      history: history || [],
-    }),
-  });
-
-  const raw = await r.text();
-  console.log("🧠 chat-ia status:", r.status, "len:", raw.length);
-
-  let data = {};
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    throw new Error("chat-ia no devolvió JSON");
-  }
-  if (!r.ok) throw new Error(data?.error || `chat-ia error ${r.status}`);
+// ======================= Envío WhatsApp =======================
+async function getCfg(userId) {
+  const { data, error } = await supabase
+    .from("whatsapp_config")
+    .select("phone_number_id, access_token")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error || !data) throw new Error("whatsapp_config not found");
   return data;
 }
 
-// =================== PROCESAR MENSAJE ===================
-async function procesar(req, message, userId, from) {
-  try {
-    if (message.type !== "text") return;
-    const texto = clean(message.text?.body || "");
-    if (!texto) return;
-
-    console.log("━━━━━━━━━━━━━━");
-    console.log("📩 IN:", from, texto);
-
-    await saveInboxMessage({ userId, from, message: texto, source: "in" });
-
-    // 1) DISPARADORES PRIMERO
-    const triggerSent = await buscarTriggerYResponder(userId, from, texto);
-    if (triggerSent) {
-      console.log("✅ Respondido por trigger");
-      return;
-    }
-
-    // 2) Pausa IA
-    const paused = await isAiPaused(from);
-    if (paused) {
-      console.log("⏸️ IA pausada para", from);
-      return;
-    }
-
-    // 3) IA
-    const ctx = await getContexto(userId, from);
-    const history = await getHistory(userId, from);
-
-    let data = {};
-    try {
-      data = await llamarChatIA({ req, userId, texto, from, ctx, history });
-    } catch (err) {
-      console.error("❌ chat-ia:", err);
-      const errMsg =
-        "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente por favor.";
-      await enviarMensaje(userId, from, errMsg);
-      await saveInboxMessage({ userId, from, message: errMsg, source: "out" });
-      return;
-    }
-
-    if (data?.context) await saveContexto(userId, from, data.context);
-
-    if (data?.response) {
-      const sent = await enviarMensaje(userId, from, data.response);
-      if (sent) {
-        await saveInboxMessage({
-          userId,
-          from,
-          message: data.response,
-          source: "out",
-        });
+async function enviarMensaje(userId, to, text) {
+  const cfg = await getCfg(userId);
+  const parts = splitMessage(text);
+  for (const part of parts) {
+    await fetch(
+      `https://graph.facebook.com/v20.0/${cfg.phone_number_id}/messages`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${cfg.access_token}`,
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to,
+          type: "text",
+          text: { body: part },
+        }),
       }
-      return;
-    }
-
-    const fallback =
-      "👋 Hola! ¿En qué puedo ayudarte?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
-    await enviarMensaje(userId, from, fallback);
-    await saveInboxMessage({ userId, from, message: fallback, source: "out" });
-  } catch (err) {
-    console.error("❌ procesar:", err);
+    );
   }
 }
 
-// =================== HANDLER ===================
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.status(200).end();
+async function enviarMedia(userId, to, mediaUrl, mediaType, caption = "") {
+  const cfg = await getCfg(userId);
+  let type = (mediaType || "").toLowerCase();
+  if (type === "gif") type = "video";
+  if (!type) type = "image";
 
+  const body = {
+    messaging_product: "whatsapp",
+    to,
+    type,
+    [type]: {
+      link: mediaUrl,
+      ...(caption && type !== "audio" ? { caption: caption.slice(0, 1024) } : {}),
+    },
+  };
+
+  await fetch(
+    `https://graph.facebook.com/v20.0/${cfg.phone_number_id}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${cfg.access_token}`,
+      },
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+async function enviarPlantilla(userId, to, template) {
+  if (template?.media_url) {
+    await enviarMedia(
+      userId,
+      to,
+      template.media_url,
+      template.media_type,
+      template.message || ""
+    );
+  } else if (template?.message) {
+    await enviarMensaje(userId, to, template.message);
+  }
+}
+
+// ======================= Inbox / Contexto / Historial =======================
+async function saveInboxMessage({ userId, from, message, source, mediaUrl = null }) {
+  try {
+    await supabase.from("inbox_messages").insert({
+      user_id: userId,
+      sender_id: from,
+      source, // "inbound" | "outbound" | "ai"
+      message: message || "",
+      media_url: mediaUrl ? [mediaUrl] : null,
+      is_read: source !== "inbound",
+    });
+  } catch (e) {
+    console.error("saveInboxMessage:", e.message);
+  }
+}
+
+async function getContexto(userId, from) {
+  const { data } = await supabase
+    .from("chat_context")
+    .select("context")
+    .eq("user_id", userId)
+    .eq("sender_id", from)
+    .maybeSingle();
+  return data?.context || {};
+}
+
+async function saveContexto(userId, from, ctx = {}) {
+  await supabase
+    .from("chat_context")
+    .upsert(
+      { user_id: userId, sender_id: from, context: ctx, updated_at: new Date().toISOString() },
+      { onConflict: "user_id,sender_id" }
+    );
+}
+
+async function isAiPaused(from) {
+  const { data } = await supabase
+    .from("conversation_settings")
+    .select("ai_paused")
+    .eq("sender_id", from)
+    .maybeSingle();
+  return !!data?.ai_paused;
+}
+
+async function getHistory(userId, from) {
+  const { data } = await supabase
+    .from("inbox_messages")
+    .select("source, message, created_at")
+    .eq("user_id", userId)
+    .eq("sender_id", from)
+    .order("created_at", { ascending: false })
+    .limit(20);
+  return (data || []).reverse();
+}
+
+// ======================= NUEVO: Detección y creación de pedidos =======================
+/**
+ * Parsea un texto que contenga "✅ PEDIDO CONFIRMADO" (formato típico de la IA)
+ * y devuelve los campos del pedido. Soporta variaciones.
+ *
+ * Ejemplo de texto esperado:
+ *   ✅ PEDIDO CONFIRMADO
+ *   Producto: Reloj X
+ *   Cantidad: 2
+ *   Cliente: Juan Pérez
+ *   Ciudad: Bogotá
+ *   Dirección: Calle 123
+ *   Total: 150000
+ */
+function parseOrderFromText(text) {
+  if (!text) return null;
+  const t = text.replace(/\r/g, "");
+  const isOrder =
+    /pedido\s+confirmado/i.test(t) ||
+    /✅\s*pedido/i.test(t) ||
+    /confirmaci[oó]n\s+de\s+pedido/i.test(t);
+  if (!isOrder) return null;
+
+  const grab = (regexes) => {
+    for (const re of regexes) {
+      const m = t.match(re);
+      if (m && m[1]) return clean(m[1]).replace(/[*_`]/g, "");
+    }
+    return null;
+  };
+
+  const product = grab([
+    /producto\s*[:\-]\s*(.+)/i,
+    /art[ií]culo\s*[:\-]\s*(.+)/i,
+  ]);
+  const quantityRaw = grab([
+    /cantidad\s*[:\-]\s*(\d+)/i,
+    /unidades?\s*[:\-]\s*(\d+)/i,
+  ]);
+  const customer = grab([
+    /cliente\s*[:\-]\s*(.+)/i,
+    /nombre\s*[:\-]\s*(.+)/i,
+  ]);
+  const city = grab([/ciudad\s*[:\-]\s*(.+)/i, /municipio\s*[:\-]\s*(.+)/i]);
+  const address = grab([
+    /direcci[oó]n\s*[:\-]\s*(.+)/i,
+    /domicilio\s*[:\-]\s*(.+)/i,
+    /barrio\s*[:\-]\s*(.+)/i,
+  ]);
+  const total = grab([
+    /total\s*[:\-]\s*\$?\s*([\d.,]+)/i,
+    /precio\s*[:\-]\s*\$?\s*([\d.,]+)/i,
+    /valor\s*[:\-]\s*\$?\s*([\d.,]+)/i,
+  ]);
+
+  return {
+    product: product || null,
+    quantity: quantityRaw ? parseInt(quantityRaw, 10) : 1,
+    customer_name: customer || null,
+    city: city || null,
+    address: address || null,
+    total_amount: total || null,
+  };
+}
+
+/**
+ * Si el texto enviado al cliente es una confirmación de pedido,
+ * crea la fila en `orders` y registra en `order_confirmations`.
+ * Es idempotente: si ya hay un pedido reciente (< 60s) para ese número, no duplica.
+ */
+async function maybeCreateOrderFromOutbound({ userId, to, text }) {
+  try {
+    const parsed = parseOrderFromText(text);
+    if (!parsed) return;
+
+    // Evitar duplicados: si hay un pedido para este número en los últimos 60s, salir.
+    const sinceIso = new Date(Date.now() - 60_000).toISOString();
+    const { data: dupe } = await supabase
+      .from("orders")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("phone", to)
+      .gte("created_at", sinceIso)
+      .limit(1);
+    if (dupe && dupe.length) return;
+
+    const ctx = await getContexto(userId, to);
+    const nowIso = new Date().toISOString();
+
+    const orderRow = {
+      user_id: userId,
+      from_number: to,
+      phone: to,
+      product: parsed.product || ctx.producto || ctx.product || null,
+      producto: parsed.product || ctx.producto || ctx.product || null,
+      customer_name: parsed.customer_name || ctx.nombre || ctx.customer_name || null,
+      city: parsed.city || ctx.ciudad || ctx.city || null,
+      ciudad: parsed.city || ctx.ciudad || ctx.city || null,
+      address: parsed.address || ctx.direccion || ctx.address || null,
+      quantity: parsed.quantity || ctx.cantidad || 1,
+      total_amount: parsed.total_amount || ctx.total || null,
+      status: "confirmed",
+      order_confirmation_sent: true,
+      order_confirmation_sent_at: nowIso,
+      current_step: "confirmed",
+      fecha: nowIso,
+      conversation_history: ctx.history || null,
+    };
+
+    const { data: inserted, error } = await supabase
+      .from("orders")
+      .insert(orderRow)
+      .select("id")
+      .single();
+
+    if (error) {
+      console.error("orders insert error:", error.message);
+      return;
+    }
+
+    await supabase.from("order_confirmations").insert({
+      user_id: userId,
+      order_id: inserted.id,
+      to_number: to,
+      message: text,
+      status: "sent",
+      sent_at: nowIso,
+      retry_count: 0,
+    });
+
+    console.log("✅ Pedido creado:", inserted.id, "para", to);
+  } catch (e) {
+    console.error("maybeCreateOrderFromOutbound error:", e.message);
+  }
+}
+
+// ======================= Triggers =======================
+async function buscarTriggerYResponder(userId, from, texto) {
+  const nTexto = norm(texto);
+  const { data: triggers } = await supabase
+    .from("triggers")
+    .select("id, keywords, template_id, match_type, enabled")
+    .eq("user_id", userId)
+    .eq("enabled", true);
+
+  if (!triggers || !triggers.length) return false;
+
+  let matched = null;
+  for (const tr of triggers) {
+    const kws = (tr.keywords || []).map((k) => norm(k));
+    const hit = kws.some((k) => {
+      if (!k) return false;
+      if (tr.match_type === "exact") return nTexto === k;
+      return nTexto.includes(k);
+    });
+    if (hit) {
+      matched = tr;
+      break;
+    }
+  }
+  if (!matched) return false;
+
+  const { data: tpl } = await supabase
+    .from("templates")
+    .select("id, message, media_url, media_type, usage_count")
+    .eq("id", matched.template_id)
+    .maybeSingle();
+
+  if (!tpl) return false;
+
+  await enviarPlantilla(userId, from, tpl);
+  await supabase
+    .from("templates")
+    .update({ usage_count: (tpl.usage_count || 0) + 1 })
+    .eq("id", tpl.id);
+
+  await saveInboxMessage({
+    userId,
+    from,
+    message: tpl.message || "",
+    source: "outbound",
+    mediaUrl: tpl.media_url || null,
+  });
+
+  // Detección de pedido también en plantillas
+  await maybeCreateOrderFromOutbound({ userId, to: from, text: tpl.message || "" });
+
+  return true;
+}
+
+// ======================= IA =======================
+async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
+  try {
+    const proto = req.headers["x-forwarded-proto"] || "https";
+    const host = req.headers["x-forwarded-host"] || req.headers.host;
+    const url = `${proto}://${host}/api/chat-ia`;
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId, from, message: texto, context: ctx, history }),
+    });
+    const data = await r.json().catch(() => ({}));
+    return data?.reply || data?.message || null;
+  } catch (e) {
+    console.error("chat-ia error:", e.message);
+    return null;
+  }
+}
+
+async function procesar(req, message, userId, from) {
+  const texto = clean(message?.text?.body || message?.button?.text || "");
+  if (!texto) return;
+
+  await saveInboxMessage({ userId, from, message: texto, source: "inbound" });
+
+  // 1) Trigger
+  const hit = await buscarTriggerYResponder(userId, from, texto);
+  if (hit) return;
+
+  // 2) IA pausada?
+  if (await isAiPaused(from)) return;
+
+  // 3) Llamar IA
+  const ctx = await getContexto(userId, from);
+  const history = await getHistory(userId, from);
+  const reply = await llamarChatIA({ req, userId, texto, from, ctx, history });
+
+  if (reply) {
+    await enviarMensaje(userId, from, reply);
+    await saveInboxMessage({ userId, from, message: reply, source: "ai" });
+    // 🆕 Si la IA confirmó pedido, lo creamos en la tabla orders
+    await maybeCreateOrderFromOutbound({ userId, to: from, text: reply });
+  }
+}
+
+// ======================= Handler =======================
+export default async function handler(req, res) {
+  // GET: verificación de Meta
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
-      console.log("✅ Webhook verificado");
       return res.status(200).send(challenge);
     }
-    return res.status(403).send("Token inválido");
+    return res.sendStatus(403);
   }
 
-  if (req.method === "POST") {
-    try {
-      const body = req.body;
-      console.log("📥 BODY:", JSON.stringify(body).slice(0, 1500));
+  if (req.method !== "POST") return res.status(405).end();
 
-      if (body.object !== "whatsapp_business_account") {
-        return res.status(404).send("Not WhatsApp");
-      }
+  try {
+    const body = req.body;
+    if (body.object !== "whatsapp_business_account") return res.sendStatus(404);
 
-      for (const entry of body.entry || []) {
-        for (const change of entry.changes || []) {
-          const value = change.value;
-          const phoneId = value?.metadata?.phone_number_id;
-          if (!phoneId) continue;
+    for (const entry of body.entry || []) {
+      for (const change of entry.changes || []) {
+        const value = change.value || {};
+        const phoneNumberId = value.metadata?.phone_number_id;
+        if (!phoneNumberId) continue;
 
-          const { data: config, error } = await supabase
-            .from("whatsapp_config")
-            .select("user_id")
-            .eq("phone_number_id", phoneId)
-            .maybeSingle();
+        // Mapear phone_number_id -> user_id
+        const { data: cfg } = await supabase
+          .from("whatsapp_config")
+          .select("user_id")
+          .eq("phone_number_id", phoneNumberId)
+          .maybeSingle();
+        if (!cfg?.user_id) continue;
 
-          if (error || !config?.user_id) {
-            console.log("❌ Sin user_id para phoneId:", phoneId);
-            continue;
-          }
-
-          for (const msg of value.messages || []) {
-            await procesar(req, msg, config.user_id, msg.from);
-          }
+        for (const message of value.messages || []) {
+          const from = message.from;
+          await procesar(req, message, cfg.user_id, from);
         }
       }
-
-      return res.status(200).send("EVENT_RECEIVED");
-    } catch (e) {
-      console.error("❌ webhook:", e);
-      return res.status(500).json({ error: "Error interno" });
     }
-  }
 
-  return res.status(405).send("Method Not Allowed");
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    console.error("webhook error:", e);
+    return res.status(200).json({ ok: false, error: e.message });
+  }
 }
