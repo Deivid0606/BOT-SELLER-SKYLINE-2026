@@ -6,7 +6,8 @@ const supabase = createClient(
 );
 
 const VERIFY_TOKEN = "miTokenSeguro2026";
-const BASE_URL = process.env.BASE_URL || "https://bot-seller-skyline-2026.vercel.app";
+const BASE_URL =
+  process.env.BASE_URL || "https://bot-seller-skyline-2026.vercel.app";
 
 const clean = (t) => String(t || "").trim();
 
@@ -22,8 +23,10 @@ async function enviarMensaje(userId, to, text) {
     return false;
   }
 
-  const partes = [];
   const msg = clean(text);
+  if (!msg) return false;
+
+  const partes = [];
   const max = 900;
 
   for (let i = 0; i < msg.length; i += max) {
@@ -49,77 +52,124 @@ async function enviarMensaje(userId, to, text) {
     );
 
     const raw = await response.text();
+
     console.log("📤 Meta status:", response.status);
     console.log("📤 Meta response:", raw);
 
-    if (!response.ok) return false;
+    if (!response.ok) {
+      console.log("❌ Error enviando WhatsApp");
+      return false;
+    }
   }
 
   return true;
 }
 
 async function getContexto(userId, from) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("chat_context")
     .select("*")
     .eq("user_id", userId)
     .eq("from_number", from)
     .maybeSingle();
 
+  if (error) {
+    console.log("❌ Error leyendo contexto:", error);
+    return {};
+  }
+
   return data || {};
 }
 
-async function saveContexto(userId, from, ctx) {
-  const { error } = await supabase.from("chat_context").upsert(
-    {
-      user_id: userId,
-      from_number: from,
-      last_topic: ctx?.last_topic || null,
-      last_trigger: ctx?.last_trigger || null,
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "user_id,from_number" }
-  );
+async function saveContexto(userId, from, ctx = {}) {
+  const payload = {
+    user_id: userId,
+    from_number: from,
+
+    last_topic: ctx?.last_topic || null,
+    last_trigger: ctx?.last_trigger || null,
+
+    current_product: ctx?.current_product || null,
+    step: ctx?.step || null,
+    order_data: ctx?.order_data || {},
+
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase.from("chat_context").upsert(payload, {
+    onConflict: "user_id,from_number",
+  });
 
   if (error) console.log("❌ Error guardando contexto:", error);
+  else console.log("✅ Contexto guardado:", payload);
 }
 
 async function getHistory(userId, from) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("inbox_messages")
     .select("message, created_at, source")
     .eq("user_id", userId)
     .eq("sender_id", from)
     .order("created_at", { ascending: false })
-    .limit(12);
+    .limit(14);
+
+  if (error) {
+    console.log("❌ Error leyendo historial:", error);
+    return [];
+  }
 
   return (data || [])
     .reverse()
     .map((m) => ({
       role: m.source === "out" ? "assistant" : "user",
       content: clean(m.message).slice(0, 500),
-    }));
+    }))
+    .filter((m) => m.content);
 }
 
-async function procesar(message, userId, from) {
-  if (message.type !== "text") return;
+async function isDuplicateMessage(messageId) {
+  if (!messageId) return false;
 
-  const texto = clean(message.text?.body || "");
-  if (!texto) return;
+  const { data, error } = await supabase
+    .from("inbox_messages")
+    .select("id")
+    .eq("wa_message_id", messageId)
+    .maybeSingle();
 
-  console.log("━━━━━━━━━━━━━━━━━━━━━━");
-  console.log("📩 WhatsApp recibido:", from, texto);
+  if (error) {
+    console.log("⚠️ No se pudo verificar duplicado:", error);
+    return false;
+  }
 
-  await supabase.from("inbox_messages").insert({
+  return !!data;
+}
+
+async function saveInboxMessage({
+  userId,
+  source,
+  from,
+  message,
+  waMessageId = null,
+}) {
+  const payload = {
     user_id: userId,
-    source: "in",
+    source,
     sender_id: from,
-    message: texto,
-  });
+    message,
+    ...(waMessageId ? { wa_message_id: waMessageId } : {}),
+  };
 
-  const ctx = await getContexto(userId, from);
-  const history = await getHistory(userId, from);
+  const { error } = await supabase.from("inbox_messages").insert(payload);
 
+  if (error) {
+    console.log("❌ Error guardando inbox:", error);
+    return false;
+  }
+
+  return true;
+}
+
+async function llamarChatIA({ userId, texto, from, ctx, history }) {
   console.log("BASE_URL:", BASE_URL);
   console.log("📡 Llamando chat-ia con:", texto);
 
@@ -130,8 +180,8 @@ async function procesar(message, userId, from) {
       user_id: userId,
       message: texto,
       from_number: from,
-      context: ctx,
-      history,
+      context: ctx || {},
+      history: history || [],
     }),
   });
 
@@ -147,37 +197,91 @@ async function procesar(message, userId, from) {
     console.log("❌ chat-ia no devolvió JSON válido");
   }
 
+  if (!resIA.ok) {
+    console.log("❌ chat-ia respondió con error:", resIA.status);
+  }
+
+  return data;
+}
+
+async function procesar(message, userId, from) {
+  if (message.type !== "text") {
+    console.log("⚠️ Mensaje no texto ignorado:", message.type);
+    return;
+  }
+
+  const texto = clean(message.text?.body || "");
+  if (!texto) return;
+
+  console.log("━━━━━━━━━━━━━━━━━━━━━━");
+  console.log("📩 WhatsApp recibido:", from, texto);
+  console.log("🆔 WA message id:", message.id || "sin id");
+
+  if (await isDuplicateMessage(message.id)) {
+    console.log("⚠️ Mensaje duplicado ignorado:", message.id);
+    return;
+  }
+
+  await saveInboxMessage({
+    userId,
+    source: "in",
+    from,
+    message: texto,
+    waMessageId: message.id || null,
+  });
+
+  const ctx = await getContexto(userId, from);
+  const history = await getHistory(userId, from);
+
+  const data = await llamarChatIA({
+    userId,
+    texto,
+    from,
+    ctx,
+    history,
+  });
+
+  if (data?.context) {
+    await saveContexto(userId, from, data.context);
+  }
+
   if (data?.response) {
     const sent = await enviarMensaje(userId, from, data.response);
 
     if (sent) {
-      await supabase.from("inbox_messages").insert({
-        user_id: userId,
+      await saveInboxMessage({
+        userId,
         source: "out",
-        sender_id: from,
+        from,
         message: data.response,
       });
-    }
-
-    if (data.context) {
-      await saveContexto(userId, from, data.context);
     }
 
     return;
   }
 
-  const fallback = "👋 Hola! ¿En qué puedo ayudarte hoy?";
+  const fallback =
+    "👋 Hola! ¿En qué puedo ayudarte hoy?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
+
   await enviarMensaje(userId, from, fallback);
 
-  await supabase.from("inbox_messages").insert({
-    user_id: userId,
+  await saveInboxMessage({
+    userId,
     source: "out",
-    sender_id: from,
+    from,
     message: fallback,
   });
 }
 
 export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
@@ -195,7 +299,7 @@ export default async function handler(req, res) {
     try {
       const body = req.body;
 
-      console.log("📥 WEBHOOK BODY:", JSON.stringify(body).slice(0, 2000));
+      console.log("📥 WEBHOOK BODY:", JSON.stringify(body).slice(0, 2500));
 
       if (body.object !== "whatsapp_business_account") {
         return res.status(404).send("Not WhatsApp");
@@ -206,13 +310,16 @@ export default async function handler(req, res) {
           const value = change.value;
           const phoneId = value?.metadata?.phone_number_id;
 
-          if (!phoneId) continue;
+          if (!phoneId) {
+            console.log("⚠️ Sin phone_number_id");
+            continue;
+          }
 
           const { data: config, error } = await supabase
             .from("whatsapp_config")
             .select("user_id")
             .eq("phone_number_id", phoneId)
-            .single();
+            .maybeSingle();
 
           if (error || !config?.user_id) {
             console.log("❌ No encontré user_id para phoneId:", phoneId, error);
