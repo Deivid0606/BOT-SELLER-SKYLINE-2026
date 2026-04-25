@@ -94,7 +94,7 @@ type FullTemplate = {
   variables: any;
 };
 
-const allTags = ["venta", "confirmado", "prospecto", "consulta", "venta web"];
+type DbTag = { id: string; name: string; color: string };
 
 function isOutgoingType(type?: string | null) {
   return !!type && type.startsWith("out_");
@@ -133,8 +133,56 @@ export default function InboxPage() {
   const [selectedFile, setSelectedFile] = useState<{ file: File; preview: string; type: string } | null>(null);
   const [selectedTemplateMedia, setSelectedTemplateMedia] = useState<{ url: string; type: string } | null>(null);
 
+  // ✅ Etiquetas dinámicas desde DB
+  const [allTags, setAllTags] = useState<DbTag[]>([]);
+  // contact_id (= phone) → array de tag names asignadas
+  const [contactTagsMap, setContactTagsMap] = useState<Record<string, string[]>>({});
+  // phone → tag desde conversation_settings (compatibilidad)
+  const [convoTagsMap, setConvoTagsMap] = useState<Record<string, string>>({});
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
+
+  // ─────────────────────────────────────────────
+  // Cargar etiquetas reales del usuario
+  // ─────────────────────────────────────────────
+  const loadAllTags = async () => {
+    if (!user) return;
+    const { data } = await supabase
+      .from("tags")
+      .select("id, name, color")
+      .eq("user_id", user.id)
+      .order("name");
+    setAllTags((data || []) as DbTag[]);
+  };
+
+  // Cargar asignaciones contact_tags + conversation_settings.tag (merge)
+  const loadAssignments = async () => {
+    if (!user) return;
+    // contact_tags JOIN tags
+    const { data: assigns } = await supabase
+      .from("contact_tags")
+      .select("contact_id, tags(name)")
+      .eq("user_id", user.id);
+    const map: Record<string, string[]> = {};
+    (assigns || []).forEach((a: any) => {
+      const tagName = a.tags?.name;
+      if (!tagName) return;
+      if (!map[a.contact_id]) map[a.contact_id] = [];
+      map[a.contact_id].push(tagName);
+    });
+    setContactTagsMap(map);
+
+    // conversation_settings.tag (legacy / quick tag)
+    const { data: convos } = await supabase
+      .from("conversation_settings")
+      .select("phone, tag");
+    const cmap: Record<string, string> = {};
+    (convos || []).forEach((c: any) => {
+      if (c.phone && c.tag) cmap[c.phone] = c.tag;
+    });
+    setConvoTagsMap(cmap);
+  };
 
   useEffect(() => {
     const loadTemplates = async () => {
@@ -158,6 +206,8 @@ export default function InboxPage() {
       }
     };
     loadTemplates();
+    loadAllTags();
+    loadAssignments();
   }, [user]);
 
   useEffect(() => {
@@ -272,15 +322,20 @@ export default function InboxPage() {
       const last = ordered[0];
       const lastDate = last?.created_at ? new Date(last.created_at) : new Date();
 
+      // ✅ tag merged: prioridad contact_tags, fallback conversation_settings
+      const ct = contactTagsMap[number];
+      const tag = (ct && ct.length > 0) ? ct[0] : convoTagsMap[number];
+
       return {
         number,
         lastMsg: last?.message || "",
         time: format(lastDate, "HH:mm"),
         date: format(lastDate, "yyyy-MM-dd"),
         unread: messages.filter((m) => !m.is_processed && !isOutgoingType(m.message_type)).length,
+        tag,
       };
     });
-  }, [dbMessages]);
+  }, [dbMessages, contactTagsMap, convoTagsMap]);
 
   const filteredChats = useMemo(() => {
     return chats.filter((chat) => {
@@ -292,12 +347,16 @@ export default function InboxPage() {
         return false;
       }
 
-      if (filterTag && chat.tag !== filterTag) return false;
+      if (filterTag) {
+        const tagsForChat = contactTagsMap[chat.number] || [];
+        const hasTag = tagsForChat.includes(filterTag) || chat.tag === filterTag;
+        if (!hasTag) return false;
+      }
       if (filterDate && chat.date !== format(filterDate, "yyyy-MM-dd")) return false;
 
       return true;
     });
-  }, [chats, searchQuery, filterTag, filterDate]);
+  }, [chats, searchQuery, filterTag, filterDate, contactTagsMap]);
 
   const selectedNumber = filteredChats[selectedChat]?.number;
 
@@ -306,7 +365,6 @@ export default function InboxPage() {
 
     const chatMessages = dbMessages.filter((msg) => msg.from_number === selectedNumber);
     
-    // Ordenar por fecha (más antiguo primero para orden cronológico correcto)
     const sortedMessages = [...chatMessages].sort((a, b) => {
       const dateA = new Date(a.created_at || 0).getTime();
       const dateB = new Date(b.created_at || 0).getTime();
@@ -566,11 +624,36 @@ export default function InboxPage() {
       toast({ title: "Error", description: error.message, variant: "destructive" });
       return;
     }
+    // ✅ También guardar en contact_tags si existe esa etiqueta
+    await assignTagToContact(selectedNumber, tag);
     toast({ title: saleType === "normal" ? "✏️ Venta Normal marcada" : "🌐 Venta Web marcada" });
+  };
+
+  // ✅ NUEVO: asigna etiqueta REAL en contact_tags (persistente)
+  const assignTagToContact = async (contactId: string, tagName: string) => {
+    if (!user || !contactId || !tagName) return;
+    // buscar tag_id
+    const tag = allTags.find((t) => t.name === tagName);
+    if (!tag) {
+      console.warn(`⚠️ Etiqueta "${tagName}" no existe en tabla tags`);
+      return;
+    }
+    const { error } = await supabase
+      .from("contact_tags")
+      .upsert(
+        { contact_id: contactId, tag_id: tag.id, user_id: user.id },
+        { onConflict: "contact_id,tag_id,user_id" }
+      );
+    if (error) {
+      console.error("contact_tags upsert error:", error);
+    } else {
+      await loadAssignments();
+    }
   };
 
   const handleSetTag = async (tag: string) => {
     if (!selectedNumber || !tag) return;
+    // Guardar en conversation_settings (legacy quick tag)
     const { error } = await supabase
       .from("conversation_settings")
       .upsert({ phone: selectedNumber, tag }, { onConflict: "phone" });
@@ -578,6 +661,8 @@ export default function InboxPage() {
       toast({ title: "Error", description: error.message, variant: "destructive" });
       return;
     }
+    // ✅ Guardar también en contact_tags para que persista en filtros
+    await assignTagToContact(selectedNumber, tag);
     toast({ title: `🏷️ Etiqueta: ${tag}` });
   };
 
@@ -690,10 +775,9 @@ export default function InboxPage() {
             </button>
             <select onChange={(e) => { if (e.target.value) { handleSetTag(e.target.value); e.target.value = ""; } }} defaultValue="" className="ml-auto text-[11px] bg-secondary/40 border border-border/40 rounded-lg px-2.5 py-1.5 text-muted-foreground focus:outline-none focus:border-primary/30 transition-colors">
               <option value="">Etiquetar...</option>
-              <option>venta normal cargada</option>
-              <option>venta web cargada</option>
-              <option>prospecto</option>
-              <option>consulta</option>
+              {allTags.map((t) => (
+                <option key={t.id} value={t.name}>{t.name}</option>
+              ))}
             </select>
           </div>
 
@@ -948,17 +1032,20 @@ export default function InboxPage() {
                       <div className="flex flex-wrap gap-1">
                         {allTags.map((tag) => (
                           <button
-                            key={tag}
-                            onClick={() => setFilterTag(filterTag === tag ? null : tag)}
+                            key={tag.id}
+                            onClick={() => setFilterTag(filterTag === tag.name ? null : tag.name)}
                             className={`text-[10px] px-2.5 py-1 rounded-lg border transition-all duration-200 ${
-                              filterTag === tag
+                              filterTag === tag.name
                                 ? "bg-primary/15 text-primary border-primary/25 shadow-sm"
                                 : "bg-secondary/30 text-muted-foreground border-border/30 hover:bg-secondary/50"
                             }`}
                           >
-                            {tag}
+                            {tag.name}
                           </button>
                         ))}
+                        {allTags.length === 0 && (
+                          <span className="text-[10px] text-muted-foreground italic">No hay etiquetas. Creá en pestaña Etiquetas.</span>
+                        )}
                       </div>
                     </div>
 
@@ -1031,6 +1118,18 @@ export default function InboxPage() {
                     </div>
                     <span className="font-mono text-xs font-bold">{chat.number}</span>
                   </div>
+                  {chat.tag && (
+                    <span
+                      className="text-[9px] px-1.5 py-0.5 rounded-full font-medium border"
+                      style={{
+                        backgroundColor: (allTags.find(t => t.name === chat.tag)?.color || "#64748B") + "20",
+                        color: allTags.find(t => t.name === chat.tag)?.color || "#64748B",
+                        borderColor: (allTags.find(t => t.name === chat.tag)?.color || "#64748B") + "40",
+                      }}
+                    >
+                      {chat.tag}
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center justify-between mt-1.5 ml-9.5">
                   <span className="text-xs text-muted-foreground truncate max-w-[180px]">{chat.lastMsg}</span>
@@ -1056,6 +1155,3 @@ export default function InboxPage() {
     </div>
   );
 }
-
-
-
