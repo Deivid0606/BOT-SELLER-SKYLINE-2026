@@ -9,6 +9,7 @@ const supabase = createClient(
 const VERIFY_TOKEN = "miTokenSeguro2026";
 
 const clean = (t) => String(t || "").trim();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const normalize = (t) =>
   clean(t)
@@ -211,7 +212,6 @@ async function saveReceivedMessage({
       from_number: from,
       message,
       message_type: messageType || "text",
-      // ✅ FIX: media_url es ARRAY → mandar array; media_url_text es TEXT → mandar string
       media_url: mediaUrl ? (Array.isArray(mediaUrl) ? mediaUrl : [mediaUrl]) : null,
       media_url_text: mediaUrl ? (Array.isArray(mediaUrl) ? mediaUrl[0] : mediaUrl) : null,
       is_read: !!isOutgoing,
@@ -224,7 +224,6 @@ async function saveReceivedMessage({
   }
 }
 
-// ✅ FIX PRINCIPAL: extrae TODOS los medios de la plantilla mirando variables.media + columnas legacy
 function extraerMediosDePlantilla(plantilla) {
   const imagenes = [];
   let video = null;
@@ -232,7 +231,6 @@ function extraerMediosDePlantilla(plantilla) {
 
   if (!plantilla) return { imagenes, video, gif };
 
-  // 1) variables.media (FORMATO REAL que usa tu app)
   const m = plantilla.variables?.media;
   if (m && typeof m === "object") {
     if (Array.isArray(m.imageUrls)) {
@@ -242,14 +240,12 @@ function extraerMediosDePlantilla(plantilla) {
     if (m.gifUrl) gif = m.gifUrl;
   }
 
-  // 2) Fallback: columnas legacy media_urls (array)
   if (Array.isArray(plantilla.media_urls)) {
     for (const u of plantilla.media_urls) {
       if (u && !imagenes.includes(u)) imagenes.push(u);
     }
   }
 
-  // 3) Fallback: columna media_url (single) — solo si no hay nada todavía
   if (imagenes.length === 0 && !video && !gif && plantilla.media_url) {
     if (plantilla.media_type === "video") video = plantilla.media_url;
     else if (plantilla.media_type === "gif") gif = plantilla.media_url;
@@ -257,6 +253,134 @@ function extraerMediosDePlantilla(plantilla) {
   }
 
   return { imagenes, video, gif };
+}
+
+// ✅ NUEVO: helper que envía una plantilla completa (texto + imágenes + video + gif).
+// Reutilizado por principal y secundario.
+async function enviarPlantillaCompleta({ userId, from, templateName, fallbackText }) {
+  let plantilla = null;
+  if (templateName && templateName !== "Ninguna") {
+    const { data: tpl } = await supabase
+      .from("templates")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("name", templateName)
+      .maybeSingle();
+    plantilla = tpl;
+  }
+
+  const mensajeFinal = clean(plantilla?.content || fallbackText || "");
+  const { imagenes, video, gif } = extraerMediosDePlantilla(plantilla);
+  console.log(`📦 Plantilla "${plantilla?.name || templateName}" → ${imagenes.length} img, video: ${!!video}, gif: ${!!gif}`);
+
+  // 1) Imágenes (primera con caption)
+  for (let i = 0; i < imagenes.length; i++) {
+    const url = imagenes[i];
+    const caption = i === 0 && mensajeFinal ? mensajeFinal : "";
+    const ok = await enviarMedia(userId, from, url, "image", caption);
+    if (ok) {
+      await saveReceivedMessage({
+        userId,
+        from,
+        message: caption || `[image] ${url}`,
+        messageType: "out_image",
+        mediaUrl: url,
+      });
+    }
+  }
+
+  // 2) Si no había imágenes pero sí texto → mandar texto solo
+  if (imagenes.length === 0 && mensajeFinal) {
+    const sent = await enviarMensaje(userId, from, mensajeFinal);
+    if (sent) {
+      await saveReceivedMessage({
+        userId, from,
+        message: mensajeFinal,
+        messageType: "out_text",
+      });
+    }
+  }
+
+  // 3) Video
+  if (video) {
+    const ok = await enviarMedia(userId, from, video, "video", "");
+    if (ok) {
+      await saveReceivedMessage({
+        userId, from,
+        message: `[video] ${video}`,
+        messageType: "out_video",
+        mediaUrl: video,
+      });
+    }
+  }
+
+  // 4) Gif
+  if (gif) {
+    const ok = await enviarMedia(userId, from, gif, "image", "");
+    if (ok) {
+      await saveReceivedMessage({
+        userId, from,
+        message: `[gif] ${gif}`,
+        messageType: "out_gif",
+        mediaUrl: gif,
+      });
+    }
+  }
+
+  if (plantilla?.id) {
+    try {
+      await supabase
+        .from("templates")
+        .update({ usage_count: (plantilla.usage_count || 0) + 1 })
+        .eq("id", plantilla.id);
+    } catch {}
+  }
+
+  return plantilla;
+}
+
+// ✅ NUEVO: aplicar auto_tag con schema real (tags + contact_tags)
+async function aplicarAutoTag(userId, contactId, tagName) {
+  if (!tagName) return;
+  try {
+    const { data: tag } = await supabase
+      .from("tags")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("name", tagName)
+      .maybeSingle();
+    if (!tag) {
+      console.log(`⚠️ auto_tag: no existe etiqueta "${tagName}" en tabla tags`);
+      return;
+    }
+    await supabase
+      .from("contact_tags")
+      .upsert(
+        { contact_id: contactId, tag_id: tag.id, user_id: userId },
+        { onConflict: "contact_id,tag_id,user_id" }
+      );
+    console.log(`🏷️ auto_tag aplicado: "${tagName}" → ${contactId}`);
+  } catch (e) {
+    console.log("⚠️ aplicarAutoTag error:", e.message);
+  }
+}
+
+// ✅ NUEVO: matcher con tipo de match
+function matchKeywords(condicion, tipo, textoNorm) {
+  if (!condicion) return false;
+  const cond = normalize(condicion);
+  if (!cond) return false;
+  const t = (tipo || "").toLowerCase();
+  if (t === "exact" || t.includes("exacto")) return textoNorm === cond;
+  return textoNorm.includes(cond);
+}
+
+function matchSecundario(secundario, textoNorm) {
+  if (!secundario?.enabled) return false;
+  const valores = Array.isArray(secundario.conditionValues) ? secundario.conditionValues : [];
+  if (valores.length === 0) return false;
+  const tipo = secundario.conditionType === "exact" ? "exact" : "keyword";
+  return valores.some((v) => matchKeywords(v, tipo, textoNorm));
 }
 
 async function evaluarDisparadores({ userId, from, texto }) {
@@ -276,22 +400,14 @@ async function evaluarDisparadores({ userId, from, texto }) {
     const textoNorm = normalize(texto);
 
     for (const trig of triggers) {
-      const tipo = (trig.type || "").toLowerCase();
-      const cond = normalize(trig.condition || "");
-      if (!cond) continue;
+      const matchPrimary = matchKeywords(trig.condition, trig.type, textoNorm);
+      const matchSecondary = matchSecundario(trig.secondary, textoNorm);
 
-      let match = false;
-      if (tipo.includes("palabra") || tipo === "keyword" || tipo === "palabra clave") {
-        match = textoNorm.includes(cond);
-      } else if (tipo === "exact" || tipo.includes("exacto")) {
-        match = textoNorm === cond;
-      } else {
-        match = textoNorm.includes(cond);
-      }
+      if (!matchPrimary && !matchSecondary) continue;
 
-      if (!match) continue;
-      console.log(`🎯 Disparador MATCH: "${trig.name}" (cond: "${trig.condition}")`);
+      console.log(`🎯 Disparador MATCH: "${trig.name}" → primary=${matchPrimary} secondary=${matchSecondary}`);
 
+      // no_repeat: solo bloquea si ya se envió este trigger antes
       if (trig.no_repeat) {
         const { data: yaEnviado } = await supabase
           .from("inbox_messages")
@@ -308,6 +424,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
         }
       }
 
+      // send_limit
       if (trig.send_limit && trig.send_limit !== "" && trig.send_limit !== "∞") {
         const limite = parseInt(trig.send_limit, 10);
         if (!isNaN(limite) && limite > 0) {
@@ -322,93 +439,41 @@ async function evaluarDisparadores({ userId, from, texto }) {
         }
       }
 
-      let plantilla = null;
-      if (trig.template) {
-        const { data: tpl } = await supabase
-          .from("templates")
-          .select("*")
-          .eq("user_id", userId)
-          .eq("name", trig.template)
-          .maybeSingle();
-        plantilla = tpl;
-      }
+      // ─────────────────────────────────────────────
+      // 1) PRIMARIO
+      // ─────────────────────────────────────────────
+      let plantillaPrimary = null;
+      if (matchPrimary) {
+        plantillaPrimary = await enviarPlantillaCompleta({
+          userId,
+          from,
+          templateName: trig.template,
+          fallbackText: trig.response,
+        });
 
-      const mensajeFinal = clean(plantilla?.content || trig.response || "");
-
-      const delayMin = parseInt(trig.delay, 10) || 0;
-      if (delayMin > 0) {
-        console.log(`⏰ Delay configurado: ${delayMin} min (enviando inmediato en serverless)`);
-      }
-
-      // ✅ FIX: extraer TODOS los medios y enviarlos
-      const { imagenes, video, gif } = extraerMediosDePlantilla(plantilla);
-      console.log(`📦 Plantilla "${plantilla?.name}" → ${imagenes.length} img, video: ${!!video}, gif: ${!!gif}`);
-
-      // 1) Enviar imágenes (la primera con caption del texto, las demás sin caption)
-      for (let i = 0; i < imagenes.length; i++) {
-        const url = imagenes[i];
-        const caption = i === 0 && mensajeFinal ? mensajeFinal : "";
-        const ok = await enviarMedia(userId, from, url, "image", caption);
-        if (ok) {
-          await saveReceivedMessage({
-            userId,
-            from,
-            message: caption || `[image] ${url}`,
-            messageType: "out_image",
-            mediaUrl: url,
-          });
+        if (trig.auto_tag) {
+          await aplicarAutoTag(userId, from, trig.auto_tag);
         }
       }
 
-      // 2) Si no había imágenes pero sí texto → mandar texto solo
-      if (imagenes.length === 0 && mensajeFinal) {
-        const sent = await enviarMensaje(userId, from, mensajeFinal);
-        if (sent) {
-          await saveReceivedMessage({
-            userId, from,
-            message: mensajeFinal,
-            messageType: "out_text",
-          });
+      // ─────────────────────────────────────────────
+      // 2) SECUNDARIO (mismo producto, mismo trigger)
+      //    Si también se mandó el primario → delay 5s para no llegar pegados
+      // ─────────────────────────────────────────────
+      if (matchSecondary) {
+        if (matchPrimary) {
+          console.log("⏳ Esperando 5s antes del secundario...");
+          await sleep(5000);
         }
+        await enviarPlantillaCompleta({
+          userId,
+          from,
+          templateName: trig.secondary?.template,
+          fallbackText: trig.secondary?.response,
+        });
       }
 
-      // 3) Enviar video
-      if (video) {
-        const ok = await enviarMedia(userId, from, video, "video", "");
-        if (ok) {
-          await saveReceivedMessage({
-            userId, from,
-            message: `[video] ${video}`,
-            messageType: "out_video",
-            mediaUrl: video,
-          });
-        }
-      }
-
-      // 4) Enviar gif (como imagen animada)
-      if (gif) {
-        const ok = await enviarMedia(userId, from, gif, "image", "");
-        if (ok) {
-          await saveReceivedMessage({
-            userId, from,
-            message: `[gif] ${gif}`,
-            messageType: "out_gif",
-            mediaUrl: gif,
-          });
-        }
-      }
-
-      if (trig.auto_tag) {
-        try {
-          await supabase.from("contact_tags").upsert(
-            { user_id: userId, contact_number: from, tag: trig.auto_tag },
-            { onConflict: "user_id,contact_number,tag" }
-          );
-        } catch (e) {
-          console.log("⚠️ auto_tag error:", e.message);
-        }
-      }
-
+      // Log
       try {
         await supabase.from("trigger_log").insert({
           trigger_id: trig.id,
@@ -417,15 +482,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
           sent_at: new Date().toISOString(),
         });
       } catch {}
-
-      if (plantilla?.id) {
-        try {
-          await supabase
-            .from("templates")
-            .update({ usage_count: (plantilla.usage_count || 0) + 1 })
-            .eq("id", plantilla.id);
-        } catch {}
-      }
 
       await saveContexto(userId, from, { last_trigger: trig.name });
       return true;
