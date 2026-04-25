@@ -475,7 +475,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
         });
       } catch {}
 
-      // 🆕 Después de enviar el trigger, revisar si la plantilla enviada
+      // Después de enviar el trigger, revisar si la plantilla enviada
       // contiene "✅ PEDIDO CONFIRMADO" y crear el pedido en orders.
       try {
         const contenidoEnviado = clean(
@@ -531,16 +531,21 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS (regex puro, sin IA)
+// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS (estricto + anti-duplicado)
 // ═══════════════════════════════════════════════════════════
 
-// Detecta si un texto es la plantilla "✅ PEDIDO CONFIRMADO"
+// Detecta si un texto es REALMENTE la plantilla "✅ PEDIDO CONFIRMADO"
+// (no cualquier mensaje que mencione "pedido confirmado")
 function esMensajePedidoConfirmado(texto) {
-  const t = normalize(texto);
-  return t.includes("pedido confirmado");
+  const t = clean(texto);
+  const tieneMarcador = /✅\s*PEDIDO CONFIRMADO/i.test(t);
+  const tieneProducto = /Producto:\s*\S/i.test(t);
+  const tieneTotal = /Total:\s*\S/i.test(t);
+  const tieneUbicacion = /Ubicaci[oó]n:\s*\S/i.test(t);
+  return tieneMarcador && tieneProducto && tieneTotal && tieneUbicacion;
 }
 
-// Parsea los campos del mensaje "✅ PEDIDO CONFIRMADO"
+// Parsea los campos del mensaje, descartando basura del prompt
 function parsearPedidoConfirmado(texto) {
   const get = (regex) => {
     const m = texto.match(regex);
@@ -555,7 +560,32 @@ function parsearPedidoConfirmado(texto) {
   const calce = get(/Calce:\s*([^\n]+)/i);
   const totalRaw = get(/Total:\s*([^\n]+)/i);
 
-  // Ubicación viene como "Asunción — Padre Juan Casanello 1670"
+  // 🚫 Validación anti-basura del producto
+  const esProductoValido = (p) => {
+    if (!p) return false;
+    if (p.length > 120) return false;
+    const blacklist = [
+      "nunca decir", "ir directo", "→", "gracias por tu audio",
+      "entendi que queres", "asuncion, hernandarias", "ypane, villeta",
+    ];
+    const pn = normalize(p);
+    return !blacklist.some((b) => pn.includes(b));
+  };
+
+  // 🚫 Validación anti-basura del nombre
+  const esNombreValido = (n) => {
+    if (!n) return false;
+    if (n.length > 60) return false;
+    const malosInicios = [
+      "yo ", "es ", "dale ", "el de ", "la ", "no ", "si ",
+      "quiero", "queria", "necesito", "me ",
+    ];
+    const nn = normalize(n);
+    return !malosInicios.some((m) => nn.startsWith(m));
+  };
+
+  if (!esProductoValido(producto)) return null;
+
   let city = null;
   let address = null;
   if (ubicacionRaw) {
@@ -564,31 +594,34 @@ function parsearPedidoConfirmado(texto) {
     address = partes.slice(1).join(" — ").trim() || null;
   }
 
-  // Cantidad: extraer número
   let quantity = null;
   if (cantidadRaw) {
     const m = cantidadRaw.match(/(\d+)/);
     if (m) quantity = parseInt(m[1], 10);
   }
 
-  // Producto: si hay calce, lo agregamos al producto para no perder info
-  let productoFinal = producto;
-  if (calce && producto) {
-    productoFinal = `${producto} (Calce ${calce})`;
+  // total como número (Gs)
+  let totalNum = null;
+  if (totalRaw) {
+    const soloDigitos = totalRaw.replace(/[^\d]/g, "");
+    if (soloDigitos) totalNum = parseInt(soloDigitos, 10);
   }
 
+  let productoFinal = producto;
+  if (calce && producto) productoFinal = `${producto} (Calce ${calce})`;
+
   return {
-    customer_name: cliente,
+    customer_name: esNombreValido(cliente) ? cliente : null,
     product: productoFinal,
     city,
     address,
     phone: contacto,
     quantity,
-    total_amount: totalRaw,
+    total_amount: totalNum,
   };
 }
 
-// Verifica si ya existe pedido para el mensaje origen (anti-duplicado)
+// Verifica si ya existe pedido para el mensaje origen (anti-duplicado por mensaje)
 async function yaExistePedidoParaMensaje(messageId) {
   if (!messageId) return false;
   try {
@@ -603,7 +636,7 @@ async function yaExistePedidoParaMensaje(messageId) {
   }
 }
 
-// Crea el pedido en la tabla orders
+// Crea el pedido en orders (con dedupe por teléfono + 30 min)
 async function detectarYGuardarPedidoConfirmado({
   userId,
   from,
@@ -617,12 +650,55 @@ async function detectarYGuardarPedidoConfirmado({
     }
 
     const datos = parsearPedidoConfirmado(textoMensaje);
-
-    if (!datos.product && !datos.customer_name) {
-      console.log("ℹ️ No se pudieron parsear campos mínimos del pedido");
+    if (!datos) {
+      console.log("🚫 Texto no parece pedido válido, descartado");
+      return;
+    }
+    if (!datos.product) {
+      console.log("🚫 Sin producto válido, descartado");
       return;
     }
 
+    // 🛡️ Anti-duplicado: ¿hay un pedido del mismo teléfono en los últimos 30 min?
+    const hace30min = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const { data: reciente } = await supabase
+      .from("orders")
+      .select("id, product")
+      .eq("user_id", userId)
+      .eq("from_number", from)
+      .gte("created_at", hace30min)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (reciente) {
+      // Mismo producto → es duplicado, no insertamos
+      if (normalize(reciente.product || "") === normalize(datos.product)) {
+        console.log(`⏭️ Pedido duplicado (mismo producto en <30min) → ${from}`);
+        return;
+      }
+      // Otro producto → el cliente modificó su pedido, actualizamos el existente
+      const updatePayload = {
+        product: datos.product,
+        updated_at: new Date().toISOString(),
+      };
+      if (datos.quantity != null) updatePayload.quantity = datos.quantity;
+      if (datos.total_amount != null) updatePayload.total_amount = datos.total_amount;
+      if (datos.address) updatePayload.address = datos.address;
+      if (datos.city) updatePayload.city = datos.city;
+      if (datos.customer_name) updatePayload.customer_name = datos.customer_name;
+
+      const { error: updErr } = await supabase
+        .from("orders")
+        .update(updatePayload)
+        .eq("id", reciente.id);
+
+      if (updErr) console.error("❌ update pedido:", updErr);
+      else console.log(`🔄 Pedido actualizado (cliente cambió producto): ${reciente.id}`);
+      return;
+    }
+
+    // No hay pedido reciente → insertar nuevo
     const insertPayload = {
       user_id: userId,
       from_number: from,
@@ -634,7 +710,7 @@ async function detectarYGuardarPedidoConfirmado({
       address: datos.address,
       city: datos.city,
       status: "confirmado",
-      metodo_pago: "efectivo", // por defecto, cambia a "transferencia" si llega comprobante
+      metodo_pago: "efectivo",
       source_message_id: sourceMessageId || null,
       detected_by_ai: true,
       created_at: new Date().toISOString(),
@@ -741,12 +817,12 @@ async function procesar(req, message, userId, from) {
       waMessageId: message.id || null,
     });
 
-    // 🆕 Si llega imagen del cliente → intentar asociar como comprobante
+    // Si llega imagen del cliente → intentar asociar como comprobante
     if (tipoMsg === "image" && mediaUrl) {
       asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch((e) =>
         console.error("comprobante bg error:", e)
       );
-      return; // imágenes no pasan por triggers/IA
+      return;
     }
 
     const disparado = await evaluarDisparadores({ userId, from, texto });
@@ -778,7 +854,7 @@ async function procesar(req, message, userId, from) {
           messageType: "out_text",
         });
 
-        // 🆕 También chequear si la respuesta de la IA contiene "PEDIDO CONFIRMADO"
+        // También chequear si la respuesta de la IA contiene "PEDIDO CONFIRMADO"
         if (esMensajePedidoConfirmado(data.response)) {
           await detectarYGuardarPedidoConfirmado({
             userId,
