@@ -440,6 +440,9 @@ async function evaluarDisparadores({ userId, from, texto }) {
       }
 
       let plantillaPrimary = null;
+      let contenidoPrimary = "";
+      let contenidoSecondary = "";
+
       if (matchPrimary) {
         plantillaPrimary = await enviarPlantillaCompleta({
           userId,
@@ -447,6 +450,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
           templateName: trig.template,
           fallbackText: trig.response,
         });
+        contenidoPrimary = clean(plantillaPrimary?.content || trig.response || "");
 
         if (trig.auto_tag) {
           await aplicarAutoTag(userId, from, trig.auto_tag);
@@ -458,12 +462,13 @@ async function evaluarDisparadores({ userId, from, texto }) {
           console.log("⏳ Esperando 5s antes del secundario...");
           await sleep(5000);
         }
-        await enviarPlantillaCompleta({
+        const plantillaSec = await enviarPlantillaCompleta({
           userId,
           from,
           templateName: trig.secondary?.template,
           fallbackText: trig.secondary?.response,
         });
+        contenidoSecondary = clean(plantillaSec?.content || trig.secondary?.response || "");
       }
 
       try {
@@ -475,19 +480,18 @@ async function evaluarDisparadores({ userId, from, texto }) {
         });
       } catch {}
 
+      // 🆕 Revisar AMBOS contenidos (primary + secondary) por confirmación de pedido
       try {
-        const contenidoEnviado = clean(
-          plantillaPrimary?.content ||
-          trig.response ||
-          ""
-        );
-        if (esMensajePedidoConfirmado(contenidoEnviado)) {
-          await detectarYGuardarPedidoConfirmado({
-            userId,
-            from,
-            textoMensaje: contenidoEnviado,
-            sourceMessageId: null,
-          });
+        const contenidosEnviados = [contenidoPrimary, contenidoSecondary].filter(Boolean);
+        for (const contenido of contenidosEnviados) {
+          if (esMensajePedidoConfirmado(contenido)) {
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: contenido,
+              sourceMessageId: null,
+            });
+          }
         }
       } catch (e) {
         console.log("⚠️ post-trigger pedido check error:", e.message);
@@ -541,13 +545,93 @@ function esMensajePedidoConfirmado(texto) {
   return tieneMarcador && tieneProducto && tieneTotal && tieneUbicacion;
 }
 
+// 🆕 Detecta si un texto es bloque de datos bancarios / transferencia
+function esBloqueDatosBancarios(texto) {
+  if (!texto) return false;
+  const tn = normalize(texto);
+  const señales = [
+    "datos para transferencia",
+    "datos de transferencia",
+    "titular:",
+    "titular ",
+    "banco familiar",
+    "banco continental",
+    "banco itau",
+    "banco gnb",
+    "banco atlas",
+    "banco regional",
+    "banco basa",
+    "ueno bank",
+    "cuenta:",
+    "nro de cuenta",
+    "numero de cuenta",
+    "alias:",
+    "cbu:",
+    "cvu:",
+  ];
+  let hits = 0;
+  for (const s of señales) {
+    if (tn.includes(s)) hits++;
+    if (hits >= 2) return true;
+  }
+  return false;
+}
+
+// 🆕 Limpia el texto del producto: quita bloque bancario y datos sueltos
+function limpiarProducto(productoRaw) {
+  if (!productoRaw) return null;
+  let p = clean(productoRaw);
+
+  // Si es claramente un bloque bancario, descartar todo
+  if (esBloqueDatosBancarios(p)) {
+    // Intentar rescatar nombres de productos después del bloque bancario
+    // Buscar separadores tipo " + Producto x1" después de los datos bancarios
+    const idxAlias = p.search(/alias:\s*\d+/i);
+    if (idxAlias >= 0) {
+      // Cortar a partir del primer "+" después del Alias
+      const restoDespuesAlias = p.substring(idxAlias);
+      const idxPlus = restoDespuesAlias.indexOf("+");
+      if (idxPlus >= 0) {
+        p = restoDespuesAlias.substring(idxPlus + 1).trim();
+      } else {
+        return null; // solo había datos bancarios, sin productos
+      }
+    } else {
+      return null;
+    }
+  }
+
+  // Partir por "+" y filtrar items que parezcan basura bancaria
+  const items = p.split(/\s*\+\s*/).filter((it) => {
+    const itClean = clean(it);
+    if (!itClean) return false;
+    if (itClean.length > 100) return false;
+    const itn = normalize(itClean);
+    const blacklistItem = [
+      "datos para transferencia",
+      "titular",
+      "banco ",
+      "cuenta:",
+      "alias:",
+      "cbu:",
+      "https://",
+      "http://",
+      "www.",
+    ];
+    return !blacklistItem.some((b) => itn.includes(b));
+  });
+
+  if (items.length === 0) return null;
+  return items.join(" + ");
+}
+
 function parsearPedidoConfirmado(texto) {
   const get = (regex) => {
     const m = texto.match(regex);
     return m ? clean(m[1]) : null;
   };
 
-  const producto = get(/Producto:\s*([^\n]+)/i);
+  const productoRaw = get(/Producto:\s*([^\n]+)/i);
   const cliente = get(/Cliente:\s*([^\n]+)/i);
   const ubicacionRaw = get(/Ubicaci[oó]n:\s*([^\n]+)/i);
   const contacto = get(/Contacto:\s*([^\n]+)/i);
@@ -555,12 +639,17 @@ function parsearPedidoConfirmado(texto) {
   const calce = get(/Calce:\s*([^\n]+)/i);
   const totalRaw = get(/Total:\s*([^\n]+)/i);
 
+  // 🆕 Limpiar producto de datos bancarios ANTES de validar
+  const producto = limpiarProducto(productoRaw);
+
   const esProductoValido = (p) => {
     if (!p) return false;
-    if (p.length > 120) return false;
+    if (p.length > 200) return false;
     const blacklist = [
       "nunca decir", "ir directo", "→", "gracias por tu audio",
       "entendi que queres", "asuncion, hernandarias", "ypane, villeta",
+      "datos para transferencia", "titular:", "alias:", "cuenta:",
+      "banco familiar", "banco continental",
     ];
     const pn = normalize(p);
     return !blacklist.some((b) => pn.includes(b));
@@ -577,7 +666,10 @@ function parsearPedidoConfirmado(texto) {
     return !malosInicios.some((m) => nn.startsWith(m));
   };
 
-  if (!esProductoValido(producto)) return null;
+  if (!esProductoValido(producto)) {
+    console.log("🚫 Producto inválido tras limpieza:", productoRaw?.substring(0, 80));
+    return null;
+  }
 
   let city = null;
   let address = null;
@@ -600,7 +692,9 @@ function parsearPedidoConfirmado(texto) {
   }
 
   let productoFinal = producto;
-  if (calce && producto) productoFinal = `${producto} (Calce ${calce})`;
+  if (calce && producto && !/calce/i.test(producto)) {
+    productoFinal = `${producto} (Calce ${calce})`;
+  }
 
   return {
     customer_name: esNombreValido(cliente) ? cliente : null,
@@ -629,7 +723,13 @@ function parsearCarrito(productString) {
       }
       return { name: clean(item), qty: 1 };
     })
-    .filter((it) => it.name);
+    .filter((it) => {
+      if (!it.name) return false;
+      // 🆕 filtrar items que sean datos bancarios
+      const itn = normalize(it.name);
+      const blacklist = ["datos para transferencia", "titular", "banco ", "cuenta:", "alias:"];
+      return !blacklist.some((b) => itn.includes(b));
+    });
 }
 
 function serializarCarrito(items) {
@@ -642,6 +742,17 @@ function serializarCarrito(items) {
 function buscarItemEnCarrito(carrito, productName) {
   const target = normalize(productName);
   return carrito.findIndex((it) => normalize(it.name) === target);
+}
+
+// 🆕 Parsea "A x1 + B x2" como múltiples items individuales
+function expandirItemsDelMensaje(productoFinal, quantityFallback) {
+  const items = parsearCarrito(productoFinal);
+  if (items.length === 0) return [];
+  // Si solo hay 1 item y no traía xN explícito, usar quantityFallback
+  if (items.length === 1 && !/x\s*\d+\s*$/i.test(productoFinal)) {
+    items[0].qty = quantityFallback || items[0].qty || 1;
+  }
+  return items;
 }
 
 // ───────────────────────────────────────────────────────────
@@ -678,6 +789,13 @@ async function detectarYGuardarPedidoConfirmado({
       return;
     }
 
+    // 🆕 Expandir productos múltiples ("A x1 + B x1") en items separados
+    const itemsNuevos = expandirItemsDelMensaje(datos.product, datos.quantity);
+    if (itemsNuevos.length === 0) {
+      console.log("🚫 No quedaron items válidos tras expandir");
+      return;
+    }
+
     // Buscar pedido reciente del mismo cliente (últimos 30 min)
     const hace30min = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     const { data: reciente } = await supabase
@@ -692,13 +810,14 @@ async function detectarYGuardarPedidoConfirmado({
 
     // ─── No hay pedido reciente → crear uno nuevo ───
     if (!reciente) {
+      const cantidadTotal = itemsNuevos.reduce((s, it) => s + it.qty, 0);
       const insertPayload = {
         user_id: userId,
         from_number: from,
         phone: datos.phone || from,
         customer_name: datos.customer_name,
-        product: serializarCarrito([{ name: datos.product, qty: datos.quantity }]),
-        quantity: datos.quantity,
+        product: serializarCarrito(itemsNuevos),
+        quantity: cantidadTotal,
         total_amount: datos.total_amount,
         address: datos.address,
         city: datos.city,
@@ -719,39 +838,35 @@ async function detectarYGuardarPedidoConfirmado({
         console.error("❌ Error insertando pedido:", error);
         return;
       }
-      console.log(`✅ Pedido NUEVO creado: ${nuevo?.id} → ${datos.product} x${datos.quantity}`);
+      console.log(`✅ Pedido NUEVO creado: ${nuevo?.id} → ${insertPayload.product}`);
       return;
     }
 
     // ─── Hay pedido reciente → modo carrito ───
+    // 🆕 Limpiar el carrito existente de basura bancaria que pudiera haberse colado antes
     const carrito = parsearCarrito(reciente.product);
-    const idx = buscarItemEnCarrito(carrito, datos.product);
+    let totalActual = reciente.total_amount || 0;
+    const cambios = [];
 
-    // Precio unitario aproximado del nuevo item
-    const precioUnitario = datos.total_amount && datos.quantity
-      ? Math.round(datos.total_amount / datos.quantity)
-      : 0;
-
-    let totalAnterior = reciente.total_amount || 0;
-    let mensajeLog = "";
-
-    if (idx >= 0) {
-      // Producto YA estaba en el carrito
-      const itemViejo = carrito[idx];
-      if (itemViejo.qty === datos.quantity) {
-        console.log(`⏭️ Duplicado exacto (${datos.product} x${datos.quantity}) → skip`);
-        return;
+    for (const nuevo of itemsNuevos) {
+      const idx = buscarItemEnCarrito(carrito, nuevo.name);
+      if (idx >= 0) {
+        const itemViejo = carrito[idx];
+        if (itemViejo.qty === nuevo.qty) {
+          cambios.push(`⏭️ ${nuevo.name} x${nuevo.qty} ya estaba (skip)`);
+          continue;
+        }
+        carrito[idx].qty = nuevo.qty;
+        cambios.push(`🔄 ${nuevo.name}: ${itemViejo.qty} → ${nuevo.qty}`);
+      } else {
+        carrito.push({ name: nuevo.name, qty: nuevo.qty });
+        cambios.push(`➕ ${nuevo.name} x${nuevo.qty}`);
       }
-      // Cambió la cantidad → ajustar
-      const diffQty = datos.quantity - itemViejo.qty;
-      carrito[idx].qty = datos.quantity;
-      totalAnterior = totalAnterior + (diffQty * precioUnitario);
-      mensajeLog = `🔄 Cantidad actualizada: ${datos.product} ${itemViejo.qty} → ${datos.quantity}`;
-    } else {
-      // Producto NUEVO → acumular
-      carrito.push({ name: datos.product, qty: datos.quantity });
-      totalAnterior = totalAnterior + (datos.total_amount || 0);
-      mensajeLog = `➕ Producto agregado al carrito: ${datos.product} x${datos.quantity}`;
+    }
+
+    // Total: si el mensaje trae un total nuevo y mayor, usarlo (es el total acumulado del bot)
+    if (datos.total_amount && datos.total_amount > totalActual) {
+      totalActual = datos.total_amount;
     }
 
     const productoSerializado = serializarCarrito(carrito);
@@ -760,7 +875,7 @@ async function detectarYGuardarPedidoConfirmado({
     const updatePayload = {
       product: productoSerializado,
       quantity: cantidadTotal,
-      total_amount: totalAnterior,
+      total_amount: totalActual,
       updated_at: new Date().toISOString(),
     };
     if (datos.address) updatePayload.address = datos.address;
@@ -776,7 +891,9 @@ async function detectarYGuardarPedidoConfirmado({
       console.error("❌ update pedido:", updErr);
       return;
     }
-    console.log(`${mensajeLog} → pedido ${reciente.id} | total: ${totalAnterior} | carrito: ${productoSerializado}`);
+    console.log(
+      `🛒 Carrito actualizado pedido ${reciente.id} | ${cambios.join(" | ")} | total: ${totalActual} | ${productoSerializado}`
+    );
   } catch (err) {
     console.error("❌ detectarYGuardarPedidoConfirmado error:", err);
   }
