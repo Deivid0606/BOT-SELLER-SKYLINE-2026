@@ -35,6 +35,52 @@ function splitMessage(text, max = 3500) {
   return parts.filter((p) => p.length > 0);
 }
 
+// ═══════════════════════════════════════════════════════════
+// 🆕 GOOGLE SHEETS — envío a Apps Script Web App
+// ═══════════════════════════════════════════════════════════
+
+async function obtenerSheetUrl(userId) {
+  try {
+    const { data } = await supabase
+      .from("whatsapp_config")
+      .select("google_sheets_url")
+      .eq("user_id", userId)
+      .maybeSingle();
+    const url = clean(data?.google_sheets_url || "");
+    if (!url) return null;
+    if (!url.startsWith("https://script.google.com/")) {
+      console.log("⚠️ google_sheets_url no parece válida:", url.substring(0, 60));
+      return null;
+    }
+    return url;
+  } catch (e) {
+    console.error("❌ obtenerSheetUrl error:", e.message);
+    return null;
+  }
+}
+
+async function enviarASheet(sheetUrl, pedido) {
+  if (!sheetUrl) return;
+  try {
+    const resp = await fetch(sheetUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(pedido),
+      redirect: "follow",
+    });
+    const raw = await resp.text();
+    if (!resp.ok) {
+      console.log("📊 Sheets error:", resp.status, raw.substring(0, 200));
+      return;
+    }
+    console.log("✅ Pedido enviado a Google Sheets");
+  } catch (e) {
+    console.error("❌ enviarASheet error:", e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+
 async function enviarMensaje(userId, to, text) {
   try {
     const { data: config, error } = await supabase
@@ -480,7 +526,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         });
       } catch {}
 
-      // 🆕 Revisar AMBOS contenidos (primary + secondary) por confirmación de pedido
       try {
         const contenidosEnviados = [contenidoPrimary, contenidoSecondary].filter(Boolean);
         for (const contenido of contenidosEnviados) {
@@ -533,7 +578,7 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS (Opción C — Mixto)
+// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS
 // ═══════════════════════════════════════════════════════════
 
 function esMensajePedidoConfirmado(texto) {
@@ -545,29 +590,15 @@ function esMensajePedidoConfirmado(texto) {
   return tieneMarcador && tieneProducto && tieneTotal && tieneUbicacion;
 }
 
-// 🆕 Detecta si un texto es bloque de datos bancarios / transferencia
 function esBloqueDatosBancarios(texto) {
   if (!texto) return false;
   const tn = normalize(texto);
   const señales = [
-    "datos para transferencia",
-    "datos de transferencia",
-    "titular:",
-    "titular ",
-    "banco familiar",
-    "banco continental",
-    "banco itau",
-    "banco gnb",
-    "banco atlas",
-    "banco regional",
-    "banco basa",
-    "ueno bank",
-    "cuenta:",
-    "nro de cuenta",
-    "numero de cuenta",
-    "alias:",
-    "cbu:",
-    "cvu:",
+    "datos para transferencia", "datos de transferencia",
+    "titular:", "titular ", "banco familiar", "banco continental",
+    "banco itau", "banco gnb", "banco atlas", "banco regional",
+    "banco basa", "ueno bank", "cuenta:", "nro de cuenta",
+    "numero de cuenta", "alias:", "cbu:", "cvu:",
   ];
   let hits = 0;
   for (const s of señales) {
@@ -577,46 +608,33 @@ function esBloqueDatosBancarios(texto) {
   return false;
 }
 
-// 🆕 Limpia el texto del producto: quita bloque bancario y datos sueltos
 function limpiarProducto(productoRaw) {
   if (!productoRaw) return null;
   let p = clean(productoRaw);
 
-  // Si es claramente un bloque bancario, descartar todo
   if (esBloqueDatosBancarios(p)) {
-    // Intentar rescatar nombres de productos después del bloque bancario
-    // Buscar separadores tipo " + Producto x1" después de los datos bancarios
     const idxAlias = p.search(/alias:\s*\d+/i);
     if (idxAlias >= 0) {
-      // Cortar a partir del primer "+" después del Alias
       const restoDespuesAlias = p.substring(idxAlias);
       const idxPlus = restoDespuesAlias.indexOf("+");
       if (idxPlus >= 0) {
         p = restoDespuesAlias.substring(idxPlus + 1).trim();
       } else {
-        return null; // solo había datos bancarios, sin productos
+        return null;
       }
     } else {
       return null;
     }
   }
 
-  // Partir por "+" y filtrar items que parezcan basura bancaria
   const items = p.split(/\s*\+\s*/).filter((it) => {
     const itClean = clean(it);
     if (!itClean) return false;
     if (itClean.length > 100) return false;
     const itn = normalize(itClean);
     const blacklistItem = [
-      "datos para transferencia",
-      "titular",
-      "banco ",
-      "cuenta:",
-      "alias:",
-      "cbu:",
-      "https://",
-      "http://",
-      "www.",
+      "datos para transferencia", "titular", "banco ", "cuenta:",
+      "alias:", "cbu:", "https://", "http://", "www.",
     ];
     return !blacklistItem.some((b) => itn.includes(b));
   });
@@ -639,7 +657,6 @@ function parsearPedidoConfirmado(texto) {
   const calce = get(/Calce:\s*([^\n]+)/i);
   const totalRaw = get(/Total:\s*([^\n]+)/i);
 
-  // 🆕 Limpiar producto de datos bancarios ANTES de validar
   const producto = limpiarProducto(productoRaw);
 
   const esProductoValido = (p) => {
@@ -704,13 +721,9 @@ function parsearPedidoConfirmado(texto) {
     phone: contacto,
     quantity,
     total_amount: totalNum,
+    calce: calce || null,
   };
 }
-
-// ───────────────────────────────────────────────────────────
-// 🛒 Helpers para manejar el campo "product" como carrito
-// Formato: "Veneno de Abeja x2 + Plantilla Ortopiex x1"
-// ───────────────────────────────────────────────────────────
 
 function parsearCarrito(productString) {
   if (!productString) return [];
@@ -725,7 +738,6 @@ function parsearCarrito(productString) {
     })
     .filter((it) => {
       if (!it.name) return false;
-      // 🆕 filtrar items que sean datos bancarios
       const itn = normalize(it.name);
       const blacklist = ["datos para transferencia", "titular", "banco ", "cuenta:", "alias:"];
       return !blacklist.some((b) => itn.includes(b));
@@ -744,18 +756,14 @@ function buscarItemEnCarrito(carrito, productName) {
   return carrito.findIndex((it) => normalize(it.name) === target);
 }
 
-// 🆕 Parsea "A x1 + B x2" como múltiples items individuales
 function expandirItemsDelMensaje(productoFinal, quantityFallback) {
   const items = parsearCarrito(productoFinal);
   if (items.length === 0) return [];
-  // Si solo hay 1 item y no traía xN explícito, usar quantityFallback
   if (items.length === 1 && !/x\s*\d+\s*$/i.test(productoFinal)) {
     items[0].qty = quantityFallback || items[0].qty || 1;
   }
   return items;
 }
-
-// ───────────────────────────────────────────────────────────
 
 async function yaExistePedidoParaMensaje(messageId) {
   if (!messageId) return false;
@@ -789,14 +797,12 @@ async function detectarYGuardarPedidoConfirmado({
       return;
     }
 
-    // 🆕 Expandir productos múltiples ("A x1 + B x1") en items separados
     const itemsNuevos = expandirItemsDelMensaje(datos.product, datos.quantity);
     if (itemsNuevos.length === 0) {
       console.log("🚫 No quedaron items válidos tras expandir");
       return;
     }
 
-    // Buscar pedido reciente del mismo cliente (últimos 30 min)
     const hace30min = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     const { data: reciente } = await supabase
       .from("orders")
@@ -811,12 +817,13 @@ async function detectarYGuardarPedidoConfirmado({
     // ─── No hay pedido reciente → crear uno nuevo ───
     if (!reciente) {
       const cantidadTotal = itemsNuevos.reduce((s, it) => s + it.qty, 0);
+      const productoSerializado = serializarCarrito(itemsNuevos);
       const insertPayload = {
         user_id: userId,
         from_number: from,
         phone: datos.phone || from,
         customer_name: datos.customer_name,
-        product: serializarCarrito(itemsNuevos),
+        product: productoSerializado,
         quantity: cantidadTotal,
         total_amount: datos.total_amount,
         address: datos.address,
@@ -839,11 +846,25 @@ async function detectarYGuardarPedidoConfirmado({
         return;
       }
       console.log(`✅ Pedido NUEVO creado: ${nuevo?.id} → ${insertPayload.product}`);
+
+      // 🆕 Enviar a Google Sheets (si está configurado)
+      const sheetUrl = await obtenerSheetUrl(userId);
+      if (sheetUrl) {
+        await enviarASheet(sheetUrl, {
+          customer_name: datos.customer_name || "",
+          customer_phone: datos.phone || from,
+          customer_city: datos.city || "",
+          customer_address: datos.address || "",
+          product: productoSerializado,
+          quantity: cantidadTotal,
+          total_amount: datos.total_amount || "",
+          note: datos.calce ? `Calce ${datos.calce}` : "",
+        });
+      }
       return;
     }
 
     // ─── Hay pedido reciente → modo carrito ───
-    // 🆕 Limpiar el carrito existente de basura bancaria que pudiera haberse colado antes
     const carrito = parsearCarrito(reciente.product);
     let totalActual = reciente.total_amount || 0;
     const cambios = [];
@@ -864,7 +885,6 @@ async function detectarYGuardarPedidoConfirmado({
       }
     }
 
-    // Total: si el mensaje trae un total nuevo y mayor, usarlo (es el total acumulado del bot)
     if (datos.total_amount && datos.total_amount > totalActual) {
       totalActual = datos.total_amount;
     }
@@ -894,6 +914,31 @@ async function detectarYGuardarPedidoConfirmado({
     console.log(
       `🛒 Carrito actualizado pedido ${reciente.id} | ${cambios.join(" | ")} | total: ${totalActual} | ${productoSerializado}`
     );
+
+    // 🆕 Reenviar a Google Sheets SOLO si hubo cambios reales (no solo skips)
+    const huboCambioReal = cambios.some((c) => !c.startsWith("⏭️"));
+    if (huboCambioReal) {
+      const sheetUrl = await obtenerSheetUrl(userId);
+      if (sheetUrl) {
+        // Recuperar datos completos del pedido para el Sheet
+        const { data: pedidoCompleto } = await supabase
+          .from("orders")
+          .select("customer_name, phone, city, address")
+          .eq("id", reciente.id)
+          .maybeSingle();
+
+        await enviarASheet(sheetUrl, {
+          customer_name: pedidoCompleto?.customer_name || datos.customer_name || "",
+          customer_phone: pedidoCompleto?.phone || datos.phone || from,
+          customer_city: pedidoCompleto?.city || datos.city || "",
+          customer_address: pedidoCompleto?.address || datos.address || "",
+          product: productoSerializado,
+          quantity: cantidadTotal,
+          total_amount: totalActual || "",
+          note: datos.calce ? `Calce ${datos.calce} (ACTUALIZADO)` : "(ACTUALIZADO)",
+        });
+      }
+    }
   } catch (err) {
     console.error("❌ detectarYGuardarPedidoConfirmado error:", err);
   }
@@ -945,8 +990,6 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
     console.error("❌ asociarComprobanteAlPedido error:", err);
   }
 }
-
-// ═══════════════════════════════════════════════════════════
 
 async function procesar(req, message, userId, from) {
   try {
