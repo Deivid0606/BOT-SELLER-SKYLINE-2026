@@ -475,8 +475,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         });
       } catch {}
 
-      // Después de enviar el trigger, revisar si la plantilla enviada
-      // contiene "✅ PEDIDO CONFIRMADO" y crear el pedido en orders.
       try {
         const contenidoEnviado = clean(
           plantillaPrimary?.content ||
@@ -531,11 +529,9 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS (estricto + anti-duplicado)
+// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS (Opción C — Mixto)
 // ═══════════════════════════════════════════════════════════
 
-// Detecta si un texto es REALMENTE la plantilla "✅ PEDIDO CONFIRMADO"
-// (no cualquier mensaje que mencione "pedido confirmado")
 function esMensajePedidoConfirmado(texto) {
   const t = clean(texto);
   const tieneMarcador = /✅\s*PEDIDO CONFIRMADO/i.test(t);
@@ -545,7 +541,6 @@ function esMensajePedidoConfirmado(texto) {
   return tieneMarcador && tieneProducto && tieneTotal && tieneUbicacion;
 }
 
-// Parsea los campos del mensaje, descartando basura del prompt
 function parsearPedidoConfirmado(texto) {
   const get = (regex) => {
     const m = texto.match(regex);
@@ -560,7 +555,6 @@ function parsearPedidoConfirmado(texto) {
   const calce = get(/Calce:\s*([^\n]+)/i);
   const totalRaw = get(/Total:\s*([^\n]+)/i);
 
-  // 🚫 Validación anti-basura del producto
   const esProductoValido = (p) => {
     if (!p) return false;
     if (p.length > 120) return false;
@@ -572,7 +566,6 @@ function parsearPedidoConfirmado(texto) {
     return !blacklist.some((b) => pn.includes(b));
   };
 
-  // 🚫 Validación anti-basura del nombre
   const esNombreValido = (n) => {
     if (!n) return false;
     if (n.length > 60) return false;
@@ -594,13 +587,12 @@ function parsearPedidoConfirmado(texto) {
     address = partes.slice(1).join(" — ").trim() || null;
   }
 
-  let quantity = null;
+  let quantity = 1;
   if (cantidadRaw) {
     const m = cantidadRaw.match(/(\d+)/);
     if (m) quantity = parseInt(m[1], 10);
   }
 
-  // total como número (Gs)
   let totalNum = null;
   if (totalRaw) {
     const soloDigitos = totalRaw.replace(/[^\d]/g, "");
@@ -621,7 +613,39 @@ function parsearPedidoConfirmado(texto) {
   };
 }
 
-// Verifica si ya existe pedido para el mensaje origen (anti-duplicado por mensaje)
+// ───────────────────────────────────────────────────────────
+// 🛒 Helpers para manejar el campo "product" como carrito
+// Formato: "Veneno de Abeja x2 + Plantilla Ortopiex x1"
+// ───────────────────────────────────────────────────────────
+
+function parsearCarrito(productString) {
+  if (!productString) return [];
+  return productString
+    .split(/\s*\+\s*/)
+    .map((item) => {
+      const m = item.match(/^(.*?)\s*x\s*(\d+)\s*$/i);
+      if (m) {
+        return { name: clean(m[1]), qty: parseInt(m[2], 10) || 1 };
+      }
+      return { name: clean(item), qty: 1 };
+    })
+    .filter((it) => it.name);
+}
+
+function serializarCarrito(items) {
+  return items
+    .filter((it) => it.name && it.qty > 0)
+    .map((it) => `${it.name} x${it.qty}`)
+    .join(" + ");
+}
+
+function buscarItemEnCarrito(carrito, productName) {
+  const target = normalize(productName);
+  return carrito.findIndex((it) => normalize(it.name) === target);
+}
+
+// ───────────────────────────────────────────────────────────
+
 async function yaExistePedidoParaMensaje(messageId) {
   if (!messageId) return false;
   try {
@@ -636,7 +660,6 @@ async function yaExistePedidoParaMensaje(messageId) {
   }
 }
 
-// Crea el pedido en orders (con dedupe por teléfono + 30 min)
 async function detectarYGuardarPedidoConfirmado({
   userId,
   from,
@@ -650,20 +673,16 @@ async function detectarYGuardarPedidoConfirmado({
     }
 
     const datos = parsearPedidoConfirmado(textoMensaje);
-    if (!datos) {
+    if (!datos || !datos.product) {
       console.log("🚫 Texto no parece pedido válido, descartado");
       return;
     }
-    if (!datos.product) {
-      console.log("🚫 Sin producto válido, descartado");
-      return;
-    }
 
-    // 🛡️ Anti-duplicado: ¿hay un pedido del mismo teléfono en los últimos 30 min?
+    // Buscar pedido reciente del mismo cliente (últimos 30 min)
     const hace30min = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     const { data: reciente } = await supabase
       .from("orders")
-      .select("id, product")
+      .select("id, product, total_amount, quantity")
       .eq("user_id", userId)
       .eq("from_number", from)
       .gte("created_at", hace30min)
@@ -671,69 +690,98 @@ async function detectarYGuardarPedidoConfirmado({
       .limit(1)
       .maybeSingle();
 
-    if (reciente) {
-      // Mismo producto → es duplicado, no insertamos
-      if (normalize(reciente.product || "") === normalize(datos.product)) {
-        console.log(`⏭️ Pedido duplicado (mismo producto en <30min) → ${from}`);
+    // ─── No hay pedido reciente → crear uno nuevo ───
+    if (!reciente) {
+      const insertPayload = {
+        user_id: userId,
+        from_number: from,
+        phone: datos.phone || from,
+        customer_name: datos.customer_name,
+        product: serializarCarrito([{ name: datos.product, qty: datos.quantity }]),
+        quantity: datos.quantity,
+        total_amount: datos.total_amount,
+        address: datos.address,
+        city: datos.city,
+        status: "confirmado",
+        metodo_pago: "efectivo",
+        source_message_id: sourceMessageId || null,
+        detected_by_ai: true,
+        created_at: new Date().toISOString(),
+      };
+
+      const { data: nuevo, error } = await supabase
+        .from("orders")
+        .insert(insertPayload)
+        .select("id")
+        .maybeSingle();
+
+      if (error) {
+        console.error("❌ Error insertando pedido:", error);
         return;
       }
-      // Otro producto → el cliente modificó su pedido, actualizamos el existente
-      const updatePayload = {
-        product: datos.product,
-        updated_at: new Date().toISOString(),
-      };
-      if (datos.quantity != null) updatePayload.quantity = datos.quantity;
-      if (datos.total_amount != null) updatePayload.total_amount = datos.total_amount;
-      if (datos.address) updatePayload.address = datos.address;
-      if (datos.city) updatePayload.city = datos.city;
-      if (datos.customer_name) updatePayload.customer_name = datos.customer_name;
-
-      const { error: updErr } = await supabase
-        .from("orders")
-        .update(updatePayload)
-        .eq("id", reciente.id);
-
-      if (updErr) console.error("❌ update pedido:", updErr);
-      else console.log(`🔄 Pedido actualizado (cliente cambió producto): ${reciente.id}`);
+      console.log(`✅ Pedido NUEVO creado: ${nuevo?.id} → ${datos.product} x${datos.quantity}`);
       return;
     }
 
-    // No hay pedido reciente → insertar nuevo
-    const insertPayload = {
-      user_id: userId,
-      from_number: from,
-      phone: datos.phone || from,
-      customer_name: datos.customer_name,
-      product: datos.product,
-      quantity: datos.quantity,
-      total_amount: datos.total_amount,
-      address: datos.address,
-      city: datos.city,
-      status: "confirmado",
-      metodo_pago: "efectivo",
-      source_message_id: sourceMessageId || null,
-      detected_by_ai: true,
-      created_at: new Date().toISOString(),
+    // ─── Hay pedido reciente → modo carrito ───
+    const carrito = parsearCarrito(reciente.product);
+    const idx = buscarItemEnCarrito(carrito, datos.product);
+
+    // Precio unitario aproximado del nuevo item
+    const precioUnitario = datos.total_amount && datos.quantity
+      ? Math.round(datos.total_amount / datos.quantity)
+      : 0;
+
+    let totalAnterior = reciente.total_amount || 0;
+    let mensajeLog = "";
+
+    if (idx >= 0) {
+      // Producto YA estaba en el carrito
+      const itemViejo = carrito[idx];
+      if (itemViejo.qty === datos.quantity) {
+        console.log(`⏭️ Duplicado exacto (${datos.product} x${datos.quantity}) → skip`);
+        return;
+      }
+      // Cambió la cantidad → ajustar
+      const diffQty = datos.quantity - itemViejo.qty;
+      carrito[idx].qty = datos.quantity;
+      totalAnterior = totalAnterior + (diffQty * precioUnitario);
+      mensajeLog = `🔄 Cantidad actualizada: ${datos.product} ${itemViejo.qty} → ${datos.quantity}`;
+    } else {
+      // Producto NUEVO → acumular
+      carrito.push({ name: datos.product, qty: datos.quantity });
+      totalAnterior = totalAnterior + (datos.total_amount || 0);
+      mensajeLog = `➕ Producto agregado al carrito: ${datos.product} x${datos.quantity}`;
+    }
+
+    const productoSerializado = serializarCarrito(carrito);
+    const cantidadTotal = carrito.reduce((sum, it) => sum + it.qty, 0);
+
+    const updatePayload = {
+      product: productoSerializado,
+      quantity: cantidadTotal,
+      total_amount: totalAnterior,
+      updated_at: new Date().toISOString(),
     };
+    if (datos.address) updatePayload.address = datos.address;
+    if (datos.city) updatePayload.city = datos.city;
+    if (datos.customer_name) updatePayload.customer_name = datos.customer_name;
 
-    const { data: nuevo, error } = await supabase
+    const { error: updErr } = await supabase
       .from("orders")
-      .insert(insertPayload)
-      .select("id")
-      .maybeSingle();
+      .update(updatePayload)
+      .eq("id", reciente.id);
 
-    if (error) {
-      console.error("❌ Error insertando pedido:", error);
+    if (updErr) {
+      console.error("❌ update pedido:", updErr);
       return;
     }
-
-    console.log(`✅ Pedido creado: ${nuevo?.id} → ${datos.customer_name} | ${datos.product}`);
+    console.log(`${mensajeLog} → pedido ${reciente.id} | total: ${totalAnterior} | carrito: ${productoSerializado}`);
   } catch (err) {
     console.error("❌ detectarYGuardarPedidoConfirmado error:", err);
   }
 }
 
-// Cuando el cliente manda una imagen, la asociamos al último pedido confirmado de él (24h)
 async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
   try {
     if (!mediaUrl) return;
@@ -817,7 +865,6 @@ async function procesar(req, message, userId, from) {
       waMessageId: message.id || null,
     });
 
-    // Si llega imagen del cliente → intentar asociar como comprobante
     if (tipoMsg === "image" && mediaUrl) {
       asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch((e) =>
         console.error("comprobante bg error:", e)
@@ -854,7 +901,6 @@ async function procesar(req, message, userId, from) {
           messageType: "out_text",
         });
 
-        // También chequear si la respuesta de la IA contiene "PEDIDO CONFIRMADO"
         if (esMensajePedidoConfirmado(data.response)) {
           await detectarYGuardarPedidoConfirmado({
             userId,
