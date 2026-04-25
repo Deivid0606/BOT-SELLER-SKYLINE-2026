@@ -1,6 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Tags, Plus, Trash2, Pencil, Smile } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
+import { toast } from "@/hooks/use-toast";
 
 const PRESET_COLORS = [
   "#22C55E", "#4F46E5", "#F59E0B", "#06B6D4", "#EF4444",
@@ -16,19 +19,16 @@ const POPULAR_EMOJIS = [
 ];
 
 interface Tag {
+  id: string;
   name: string;
   color: string;
   count: number;
 }
 
 export default function TagsPage() {
-  const [tags, setTags] = useState<Tag[]>([
-    { name: "🛒 venta normal cargada", color: "#22C55E", count: 45 },
-    { name: "🌐 venta web cargada", color: "#4F46E5", count: 23 },
-    { name: "🎯 prospecto", color: "#F59E0B", count: 67 },
-    { name: "💬 consulta", color: "#06B6D4", count: 89 },
-    { name: "❌ cancelado", color: "#EF4444", count: 12 },
-  ]);
+  const { user } = useAuth();
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const [newName, setNewName] = useState("");
   const [selectedColor, setSelectedColor] = useState(PRESET_COLORS[0]);
@@ -39,16 +39,80 @@ export default function TagsPage() {
 
   const inputClass = "w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 transition-colors";
 
-  const addTag = () => {
-    if (!newName.trim()) return;
-    setTags(prev => [...prev, { name: newName.trim(), color: selectedColor, count: 0 }]);
-    setNewName("");
-    setSelectedColor(PRESET_COLORS[0]);
+  // ─────────────────────────────────────────────
+  // Cargar etiquetas reales desde DB + contador de uso
+  // ─────────────────────────────────────────────
+  const loadTags = async () => {
+    if (!user) return;
+    setLoading(true);
+    const { data: tagsData, error } = await supabase
+      .from("tags")
+      .select("id, name, color")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      toast({ title: "Error cargando etiquetas", description: error.message, variant: "destructive" });
+      setLoading(false);
+      return;
+    }
+
+    // Contar cuántos contactos tienen cada etiqueta
+    const { data: counts } = await supabase
+      .from("contact_tags")
+      .select("tag_id")
+      .eq("user_id", user.id);
+
+    const countMap = new Map<string, number>();
+    (counts || []).forEach((c: any) => {
+      countMap.set(c.tag_id, (countMap.get(c.tag_id) || 0) + 1);
+    });
+
+    setTags(
+      (tagsData || []).map((t: any) => ({
+        id: t.id,
+        name: t.name,
+        color: t.color || "#22C55E",
+        count: countMap.get(t.id) || 0,
+      }))
+    );
+    setLoading(false);
   };
 
-  const deleteTag = (name: string) => {
-    setTags(prev => prev.filter(t => t.name !== name));
-    if (editingTag === name) setEditingTag(null);
+  useEffect(() => {
+    loadTags();
+  }, [user]);
+
+  const addTag = async () => {
+    if (!newName.trim() || !user) return;
+    const { error } = await supabase.from("tags").insert({
+      user_id: user.id,
+      name: newName.trim(),
+      color: selectedColor,
+    });
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      return;
+    }
+    toast({ title: "✅ Etiqueta creada" });
+    setNewName("");
+    setSelectedColor(PRESET_COLORS[0]);
+    await loadTags();
+  };
+
+  const deleteTag = async (tag: Tag) => {
+    if (!user) return;
+    if (!window.confirm(`¿Eliminar la etiqueta "${tag.name}"?`)) return;
+    // Borrar asignaciones primero (por si no hay ON DELETE CASCADE)
+    await supabase.from("contact_tags").delete().eq("tag_id", tag.id);
+    const { error } = await supabase.from("tags").delete().eq("id", tag.id);
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      return;
+    }
+    if (editingTag === tag.name) setEditingTag(null);
+    toast({ title: "🗑️ Etiqueta eliminada" });
+    await loadTags();
   };
 
   const startEdit = (tag: Tag) => {
@@ -57,9 +121,19 @@ export default function TagsPage() {
     setEditColor(tag.color);
   };
 
-  const saveEdit = (originalName: string) => {
-    setTags(prev => prev.map(t => t.name === originalName ? { ...t, name: editName, color: editColor } : t));
+  const saveEdit = async (tag: Tag) => {
+    if (!user) return;
+    const { error } = await supabase
+      .from("tags")
+      .update({ name: editName, color: editColor })
+      .eq("id", tag.id);
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      return;
+    }
     setEditingTag(null);
+    toast({ title: "✅ Etiqueta actualizada" });
+    await loadTags();
   };
 
   const insertEmoji = (emoji: string, target: "new" | "edit") => {
@@ -172,8 +246,11 @@ export default function TagsPage() {
             <span className="text-[10px] text-muted-foreground bg-secondary px-2 py-0.5 rounded-full">{tags.length}</span>
           </div>
           <div className="divide-y divide-border">
-            {tags.map((tag) => (
-              <div key={tag.name}>
+            {loading && (
+              <div className="px-4 py-8 text-center text-sm text-muted-foreground">Cargando...</div>
+            )}
+            {!loading && tags.map((tag) => (
+              <div key={tag.id}>
                 <div className="px-4 py-3 hover:bg-secondary/30 transition-colors flex items-center gap-3">
                   <div className="h-3 w-3 rounded-full shrink-0" style={{ backgroundColor: tag.color }} />
                   <span className="flex-1 text-sm font-medium">{tag.name}</span>
@@ -181,7 +258,7 @@ export default function TagsPage() {
                   <button onClick={() => startEdit(tag)} className="text-muted-foreground hover:text-foreground transition-colors p-1">
                     <Pencil className="h-3.5 w-3.5" />
                   </button>
-                  <button onClick={() => deleteTag(tag.name)} className="text-muted-foreground hover:text-destructive transition-colors p-1">
+                  <button onClick={() => deleteTag(tag)} className="text-muted-foreground hover:text-destructive transition-colors p-1">
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </div>
@@ -239,7 +316,7 @@ export default function TagsPage() {
                           ))}
                         </div>
                         <div className="flex gap-2">
-                          <button onClick={() => saveEdit(tag.name)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors">
+                          <button onClick={() => saveEdit(tag)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 transition-colors">
                             Guardar
                           </button>
                           <button onClick={() => setEditingTag(null)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-secondary text-foreground text-xs border border-border hover:bg-secondary/80 transition-colors">
@@ -252,7 +329,7 @@ export default function TagsPage() {
                 </AnimatePresence>
               </div>
             ))}
-            {tags.length === 0 && (
+            {!loading && tags.length === 0 && (
               <div className="px-4 py-8 text-center text-sm text-muted-foreground">
                 No hay etiquetas creadas
               </div>
