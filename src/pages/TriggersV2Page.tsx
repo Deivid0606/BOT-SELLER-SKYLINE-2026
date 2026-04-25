@@ -74,13 +74,10 @@ interface RemarketingCampaign {
   scheduleTimeTo: string;
 }
 
-const mockTags = [
-  { name: "venta normal cargada", color: "#22C55E" },
-  { name: "venta web cargada", color: "#4F46E5" },
-  { name: "prospecto", color: "#F59E0B" },
-  { name: "consulta", color: "#06B6D4" },
-  { name: "cancelado", color: "#EF4444" },
-];
+// Etiquetas reales cargadas desde la tabla `tags` de Supabase.
+// Se mantiene el mismo shape { name, color } que usaba el mock anterior
+// para no romper ninguna referencia de la UI.
+type TagOption = { name: string; color: string };
 
 const defaultSecondary: SecondaryTrigger = {
   enabled: false,
@@ -257,6 +254,7 @@ export default function TriggersV2Page() {
   >("campaigns");
 
   const [realTemplates, setRealTemplates] = useState<string[]>([]);
+  const [realTags, setRealTags] = useState<TagOption[]>([]);
 
   const inputClass =
     "w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 transition-colors";
@@ -356,6 +354,52 @@ export default function TriggersV2Page() {
     loadTemplates();
     loadTriggers();
     loadCampaigns();
+  }, [user]);
+
+  // Carga las etiquetas reales del usuario desde la tabla `tags`
+  // y las refresca cuando otra pestaña (Tags / Inbox) las modifique.
+  useEffect(() => {
+    if (!user) {
+      setRealTags([]);
+      return;
+    }
+
+    const loadTags = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("tags")
+          .select("name, color")
+          .eq("user_id", user.id)
+          .order("name", { ascending: true });
+
+        if (error) {
+          console.error("Error cargando etiquetas:", error);
+          setRealTags([]);
+          return;
+        }
+
+        setRealTags(
+          Array.isArray(data)
+            ? data
+                .filter(
+                  (t: any) =>
+                    typeof t?.name === "string" && typeof t?.color === "string"
+                )
+                .map((t: any) => ({ name: t.name, color: t.color }))
+            : []
+        );
+      } catch (err) {
+        console.error("Error inesperado cargando etiquetas:", err);
+        setRealTags([]);
+      }
+    };
+
+    loadTags();
+
+    // Refrescar al volver a la pestaña (otra vista pudo crear/borrar etiquetas)
+    const onFocus = () => loadTags();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, [user]);
 
   const toggleActive = async (id: string) => {
@@ -1027,7 +1071,7 @@ export default function TriggersV2Page() {
                                     }
                                   >
                                     <option value="">Sin etiqueta</option>
-                                    {mockTags.map((tag) => (
+                                    {realTags.map((tag) => (
                                       <option key={tag.name} value={tag.name}>
                                         {tag.name}
                                       </option>
@@ -1040,7 +1084,7 @@ export default function TriggersV2Page() {
                                         className="h-3 w-3 rounded-full"
                                         style={{
                                           backgroundColor:
-                                            mockTags.find(
+                                            realTags.find(
                                               (t) =>
                                                 t.name === editingTrigger.autoTag
                                             )?.color || "#888",
@@ -1502,7 +1546,7 @@ export default function TriggersV2Page() {
 
                           <div className="flex items-center gap-2 mt-1 flex-wrap">
                             {campaign.tags.map((tag) => {
-                              const found = mockTags.find((t) => t.name === tag);
+                              const found = realTags.find((t) => t.name === tag);
                               return (
                                 <span
                                   key={tag}
@@ -1587,7 +1631,7 @@ export default function TriggersV2Page() {
                                     (selecciona una o más)
                                   </label>
                                   <div className="flex flex-wrap gap-2">
-                                    {mockTags.map((tag) => {
+                                    {realTags.map((tag) => {
                                       const selected =
                                         editingCampaign.tags.includes(tag.name);
 
@@ -1922,7 +1966,3 @@ export default function TriggersV2Page() {
     </div>
   );
 }
-
-
-
-
