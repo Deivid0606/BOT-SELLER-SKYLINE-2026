@@ -35,7 +35,9 @@ function splitMessage(text, max = 3500) {
   return parts.filter((p) => p.length > 0);
 }
 
-
+// ═══════════════════════════════════════════════════════════
+// 📊 GOOGLE SHEETS — keys EXACTAS que espera tu Apps Script
+// ═══════════════════════════════════════════════════════════
 async function enviarASheet(userId, order, nota = "") {
   try {
     const { data: config, error } = await supabase
@@ -56,30 +58,23 @@ async function enviarASheet(userId, order, nota = "") {
     }
 
     const payload = {
-      nombre_cliente: clean(order.customer_name),
-      whatsapp: clean(order.phone || order.from_number),
-      ciudad: clean(order.city),
-      producto: clean(order.product),
-      cantidad: order.quantity || "",
-      total_a_pagar: order.total_amount || "",
-      calle: clean(order.address),
-      nota: clean(nota),
-      row: [
-        clean(order.customer_name),
-        clean(order.phone || order.from_number),
-        clean(order.city),
-        clean(order.product),
-        order.quantity || "",
-        order.total_amount || "",
-        clean(order.address),
-        clean(nota),
-      ],
+      customer_name: clean(order.customer_name),
+      customer_phone: clean(order.phone || order.from_number),
+      customer_city: clean(order.city),
+      product: clean(order.product),
+      quantity: order.quantity || 1,
+      total_amount: order.total_amount || "",
+      customer_address: clean(order.address),
+      note: clean(nota),
     };
+
+    console.log("📤 Enviando a Sheet:", JSON.stringify(payload));
 
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      redirect: "follow",
     });
 
     const raw = await response.text();
@@ -547,7 +542,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         });
       } catch {}
 
-      // 🆕 Revisar AMBOS contenidos (primary + secondary) por confirmación de pedido
       try {
         const contenidosEnviados = [contenidoPrimary, contenidoSecondary].filter(Boolean);
         for (const contenido of contenidosEnviados) {
@@ -600,7 +594,7 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS (Opción C — Mixto)
+// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS
 // ═══════════════════════════════════════════════════════════
 
 function esMensajePedidoConfirmado(texto) {
@@ -612,29 +606,16 @@ function esMensajePedidoConfirmado(texto) {
   return tieneMarcador && tieneProducto && tieneTotal && tieneUbicacion;
 }
 
-// 🆕 Detecta si un texto es bloque de datos bancarios / transferencia
 function esBloqueDatosBancarios(texto) {
   if (!texto) return false;
   const tn = normalize(texto);
   const señales = [
-    "datos para transferencia",
-    "datos de transferencia",
-    "titular:",
-    "titular ",
-    "banco familiar",
-    "banco continental",
-    "banco itau",
-    "banco gnb",
-    "banco atlas",
-    "banco regional",
-    "banco basa",
-    "ueno bank",
-    "cuenta:",
-    "nro de cuenta",
-    "numero de cuenta",
-    "alias:",
-    "cbu:",
-    "cvu:",
+    "datos para transferencia", "datos de transferencia",
+    "titular:", "titular ",
+    "banco familiar", "banco continental", "banco itau", "banco gnb",
+    "banco atlas", "banco regional", "banco basa", "ueno bank",
+    "cuenta:", "nro de cuenta", "numero de cuenta",
+    "alias:", "cbu:", "cvu:",
   ];
   let hits = 0;
   for (const s of señales) {
@@ -644,46 +625,33 @@ function esBloqueDatosBancarios(texto) {
   return false;
 }
 
-// 🆕 Limpia el texto del producto: quita bloque bancario y datos sueltos
 function limpiarProducto(productoRaw) {
   if (!productoRaw) return null;
   let p = clean(productoRaw);
 
-  // Si es claramente un bloque bancario, descartar todo
   if (esBloqueDatosBancarios(p)) {
-    // Intentar rescatar nombres de productos después del bloque bancario
-    // Buscar separadores tipo " + Producto x1" después de los datos bancarios
     const idxAlias = p.search(/alias:\s*\d+/i);
     if (idxAlias >= 0) {
-      // Cortar a partir del primer "+" después del Alias
       const restoDespuesAlias = p.substring(idxAlias);
       const idxPlus = restoDespuesAlias.indexOf("+");
       if (idxPlus >= 0) {
         p = restoDespuesAlias.substring(idxPlus + 1).trim();
       } else {
-        return null; // solo había datos bancarios, sin productos
+        return null;
       }
     } else {
       return null;
     }
   }
 
-  // Partir por "+" y filtrar items que parezcan basura bancaria
   const items = p.split(/\s*\+\s*/).filter((it) => {
     const itClean = clean(it);
     if (!itClean) return false;
     if (itClean.length > 100) return false;
     const itn = normalize(itClean);
     const blacklistItem = [
-      "datos para transferencia",
-      "titular",
-      "banco ",
-      "cuenta:",
-      "alias:",
-      "cbu:",
-      "https://",
-      "http://",
-      "www.",
+      "datos para transferencia", "titular", "banco ", "cuenta:",
+      "alias:", "cbu:", "https://", "http://", "www.",
     ];
     return !blacklistItem.some((b) => itn.includes(b));
   });
@@ -706,7 +674,6 @@ function parsearPedidoConfirmado(texto) {
   const calce = get(/Calce:\s*([^\n]+)/i);
   const totalRaw = get(/Total:\s*([^\n]+)/i);
 
-  // 🆕 Limpiar producto de datos bancarios ANTES de validar
   const producto = limpiarProducto(productoRaw);
 
   const esProductoValido = (p) => {
@@ -774,11 +741,6 @@ function parsearPedidoConfirmado(texto) {
   };
 }
 
-// ───────────────────────────────────────────────────────────
-// 🛒 Helpers para manejar el campo "product" como carrito
-// Formato: "Veneno de Abeja x2 + Plantilla Ortopiex x1"
-// ───────────────────────────────────────────────────────────
-
 function parsearCarrito(productString) {
   if (!productString) return [];
   return productString
@@ -792,7 +754,6 @@ function parsearCarrito(productString) {
     })
     .filter((it) => {
       if (!it.name) return false;
-      // 🆕 filtrar items que sean datos bancarios
       const itn = normalize(it.name);
       const blacklist = ["datos para transferencia", "titular", "banco ", "cuenta:", "alias:"];
       return !blacklist.some((b) => itn.includes(b));
@@ -811,18 +772,14 @@ function buscarItemEnCarrito(carrito, productName) {
   return carrito.findIndex((it) => normalize(it.name) === target);
 }
 
-// 🆕 Parsea "A x1 + B x2" como múltiples items individuales
 function expandirItemsDelMensaje(productoFinal, quantityFallback) {
   const items = parsearCarrito(productoFinal);
   if (items.length === 0) return [];
-  // Si solo hay 1 item y no traía xN explícito, usar quantityFallback
   if (items.length === 1 && !/x\s*\d+\s*$/i.test(productoFinal)) {
     items[0].qty = quantityFallback || items[0].qty || 1;
   }
   return items;
 }
-
-// ───────────────────────────────────────────────────────────
 
 async function yaExistePedidoParaMensaje(messageId) {
   if (!messageId) return false;
@@ -856,14 +813,12 @@ async function detectarYGuardarPedidoConfirmado({
       return;
     }
 
-    // 🆕 Expandir productos múltiples ("A x1 + B x1") en items separados
     const itemsNuevos = expandirItemsDelMensaje(datos.product, datos.quantity);
     if (itemsNuevos.length === 0) {
       console.log("🚫 No quedaron items válidos tras expandir");
       return;
     }
 
-    // Buscar pedido reciente del mismo cliente (últimos 30 min)
     const hace30min = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     const { data: reciente } = await supabase
       .from("orders")
@@ -875,7 +830,6 @@ async function detectarYGuardarPedidoConfirmado({
       .limit(1)
       .maybeSingle();
 
-    // ─── No hay pedido reciente → crear uno nuevo ───
     if (!reciente) {
       const cantidadTotal = itemsNuevos.reduce((s, it) => s + it.qty, 0);
       const insertPayload = {
@@ -910,8 +864,6 @@ async function detectarYGuardarPedidoConfirmado({
       return;
     }
 
-    // ─── Hay pedido reciente → modo carrito ───
-    // 🆕 Limpiar el carrito existente de basura bancaria que pudiera haberse colado antes
     const carrito = parsearCarrito(reciente.product);
     let totalActual = reciente.total_amount || 0;
     const cambios = [];
@@ -932,7 +884,6 @@ async function detectarYGuardarPedidoConfirmado({
       }
     }
 
-    // Total: si el mensaje trae un total nuevo y mayor, usarlo (es el total acumulado del bot)
     if (datos.total_amount && datos.total_amount > totalActual) {
       totalActual = datos.total_amount;
     }
