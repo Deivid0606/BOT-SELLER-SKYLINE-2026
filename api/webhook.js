@@ -218,9 +218,19 @@ async function saveReceivedMessage({
       is_processed: !!isOutgoing,
       ...(waMessageId ? { wa_message_id: waMessageId } : {}),
     };
-    await supabase.from("inbox_messages").insert(payload);
+    const { data, error } = await supabase
+      .from("inbox_messages")
+      .insert(payload)
+      .select("id")
+      .maybeSingle();
+    if (error) {
+      console.error("❌ saveReceivedMessage error:", error);
+      return null;
+    }
+    return data?.id || null;
   } catch (err) {
     console.error("❌ saveReceivedMessage error:", err);
+    return null;
   }
 }
 
@@ -255,8 +265,6 @@ function extraerMediosDePlantilla(plantilla) {
   return { imagenes, video, gif };
 }
 
-// ✅ NUEVO: helper que envía una plantilla completa (texto + imágenes + video + gif).
-// Reutilizado por principal y secundario.
 async function enviarPlantillaCompleta({ userId, from, templateName, fallbackText }) {
   let plantilla = null;
   if (templateName && templateName !== "Ninguna") {
@@ -273,7 +281,6 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
   const { imagenes, video, gif } = extraerMediosDePlantilla(plantilla);
   console.log(`📦 Plantilla "${plantilla?.name || templateName}" → ${imagenes.length} img, video: ${!!video}, gif: ${!!gif}`);
 
-  // 1) Imágenes (primera con caption)
   for (let i = 0; i < imagenes.length; i++) {
     const url = imagenes[i];
     const caption = i === 0 && mensajeFinal ? mensajeFinal : "";
@@ -289,7 +296,6 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     }
   }
 
-  // 2) Si no había imágenes pero sí texto → mandar texto solo
   if (imagenes.length === 0 && mensajeFinal) {
     const sent = await enviarMensaje(userId, from, mensajeFinal);
     if (sent) {
@@ -301,7 +307,6 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     }
   }
 
-  // 3) Video
   if (video) {
     const ok = await enviarMedia(userId, from, video, "video", "");
     if (ok) {
@@ -314,7 +319,6 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     }
   }
 
-  // 4) Gif
   if (gif) {
     const ok = await enviarMedia(userId, from, gif, "image", "");
     if (ok) {
@@ -339,7 +343,6 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
   return plantilla;
 }
 
-// ✅ NUEVO: aplicar auto_tag con schema real (tags + contact_tags)
 async function aplicarAutoTag(userId, contactId, tagName) {
   if (!tagName) return;
   try {
@@ -365,7 +368,6 @@ async function aplicarAutoTag(userId, contactId, tagName) {
   }
 }
 
-// ✅ NUEVO: matcher con tipo de match
 function matchKeywords(condicion, tipo, textoNorm) {
   if (!condicion) return false;
   const cond = normalize(condicion);
@@ -407,7 +409,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
 
       console.log(`🎯 Disparador MATCH: "${trig.name}" → primary=${matchPrimary} secondary=${matchSecondary}`);
 
-      // no_repeat: solo bloquea si ya se envió este trigger antes
       if (trig.no_repeat) {
         const { data: yaEnviado } = await supabase
           .from("inbox_messages")
@@ -424,7 +425,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         }
       }
 
-      // send_limit
       if (trig.send_limit && trig.send_limit !== "" && trig.send_limit !== "∞") {
         const limite = parseInt(trig.send_limit, 10);
         if (!isNaN(limite) && limite > 0) {
@@ -439,9 +439,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         }
       }
 
-      // ─────────────────────────────────────────────
-      // 1) PRIMARIO
-      // ─────────────────────────────────────────────
       let plantillaPrimary = null;
       if (matchPrimary) {
         plantillaPrimary = await enviarPlantillaCompleta({
@@ -456,10 +453,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         }
       }
 
-      // ─────────────────────────────────────────────
-      // 2) SECUNDARIO (mismo producto, mismo trigger)
-      //    Si también se mandó el primario → delay 5s para no llegar pegados
-      // ─────────────────────────────────────────────
       if (matchSecondary) {
         if (matchPrimary) {
           console.log("⏳ Esperando 5s antes del secundario...");
@@ -473,7 +466,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         });
       }
 
-      // Log
       try {
         await supabase.from("trigger_log").insert({
           trigger_id: trig.id,
@@ -482,6 +474,26 @@ async function evaluarDisparadores({ userId, from, texto }) {
           sent_at: new Date().toISOString(),
         });
       } catch {}
+
+      // 🆕 Después de enviar el trigger, revisar si la plantilla enviada
+      // contiene "✅ PEDIDO CONFIRMADO" y crear el pedido en orders.
+      try {
+        const contenidoEnviado = clean(
+          plantillaPrimary?.content ||
+          trig.response ||
+          ""
+        );
+        if (esMensajePedidoConfirmado(contenidoEnviado)) {
+          await detectarYGuardarPedidoConfirmado({
+            userId,
+            from,
+            textoMensaje: contenidoEnviado,
+            sourceMessageId: null,
+          });
+        }
+      } catch (e) {
+        console.log("⚠️ post-trigger pedido check error:", e.message);
+      }
 
       await saveContexto(userId, from, { last_trigger: trig.name });
       return true;
@@ -518,27 +530,224 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
   return data;
 }
 
+// ═══════════════════════════════════════════════════════════
+// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS (regex puro, sin IA)
+// ═══════════════════════════════════════════════════════════
+
+// Detecta si un texto es la plantilla "✅ PEDIDO CONFIRMADO"
+function esMensajePedidoConfirmado(texto) {
+  const t = normalize(texto);
+  return t.includes("pedido confirmado");
+}
+
+// Parsea los campos del mensaje "✅ PEDIDO CONFIRMADO"
+function parsearPedidoConfirmado(texto) {
+  const get = (regex) => {
+    const m = texto.match(regex);
+    return m ? clean(m[1]) : null;
+  };
+
+  const producto = get(/Producto:\s*([^\n]+)/i);
+  const cliente = get(/Cliente:\s*([^\n]+)/i);
+  const ubicacionRaw = get(/Ubicaci[oó]n:\s*([^\n]+)/i);
+  const contacto = get(/Contacto:\s*([^\n]+)/i);
+  const cantidadRaw = get(/Cantidad:\s*([^\n]+)/i);
+  const calce = get(/Calce:\s*([^\n]+)/i);
+  const totalRaw = get(/Total:\s*([^\n]+)/i);
+
+  // Ubicación viene como "Asunción — Padre Juan Casanello 1670"
+  let city = null;
+  let address = null;
+  if (ubicacionRaw) {
+    const partes = ubicacionRaw.split(/\s*[—–-]\s*/);
+    city = partes[0] ? clean(partes[0]) : null;
+    address = partes.slice(1).join(" — ").trim() || null;
+  }
+
+  // Cantidad: extraer número
+  let quantity = null;
+  if (cantidadRaw) {
+    const m = cantidadRaw.match(/(\d+)/);
+    if (m) quantity = parseInt(m[1], 10);
+  }
+
+  // Producto: si hay calce, lo agregamos al producto para no perder info
+  let productoFinal = producto;
+  if (calce && producto) {
+    productoFinal = `${producto} (Calce ${calce})`;
+  }
+
+  return {
+    customer_name: cliente,
+    product: productoFinal,
+    city,
+    address,
+    phone: contacto,
+    quantity,
+    total_amount: totalRaw,
+  };
+}
+
+// Verifica si ya existe pedido para el mensaje origen (anti-duplicado)
+async function yaExistePedidoParaMensaje(messageId) {
+  if (!messageId) return false;
+  try {
+    const { data } = await supabase
+      .from("orders")
+      .select("id")
+      .eq("source_message_id", messageId)
+      .maybeSingle();
+    return !!data;
+  } catch {
+    return false;
+  }
+}
+
+// Crea el pedido en la tabla orders
+async function detectarYGuardarPedidoConfirmado({
+  userId,
+  from,
+  textoMensaje,
+  sourceMessageId,
+}) {
+  try {
+    if (sourceMessageId && (await yaExistePedidoParaMensaje(sourceMessageId))) {
+      console.log("⏭️ Ya existe pedido para ese mensaje, skip");
+      return;
+    }
+
+    const datos = parsearPedidoConfirmado(textoMensaje);
+
+    if (!datos.product && !datos.customer_name) {
+      console.log("ℹ️ No se pudieron parsear campos mínimos del pedido");
+      return;
+    }
+
+    const insertPayload = {
+      user_id: userId,
+      from_number: from,
+      phone: datos.phone || from,
+      customer_name: datos.customer_name,
+      product: datos.product,
+      quantity: datos.quantity,
+      total_amount: datos.total_amount,
+      address: datos.address,
+      city: datos.city,
+      status: "confirmado",
+      metodo_pago: "efectivo", // por defecto, cambia a "transferencia" si llega comprobante
+      source_message_id: sourceMessageId || null,
+      detected_by_ai: true,
+      created_at: new Date().toISOString(),
+    };
+
+    const { data: nuevo, error } = await supabase
+      .from("orders")
+      .insert(insertPayload)
+      .select("id")
+      .maybeSingle();
+
+    if (error) {
+      console.error("❌ Error insertando pedido:", error);
+      return;
+    }
+
+    console.log(`✅ Pedido creado: ${nuevo?.id} → ${datos.customer_name} | ${datos.product}`);
+  } catch (err) {
+    console.error("❌ detectarYGuardarPedidoConfirmado error:", err);
+  }
+}
+
+// Cuando el cliente manda una imagen, la asociamos al último pedido confirmado de él (24h)
+async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
+  try {
+    if (!mediaUrl) return;
+
+    const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    const { data: pedido } = await supabase
+      .from("orders")
+      .select("id, comprobante_url")
+      .eq("user_id", userId)
+      .eq("from_number", from)
+      .eq("status", "confirmado")
+      .gte("created_at", hace24h)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!pedido) {
+      console.log("ℹ️ Comprobante recibido pero no hay pedido confirmado reciente");
+      return;
+    }
+
+    if (pedido.comprobante_url) {
+      console.log("ℹ️ El pedido ya tiene comprobante, no sobrescribo");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("orders")
+      .update({
+        comprobante_url: mediaUrl,
+        metodo_pago: "transferencia",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", pedido.id);
+
+    if (error) {
+      console.error("❌ Error asociando comprobante:", error);
+      return;
+    }
+
+    console.log(`💳 Comprobante asociado al pedido ${pedido.id}`);
+  } catch (err) {
+    console.error("❌ asociarComprobanteAlPedido error:", err);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+
 async function procesar(req, message, userId, from) {
   try {
-    if (message.type !== "text") return;
+    const tipoMsg = message.type;
 
-    const texto = clean(message.text?.body || "");
-    if (!texto) return;
+    let texto = "";
+    let mediaUrl = null;
+
+    if (tipoMsg === "text") {
+      texto = clean(message.text?.body || "");
+    } else if (tipoMsg === "image") {
+      texto = clean(message.image?.caption || "[imagen]");
+      mediaUrl = message.image?.id ? `wa_media:${message.image.id}` : null;
+    } else {
+      return;
+    }
+
+    if (!texto && !mediaUrl) return;
 
     console.log("━━━━━━━━━━━━━━━━━━━━━━");
-    console.log("📩 WhatsApp recibido:", from, texto);
+    console.log("📩 WhatsApp recibido:", from, texto, mediaUrl ? "(con media)" : "");
 
     if (await isDuplicateMessage(message.id)) {
       console.log("⚠️ Duplicado ignorado");
       return;
     }
 
-    await saveReceivedMessage({
+    const sourceMessageId = await saveReceivedMessage({
       userId, from,
       message: texto,
-      messageType: "text",
+      messageType: tipoMsg === "image" ? "image" : "text",
+      mediaUrl,
       waMessageId: message.id || null,
     });
+
+    // 🆕 Si llega imagen del cliente → intentar asociar como comprobante
+    if (tipoMsg === "image" && mediaUrl) {
+      asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch((e) =>
+        console.error("comprobante bg error:", e)
+      );
+      return; // imágenes no pasan por triggers/IA
+    }
 
     const disparado = await evaluarDisparadores({ userId, from, texto });
     if (disparado) {
@@ -568,6 +777,16 @@ async function procesar(req, message, userId, from) {
           message: data.response,
           messageType: "out_text",
         });
+
+        // 🆕 También chequear si la respuesta de la IA contiene "PEDIDO CONFIRMADO"
+        if (esMensajePedidoConfirmado(data.response)) {
+          await detectarYGuardarPedidoConfirmado({
+            userId,
+            from,
+            textoMensaje: data.response,
+            sourceMessageId: null,
+          });
+        }
       }
       return;
     }
