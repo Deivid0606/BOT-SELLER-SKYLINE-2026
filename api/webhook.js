@@ -543,7 +543,9 @@ async function evaluarDisparadores({ userId, from, texto }) {
         });
       } catch {}
 
-      // 🔥 DETECCIÓN CONSOLIDADA: juntamos TODO lo que se envió en un solo bloque
+      // 🔥 FIX BUG 1: NO concatenar bloques. Evaluar cada bloque INDIVIDUALMENTE.
+      // Si concatenamos, el regex de Producto:/Total:/Ubicación: agarra mezcla
+      // del primary + secondary y el parser falla o devuelve datos basura.
       try {
         const captionPrimary = plantillaPrimary?.variables?.media?.caption || "";
         const captionSec = plantillaSec?.variables?.media?.caption || "";
@@ -551,33 +553,27 @@ async function evaluarDisparadores({ userId, from, texto }) {
         const bloques = [
           contenidoPrimary,
           captionPrimary,
-          trig.response,
           contenidoSecondary,
           captionSec,
-          trig.secondary?.response,
         ].filter(Boolean);
 
-        const textoCompleto = bloques.join("\n");
-
-        if (esMensajePedidoConfirmado(textoCompleto)) {
-          await detectarYGuardarPedidoConfirmado({
-            userId,
-            from,
-            textoMensaje: textoCompleto,
-            sourceMessageId: null,
-          });
-        } else {
-          for (const contenido of bloques) {
-            if (esMensajePedidoConfirmado(contenido)) {
-              await detectarYGuardarPedidoConfirmado({
-                userId,
-                from,
-                textoMensaje: contenido,
-                sourceMessageId: null,
-              });
-              break;
-            }
+        let pedidoDetectado = false;
+        for (const contenido of bloques) {
+          if (esMensajePedidoConfirmado(contenido)) {
+            console.log("🎯 Pedido detectado en bloque individual");
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: contenido,
+              sourceMessageId: null,
+            });
+            pedidoDetectado = true;
+            break;
           }
+        }
+
+        if (!pedidoDetectado) {
+          console.log("ℹ️ Ningún bloque del trigger contiene pedido confirmado válido");
         }
       } catch (e) {
         console.log("⚠️ post-trigger pedido check error:", e.message);
@@ -694,19 +690,48 @@ function limpiarProducto(productoRaw) {
   return items.join(" + ");
 }
 
-// 🔥 Helper: extrae UN solo monto válido de una línea, sin concatenar dígitos sueltos
 function extraerMontoUnico(lineaRaw) {
   if (!lineaRaw) return null;
-  // Captura el PRIMER número con formato 159.000 / 159,000 / 1.500.000 / 159000
   const m = lineaRaw.match(/(\d{1,3}(?:[.,]\d{3})+|\d{3,9})/);
   if (!m) return null;
   const soloDigitos = m[1].replace(/[^\d]/g, "");
   if (!soloDigitos) return null;
   const num = parseInt(soloDigitos, 10);
   if (isNaN(num) || num <= 0) return null;
-  // Sanity check: si pasa de 999.999.999 (mil millones) seguro está mal pegado
   if (num > 999999999) return null;
   return num;
+}
+
+// 🔥 FIX BUG 2: Validar y limpiar la ciudad para que no se cuele un listado
+// de ciudades de cobertura ni texto largo del producto.
+function limpiarCiudad(cityRaw) {
+  if (!cityRaw) return null;
+  let c = clean(cityRaw);
+
+  // Si tiene comas → es probablemente una lista de ciudades de cobertura.
+  // Nos quedamos solo con la primera.
+  if (c.includes(",")) {
+    c = c.split(",")[0].trim();
+  }
+
+  // Cortar en " y " (típico de listados: "Ciudad del Este y Hernandarias")
+  if (/\sy\s/i.test(c) && c.length > 30) {
+    c = c.split(/\sy\s/i)[0].trim();
+  }
+
+  // Si sigue siendo demasiado larga (>40 chars) → es basura, descartar
+  if (c.length > 40) {
+    console.log("🚫 City demasiado larga, descartada:", c.substring(0, 60));
+    return null;
+  }
+
+  // Si contiene caracteres raros del producto (paréntesis con calce, x número, etc.)
+  if (/x\s*\d+|\(calce|talle\s*\d/i.test(c)) {
+    console.log("🚫 City contiene datos de producto, descartada:", c);
+    return null;
+  }
+
+  return c || null;
 }
 
 function parsearPedidoConfirmado(textoOriginal) {
@@ -768,14 +793,15 @@ function parsearPedidoConfirmado(textoOriginal) {
     address = partes.slice(1).join(" — ").trim() || null;
   }
 
+  // 🔥 FIX BUG 2: limpiar ciudad antes de devolverla
+  city = limpiarCiudad(city);
+
   let quantity = 1;
   if (cantidadRaw) {
     const m = cantidadRaw.match(/(\d+)/);
     if (m) quantity = parseInt(m[1], 10);
   }
 
-  // 🔥 FIX: usar extraerMontoUnico — captura UN solo número con formato,
-  // no concatena dígitos sueltos de varios totales pegados.
   const totalNum = extraerMontoUnico(totalRaw);
 
   let productoFinal = producto;
@@ -937,10 +963,13 @@ async function detectarYGuardarPedidoConfirmado({
       }
     }
 
-    // 🔥 FIX: solo reemplazar el total si el nuevo es razonable y mayor.
-    // Nunca aceptar montos absurdos (ya filtrados en extraerMontoUnico).
-    if (datos.total_amount && datos.total_amount > totalActual) {
-      totalActual = datos.total_amount;
+    // 🔥 FIX BUG 3: si total actual es 0/null y llega uno válido → reemplazar siempre
+    if (datos.total_amount) {
+      if (!totalActual || totalActual <= 0) {
+        totalActual = datos.total_amount;
+      } else if (datos.total_amount > totalActual) {
+        totalActual = datos.total_amount;
+      }
     }
 
     const productoSerializado = serializarCarrito(carrito);
