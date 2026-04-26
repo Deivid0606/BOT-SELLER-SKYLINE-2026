@@ -1,8 +1,18 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  UserCheck, UserX, Power, PowerOff, Calendar, MessageSquareWarning,
-  ChevronDown, ChevronUp, Search, Shield, ShieldAlert, Save
+  UserCheck,
+  UserX,
+  Power,
+  PowerOff,
+  Calendar,
+  MessageSquareWarning,
+  ChevronDown,
+  ChevronUp,
+  Search,
+  Shield,
+  ShieldAlert,
+  Save,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -44,41 +54,50 @@ export default function AdminUsersPage() {
 
   const fetchUsers = async () => {
     setLoading(true);
-    const { data: profiles, error } = await supabase
-      .from("profiles")
-      .select("*")
+
+    // 1) Fuente principal: user_roles (admin ve todos gracias a la policy)
+    const { data: roles, error: rolesError } = await supabase
+      .from("user_roles")
+      .select("user_id, role, email, full_name, created_at")
       .order("created_at", { ascending: true });
 
-    if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+    if (rolesError) {
+      toast({
+        title: "Error",
+        description: rolesError.message,
+        variant: "destructive",
+      });
       setLoading(false);
       return;
     }
 
-    // Fetch roles for all users
-    const userIds = profiles?.map((p) => p.user_id) || [];
-    const { data: roles } = await supabase
-      .from("user_roles")
-      .select("user_id, role")
+    // 2) Enriquecer con profiles (avatar, approved, active, fechas, mensaje)
+    const userIds = (roles || []).map((r: any) => r.user_id);
+    const { data: profiles } = await supabase
+      .from("profiles")
+      .select("*")
       .in("user_id", userIds);
 
-    const roleMap: Record<string, string> = {};
-    roles?.forEach((r) => (roleMap[r.user_id] = r.role));
+    const profileMap: Record<string, any> = {};
+    profiles?.forEach((p: any) => (profileMap[p.user_id] = p));
 
-    const merged: ManagedUser[] = (profiles || []).map((p) => ({
-      id: p.id,
-      user_id: p.user_id,
-      display_name: p.display_name,
-      avatar_url: p.avatar_url,
-      approved: (p as any).approved ?? false,
-      active: (p as any).active ?? true,
-      active_from: (p as any).active_from,
-      active_until: (p as any).active_until,
-      inactive_message: (p as any).inactive_message,
-      created_at: p.created_at,
-      role: roleMap[p.user_id] || null,
-      email: p.display_name, // fallback since we can't access auth.users
-    }));
+    const merged: ManagedUser[] = (roles || []).map((r: any) => {
+      const p = profileMap[r.user_id] || {};
+      return {
+        id: p.id || r.user_id,
+        user_id: r.user_id,
+        display_name: r.full_name || p.display_name || null,
+        avatar_url: p.avatar_url || null,
+        approved: p.approved ?? false,
+        active: p.active ?? true,
+        active_from: p.active_from ?? null,
+        active_until: p.active_until ?? null,
+        inactive_message: p.inactive_message ?? null,
+        created_at: r.created_at,
+        role: r.role,
+        email: r.email,
+      };
+    });
 
     setUsers(merged);
     setLoading(false);
@@ -102,7 +121,8 @@ export default function AdminUsersPage() {
     if (edits.active !== undefined) updates.active = edits.active;
     if (edits.active_from !== undefined) updates.active_from = edits.active_from || null;
     if (edits.active_until !== undefined) updates.active_until = edits.active_until || null;
-    if (edits.inactive_message !== undefined) updates.inactive_message = edits.inactive_message || null;
+    if (edits.inactive_message !== undefined)
+      updates.inactive_message = edits.inactive_message || null;
 
     if (Object.keys(updates).length === 0) {
       setSaving(null);
@@ -115,9 +135,16 @@ export default function AdminUsersPage() {
       .eq("user_id", user.user_id);
 
     if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
     } else {
-      toast({ title: "✅ Guardado", description: `Usuario ${user.display_name || "sin nombre"} actualizado` });
+      toast({
+        title: "✅ Guardado",
+        description: `Usuario ${user.display_name || user.email || "sin nombre"} actualizado`,
+      });
       setEditState((prev) => {
         const next = { ...prev };
         delete next[user.user_id];
@@ -128,7 +155,7 @@ export default function AdminUsersPage() {
     setSaving(null);
   };
 
-  const toggleApproval = async (user: ManagedUser) => {
+  const toggleApproval = (user: ManagedUser) => {
     const newVal = !(getEdit(user.user_id)?.approved ?? user.approved);
     updateEdit(user.user_id, { approved: newVal });
   };
@@ -139,7 +166,7 @@ export default function AdminUsersPage() {
   };
 
   const getValue = (user: ManagedUser, field: keyof ManagedUser) => {
-    const edit = getEdit(user.user_id);
+    const edit = getEdit(user.user_id) as any;
     return edit[field] !== undefined ? edit[field] : user[field];
   };
 
@@ -150,38 +177,41 @@ export default function AdminUsersPage() {
     const s = search.toLowerCase();
     return (
       (u.display_name || "").toLowerCase().includes(s) ||
+      (u.email || "").toLowerCase().includes(s) ||
       (u.role || "").toLowerCase().includes(s)
     );
   });
 
   if (role !== "admin") {
     return (
-      <div className="flex items-center justify-center py-20">
-        <p className="text-muted-foreground">No tenés permisos para acceder a esta página.</p>
+      <div className="p-8">
+        <p className="text-center text-muted-foreground">
+          No tenés permisos para acceder a esta página.
+        </p>
       </div>
     );
   }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <div className="h-6 w-6 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+      <div className="p-8 flex items-center justify-center">
+        <div className="h-8 w-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="space-y-6 max-w-4xl">
+    <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold font-heading text-gradient">Gestión de Usuarios</h1>
-        <span className="text-xs text-muted-foreground">{users.length} usuarios</span>
+        <h1 className="text-2xl font-semibold">Gestión de Usuarios</h1>
+        <span className="text-sm text-muted-foreground">{users.length} usuarios</span>
       </div>
 
       {/* Search */}
-      <div className="relative">
+      <div className="relative max-w-md">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
-          placeholder="Buscar usuario..."
+          placeholder="Buscar por nombre, email o rol..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="pl-10"
@@ -203,61 +233,72 @@ export default function AdminUsersPage() {
             <motion.div
               key={user.user_id}
               layout
-              className="bg-card border border-border rounded-xl overflow-hidden"
+              className="border rounded-lg bg-card overflow-hidden"
             >
               {/* Header row */}
               <div
-                className="flex items-center gap-4 px-5 py-4 cursor-pointer hover:bg-secondary/30 transition-colors"
+                className="flex items-center gap-4 p-4 cursor-pointer hover:bg-accent/50"
                 onClick={() => setExpandedUser(isExpanded ? null : user.user_id)}
               >
                 {/* Avatar */}
-                <div className="h-10 w-10 rounded-full bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/20 flex items-center justify-center text-primary font-bold text-sm shrink-0">
-                  {(user.display_name || "?")[0].toUpperCase()}
+                <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center font-semibold text-primary">
+                  {(user.display_name || user.email || "?")[0].toUpperCase()}
                 </div>
 
                 {/* Info */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">{user.display_name || "Sin nombre"}</p>
-                  <p className="text-[10px] text-muted-foreground">
-                    Registrado: {format(new Date(user.created_at), "dd MMM yyyy", { locale: es })}
+                  <p className="font-medium truncate">
+                    {user.display_name || "Sin nombre"}
+                  </p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {user.email || "—"} · Registrado:{" "}
+                    {format(new Date(user.created_at), "dd MMM yyyy", { locale: es })}
                   </p>
                 </div>
 
                 {/* Status badges */}
                 <div className="flex items-center gap-2">
                   {user.role && (
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
-                      user.role === "admin"
-                        ? "bg-primary/12 text-primary border border-primary/20"
-                        : "bg-secondary text-muted-foreground border border-border"
-                    }`}>
+                    <span className="text-[10px] uppercase tracking-wider px-2 py-1 rounded bg-muted text-muted-foreground">
                       {user.role.toUpperCase()}
                     </span>
                   )}
 
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium flex items-center gap-1 ${
-                    approved
-                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                      : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                  }`}>
-                    {approved ? <UserCheck className="h-3 w-3" /> : <UserX className="h-3 w-3" />}
+                  <span
+                    className={`text-xs px-2 py-1 rounded flex items-center gap-1 ${
+                      approved
+                        ? "bg-emerald-500/10 text-emerald-600"
+                        : "bg-amber-500/10 text-amber-600"
+                    }`}
+                  >
+                    {approved ? (
+                      <Shield className="h-3 w-3" />
+                    ) : (
+                      <ShieldAlert className="h-3 w-3" />
+                    )}
                     {approved ? "Aprobado" : "Pendiente"}
                   </span>
 
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium flex items-center gap-1 ${
-                    active
-                      ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                      : "bg-red-500/10 text-red-400 border border-red-500/20"
-                  }`}>
-                    {active ? <Power className="h-3 w-3" /> : <PowerOff className="h-3 w-3" />}
+                  <span
+                    className={`text-xs px-2 py-1 rounded flex items-center gap-1 ${
+                      active
+                        ? "bg-emerald-500/10 text-emerald-600"
+                        : "bg-rose-500/10 text-rose-600"
+                    }`}
+                  >
+                    {active ? (
+                      <Power className="h-3 w-3" />
+                    ) : (
+                      <PowerOff className="h-3 w-3" />
+                    )}
                     {active ? "Activo" : "Inactivo"}
                   </span>
                 </div>
 
                 {isExpanded ? (
-                  <ChevronUp className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
                 ) : (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
                 )}
               </div>
 
@@ -268,52 +309,61 @@ export default function AdminUsersPage() {
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: "auto", opacity: 1 }}
                     exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.2 }}
-                    className="overflow-hidden"
+                    className="border-t overflow-hidden"
                   >
-                    <div className="px-5 pb-5 pt-2 border-t border-border space-y-5">
+                    <div className="p-4 space-y-6">
                       {/* Aprobar / Rechazar */}
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <Shield className="h-4 w-4 text-primary" />
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-start gap-3">
+                          {approved ? (
+                            <UserCheck className="h-5 w-5 text-emerald-600 mt-0.5" />
+                          ) : (
+                            <UserX className="h-5 w-5 text-amber-600 mt-0.5" />
+                          )}
                           <div>
-                            <p className="text-sm font-medium">Aprobar usuario</p>
-                            <p className="text-[10px] text-muted-foreground">
-                              {approved ? "El usuario puede usar el sistema" : "El usuario NO puede acceder al sistema"}
+                            <p className="font-medium text-sm">Aprobar usuario</p>
+                            <p className="text-xs text-muted-foreground">
+                              {approved
+                                ? "El usuario puede usar el sistema"
+                                : "El usuario NO puede acceder al sistema"}
                             </p>
                           </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <Button
-                            size="sm"
-                            variant={approved ? "destructive" : "default"}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleApproval(user);
-                            }}
-                            className="text-xs"
-                          >
-                            {approved ? (
-                              <><UserX className="h-3.5 w-3.5 mr-1" /> Rechazar</>
-                            ) : (
-                              <><UserCheck className="h-3.5 w-3.5 mr-1" /> Aprobar</>
-                            )}
-                          </Button>
-                        </div>
+                        <Button
+                          size="sm"
+                          variant={approved ? "outline" : "default"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleApproval(user);
+                          }}
+                          className="text-xs gap-1"
+                        >
+                          {approved ? (
+                            <>
+                              <UserX className="h-3 w-3" /> Rechazar
+                            </>
+                          ) : (
+                            <>
+                              <UserCheck className="h-3 w-3" /> Aprobar
+                            </>
+                          )}
+                        </Button>
                       </div>
 
                       {/* Encender / Apagar */}
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-start gap-3">
                           {active ? (
-                            <Power className="h-4 w-4 text-emerald-400" />
+                            <Power className="h-5 w-5 text-emerald-600 mt-0.5" />
                           ) : (
-                            <PowerOff className="h-4 w-4 text-red-400" />
+                            <PowerOff className="h-5 w-5 text-rose-600 mt-0.5" />
                           )}
                           <div>
-                            <p className="text-sm font-medium">Sistema activo</p>
-                            <p className="text-[10px] text-muted-foreground">
-                              {active ? "El bot responde mensajes" : "El bot NO responde mensajes"}
+                            <p className="font-medium text-sm">Sistema activo</p>
+                            <p className="text-xs text-muted-foreground">
+                              {active
+                                ? "El bot responde mensajes"
+                                : "El bot NO responde mensajes"}
                             </p>
                           </div>
                         </div>
@@ -325,34 +375,38 @@ export default function AdminUsersPage() {
 
                       {/* Rango de fechas */}
                       <div className="space-y-3">
-                        <div className="flex items-center gap-3">
-                          <Calendar className="h-4 w-4 text-primary" />
+                        <div className="flex items-start gap-3">
+                          <Calendar className="h-5 w-5 text-primary mt-0.5" />
                           <div>
-                            <p className="text-sm font-medium">Período de actividad</p>
-                            <p className="text-[10px] text-muted-foreground">
+                            <p className="font-medium text-sm">Período de actividad</p>
+                            <p className="text-xs text-muted-foreground">
                               Define desde cuándo y hasta cuándo la app estará activa para este usuario
                             </p>
                           </div>
                         </div>
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-2 gap-3 pl-8">
                           <div>
-                            <label className="text-[10px] text-muted-foreground mb-1 block">Desde</label>
+                            <label className="text-xs text-muted-foreground">Desde</label>
                             <Input
                               type="date"
-                              value={activeFrom || ""}
+                              value={activeFrom ? activeFrom.substring(0, 10) : ""}
                               onChange={(e) =>
-                                updateEdit(user.user_id, { active_from: e.target.value || null })
+                                updateEdit(user.user_id, {
+                                  active_from: e.target.value || null,
+                                })
                               }
                               className="text-sm"
                             />
                           </div>
                           <div>
-                            <label className="text-[10px] text-muted-foreground mb-1 block">Hasta</label>
+                            <label className="text-xs text-muted-foreground">Hasta</label>
                             <Input
                               type="date"
-                              value={activeUntil || ""}
+                              value={activeUntil ? activeUntil.substring(0, 10) : ""}
                               onChange={(e) =>
-                                updateEdit(user.user_id, { active_until: e.target.value || null })
+                                updateEdit(user.user_id, {
+                                  active_until: e.target.value || null,
+                                })
                               }
                               className="text-sm"
                             />
@@ -362,23 +416,25 @@ export default function AdminUsersPage() {
 
                       {/* Mensaje personalizado */}
                       <div className="space-y-2">
-                        <div className="flex items-center gap-3">
-                          <MessageSquareWarning className="h-4 w-4 text-amber-400" />
+                        <div className="flex items-start gap-3">
+                          <MessageSquareWarning className="h-5 w-5 text-amber-600 mt-0.5" />
                           <div>
-                            <p className="text-sm font-medium">Mensaje de bloqueo</p>
-                            <p className="text-[10px] text-muted-foreground">
+                            <p className="font-medium text-sm">Mensaje de bloqueo</p>
+                            <p className="text-xs text-muted-foreground">
                               Mensaje que verá el usuario cuando su cuenta esté inactiva o fuera del período
                             </p>
                           </div>
                         </div>
                         <Textarea
-                          placeholder="Ej: Tu cuenta ha sido suspendida. Contacta al administrador para más información."
                           value={inactiveMessage || ""}
                           onChange={(e) =>
-                            updateEdit(user.user_id, { inactive_message: e.target.value })
+                            updateEdit(user.user_id, {
+                              inactive_message: e.target.value,
+                            })
                           }
                           rows={3}
                           className="text-sm"
+                          placeholder="Ej: Tu cuenta está temporalmente desactivada. Contactá al administrador."
                         />
                       </div>
 
