@@ -7,6 +7,7 @@ import {
   TrendingUp,
   MapPin,
   Package,
+  CalendarIcon,
 } from "lucide-react";
 import {
   BarChart,
@@ -21,59 +22,94 @@ import {
 } from "recharts";
 import { motion } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
-import { format, subDays } from "date-fns";
+import {
+  format,
+  subDays,
+  startOfDay,
+  endOfDay,
+  startOfMonth,
+  endOfMonth,
+  eachDayOfInterval,
+  isWithinInterval,
+} from "date-fns";
+import { es } from "date-fns/locale";
+import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
+import type { DateRange } from "react-day-picker";
 
 type DbMessage = {
   id: string;
   from_number: string | null;
   message: string | null;
   is_processed: boolean | null;
+  created_at?: string | null;
 };
 
 type DbOrder = {
   id: string;
-  producto: string | null;
-  ciudad: string | null;
-  fecha: string | null;
+  product: string | null;
+  city: string | null;
+  status: string | null;
+  total_amount: string | null;
+  created_at: string;
 };
 
-type DayPoint = {
-  day: string;
-  msgs: number;
-};
+// ✅ Estados que cuentan como "venta cerrada"
+const CLOSED_STATUSES = new Set(["cargado", "confirmado", "confirmed", "droppx"]);
 
-type SalesPoint = {
-  day: string;
-  ventas: number;
-};
+type RangeKey = "hoy" | "7d" | "30d" | "mes" | "custom";
 
 export default function DashboardPage() {
   const [messages, setMessages] = useState<DbMessage[]>([]);
   const [orders, setOrders] = useState<DbOrder[]>([]);
   const [loading, setLoading] = useState(true);
 
+  const [rangeKey, setRangeKey] = useState<RangeKey>("hoy");
+  const [customRange, setCustomRange] = useState<DateRange | undefined>();
+
+  // Calcular rango de fechas según el botón activo
+  const { from, to, label } = useMemo(() => {
+    const now = new Date();
+    if (rangeKey === "hoy") {
+      return { from: startOfDay(now), to: endOfDay(now), label: "Hoy" };
+    }
+    if (rangeKey === "7d") {
+      return { from: startOfDay(subDays(now, 6)), to: endOfDay(now), label: "Últimos 7 días" };
+    }
+    if (rangeKey === "30d") {
+      return { from: startOfDay(subDays(now, 29)), to: endOfDay(now), label: "Últimos 30 días" };
+    }
+    if (rangeKey === "mes") {
+      return { from: startOfMonth(now), to: endOfMonth(now), label: "Este mes" };
+    }
+    if (customRange?.from) {
+      const f = startOfDay(customRange.from);
+      const t = endOfDay(customRange.to ?? customRange.from);
+      return {
+        from: f,
+        to: t,
+        label: `${format(f, "dd MMM", { locale: es })} → ${format(t, "dd MMM", { locale: es })}`,
+      };
+    }
+    return { from: startOfDay(now), to: endOfDay(now), label: "Hoy" };
+  }, [rangeKey, customRange]);
+
   const loadDashboardData = async () => {
     setLoading(true);
-
     const [messagesRes, ordersRes] = await Promise.all([
       supabase
         .from("received_messages")
-        .select("id, from_number, message, is_processed")
+        .select("id, from_number, message, is_processed, created_at")
         .order("id", { ascending: false }),
       supabase
         .from("orders")
-        .select("id, producto, ciudad, fecha")
+        .select("id, product, city, status, total_amount, created_at")
         .order("created_at", { ascending: false }),
     ]);
-
-    if (messagesRes.error) {
-      console.error("Error cargando mensajes dashboard:", messagesRes.error);
-    }
-
-    if (ordersRes.error) {
-      console.error("Error cargando órdenes dashboard:", ordersRes.error);
-    }
-
+    if (messagesRes.error) console.error("Error mensajes:", messagesRes.error);
+    if (ordersRes.error) console.error("Error órdenes:", ordersRes.error);
     setMessages((messagesRes.data || []) as DbMessage[]);
     setOrders((ordersRes.data || []) as DbOrder[]);
     setLoading(false);
@@ -81,311 +117,311 @@ export default function DashboardPage() {
 
   useEffect(() => {
     loadDashboardData();
-
-    const messagesChannel = supabase
+    const m = supabase
       .channel("dashboard_messages_realtime")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "received_messages" },
-        () => {
-          loadDashboardData();
-        }
+        loadDashboardData
       )
       .subscribe();
-
-    const ordersChannel = supabase
+    const o = supabase
       .channel("dashboard_orders_realtime")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "orders" },
-        () => {
-          loadDashboardData();
-        }
+        loadDashboardData
       )
       .subscribe();
-
     return () => {
-      supabase.removeChannel(messagesChannel);
-      supabase.removeChannel(ordersChannel);
+      supabase.removeChannel(m);
+      supabase.removeChannel(o);
     };
   }, []);
 
-  const todayMessages = messages.length;
+  // Pedidos cerrados dentro del rango seleccionado
+  const ordersInRange = useMemo(
+    () =>
+      orders.filter((o) => {
+        if (!o.status || !CLOSED_STATUSES.has(o.status)) return false;
+        return isWithinInterval(new Date(o.created_at), { start: from, end: to });
+      }),
+    [orders, from, to]
+  );
 
-  const activeChats = useMemo(() => {
-    const unique = new Set(
-      messages
-        .map((m) => m.from_number)
-        .filter((v): v is string => !!v)
-    );
-    return unique.size;
-  }, [messages]);
+  // Mensajes dentro del rango
+  const messagesInRange = useMemo(
+    () =>
+      messages.filter((m) => {
+        if (!m.created_at) return false;
+        return isWithinInterval(new Date(m.created_at), { start: from, end: to });
+      }),
+    [messages, from, to]
+  );
 
-  const todaySales = orders.length;
+  const totalMessages = messagesInRange.length;
+  const activeChats = useMemo(
+    () =>
+      new Set(messagesInRange.map((m) => m.from_number).filter((v): v is string => !!v)).size,
+    [messagesInRange]
+  );
+  const totalSales = ordersInRange.length;
+  const conversionRate = activeChats > 0 ? Math.round((totalSales / activeChats) * 100) : 0;
 
-  const conversionRate = activeChats > 0 ? Math.round((todaySales / activeChats) * 100) : 0;
-
-  const msgData = useMemo<DayPoint[]>(() => {
-    const days = Array.from({ length: 7 }).map((_, index) => {
-      const date = subDays(new Date(), 6 - index);
-      return {
-        raw: format(date, "yyyy-MM-dd"),
-        label: format(date, "EEE"),
-      };
-    });
-
-    return days.map((day, index) => ({
-      day: ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"][subDays(new Date(), 6 - index).getDay()],
-      msgs: index === 6 ? messages.length : 0,
+  const msgData = useMemo(() => {
+    const days = eachDayOfInterval({ start: from, end: to });
+    return days.map((day) => ({
+      day: format(day, days.length <= 7 ? "EEE" : "dd/MM", { locale: es }),
+      msgs: messagesInRange.filter(
+        (m) =>
+          m.created_at &&
+          isWithinInterval(new Date(m.created_at), {
+            start: startOfDay(day),
+            end: endOfDay(day),
+          })
+      ).length,
     }));
-  }, [messages]);
+  }, [messagesInRange, from, to]);
 
-  const salesData = useMemo<SalesPoint[]>(() => {
-    return Array.from({ length: 7 }).map((_, index) => ({
-      day: ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"][subDays(new Date(), 6 - index).getDay()],
-      ventas: index === 6 ? orders.length : 0,
+  const salesData = useMemo(() => {
+    const days = eachDayOfInterval({ start: from, end: to });
+    return days.map((day) => ({
+      day: format(day, days.length <= 7 ? "EEE" : "dd/MM", { locale: es }),
+      ventas: ordersInRange.filter((o) =>
+        isWithinInterval(new Date(o.created_at), {
+          start: startOfDay(day),
+          end: endOfDay(day),
+        })
+      ).length,
     }));
-  }, [orders]);
+  }, [ordersInRange, from, to]);
 
   const topProducts = useMemo(() => {
-    const counter = new Map<string, number>();
-
-    for (const order of orders) {
-      const name = order.producto?.trim();
-      if (!name) continue;
-      counter.set(name, (counter.get(name) || 0) + 1);
+    const c = new Map<string, number>();
+    for (const o of ordersInRange) {
+      const n = o.product?.trim();
+      if (n) c.set(n, (c.get(n) || 0) + 1);
     }
-
-    return Array.from(counter.entries())
+    return Array.from(c.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
-  }, [orders]);
+  }, [ordersInRange]);
 
   const topCities = useMemo(() => {
-    const counter = new Map<string, number>();
-
-    for (const order of orders) {
-      const name = order.ciudad?.trim();
-      if (!name) continue;
-      counter.set(name, (counter.get(name) || 0) + 1);
+    const c = new Map<string, number>();
+    for (const o of ordersInRange) {
+      const n = o.city?.trim();
+      if (n) c.set(n, (c.get(n) || 0) + 1);
     }
-
-    return Array.from(counter.entries())
+    return Array.from(c.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
-  }, [orders]);
+  }, [ordersInRange]);
+
+  const rangeButtons: { key: RangeKey; label: string }[] = [
+    { key: "hoy", label: "Hoy" },
+    { key: "7d", label: "7 días" },
+    { key: "30d", label: "30 días" },
+    { key: "mes", label: "Este mes" },
+  ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="p-6 space-y-6">
+      {/* Header con título y filtros de fecha */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold font-heading text-gradient">
+          <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-purple-400 bg-clip-text text-transparent">
             Dashboard de Ventas
           </h1>
-          <p className="text-xs text-muted-foreground mt-1">
-            Resumen en tiempo real de tu negocio
+          <p className="text-sm text-muted-foreground mt-1">
+            {label} · {loading ? "Cargando..." : `${totalSales} pedidos cerrados`}
           </p>
         </div>
 
-        <div className="flex gap-1.5">
-          {["Hoy", "7 días", "30 días", "Este mes"].map((label, i) => (
-            <button
-              key={label}
-              className={`px-3.5 py-2 rounded-lg text-xs font-medium transition-all duration-200 ${
-                i === 0
-                  ? "glass glass-border text-primary shadow-sm"
-                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground border border-transparent"
-              }`}
+        <div className="flex flex-wrap gap-2">
+          {rangeButtons.map((b) => (
+            <Button
+              key={b.key}
+              variant={rangeKey === b.key ? "default" : "outline"}
+              size="sm"
+              onClick={() => setRangeKey(b.key)}
             >
-              {label}
-            </button>
+              {b.label}
+            </Button>
           ))}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant={rangeKey === "custom" ? "default" : "outline"}
+                size="sm"
+                className="gap-2"
+              >
+                <CalendarIcon className="h-4 w-4" />
+                {rangeKey === "custom" && customRange?.from
+                  ? `${format(customRange.from, "dd/MM")}${
+                      customRange.to ? ` - ${format(customRange.to, "dd/MM")}` : ""
+                    }`
+                  : "Personalizado"}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0" align="end">
+              <Calendar
+                mode="range"
+                selected={customRange}
+                onSelect={(r) => {
+                  setCustomRange(r);
+                  if (r?.from) setRangeKey("custom");
+                }}
+                numberOfMonths={2}
+                locale={es}
+                initialFocus
+                className={cn("p-3 pointer-events-auto")}
+              />
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard
-          title="Mensajes Hoy"
-          value={loading ? "..." : String(todayMessages)}
-          icon={MessageSquare}
-          delay={0}
-        />
-        <KpiCard
-          title="Chats Activos"
-          value={loading ? "..." : String(activeChats)}
-          icon={Users}
-          delay={0.08}
-        />
-        <KpiCard
-          title="Ventas del Día"
-          value={loading ? "..." : String(todaySales)}
-          icon={ShoppingCart}
-          delay={0.16}
-        />
-        <KpiCard
-          title="Tasa Conversión"
-          value={loading ? "..." : `${conversionRate}%`}
-          icon={TrendingUp}
-          delay={0.24}
-        />
+      {/* KPIs */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <KpiCard title="Mensajes" value={totalMessages.toString()} icon={MessageSquare} />
+        <KpiCard title="Chats activos" value={activeChats.toString()} icon={Users} />
+        <KpiCard title="Ventas cerradas" value={totalSales.toString()} icon={ShoppingCart} />
+        <KpiCard title="Tasa conversión" value={`${conversionRate}%`} icon={TrendingUp} />
       </div>
 
+      {/* Gráficos */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <motion.div
-          initial={{ opacity: 0, y: 16 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-          className="glass glass-border rounded-xl p-5"
+          className="rounded-xl border border-border bg-card p-5"
         >
-          <h3 className="text-sm font-semibold text-foreground mb-4 font-heading flex items-center gap-2">
-            <div className="w-1 h-4 rounded-full bg-primary" />
-            Mensajes por Día
+          <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
+            <span className="w-1 h-4 bg-primary rounded" /> Mensajes por Día
           </h3>
-
-          <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={msgData}>
-              <defs>
-                <linearGradient id="colorMsgs" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="hsl(239 84% 67%)" stopOpacity={0.25} />
-                  <stop offset="95%" stopColor="hsl(239 84% 67%)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(230 20% 13%)" vertical={false} />
-              <XAxis dataKey="day" stroke="hsl(220 15% 40%)" fontSize={11} tickLine={false} axisLine={false} />
-              <YAxis stroke="hsl(220 15% 40%)" fontSize={11} tickLine={false} axisLine={false} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "hsl(230 35% 9%)",
-                  border: "1px solid hsl(230 20% 16%)",
-                  borderRadius: "12px",
-                  color: "hsl(220 30% 94%)",
-                  fontSize: "12px",
-                  backdropFilter: "blur(12px)",
-                  boxShadow: "0 8px 32px hsl(0 0% 0% / 0.4)",
-                }}
-              />
-              <Area
-                type="monotone"
-                dataKey="msgs"
-                stroke="hsl(239 84% 67%)"
-                fill="url(#colorMsgs)"
-                strokeWidth={2.5}
-                dot={false}
-                activeDot={{ r: 4, fill: "hsl(239 84% 67%)", stroke: "hsl(0 0% 100%)", strokeWidth: 2 }}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={msgData}>
+                <defs>
+                  <linearGradient id="msgGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.4} />
+                    <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                <YAxis
+                  stroke="hsl(var(--muted-foreground))"
+                  fontSize={12}
+                  allowDecimals={false}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "hsl(var(--card))",
+                    border: "1px solid hsl(var(--border))",
+                    borderRadius: "8px",
+                  }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="msgs"
+                  stroke="hsl(var(--primary))"
+                  fill="url(#msgGrad)"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
         </motion.div>
 
         <motion.div
-          initial={{ opacity: 0, y: 16 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-          className="glass glass-border rounded-xl p-5"
+          transition={{ delay: 0.1 }}
+          className="rounded-xl border border-border bg-card p-5"
         >
-          <h3 className="text-sm font-semibold text-foreground mb-4 font-heading flex items-center gap-2">
-            <div className="w-1 h-4 rounded-full bg-accent" />
-            Ventas por Día
+          <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
+            <span className="w-1 h-4 bg-purple-500 rounded" /> Ventas por Día (cerradas)
           </h3>
-
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={salesData}>
-              <defs>
-                <linearGradient id="colorBar" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="hsl(239 84% 67%)" />
-                  <stop offset="100%" stopColor="hsl(270 70% 55%)" />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(230 20% 13%)" vertical={false} />
-              <XAxis dataKey="day" stroke="hsl(220 15% 40%)" fontSize={11} tickLine={false} axisLine={false} />
-              <YAxis stroke="hsl(220 15% 40%)" fontSize={11} tickLine={false} axisLine={false} />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "hsl(230 35% 9%)",
-                  border: "1px solid hsl(230 20% 16%)",
-                  borderRadius: "12px",
-                  color: "hsl(220 30% 94%)",
-                  fontSize: "12px",
-                  backdropFilter: "blur(12px)",
-                  boxShadow: "0 8px 32px hsl(0 0% 0% / 0.4)",
-                }}
-              />
-              <Bar dataKey="ventas" fill="url(#colorBar)" radius={[6, 6, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={salesData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} />
+                <YAxis
+                  stroke="hsl(var(--muted-foreground))"
+                  fontSize={12}
+                  allowDecimals={false}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "hsl(var(--card))",
+                    border: "1px solid hsl(var(--border))",
+                    borderRadius: "8px",
+                  }}
+                />
+                <Bar dataKey="ventas" fill="hsl(var(--primary))" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </motion.div>
       </div>
 
+      {/* Top Productos y Ciudades */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.5, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-          className="glass glass-border rounded-xl p-5"
-        >
-          <h3 className="text-sm font-semibold text-foreground mb-4 font-heading flex items-center gap-2">
+        <div className="rounded-xl border border-border bg-card p-5">
+          <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
             <Package className="h-4 w-4 text-primary" /> Top Productos
           </h3>
-
           {topProducts.length === 0 ? (
-            <p className="text-xs text-muted-foreground text-center py-8">
-              Sin datos todavía
+            <p className="text-sm text-muted-foreground py-8 text-center">
+              No hay pedidos cerrados en este período
             </p>
           ) : (
-            <div className="space-y-1">
+            <ul className="space-y-2">
               {topProducts.map((p, i) => (
-                <div
+                <li
                   key={p.name}
-                  className="flex items-center gap-3 py-2.5 px-3 rounded-lg hover:bg-secondary/30 transition-colors duration-200 group"
+                  className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted/50 transition"
                 >
-                  <span className="text-xs font-bold text-primary/60 w-5 font-mono">
+                  <span className="text-xs font-mono text-muted-foreground w-6">
                     {String(i + 1).padStart(2, "0")}
                   </span>
-                  <span className="flex-1 text-sm font-medium">{p.name}</span>
-                  <span className="text-xs px-2.5 py-1 rounded-lg bg-secondary/60 border border-border/40 font-mono font-medium group-hover:bg-primary/10 group-hover:text-primary group-hover:border-primary/20 transition-all">
-                    {p.count}
-                  </span>
-                </div>
+                  <span className="flex-1 text-sm text-foreground truncate">{p.name}</span>
+                  <span className="text-sm font-semibold text-primary">{p.count}</span>
+                </li>
               ))}
-            </div>
+            </ul>
           )}
-        </motion.div>
+        </div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.6, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-          className="glass glass-border rounded-xl p-5"
-        >
-          <h3 className="text-sm font-semibold text-foreground mb-4 font-heading flex items-center gap-2">
-            <MapPin className="h-4 w-4 text-accent" /> Ventas por Ciudad
+        <div className="rounded-xl border border-border bg-card p-5">
+          <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
+            <MapPin className="h-4 w-4 text-purple-400" /> Ventas por Ciudad
           </h3>
-
           {topCities.length === 0 ? (
-            <p className="text-xs text-muted-foreground text-center py-8">
-              Sin datos todavía
+            <p className="text-sm text-muted-foreground py-8 text-center">
+              No hay pedidos cerrados en este período
             </p>
           ) : (
-            <div className="space-y-1">
+            <ul className="space-y-2">
               {topCities.map((c, i) => (
-                <div
+                <li
                   key={c.name}
-                  className="flex items-center gap-3 py-2.5 px-3 rounded-lg hover:bg-secondary/30 transition-colors duration-200 group"
+                  className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted/50 transition"
                 >
-                  <span className="text-xs font-bold text-accent/60 w-5 font-mono">
+                  <span className="text-xs font-mono text-muted-foreground w-6">
                     {String(i + 1).padStart(2, "0")}
                   </span>
-                  <span className="flex-1 text-sm font-medium">{c.name}</span>
-                  <span className="text-xs px-2.5 py-1 rounded-lg bg-secondary/60 border border-border/40 font-mono font-medium group-hover:bg-accent/10 group-hover:text-accent group-hover:border-accent/20 transition-all">
-                    {c.count}
-                  </span>
-                </div>
+                  <span className="flex-1 text-sm text-foreground truncate">{c.name}</span>
+                  <span className="text-sm font-semibold text-purple-400">{c.count}</span>
+                </li>
               ))}
-            </div>
+            </ul>
           )}
-        </motion.div>
+        </div>
       </div>
     </div>
   );
