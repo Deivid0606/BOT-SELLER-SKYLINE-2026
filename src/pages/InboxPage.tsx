@@ -609,8 +609,8 @@ export default function InboxPage() {
   };
 
   return (
-    <div className="flex h-full bg-background overflow-hidden">
-      <div className="flex-1 flex flex-col min-h-0">
+    <div className="flex h-[calc(100dvh-48px)] max-h-[calc(100dvh-48px)] min-h-0 bg-background overflow-hidden">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         <div className="border-b border-border/40 px-6 py-4 flex items-center gap-3 shrink-0">
           <div className="w-1 h-10 bg-primary rounded-full" />
           <div className="flex-1">
@@ -672,7 +672,7 @@ export default function InboxPage() {
               </select>
             </div>
 
-            <div className="flex-1 overflow-y-auto min-h-0 px-6 py-4 space-y-3">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-4 space-y-3">
               {loading ? (
                 <p className="text-sm text-muted-foreground text-center">Cargando mensajes...</p>
               ) : currentMessages.length === 0 ? (
@@ -789,7 +789,7 @@ export default function InboxPage() {
                 </div>
               )}
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 min-w-0">
                 <input ref={fileInputRef} type="file" hidden onChange={handleFileSelect} accept="image/*,video/*,audio/*" />
                 <button onClick={() => fileInputRef.current?.click()} className="p-2.5 rounded-xl hover:bg-secondary/50 text-muted-foreground hover:text-foreground" title="Subir archivo">
                   <Image className="w-4 h-4" />
@@ -803,7 +803,7 @@ export default function InboxPage() {
                 <input
                   type="text"
                   placeholder="Escribe tu mensaje aquí..."
-                  className="flex-1 bg-secondary/40 border border-border/40 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-primary/40"
+                  className="flex-1 min-w-0 bg-secondary/40 border border-border/40 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-primary/40"
                   value={messageInput}
                   onChange={(e) => setMessageInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter" && !sending) handleSendMessage(); }}
@@ -906,7 +906,7 @@ export default function InboxPage() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto min-h-0">
+            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
               {filteredChats.map((chat, i) => {
                 const tagColor = getTagColor(chat.tag);
                 return (
@@ -917,12 +917,12 @@ export default function InboxPage() {
                       selectedChat === i ? "bg-primary/5 border-l-2 border-l-primary" : ""
                     }`}
                   >
-                    <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center justify-between gap-2 mb-1">
                       <div className="flex items-center gap-2">
                         <div className="w-7 h-7 rounded-full bg-primary/15 flex items-center justify-center text-[10px] font-semibold text-primary">
                           {chat.number.slice(-2)}
                         </div>
-                        <span className="text-xs font-medium">{chat.number}</span>
+                        <span className="text-xs font-medium truncate">{chat.number}</span>
                       </div>
                       {chat.tag && (
                         <span
