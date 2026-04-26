@@ -610,7 +610,7 @@ export default function TriggersV2Page() {
         tags: editingCampaign.tags,
         message_type: editingCampaign.messageType,
         custom_message: editingCampaign.customMessage ?? "",
-        selected_template: editingCampaign.selectedTemplate?.trim() ? editingCampaign.selectedTemplate : null,
+        selected_template: editingCampaign.selectedTemplate ?? "",
         interval_days: Number(editingCampaign.intervalDays) || 4,
         schedule_type: editingCampaign.scheduleType,
         schedule_days: editingCampaign.scheduleDays,
