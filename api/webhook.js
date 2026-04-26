@@ -36,7 +36,7 @@ function splitMessage(text, max = 3500) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 📊 GOOGLE SHEETS — keys EXACTAS que espera tu Apps Script
+// 📊 GOOGLE SHEETS
 // ═══════════════════════════════════════════════════════════
 async function enviarASheet(userId, order, nota = "") {
   try {
@@ -432,11 +432,11 @@ async function aplicarAutoTag(userId, contactId, tagName) {
 
 function matchKeywords(condicion, tipo, textoNorm) {
   if (!condicion) return false;
-  const cond = normalize(condicion);
-  if (!cond) return false;
+  const palabras = String(condicion).split(/[,;|]/).map((p) => normalize(p)).filter(Boolean);
+  if (palabras.length === 0) return false;
   const t = (tipo || "").toLowerCase();
-  if (t === "exact" || t.includes("exacto")) return textoNorm === cond;
-  return textoNorm.includes(cond);
+  const esExacto = t === "exact" || t.includes("exacto");
+  return palabras.some((cond) => esExacto ? textoNorm === cond : textoNorm.includes(cond));
 }
 
 function matchSecundario(secundario, textoNorm) {
@@ -502,6 +502,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
       }
 
       let plantillaPrimary = null;
+      let plantillaSec = null;
       let contenidoPrimary = "";
       let contenidoSecondary = "";
 
@@ -524,7 +525,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
           console.log("⏳ Esperando 5s antes del secundario...");
           await sleep(5000);
         }
-        const plantillaSec = await enviarPlantillaCompleta({
+        plantillaSec = await enviarPlantillaCompleta({
           userId,
           from,
           templateName: trig.secondary?.template,
@@ -542,16 +543,41 @@ async function evaluarDisparadores({ userId, from, texto }) {
         });
       } catch {}
 
+      // 🔥 DETECCIÓN CONSOLIDADA: juntamos TODO lo que se envió en un solo bloque
       try {
-        const contenidosEnviados = [contenidoPrimary, contenidoSecondary].filter(Boolean);
-        for (const contenido of contenidosEnviados) {
-          if (esMensajePedidoConfirmado(contenido)) {
-            await detectarYGuardarPedidoConfirmado({
-              userId,
-              from,
-              textoMensaje: contenido,
-              sourceMessageId: null,
-            });
+        const captionPrimary = plantillaPrimary?.variables?.media?.caption || "";
+        const captionSec = plantillaSec?.variables?.media?.caption || "";
+
+        const bloques = [
+          contenidoPrimary,
+          captionPrimary,
+          trig.response,
+          contenidoSecondary,
+          captionSec,
+          trig.secondary?.response,
+        ].filter(Boolean);
+
+        const textoCompleto = bloques.join("\n");
+
+        if (esMensajePedidoConfirmado(textoCompleto)) {
+          await detectarYGuardarPedidoConfirmado({
+            userId,
+            from,
+            textoMensaje: textoCompleto,
+            sourceMessageId: null,
+          });
+        } else {
+          // Fallback: chequeo individual por si alguno solo ya tiene los 4 campos
+          for (const contenido of bloques) {
+            if (esMensajePedidoConfirmado(contenido)) {
+              await detectarYGuardarPedidoConfirmado({
+                userId,
+                from,
+                textoMensaje: contenido,
+                sourceMessageId: null,
+              });
+              break;
+            }
           }
         }
       } catch (e) {
@@ -594,15 +620,26 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS
+// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS (más tolerante)
 // ═══════════════════════════════════════════════════════════
 
+// Convierte el mensaje en un texto "limpio" con saltos de línea reales,
+// aunque venga todo en una sola línea o con emojis-separador.
+function normalizarParaParseo(texto) {
+  const SEPARADORES = /[✅💰🚚⏰📦📍📞👤🛒💜✨🛍️👉🎯⭐💳]/gu;
+  return clean(texto)
+    .replace(SEPARADORES, "\n")
+    .replace(/[ \t]{2,}/g, "\n")
+    .replace(/\n+/g, "\n")
+    .trim();
+}
+
 function esMensajePedidoConfirmado(texto) {
-  const t = clean(texto);
-  const tieneMarcador = /✅\s*PEDIDO CONFIRMADO/i.test(t);
+  const t = normalizarParaParseo(texto);
+  const tieneMarcador = /PEDIDO CONFIRMADO/i.test(t);
   const tieneProducto = /Producto:\s*\S/i.test(t);
-  const tieneTotal = /Total:\s*\S/i.test(t);
-  const tieneUbicacion = /Ubicaci[oó]n:\s*\S/i.test(t);
+  const tieneTotal = /(Total|Monto|Importe):\s*\S/i.test(t);
+  const tieneUbicacion = /(Ubicaci[oó]n|Direcci[oó]n):\s*\S/i.test(t);
   return tieneMarcador && tieneProducto && tieneTotal && tieneUbicacion;
 }
 
@@ -660,19 +697,26 @@ function limpiarProducto(productoRaw) {
   return items.join(" + ");
 }
 
-function parsearPedidoConfirmado(texto) {
+function parsearPedidoConfirmado(textoOriginal) {
+  // 🔥 Normalizamos para que cada campo termine en \n
+  const texto = normalizarParaParseo(textoOriginal);
+
   const get = (regex) => {
     const m = texto.match(regex);
     return m ? clean(m[1]) : null;
   };
 
-  const productoRaw = get(/Producto:\s*([^\n]+)/i);
-  const cliente = get(/Cliente:\s*([^\n]+)/i);
-  const ubicacionRaw = get(/Ubicaci[oó]n:\s*([^\n]+)/i);
-  const contacto = get(/Contacto:\s*([^\n]+)/i);
-  const cantidadRaw = get(/Cantidad:\s*([^\n]+)/i);
-  const calce = get(/Calce:\s*([^\n]+)/i);
-  const totalRaw = get(/Total:\s*([^\n]+)/i);
+  const productoRaw  = get(/Producto:\s*([^\n]+)/i);
+  const cliente      = get(/Cliente:\s*([^\n]+)/i);
+  const ubicacionRaw = get(/Ubicaci[oó]n:\s*([^\n]+)/i)
+                    || get(/Direcci[oó]n:\s*([^\n]+)/i);
+  const contacto     = get(/Contacto:\s*([^\n]+)/i)
+                    || get(/Tel[eé]fono:\s*([^\n]+)/i);
+  const cantidadRaw  = get(/Cantidad:\s*([^\n]+)/i);
+  const calce        = get(/Calce:\s*([^\n]+)/i);
+  const totalRaw     = get(/Total:\s*([^\n]+)/i)
+                    || get(/Monto:\s*([^\n]+)/i)
+                    || get(/Importe:\s*([^\n]+)/i);
 
   const producto = limpiarProducto(productoRaw);
 
