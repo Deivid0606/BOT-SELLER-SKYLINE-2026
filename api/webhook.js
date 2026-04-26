@@ -1,6 +1,3 @@
-
-
-
 // api/webhook.js
 import { createClient } from "@supabase/supabase-js";
 
@@ -435,18 +432,11 @@ async function aplicarAutoTag(userId, contactId, tagName) {
 
 function matchKeywords(condicion, tipo, textoNorm) {
   if (!condicion) return false;
-  // Soporta múltiples palabras separadas por coma, punto y coma o pipe.
-  // Ej: "veneno, crema, abeja"  →  ["veneno", "crema", "abeja"]
-  const palabras = String(condicion)
-    .split(/[,;|]/)
-    .map((p) => normalize(p))
-    .filter(Boolean);
-  if (palabras.length === 0) return false;
+  const cond = normalize(condicion);
+  if (!cond) return false;
   const t = (tipo || "").toLowerCase();
-  const esExacto = t === "exact" || t.includes("exacto");
-  return palabras.some((cond) =>
-    esExacto ? textoNorm === cond : textoNorm.includes(cond)
-  );
+  if (t === "exact" || t.includes("exacto")) return textoNorm === cond;
+  return textoNorm.includes(cond);
 }
 
 function matchSecundario(secundario, textoNorm) {
@@ -1132,3 +1122,4 @@ export default async function handler(req, res) {
   }
 
   return res.status(405).send("Method Not Allowed");
+}
