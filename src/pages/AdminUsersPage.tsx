@@ -55,7 +55,6 @@ export default function AdminUsersPage() {
   const fetchUsers = async () => {
     setLoading(true);
 
-    // 1) Fuente principal: user_roles (admin ve todos gracias a la policy)
     const { data: roles, error: rolesError } = await supabase
       .from("user_roles")
       .select("user_id, role, email, full_name, created_at")
@@ -71,7 +70,6 @@ export default function AdminUsersPage() {
       return;
     }
 
-    // 2) Enriquecer con profiles (avatar, approved, active, fechas, mensaje)
     const userIds = (roles || []).map((r: any) => r.user_id);
     const { data: profiles } = await supabase
       .from("profiles")
@@ -116,23 +114,29 @@ export default function AdminUsersPage() {
     setSaving(user.user_id);
     const edits = getEdit(user.user_id);
 
-    const updates: any = {};
-    if (edits.approved !== undefined) updates.approved = edits.approved;
-    if (edits.active !== undefined) updates.active = edits.active;
-    if (edits.active_from !== undefined) updates.active_from = edits.active_from || null;
-    if (edits.active_until !== undefined) updates.active_until = edits.active_until || null;
-    if (edits.inactive_message !== undefined)
-      updates.inactive_message = edits.inactive_message || null;
-
-    if (Object.keys(updates).length === 0) {
+    if (Object.keys(edits).length === 0) {
       setSaving(null);
       return;
     }
 
+    const payload: any = {
+      user_id: user.user_id,
+      id: user.user_id,
+      approved: edits.approved !== undefined ? edits.approved : user.approved,
+      active: edits.active !== undefined ? edits.active : user.active,
+      active_from:
+        edits.active_from !== undefined ? edits.active_from : user.active_from,
+      active_until:
+        edits.active_until !== undefined ? edits.active_until : user.active_until,
+      inactive_message:
+        edits.inactive_message !== undefined
+          ? edits.inactive_message
+          : user.inactive_message,
+    };
+
     const { error } = await supabase
       .from("profiles")
-      .update(updates)
-      .eq("user_id", user.user_id);
+      .upsert(payload, { onConflict: "user_id" });
 
     if (error) {
       toast({
