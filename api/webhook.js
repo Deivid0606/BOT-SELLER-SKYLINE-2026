@@ -35,9 +35,7 @@ function splitMessage(text, max = 3500) {
   return parts.filter((p) => p.length > 0);
 }
 
-// ═══════════════════════════════════════════════════════════
-// 📊 GOOGLE SHEETS
-// ═══════════════════════════════════════════════════════════
+
 async function enviarASheet(userId, order, nota = "") {
   try {
     const { data: config, error } = await supabase
@@ -58,6 +56,7 @@ async function enviarASheet(userId, order, nota = "") {
     }
 
     const payload = {
+      // Campos EXACTOS que lee tu Apps Script
       customer_name: clean(order.customer_name),
       customer_phone: clean(order.phone || order.from_number),
       customer_city: clean(order.city),
@@ -66,15 +65,22 @@ async function enviarASheet(userId, order, nota = "") {
       total_amount: order.total_amount || "",
       customer_address: clean(order.address),
       note: clean(nota),
-    };
 
-    console.log("📤 Enviando a Sheet:", JSON.stringify(payload));
+      // Campos extra compatibles por si luego cambias el Apps Script
+      nombre_cliente: clean(order.customer_name),
+      whatsapp: clean(order.phone || order.from_number),
+      ciudad: clean(order.city),
+      producto: clean(order.product),
+      cantidad: order.quantity || 1,
+      total_a_pagar: order.total_amount || "",
+      calle: clean(order.address),
+      nota: clean(nota),
+    };
 
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-      redirect: "follow",
     });
 
     const raw = await response.text();
@@ -432,11 +438,11 @@ async function aplicarAutoTag(userId, contactId, tagName) {
 
 function matchKeywords(condicion, tipo, textoNorm) {
   if (!condicion) return false;
-  const palabras = String(condicion).split(/[,;|]/).map((p) => normalize(p)).filter(Boolean);
-  if (palabras.length === 0) return false;
+  const cond = normalize(condicion);
+  if (!cond) return false;
   const t = (tipo || "").toLowerCase();
-  const esExacto = t === "exact" || t.includes("exacto");
-  return palabras.some((cond) => esExacto ? textoNorm === cond : textoNorm.includes(cond));
+  if (t === "exact" || t.includes("exacto")) return textoNorm === cond;
+  return textoNorm.includes(cond);
 }
 
 function matchSecundario(secundario, textoNorm) {
@@ -502,7 +508,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
       }
 
       let plantillaPrimary = null;
-      let plantillaSec = null;
       let contenidoPrimary = "";
       let contenidoSecondary = "";
 
@@ -525,7 +530,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
           console.log("⏳ Esperando 5s antes del secundario...");
           await sleep(5000);
         }
-        plantillaSec = await enviarPlantillaCompleta({
+        const plantillaSec = await enviarPlantillaCompleta({
           userId,
           from,
           templateName: trig.secondary?.template,
@@ -543,37 +548,18 @@ async function evaluarDisparadores({ userId, from, texto }) {
         });
       } catch {}
 
-      // 🔥 FIX BUG 1: NO concatenar bloques. Evaluar cada bloque INDIVIDUALMENTE.
-      // Si concatenamos, el regex de Producto:/Total:/Ubicación: agarra mezcla
-      // del primary + secondary y el parser falla o devuelve datos basura.
+      // 🆕 Revisar AMBOS contenidos (primary + secondary) por confirmación de pedido
       try {
-        const captionPrimary = plantillaPrimary?.variables?.media?.caption || "";
-        const captionSec = plantillaSec?.variables?.media?.caption || "";
-
-        const bloques = [
-          contenidoPrimary,
-          captionPrimary,
-          contenidoSecondary,
-          captionSec,
-        ].filter(Boolean);
-
-        let pedidoDetectado = false;
-        for (const contenido of bloques) {
+        const contenidosEnviados = [contenidoPrimary, contenidoSecondary].filter(Boolean);
+        for (const contenido of contenidosEnviados) {
           if (esMensajePedidoConfirmado(contenido)) {
-            console.log("🎯 Pedido detectado en bloque individual");
             await detectarYGuardarPedidoConfirmado({
               userId,
               from,
               textoMensaje: contenido,
               sourceMessageId: null,
             });
-            pedidoDetectado = true;
-            break;
           }
-        }
-
-        if (!pedidoDetectado) {
-          console.log("ℹ️ Ningún bloque del trigger contiene pedido confirmado válido");
         }
       } catch (e) {
         console.log("⚠️ post-trigger pedido check error:", e.message);
@@ -615,37 +601,41 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS
+// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS (Opción C — Mixto)
 // ═══════════════════════════════════════════════════════════
 
-function normalizarParaParseo(texto) {
-  const SEPARADORES = /[✅💰🚚⏰📦📍📞👤🛒💜✨🛍️👉🎯⭐💳]/gu;
-  return clean(texto)
-    .replace(SEPARADORES, "\n")
-    .replace(/[ \t]{2,}/g, "\n")
-    .replace(/\n+/g, "\n")
-    .trim();
-}
-
 function esMensajePedidoConfirmado(texto) {
-  const t = normalizarParaParseo(texto);
-  const tieneMarcador = /PEDIDO CONFIRMADO/i.test(t);
+  const t = clean(texto);
+  const tieneMarcador = /✅\s*PEDIDO CONFIRMADO/i.test(t);
   const tieneProducto = /Producto:\s*\S/i.test(t);
-  const tieneTotal = /(Total|Monto|Importe):\s*\S/i.test(t);
-  const tieneUbicacion = /(Ubicaci[oó]n|Direcci[oó]n):\s*\S/i.test(t);
+  const tieneTotal = /Total:\s*\S/i.test(t);
+  const tieneUbicacion = /Ubicaci[oó]n:\s*\S/i.test(t);
   return tieneMarcador && tieneProducto && tieneTotal && tieneUbicacion;
 }
 
+// 🆕 Detecta si un texto es bloque de datos bancarios / transferencia
 function esBloqueDatosBancarios(texto) {
   if (!texto) return false;
   const tn = normalize(texto);
   const señales = [
-    "datos para transferencia", "datos de transferencia",
-    "titular:", "titular ",
-    "banco familiar", "banco continental", "banco itau", "banco gnb",
-    "banco atlas", "banco regional", "banco basa", "ueno bank",
-    "cuenta:", "nro de cuenta", "numero de cuenta",
-    "alias:", "cbu:", "cvu:",
+    "datos para transferencia",
+    "datos de transferencia",
+    "titular:",
+    "titular ",
+    "banco familiar",
+    "banco continental",
+    "banco itau",
+    "banco gnb",
+    "banco atlas",
+    "banco regional",
+    "banco basa",
+    "ueno bank",
+    "cuenta:",
+    "nro de cuenta",
+    "numero de cuenta",
+    "alias:",
+    "cbu:",
+    "cvu:",
   ];
   let hits = 0;
   for (const s of señales) {
@@ -655,33 +645,46 @@ function esBloqueDatosBancarios(texto) {
   return false;
 }
 
+// 🆕 Limpia el texto del producto: quita bloque bancario y datos sueltos
 function limpiarProducto(productoRaw) {
   if (!productoRaw) return null;
   let p = clean(productoRaw);
 
+  // Si es claramente un bloque bancario, descartar todo
   if (esBloqueDatosBancarios(p)) {
+    // Intentar rescatar nombres de productos después del bloque bancario
+    // Buscar separadores tipo " + Producto x1" después de los datos bancarios
     const idxAlias = p.search(/alias:\s*\d+/i);
     if (idxAlias >= 0) {
+      // Cortar a partir del primer "+" después del Alias
       const restoDespuesAlias = p.substring(idxAlias);
       const idxPlus = restoDespuesAlias.indexOf("+");
       if (idxPlus >= 0) {
         p = restoDespuesAlias.substring(idxPlus + 1).trim();
       } else {
-        return null;
+        return null; // solo había datos bancarios, sin productos
       }
     } else {
       return null;
     }
   }
 
+  // Partir por "+" y filtrar items que parezcan basura bancaria
   const items = p.split(/\s*\+\s*/).filter((it) => {
     const itClean = clean(it);
     if (!itClean) return false;
     if (itClean.length > 100) return false;
     const itn = normalize(itClean);
     const blacklistItem = [
-      "datos para transferencia", "titular", "banco ", "cuenta:",
-      "alias:", "cbu:", "https://", "http://", "www.",
+      "datos para transferencia",
+      "titular",
+      "banco ",
+      "cuenta:",
+      "alias:",
+      "cbu:",
+      "https://",
+      "http://",
+      "www.",
     ];
     return !blacklistItem.some((b) => itn.includes(b));
   });
@@ -690,70 +693,21 @@ function limpiarProducto(productoRaw) {
   return items.join(" + ");
 }
 
-function extraerMontoUnico(lineaRaw) {
-  if (!lineaRaw) return null;
-  const m = lineaRaw.match(/(\d{1,3}(?:[.,]\d{3})+|\d{3,9})/);
-  if (!m) return null;
-  const soloDigitos = m[1].replace(/[^\d]/g, "");
-  if (!soloDigitos) return null;
-  const num = parseInt(soloDigitos, 10);
-  if (isNaN(num) || num <= 0) return null;
-  if (num > 999999999) return null;
-  return num;
-}
-
-// 🔥 FIX BUG 2: Validar y limpiar la ciudad para que no se cuele un listado
-// de ciudades de cobertura ni texto largo del producto.
-function limpiarCiudad(cityRaw) {
-  if (!cityRaw) return null;
-  let c = clean(cityRaw);
-
-  // Si tiene comas → es probablemente una lista de ciudades de cobertura.
-  // Nos quedamos solo con la primera.
-  if (c.includes(",")) {
-    c = c.split(",")[0].trim();
-  }
-
-  // Cortar en " y " (típico de listados: "Ciudad del Este y Hernandarias")
-  if (/\sy\s/i.test(c) && c.length > 30) {
-    c = c.split(/\sy\s/i)[0].trim();
-  }
-
-  // Si sigue siendo demasiado larga (>40 chars) → es basura, descartar
-  if (c.length > 40) {
-    console.log("🚫 City demasiado larga, descartada:", c.substring(0, 60));
-    return null;
-  }
-
-  // Si contiene caracteres raros del producto (paréntesis con calce, x número, etc.)
-  if (/x\s*\d+|\(calce|talle\s*\d/i.test(c)) {
-    console.log("🚫 City contiene datos de producto, descartada:", c);
-    return null;
-  }
-
-  return c || null;
-}
-
-function parsearPedidoConfirmado(textoOriginal) {
-  const texto = normalizarParaParseo(textoOriginal);
-
+function parsearPedidoConfirmado(texto) {
   const get = (regex) => {
     const m = texto.match(regex);
     return m ? clean(m[1]) : null;
   };
 
-  const productoRaw  = get(/Producto:\s*([^\n]+)/i);
-  const cliente      = get(/Cliente:\s*([^\n]+)/i);
-  const ubicacionRaw = get(/Ubicaci[oó]n:\s*([^\n]+)/i)
-                    || get(/Direcci[oó]n:\s*([^\n]+)/i);
-  const contacto     = get(/Contacto:\s*([^\n]+)/i)
-                    || get(/Tel[eé]fono:\s*([^\n]+)/i);
-  const cantidadRaw  = get(/Cantidad:\s*([^\n]+)/i);
-  const calce        = get(/Calce:\s*([^\n]+)/i);
-  const totalRaw     = get(/Total:\s*([^\n]+)/i)
-                    || get(/Monto:\s*([^\n]+)/i)
-                    || get(/Importe:\s*([^\n]+)/i);
+  const productoRaw = get(/Producto:\s*([^\n]+)/i);
+  const cliente = get(/Cliente:\s*([^\n]+)/i);
+  const ubicacionRaw = get(/Ubicaci[oó]n:\s*([^\n]+)/i);
+  const contacto = get(/Contacto:\s*([^\n]+)/i);
+  const cantidadRaw = get(/Cantidad:\s*([^\n]+)/i);
+  const calce = get(/Calce:\s*([^\n]+)/i);
+  const totalRaw = get(/Total:\s*([^\n]+)/i);
 
+  // 🆕 Limpiar producto de datos bancarios ANTES de validar
   const producto = limpiarProducto(productoRaw);
 
   const esProductoValido = (p) => {
@@ -793,16 +747,17 @@ function parsearPedidoConfirmado(textoOriginal) {
     address = partes.slice(1).join(" — ").trim() || null;
   }
 
-  // 🔥 FIX BUG 2: limpiar ciudad antes de devolverla
-  city = limpiarCiudad(city);
-
   let quantity = 1;
   if (cantidadRaw) {
     const m = cantidadRaw.match(/(\d+)/);
     if (m) quantity = parseInt(m[1], 10);
   }
 
-  const totalNum = extraerMontoUnico(totalRaw);
+  let totalNum = null;
+  if (totalRaw) {
+    const soloDigitos = totalRaw.replace(/[^\d]/g, "");
+    if (soloDigitos) totalNum = parseInt(soloDigitos, 10);
+  }
 
   let productoFinal = producto;
   if (calce && producto && !/calce/i.test(producto)) {
@@ -820,6 +775,11 @@ function parsearPedidoConfirmado(textoOriginal) {
   };
 }
 
+// ───────────────────────────────────────────────────────────
+// 🛒 Helpers para manejar el campo "product" como carrito
+// Formato: "Veneno de Abeja x2 + Plantilla Ortopiex x1"
+// ───────────────────────────────────────────────────────────
+
 function parsearCarrito(productString) {
   if (!productString) return [];
   return productString
@@ -833,6 +793,7 @@ function parsearCarrito(productString) {
     })
     .filter((it) => {
       if (!it.name) return false;
+      // 🆕 filtrar items que sean datos bancarios
       const itn = normalize(it.name);
       const blacklist = ["datos para transferencia", "titular", "banco ", "cuenta:", "alias:"];
       return !blacklist.some((b) => itn.includes(b));
@@ -851,14 +812,18 @@ function buscarItemEnCarrito(carrito, productName) {
   return carrito.findIndex((it) => normalize(it.name) === target);
 }
 
+// 🆕 Parsea "A x1 + B x2" como múltiples items individuales
 function expandirItemsDelMensaje(productoFinal, quantityFallback) {
   const items = parsearCarrito(productoFinal);
   if (items.length === 0) return [];
+  // Si solo hay 1 item y no traía xN explícito, usar quantityFallback
   if (items.length === 1 && !/x\s*\d+\s*$/i.test(productoFinal)) {
     items[0].qty = quantityFallback || items[0].qty || 1;
   }
   return items;
 }
+
+// ───────────────────────────────────────────────────────────
 
 async function yaExistePedidoParaMensaje(messageId) {
   if (!messageId) return false;
@@ -892,23 +857,31 @@ async function detectarYGuardarPedidoConfirmado({
       return;
     }
 
+    // 🆕 Expandir productos múltiples ("A x1 + B x1") en items separados
     const itemsNuevos = expandirItemsDelMensaje(datos.product, datos.quantity);
     if (itemsNuevos.length === 0) {
       console.log("🚫 No quedaron items válidos tras expandir");
       return;
     }
 
-    const hace30min = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    // Buscar pedido reciente del mismo cliente (última 1 hora)
+    // Si pasó más de 1h desde el último pedido → se considera un pedido NUEVO,
+    // aunque el cliente vuelva a escribir el mismo número.
+    // Además solo agrupamos si el pedido sigue en estado "confirmado" (carrito abierto).
+    // Si ya está "cargado", "droppx" o cualquier estado cerrado, no se toca: se crea uno nuevo.
+    const hace1hora = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const { data: reciente } = await supabase
       .from("orders")
-      .select("id, product, total_amount, quantity")
+      .select("id, product, total_amount, quantity, status")
       .eq("user_id", userId)
       .eq("from_number", from)
-      .gte("created_at", hace30min)
+      .eq("status", "confirmado")
+      .gte("created_at", hace1hora)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
+    // ─── No hay pedido reciente → crear uno nuevo ───
     if (!reciente) {
       const cantidadTotal = itemsNuevos.reduce((s, it) => s + it.qty, 0);
       const insertPayload = {
@@ -938,11 +911,13 @@ async function detectarYGuardarPedidoConfirmado({
         console.error("❌ Error insertando pedido:", error);
         return;
       }
-      console.log(`✅ Pedido NUEVO creado: ${nuevo?.id} → ${insertPayload.product} | total: ${insertPayload.total_amount}`);
-      enviarASheetSinBloquear(userId, { ...insertPayload, id: nuevo?.id }, "NUEVO");
+      console.log(`✅ Pedido NUEVO creado: ${nuevo?.id} → ${insertPayload.product}`);
+      await enviarASheet(userId, { ...insertPayload, id: nuevo?.id }, "NUEVO");
       return;
     }
 
+    // ─── Hay pedido reciente → modo carrito ───
+    // 🆕 Limpiar el carrito existente de basura bancaria que pudiera haberse colado antes
     const carrito = parsearCarrito(reciente.product);
     let totalActual = reciente.total_amount || 0;
     const cambios = [];
@@ -963,13 +938,9 @@ async function detectarYGuardarPedidoConfirmado({
       }
     }
 
-    // 🔥 FIX BUG 3: si total actual es 0/null y llega uno válido → reemplazar siempre
-    if (datos.total_amount) {
-      if (!totalActual || totalActual <= 0) {
-        totalActual = datos.total_amount;
-      } else if (datos.total_amount > totalActual) {
-        totalActual = datos.total_amount;
-      }
+    // Total: si el mensaje trae un total nuevo y mayor, usarlo (es el total acumulado del bot)
+    if (datos.total_amount && datos.total_amount > totalActual) {
+      totalActual = datos.total_amount;
     }
 
     const productoSerializado = serializarCarrito(carrito);
@@ -997,7 +968,7 @@ async function detectarYGuardarPedidoConfirmado({
     console.log(
       `🛒 Carrito actualizado pedido ${reciente.id} | ${cambios.join(" | ")} | total: ${totalActual} | ${productoSerializado}`
     );
-    enviarASheetSinBloquear(
+    await enviarASheet(
       userId,
       {
         id: reciente.id,
