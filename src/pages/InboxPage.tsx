@@ -609,9 +609,9 @@ export default function InboxPage() {
   };
 
   return (
-    <div className="flex h-full bg-background">
-      <div className="flex-1 flex flex-col">
-        <div className="border-b border-border/40 px-6 py-4 flex items-center gap-3">
+    <div className="flex h-full bg-background overflow-hidden">
+      <div className="flex-1 flex flex-col min-h-0">
+        <div className="border-b border-border/40 px-6 py-4 flex items-center gap-3 shrink-0">
           <div className="w-1 h-10 bg-primary rounded-full" />
           <div className="flex-1">
             <h1 className="text-lg font-semibold">Inbox Profesional</h1>
@@ -622,9 +622,9 @@ export default function InboxPage() {
           </span>
         </div>
 
-        <div className="flex flex-1 overflow-hidden">
-          <div className="flex-1 flex flex-col">
-            <div className="border-b border-border/40 px-6 py-3 flex items-center gap-3">
+        <div className="flex flex-1 overflow-hidden min-h-0">
+          <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+            <div className="border-b border-border/40 px-6 py-3 flex items-center gap-3 shrink-0">
               <div className="w-9 h-9 rounded-full bg-primary/15 flex items-center justify-center text-xs font-semibold text-primary">
                 {filteredChats[selectedChat]?.number?.slice(-2) || "--"}
               </div>
@@ -646,7 +646,7 @@ export default function InboxPage() {
               </div>
             </div>
 
-            <div className="border-b border-border/40 px-6 py-2.5 flex items-center gap-2 flex-wrap">
+            <div className="border-b border-border/40 px-6 py-2.5 flex items-center gap-2 flex-wrap shrink-0">
               <button onClick={() => handleMarkSale("normal")} className="text-[11px] px-3 py-1.5 rounded-lg bg-success/10 text-success border border-success/20 hover:bg-success/20 transition-all font-medium">
                 ✏️ Venta Normal
               </button>
@@ -672,7 +672,7 @@ export default function InboxPage() {
               </select>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+            <div className="flex-1 overflow-y-auto min-h-0 px-6 py-4 space-y-3">
               {loading ? (
                 <p className="text-sm text-muted-foreground text-center">Cargando mensajes...</p>
               ) : currentMessages.length === 0 ? (
@@ -709,7 +709,7 @@ export default function InboxPage() {
               )}
             </div>
 
-            <div className="border-t border-border/40 p-4">
+            <div className="border-t border-border/40 p-4 shrink-0">
               {selectedFile && (
                 <div className="mb-2 flex items-center gap-2 bg-secondary/40 rounded-lg p-2">
                   <div className="flex items-center gap-2 flex-1 text-xs">
@@ -816,8 +816,8 @@ export default function InboxPage() {
           </div>
 
           {/* SIDEBAR DE CHATS */}
-          <div className="w-80 border-l border-border/40 flex flex-col">
-            <div className="px-4 py-3 border-b border-border/40">
+          <div className="w-80 border-l border-border/40 flex flex-col min-h-0 overflow-hidden">
+            <div className="px-4 py-3 border-b border-border/40 shrink-0">
               <div className="flex items-center justify-between mb-3">
                 <span className="text-sm font-semibold">Chats Recientes</span>
                 <div className="flex items-center gap-2">
@@ -906,7 +906,7 @@ export default function InboxPage() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 overflow-y-auto min-h-0">
               {filteredChats.map((chat, i) => {
                 const tagColor = getTagColor(chat.tag);
                 return (
