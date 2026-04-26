@@ -567,7 +567,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
             sourceMessageId: null,
           });
         } else {
-          // Fallback: chequeo individual por si alguno solo ya tiene los 4 campos
           for (const contenido of bloques) {
             if (esMensajePedidoConfirmado(contenido)) {
               await detectarYGuardarPedidoConfirmado({
@@ -620,11 +619,9 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS (más tolerante)
+// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS
 // ═══════════════════════════════════════════════════════════
 
-// Convierte el mensaje en un texto "limpio" con saltos de línea reales,
-// aunque venga todo en una sola línea o con emojis-separador.
 function normalizarParaParseo(texto) {
   const SEPARADORES = /[✅💰🚚⏰📦📍📞👤🛒💜✨🛍️👉🎯⭐💳]/gu;
   return clean(texto)
@@ -697,8 +694,22 @@ function limpiarProducto(productoRaw) {
   return items.join(" + ");
 }
 
+// 🔥 Helper: extrae UN solo monto válido de una línea, sin concatenar dígitos sueltos
+function extraerMontoUnico(lineaRaw) {
+  if (!lineaRaw) return null;
+  // Captura el PRIMER número con formato 159.000 / 159,000 / 1.500.000 / 159000
+  const m = lineaRaw.match(/(\d{1,3}(?:[.,]\d{3})+|\d{3,9})/);
+  if (!m) return null;
+  const soloDigitos = m[1].replace(/[^\d]/g, "");
+  if (!soloDigitos) return null;
+  const num = parseInt(soloDigitos, 10);
+  if (isNaN(num) || num <= 0) return null;
+  // Sanity check: si pasa de 999.999.999 (mil millones) seguro está mal pegado
+  if (num > 999999999) return null;
+  return num;
+}
+
 function parsearPedidoConfirmado(textoOriginal) {
-  // 🔥 Normalizamos para que cada campo termine en \n
   const texto = normalizarParaParseo(textoOriginal);
 
   const get = (regex) => {
@@ -763,11 +774,9 @@ function parsearPedidoConfirmado(textoOriginal) {
     if (m) quantity = parseInt(m[1], 10);
   }
 
-  let totalNum = null;
-  if (totalRaw) {
-    const soloDigitos = totalRaw.replace(/[^\d]/g, "");
-    if (soloDigitos) totalNum = parseInt(soloDigitos, 10);
-  }
+  // 🔥 FIX: usar extraerMontoUnico — captura UN solo número con formato,
+  // no concatena dígitos sueltos de varios totales pegados.
+  const totalNum = extraerMontoUnico(totalRaw);
 
   let productoFinal = producto;
   if (calce && producto && !/calce/i.test(producto)) {
@@ -903,7 +912,7 @@ async function detectarYGuardarPedidoConfirmado({
         console.error("❌ Error insertando pedido:", error);
         return;
       }
-      console.log(`✅ Pedido NUEVO creado: ${nuevo?.id} → ${insertPayload.product}`);
+      console.log(`✅ Pedido NUEVO creado: ${nuevo?.id} → ${insertPayload.product} | total: ${insertPayload.total_amount}`);
       enviarASheetSinBloquear(userId, { ...insertPayload, id: nuevo?.id }, "NUEVO");
       return;
     }
@@ -928,6 +937,8 @@ async function detectarYGuardarPedidoConfirmado({
       }
     }
 
+    // 🔥 FIX: solo reemplazar el total si el nuevo es razonable y mayor.
+    // Nunca aceptar montos absurdos (ya filtrados en extraerMontoUnico).
     if (datos.total_amount && datos.total_amount > totalActual) {
       totalActual = datos.total_amount;
     }
