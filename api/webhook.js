@@ -7,6 +7,8 @@ const supabase = createClient(
 );
 
 const VERIFY_TOKEN = "miTokenSeguro2026";
+const LOVABLE_API_KEY = process.env.LOVABLE_API_KEY;
+const STORAGE_BUCKET_COMPROBANTES = "comprobantes";
 
 const clean = (t) => String(t || "").trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1037,6 +1039,310 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// 🖼️ SISTEMA DE PROCESAMIENTO DE IMÁGENES + IA VISUAL
+// ═══════════════════════════════════════════════════════════
+
+// 1) Descarga el binario de una imagen desde la API de WhatsApp
+async function descargarMediaWhatsapp(userId, mediaId) {
+  try {
+    const { data: config } = await supabase
+      .from("whatsapp_config")
+      .select("permanent_token")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (!config?.permanent_token) return null;
+    const token = config.permanent_token.trim();
+
+    // Paso 1: obtener URL temporal del media
+    const metaRes = await fetch(`https://graph.facebook.com/v22.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!metaRes.ok) {
+      console.error("❌ media meta:", metaRes.status, await metaRes.text());
+      return null;
+    }
+    const meta = await metaRes.json();
+    if (!meta.url) return null;
+
+    // Paso 2: descargar el binario (también requiere auth)
+    const binRes = await fetch(meta.url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!binRes.ok) {
+      console.error("❌ media bin:", binRes.status);
+      return null;
+    }
+    const arrayBuf = await binRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuf);
+    const mimeType = meta.mime_type || "image/jpeg";
+    return { buffer, mimeType, sizeBytes: buffer.length };
+  } catch (err) {
+    console.error("❌ descargarMediaWhatsapp:", err);
+    return null;
+  }
+}
+
+// 2) Sube el comprobante a Supabase Storage y devuelve URL pública
+async function subirComprobanteAStorage({ userId, from, buffer, mimeType }) {
+  try {
+    const ext = (mimeType.split("/")[1] || "jpg").replace("jpeg", "jpg");
+    const fileName = `${userId}/${from}/${Date.now()}.${ext}`;
+    const { error } = await supabase.storage
+      .from(STORAGE_BUCKET_COMPROBANTES)
+      .upload(fileName, buffer, { contentType: mimeType, upsert: false });
+    if (error) {
+      console.error("❌ storage upload:", error);
+      return null;
+    }
+    const { data: pub } = supabase.storage
+      .from(STORAGE_BUCKET_COMPROBANTES)
+      .getPublicUrl(fileName);
+    return pub?.publicUrl || null;
+  } catch (err) {
+    console.error("❌ subirComprobanteAStorage:", err);
+    return null;
+  }
+}
+
+// 3) Extrae el bloque de "datos bancarios" del entrenamiento del vendedor
+async function cargarEntrenamiento(userId) {
+  try {
+    const { data } = await supabase
+      .from("training_data")
+      .select("response")
+      .eq("user_id", userId)
+      .eq("is_active", true)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return clean(data?.response || "");
+  } catch (err) {
+    console.error("❌ cargarEntrenamiento:", err);
+    return "";
+  }
+}
+
+// Heurística: busca un bloque que contenga "datos bancarios", "transferencia",
+// "cuenta", "banco", "titular" y devuelve hasta ~25 líneas alrededor.
+function extraerDatosBancariosDelEntrenamiento(training) {
+  if (!training) return "";
+  const lines = training.split("\n");
+  const lower = lines.map((l) => normalize(l));
+  const palabrasClave = [
+    "datos bancarios", "datos para transferir", "datos para transferencia",
+    "datos para deposito", "datos para depósito", "transferencia bancaria",
+    "cuenta bancaria", "metodo de pago", "métodos de pago", "metodos de pago",
+    "forma de pago", "formas de pago", "cuenta corriente", "caja de ahorro",
+  ];
+  let startIdx = -1;
+  for (let i = 0; i < lower.length; i++) {
+    if (palabrasClave.some((p) => lower[i].includes(p))) {
+      startIdx = i;
+      break;
+    }
+  }
+  if (startIdx === -1) {
+    // fallback: filtrar líneas que mencionen bancos típicos paraguayos / titulares
+    const bancos = ["itau", "itaú", "ueno", "vision", "visión", "continental",
+      "atlas", "familiar", "regional", "banco", "tigo money", "personal pay",
+      "billetera", "wally", "zimple", "giros tigo", "claro pay"];
+    const filtradas = lines.filter((l, i) =>
+      bancos.some((b) => lower[i].includes(b)) ||
+      /\b(c[íi]\.?\s*\d|ruc|c\.?c\.?|c\.?a\.?)\b/i.test(lower[i])
+    );
+    return filtradas.slice(0, 25).join("\n");
+  }
+  // Tomar 25 líneas a partir del match (o hasta encontrar línea muy en blanco doble)
+  const bloque = [];
+  for (let i = startIdx; i < Math.min(startIdx + 25, lines.length); i++) {
+    bloque.push(lines[i]);
+    if (i > startIdx && lines[i].trim() === "" && lines[i - 1]?.trim() === "") break;
+  }
+  return bloque.join("\n").trim();
+}
+
+// 4) Llama a Lovable AI Gateway con la imagen + tool calling para JSON estructurado
+async function analizarImagenConIA({ buffer, mimeType, datosBancarios }) {
+  if (!LOVABLE_API_KEY) {
+    console.error("❌ Falta LOVABLE_API_KEY");
+    return null;
+  }
+  try {
+    const base64 = buffer.toString("base64");
+    const dataUrl = `data:${mimeType};base64,${base64}`;
+
+    const systemPrompt = `Sos un asistente que analiza imágenes recibidas por WhatsApp en una tienda paraguaya.
+Tu tarea: determinar si la imagen es un COMPROBANTE DE PAGO (transferencia bancaria, depósito, captura de billetera Tigo Money / Personal Pay / Zimple / Wally / Claro Pay, etc.) o cualquier otra cosa (foto de producto, captura de chat, meme, foto personal, documento, etc.).
+
+Si es comprobante: extraé titular destino, banco/billetera destino, monto, fecha y número de operación si se ven.
+Si NO es comprobante: describí brevemente qué se ve en la imagen para que el bot pueda responder al cliente.
+
+DATOS BANCARIOS DEL VENDEDOR (contra los que hay que validar el destino):
+${datosBancarios || "(no disponibles)"}
+
+Comparación: si el titular o banco/billetera del comprobante coincide con alguno del vendedor (ignorá mayúsculas/acentos/espacios), marcá datos_coinciden=true.`;
+
+    const body = {
+      model: "google/gemini-2.5-flash",
+      messages: [
+        { role: "system", content: systemPrompt },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Analizá esta imagen y devolvé el resultado usando la función analizar_imagen." },
+            { type: "image_url", image_url: { url: dataUrl } },
+          ],
+        },
+      ],
+      tools: [{
+        type: "function",
+        function: {
+          name: "analizar_imagen",
+          description: "Devuelve el análisis de la imagen recibida por WhatsApp.",
+          parameters: {
+            type: "object",
+            properties: {
+              es_comprobante: { type: "boolean", description: "true si la imagen es un comprobante de pago/transferencia/billetera" },
+              datos_coinciden: { type: "boolean", description: "true solo si el titular o banco destino coincide con los datos del vendedor" },
+              titular_destino: { type: "string", description: "Nombre del titular/cuenta destino tal como aparece en el comprobante. Vacío si no es comprobante." },
+              banco_destino: { type: "string", description: "Banco o billetera destino (Itaú, Ueno, Tigo Money, etc.). Vacío si no aplica." },
+              monto: { type: "number", description: "Monto en guaraníes. 0 si no se ve." },
+              fecha: { type: "string", description: "Fecha del comprobante en formato YYYY-MM-DD. Vacío si no se ve." },
+              numero_operacion: { type: "string", description: "Número de operación / referencia. Vacío si no se ve." },
+              descripcion_imagen: { type: "string", description: "Si NO es comprobante: descripción breve (máx 200 chars) de qué se ve. Si es comprobante: vacío." },
+            },
+            required: ["es_comprobante", "datos_coinciden", "titular_destino", "banco_destino", "monto", "fecha", "numero_operacion", "descripcion_imagen"],
+            additionalProperties: false,
+          },
+        },
+      }],
+      tool_choice: { type: "function", function: { name: "analizar_imagen" } },
+    };
+
+    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${LOVABLE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const t = await res.text();
+      console.error("❌ Lovable AI:", res.status, t.slice(0, 400));
+      return null;
+    }
+    const data = await res.json();
+    const toolCall = data?.choices?.[0]?.message?.tool_calls?.[0];
+    if (!toolCall?.function?.arguments) {
+      console.error("❌ Sin tool_call en respuesta IA");
+      return null;
+    }
+    return JSON.parse(toolCall.function.arguments);
+  } catch (err) {
+    console.error("❌ analizarImagenConIA:", err);
+    return null;
+  }
+}
+
+// 5) Flujo completo cuando llega una imagen
+async function procesarImagenEntrante({ userId, from, mediaId, caption }) {
+  try {
+    // a) Descargar de WhatsApp
+    const media = await descargarMediaWhatsapp(userId, mediaId);
+    if (!media) {
+      await enviarMensaje(userId, from, "⚠️ No pude descargar la imagen, ¿podés reenviarla?");
+      return;
+    }
+
+    // b) Subir a storage
+    const publicUrl = await subirComprobanteAStorage({
+      userId, from, buffer: media.buffer, mimeType: media.mimeType,
+    });
+
+    // c) Cargar datos bancarios desde el entrenamiento del vendedor
+    const training = await cargarEntrenamiento(userId);
+    const datosBancarios = extraerDatosBancariosDelEntrenamiento(training);
+    console.log("🏦 Datos bancarios detectados:", datosBancarios.slice(0, 200));
+
+    // d) Analizar con IA
+    const analisis = await analizarImagenConIA({
+      buffer: media.buffer,
+      mimeType: media.mimeType,
+      datosBancarios,
+    });
+
+    if (!analisis) {
+      await enviarMensaje(userId, from, "⚠️ Recibí tu imagen pero no pude analizarla. Te respondo enseguida 🙏");
+      return;
+    }
+
+    console.log("🔍 Análisis IA:", JSON.stringify(analisis));
+
+    // e) Decidir según el caso
+    if (analisis.es_comprobante) {
+      // Buscar pedido reciente del cliente
+      const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const { data: pedido } = await supabase
+        .from("orders")
+        .select("id, comprobante_url, customer_name, product")
+        .eq("user_id", userId)
+        .eq("from_number", from)
+        .gte("created_at", hace24h)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      // Asociar siempre que haya pedido (aunque no matchee, para revisión manual)
+      if (pedido && publicUrl && !pedido.comprobante_url) {
+        await supabase.from("orders").update({
+          comprobante_url: publicUrl,
+          metodo_pago: "transferencia",
+          comprobante_titular: analisis.titular_destino || null,
+          comprobante_banco: analisis.banco_destino || null,
+          comprobante_monto: analisis.monto || null,
+          comprobante_validado: !!analisis.datos_coinciden,
+          updated_at: new Date().toISOString(),
+        }).eq("id", pedido.id);
+        console.log(`💳 Comprobante asociado al pedido ${pedido.id} | match=${analisis.datos_coinciden}`);
+      }
+
+      // Responder al cliente
+      let respuesta;
+      if (analisis.datos_coinciden) {
+        respuesta = `✅ ¡Perfecto! Recibí tu comprobante${analisis.titular_destino ? ` a nombre de *${analisis.titular_destino}*` : ""}${analisis.monto ? ` por *Gs. ${Number(analisis.monto).toLocaleString("es-PY")}*` : ""}.\n\nLo verifico y te confirmo el envío en breve 📦🙌`;
+      } else {
+        respuesta = `📩 Recibí tu comprobante${analisis.titular_destino ? ` a nombre de *${analisis.titular_destino}*` : ""}, pero los datos no coinciden con los míos. ¿Podrías revisar que hayas transferido a la cuenta correcta? 🙏\n\nSi ya transferiste y estás seguro, avisame y lo verifico manualmente.`;
+      }
+      await enviarMensaje(userId, from, respuesta);
+      await saveReceivedMessage({ userId, from, message: respuesta, messageType: "out_text" });
+      return;
+    }
+
+    // NO es comprobante → pasarle a la IA conversacional con la descripción
+    const textoVirtual = caption
+      ? `[el cliente envió una imagen con texto: "${caption}". Descripción de la imagen: ${analisis.descripcion_imagen}]`
+      : `[el cliente envió una imagen. Descripción: ${analisis.descripcion_imagen}]`;
+
+    const ctx = await getContexto(userId, from);
+    const history = await getHistory(userId, from);
+    let data = {};
+    try {
+      data = await llamarChatIA({ userId, texto: textoVirtual, from, ctx, history });
+    } catch (err) {
+      console.error("❌ chat-ia (imagen) error:", err);
+    }
+    if (data?.context) await saveContexto(userId, from, data.context);
+    const respuesta = data?.response || `Recibí tu imagen 👀 ¿En qué te puedo ayudar?`;
+    await enviarMensaje(userId, from, respuesta);
+    await saveReceivedMessage({ userId, from, message: respuesta, messageType: "out_text" });
+  } catch (err) {
+    console.error("❌ procesarImagenEntrante:", err);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 
 async function procesar(req, message, userId, from) {
   try {
@@ -1044,12 +1350,16 @@ async function procesar(req, message, userId, from) {
 
     let texto = "";
     let mediaUrl = null;
+    let mediaIdEntrante = null;
+    let captionImagen = "";
 
     if (tipoMsg === "text") {
       texto = clean(message.text?.body || "");
     } else if (tipoMsg === "image") {
-      texto = clean(message.image?.caption || "[imagen]");
-      mediaUrl = message.image?.id ? `wa_media:${message.image.id}` : null;
+      captionImagen = clean(message.image?.caption || "");
+      texto = captionImagen || "[imagen]";
+      mediaIdEntrante = message.image?.id || null;
+      mediaUrl = mediaIdEntrante ? `wa_media:${mediaIdEntrante}` : null;
     } else {
       return;
     }
@@ -1072,10 +1382,13 @@ async function procesar(req, message, userId, from) {
       waMessageId: message.id || null,
     });
 
-    if (tipoMsg === "image" && mediaUrl) {
-      asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch((e) =>
-        console.error("comprobante bg error:", e)
-      );
+    if (tipoMsg === "image" && mediaIdEntrante) {
+      // Flujo completo: descarga + storage + IA visual + respuesta
+      await procesarImagenEntrante({
+        userId, from,
+        mediaId: mediaIdEntrante,
+        caption: captionImagen,
+      });
       return;
     }
 
