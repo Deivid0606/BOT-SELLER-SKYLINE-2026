@@ -1162,7 +1162,7 @@ function extraerDatosBancariosDelEntrenamiento(training) {
 }
 
 // 4) Llama a Lovable AI Gateway con la imagen + tool calling para JSON estructurado
-async function analizarImagenConIA({ buffer, mimeType, datosBancarios }) {
+async function analizarImagenConIA({ buffer, mimeType, datosBancarios, catalogoProductos }) {
   if (!LOVABLE_API_KEY) {
     console.error("❌ Falta LOVABLE_API_KEY");
     return null;
@@ -1170,20 +1170,53 @@ async function analizarImagenConIA({ buffer, mimeType, datosBancarios }) {
   try {
     const base64 = buffer.toString("base64");
     const dataUrl = `data:${mimeType};base64,${base64}`;
+    console.log(`📐 Imagen: ${mimeType}, ${(buffer.length / 1024).toFixed(0)}KB`);
 
     const systemPrompt = `Sos un asistente que analiza imágenes recibidas por WhatsApp en una tienda paraguaya.
-Tu tarea: determinar si la imagen es un COMPROBANTE DE PAGO (transferencia bancaria, depósito, captura de billetera Tigo Money / Personal Pay / Zimple / Wally / Claro Pay, etc.) o cualquier otra cosa (foto de producto, captura de chat, meme, foto personal, documento, etc.).
+Tu tarea: clasificar la imagen en una de tres categorías:
+1) COMPROBANTE DE PAGO (transferencia bancaria, depósito, captura de billetera Tigo Money / Personal Pay / Zimple / Wally / Claro Pay, etc.)
+2) PRODUCTO DEL CATÁLOGO (foto/flyer/captura de uno de los productos que vendemos — listados abajo)
+3) OTRO (captura de chat, meme, foto personal, documento, etc.)
 
 Si es comprobante: extraé titular destino, banco/billetera destino, monto, fecha y número de operación si se ven.
-Si NO es comprobante: describí brevemente qué se ve en la imagen para que el bot pueda responder al cliente.
+Si es producto del catálogo: identificá CUÁL producto es (nombre exacto del catálogo) y dejá producto_detectado con ese nombre.
+Si es otro: describí brevemente qué se ve para que el bot pueda responder al cliente.
 
 DATOS BANCARIOS DEL VENDEDOR (contra los que hay que validar el destino):
 ${datosBancarios || "(no disponibles)"}
 
+CATÁLOGO DE PRODUCTOS DEL VENDEDOR (para identificar productos en la imagen):
+${catalogoProductos || "(no disponible)"}
+
 Comparación: si el titular o banco/billetera del comprobante coincide con alguno del vendedor (ignorá mayúsculas/acentos/espacios), marcá datos_coinciden=true.`;
 
-    const body = {
-      model: "google/gemini-2.5-flash",
+    const tools = [{
+      type: "function",
+      function: {
+        name: "analizar_imagen",
+        description: "Devuelve el análisis de la imagen recibida por WhatsApp.",
+        parameters: {
+          type: "object",
+          properties: {
+            tipo: { type: "string", enum: ["comprobante", "producto", "otro"], description: "Categoría de la imagen" },
+            es_comprobante: { type: "boolean" },
+            datos_coinciden: { type: "boolean", description: "true solo si titular o banco destino coincide con datos del vendedor" },
+            titular_destino: { type: "string" },
+            banco_destino: { type: "string" },
+            monto: { type: "number", description: "Monto en guaraníes. 0 si no aplica." },
+            fecha: { type: "string", description: "YYYY-MM-DD o vacío" },
+            numero_operacion: { type: "string" },
+            producto_detectado: { type: "string", description: "Nombre EXACTO del producto del catálogo si la imagen muestra uno. Vacío si no." },
+            descripcion_imagen: { type: "string", description: "Descripción breve (máx 200 chars) si tipo=otro. Vacío en otros casos." },
+          },
+          required: ["tipo", "es_comprobante", "datos_coinciden", "titular_destino", "banco_destino", "monto", "fecha", "numero_operacion", "producto_detectado", "descripcion_imagen"],
+          additionalProperties: false,
+        },
+      },
+    }];
+
+    const buildBody = (model) => ({
+      model,
       messages: [
         { role: "system", content: systemPrompt },
         {
@@ -1194,52 +1227,48 @@ Comparación: si el titular o banco/billetera del comprobante coincide con algun
           ],
         },
       ],
-      tools: [{
-        type: "function",
-        function: {
-          name: "analizar_imagen",
-          description: "Devuelve el análisis de la imagen recibida por WhatsApp.",
-          parameters: {
-            type: "object",
-            properties: {
-              es_comprobante: { type: "boolean", description: "true si la imagen es un comprobante de pago/transferencia/billetera" },
-              datos_coinciden: { type: "boolean", description: "true solo si el titular o banco destino coincide con los datos del vendedor" },
-              titular_destino: { type: "string", description: "Nombre del titular/cuenta destino tal como aparece en el comprobante. Vacío si no es comprobante." },
-              banco_destino: { type: "string", description: "Banco o billetera destino (Itaú, Ueno, Tigo Money, etc.). Vacío si no aplica." },
-              monto: { type: "number", description: "Monto en guaraníes. 0 si no se ve." },
-              fecha: { type: "string", description: "Fecha del comprobante en formato YYYY-MM-DD. Vacío si no se ve." },
-              numero_operacion: { type: "string", description: "Número de operación / referencia. Vacío si no se ve." },
-              descripcion_imagen: { type: "string", description: "Si NO es comprobante: descripción breve (máx 200 chars) de qué se ve. Si es comprobante: vacío." },
-            },
-            required: ["es_comprobante", "datos_coinciden", "titular_destino", "banco_destino", "monto", "fecha", "numero_operacion", "descripcion_imagen"],
-            additionalProperties: false,
-          },
-        },
-      }],
+      tools,
       tool_choice: { type: "function", function: { name: "analizar_imagen" } },
-    };
-
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
     });
 
-    if (!res.ok) {
-      const t = await res.text();
-      console.error("❌ Lovable AI:", res.status, t.slice(0, 400));
-      return null;
-    }
-    const data = await res.json();
-    const toolCall = data?.choices?.[0]?.message?.tool_calls?.[0];
-    if (!toolCall?.function?.arguments) {
-      console.error("❌ Sin tool_call en respuesta IA");
-      return null;
-    }
-    return JSON.parse(toolCall.function.arguments);
+    const intentar = async (model) => {
+      const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${LOVABLE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(buildBody(model)),
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        console.error(`❌ Lovable AI [${model}] status=${res.status}:`, t.slice(0, 500));
+        return { ok: false, status: res.status, body: t };
+      }
+      const data = await res.json();
+      const toolCall = data?.choices?.[0]?.message?.tool_calls?.[0];
+      if (!toolCall?.function?.arguments) {
+        console.error(`❌ [${model}] sin tool_call:`, JSON.stringify(data).slice(0, 400));
+        return { ok: false };
+      }
+      try {
+        return { ok: true, parsed: JSON.parse(toolCall.function.arguments) };
+      } catch (e) {
+        console.error(`❌ [${model}] JSON parse:`, e.message, toolCall.function.arguments?.slice(0, 200));
+        return { ok: false };
+      }
+    };
+
+    // Intento 1: gemini-2.5-flash
+    let r = await intentar("google/gemini-2.5-flash");
+    if (r.ok) return r.parsed;
+
+    // Intento 2: fallback a gemini-2.5-flash-lite (más permisivo, más rápido)
+    console.log("↩️ Reintentando con gemini-2.5-flash-lite...");
+    r = await intentar("google/gemini-2.5-flash-lite");
+    if (r.ok) return r.parsed;
+
+    return null;
   } catch (err) {
     console.error("❌ analizarImagenConIA:", err);
     return null;
@@ -1264,6 +1293,14 @@ async function procesarImagenEntrante({ userId, from, mediaId, caption }) {
     // c) Cargar datos bancarios desde el entrenamiento del vendedor
     const training = await cargarEntrenamiento(userId);
     const datosBancarios = extraerDatosBancariosDelEntrenamiento(training);
+    // Catálogo: pasamos las primeras ~80 líneas significativas del entrenamiento
+    // (donde suelen estar los nombres de productos con sus precios).
+    const catalogoProductos = training
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 3)
+      .slice(0, 80)
+      .join("\n");
     console.log("🏦 Datos bancarios detectados:", datosBancarios.slice(0, 200));
 
     // d) Analizar con IA
@@ -1271,17 +1308,35 @@ async function procesarImagenEntrante({ userId, from, mediaId, caption }) {
       buffer: media.buffer,
       mimeType: media.mimeType,
       datosBancarios,
+      catalogoProductos,
     });
 
     if (!analisis) {
-      await enviarMensaje(userId, from, "⚠️ Recibí tu imagen pero no pude analizarla. Te respondo enseguida 🙏");
+      // Fallback: pasar a IA conversacional para no dejar al cliente colgado
+      const ctx = await getContexto(userId, from);
+      const history = await getHistory(userId, from);
+      const textoFallback = caption
+        ? `[el cliente envió una imagen con el texto: "${caption}"]`
+        : `[el cliente envió una imagen]`;
+      try {
+        const data = await llamarChatIA({ userId, texto: textoFallback, from, ctx, history });
+        if (data?.context) await saveContexto(userId, from, data.context);
+        const r = data?.response || "👋 ¡Recibí tu imagen! Contame qué necesitás 🙏";
+        await enviarMensaje(userId, from, r);
+        await saveReceivedMessage({ userId, from, message: r, messageType: "out_text" });
+      } catch (e) {
+        console.error("❌ fallback chat-ia:", e);
+      }
       return;
     }
 
     console.log("🔍 Análisis IA:", JSON.stringify(analisis));
 
     // e) Decidir según el caso
-    if (analisis.es_comprobante) {
+    const tipo = analisis.tipo || (analisis.es_comprobante ? "comprobante" : (analisis.producto_detectado ? "producto" : "otro"));
+
+    // ─── CASO 1: COMPROBANTE ───
+    if (tipo === "comprobante" || analisis.es_comprobante) {
       // Buscar pedido reciente del cliente
       const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
       const { data: pedido } = await supabase
@@ -1320,10 +1375,20 @@ async function procesarImagenEntrante({ userId, from, mediaId, caption }) {
       return;
     }
 
-    // NO es comprobante → pasarle a la IA conversacional con la descripción
-    const textoVirtual = caption
-      ? `[el cliente envió una imagen con texto: "${caption}". Descripción de la imagen: ${analisis.descripcion_imagen}]`
-      : `[el cliente envió una imagen. Descripción: ${analisis.descripcion_imagen}]`;
+    // ─── CASO 2: PRODUCTO DEL CATÁLOGO ───
+    // Le pasamos a chat-ia el contexto de que el cliente preguntó por ESE producto.
+    // chat-ia ya tiene la lógica para responder con precio + CTA usando el entrenamiento.
+    let textoVirtual;
+    if (tipo === "producto" && analisis.producto_detectado) {
+      textoVirtual = caption
+        ? `${caption}\n\n[el cliente envió una foto del producto "${analisis.producto_detectado}", respondé con info y precio de ese producto según el entrenamiento]`
+        : `Hola, me interesa este producto: ${analisis.producto_detectado}\n\n[el cliente envió una foto del producto "${analisis.producto_detectado}", respondé con info y precio según el entrenamiento]`;
+    } else {
+      // ─── CASO 3: OTRO ───
+      textoVirtual = caption
+        ? `[el cliente envió una imagen con texto: "${caption}". Descripción: ${analisis.descripcion_imagen || "(imagen sin descripción)"}]`
+        : `[el cliente envió una imagen. Descripción: ${analisis.descripcion_imagen || "(sin descripción)"}]`;
+    }
 
     const ctx = await getContexto(userId, from);
     const history = await getHistory(userId, from);
