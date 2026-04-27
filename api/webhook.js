@@ -1,4 +1,7 @@
-// api/webhook.js
+// api/webhook.js — webhook_v13.js
+// WhatsApp Cloud API → Triggers → Gemini
+// + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
+
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -35,6 +38,9 @@ function splitMessage(text, max = 3500) {
   return parts.filter((p) => p.length > 0);
 }
 
+// ═══════════════════════════════════════════════════════════
+// GOOGLE SHEETS
+// ═══════════════════════════════════════════════════════════
 
 async function enviarASheet(userId, order, nota = "") {
   try {
@@ -56,7 +62,6 @@ async function enviarASheet(userId, order, nota = "") {
     }
 
     const payload = {
-      // Campos EXACTOS que lee tu Apps Script
       customer_name: clean(order.customer_name),
       customer_phone: clean(order.phone || order.from_number),
       customer_city: clean(order.city),
@@ -66,7 +71,6 @@ async function enviarASheet(userId, order, nota = "") {
       customer_address: clean(order.address),
       note: clean(nota),
 
-      // Campos extra compatibles por si luego cambias el Apps Script
       nombre_cliente: clean(order.customer_name),
       whatsapp: clean(order.phone || order.from_number),
       ciudad: clean(order.city),
@@ -102,6 +106,10 @@ function enviarASheetSinBloquear(userId, order, nota = "") {
     console.log("❌ enviarASheetSinBloquear error:", err.message || err);
   });
 }
+
+// ═══════════════════════════════════════════════════════════
+// ENVÍO DE MENSAJES Y MEDIA A WHATSAPP
+// ═══════════════════════════════════════════════════════════
 
 async function enviarMensaje(userId, to, text) {
   try {
@@ -191,6 +199,99 @@ async function enviarMedia(userId, to, mediaUrl, mediaType = "image", caption = 
     return false;
   }
 }
+
+// ═══════════════════════════════════════════════════════════
+// 🆕 DESCARGA MEDIA DE WHATSAPP Y LA SUBE A SUPABASE STORAGE
+// ═══════════════════════════════════════════════════════════
+
+async function descargarYSubirMedia({ userId, mediaId, mimeType, from }) {
+  try {
+    if (!mediaId) return null;
+
+    const { data: config } = await supabase
+      .from("whatsapp_config")
+      .select("permanent_token")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (!config?.permanent_token) {
+      console.log("❌ Sin token para descargar media");
+      return null;
+    }
+    const token = config.permanent_token.trim();
+
+    // 1) Pedir URL temporal a Meta
+    const metaRes = await fetch(`https://graph.facebook.com/v22.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!metaRes.ok) {
+      console.log("❌ Meta media URL error:", metaRes.status, await metaRes.text());
+      return null;
+    }
+    const metaJson = await metaRes.json();
+    const downloadUrl = metaJson.url;
+    const realMime = metaJson.mime_type || mimeType || "application/octet-stream";
+    if (!downloadUrl) {
+      console.log("❌ Meta no devolvió url de descarga");
+      return null;
+    }
+
+    // 2) Descargar binario (también requiere el token)
+    const binRes = await fetch(downloadUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!binRes.ok) {
+      console.log("❌ Descarga binario error:", binRes.status);
+      return null;
+    }
+    const arrayBuffer = await binRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    // 3) Determinar extensión
+    const extMap = {
+      "audio/ogg": "ogg",
+      "audio/ogg; codecs=opus": "ogg",
+      "audio/mpeg": "mp3",
+      "audio/mp4": "m4a",
+      "audio/aac": "aac",
+      "audio/amr": "amr",
+      "image/jpeg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+      "video/mp4": "mp4",
+      "video/3gpp": "3gp",
+      "application/pdf": "pdf",
+    };
+    const baseMime = String(realMime).split(";")[0].trim().toLowerCase();
+    const ext = extMap[baseMime] || extMap[realMime] || "bin";
+
+    // 4) Subir a Storage (bucket: comprobantes)
+    const path = `wa-incoming/${userId}/${from}/${Date.now()}-${mediaId}.${ext}`;
+    const { error: upErr } = await supabase.storage
+      .from("comprobantes")
+      .upload(path, buffer, {
+        contentType: baseMime,
+        upsert: false,
+      });
+
+    if (upErr) {
+      console.log("❌ Storage upload error:", upErr.message || upErr);
+      return null;
+    }
+
+    const { data: pub } = supabase.storage.from("comprobantes").getPublicUrl(path);
+    const publicUrl = pub?.publicUrl || null;
+    console.log(`✅ Media subida: ${baseMime} → ${publicUrl}`);
+    return publicUrl;
+  } catch (err) {
+    console.error("❌ descargarYSubirMedia error:", err);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// CONTEXTO E HISTORIAL
+// ═══════════════════════════════════════════════════════════
 
 async function getContexto(userId, from) {
   try {
@@ -302,6 +403,10 @@ async function saveReceivedMessage({
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// PLANTILLAS
+// ═══════════════════════════════════════════════════════════
+
 function extraerMediosDePlantilla(plantilla) {
   const imagenes = [];
   let video = null;
@@ -347,7 +452,9 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
 
   const mensajeFinal = clean(plantilla?.content || fallbackText || "");
   const { imagenes, video, gif } = extraerMediosDePlantilla(plantilla);
-  console.log(`📦 Plantilla "${plantilla?.name || templateName}" → ${imagenes.length} img, video: ${!!video}, gif: ${!!gif}`);
+  console.log(
+    `📦 Plantilla "${plantilla?.name || templateName}" → ${imagenes.length} img, video: ${!!video}, gif: ${!!gif}`
+  );
 
   for (let i = 0; i < imagenes.length; i++) {
     const url = imagenes[i];
@@ -368,7 +475,8 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     const sent = await enviarMensaje(userId, from, mensajeFinal);
     if (sent) {
       await saveReceivedMessage({
-        userId, from,
+        userId,
+        from,
         message: mensajeFinal,
         messageType: "out_text",
       });
@@ -379,7 +487,8 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     const ok = await enviarMedia(userId, from, video, "video", "");
     if (ok) {
       await saveReceivedMessage({
-        userId, from,
+        userId,
+        from,
         message: `[video] ${video}`,
         messageType: "out_video",
         mediaUrl: video,
@@ -391,7 +500,8 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     const ok = await enviarMedia(userId, from, gif, "image", "");
     if (ok) {
       await saveReceivedMessage({
-        userId, from,
+        userId,
+        from,
         message: `[gif] ${gif}`,
         messageType: "out_gif",
         mediaUrl: gif,
@@ -410,6 +520,10 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
 
   return plantilla;
 }
+
+// ═══════════════════════════════════════════════════════════
+// AUTO-TAGS Y DISPARADORES
+// ═══════════════════════════════════════════════════════════
 
 async function aplicarAutoTag(userId, contactId, tagName) {
   if (!tagName) return;
@@ -475,7 +589,9 @@ async function evaluarDisparadores({ userId, from, texto }) {
 
       if (!matchPrimary && !matchSecondary) continue;
 
-      console.log(`🎯 Disparador MATCH: "${trig.name}" → primary=${matchPrimary} secondary=${matchSecondary}`);
+      console.log(
+        `🎯 Disparador MATCH: "${trig.name}" → primary=${matchPrimary} secondary=${matchSecondary}`
+      );
 
       if (trig.no_repeat) {
         const { data: yaEnviado } = await supabase
@@ -548,7 +664,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         });
       } catch {}
 
-      // 🆕 Revisar AMBOS contenidos (primary + secondary) por confirmación de pedido
       try {
         const contenidosEnviados = [contenidoPrimary, contenidoSecondary].filter(Boolean);
         for (const contenido of contenidosEnviados) {
@@ -576,6 +691,10 @@ async function evaluarDisparadores({ userId, from, texto }) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// LLAMADA A CHAT-IA
+// ═══════════════════════════════════════════════════════════
+
 async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
   const host = req.headers.host;
   const protocol = req.headers["x-forwarded-proto"] || "https";
@@ -595,13 +714,17 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
   });
   const raw = await resIA.text();
   let data = {};
-  try { data = JSON.parse(raw); } catch { throw new Error("chat-ia no devolvió JSON"); }
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error("chat-ia no devolvió JSON");
+  }
   if (!resIA.ok) throw new Error(data?.error || `chat-ia error ${resIA.status}`);
   return data;
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🆕 DETECTOR DE PEDIDOS CONFIRMADOS (Opción C — Mixto)
+// DETECTOR DE PEDIDOS CONFIRMADOS (Opción C — Mixto)
 // ═══════════════════════════════════════════════════════════
 
 function esMensajePedidoConfirmado(texto) {
@@ -613,7 +736,6 @@ function esMensajePedidoConfirmado(texto) {
   return tieneMarcador && tieneProducto && tieneTotal && tieneUbicacion;
 }
 
-// 🆕 Detecta si un texto es bloque de datos bancarios / transferencia
 function esBloqueDatosBancarios(texto) {
   if (!texto) return false;
   const tn = normalize(texto);
@@ -645,31 +767,25 @@ function esBloqueDatosBancarios(texto) {
   return false;
 }
 
-// 🆕 Limpia el texto del producto: quita bloque bancario y datos sueltos
 function limpiarProducto(productoRaw) {
   if (!productoRaw) return null;
   let p = clean(productoRaw);
 
-  // Si es claramente un bloque bancario, descartar todo
   if (esBloqueDatosBancarios(p)) {
-    // Intentar rescatar nombres de productos después del bloque bancario
-    // Buscar separadores tipo " + Producto x1" después de los datos bancarios
     const idxAlias = p.search(/alias:\s*\d+/i);
     if (idxAlias >= 0) {
-      // Cortar a partir del primer "+" después del Alias
       const restoDespuesAlias = p.substring(idxAlias);
       const idxPlus = restoDespuesAlias.indexOf("+");
       if (idxPlus >= 0) {
         p = restoDespuesAlias.substring(idxPlus + 1).trim();
       } else {
-        return null; // solo había datos bancarios, sin productos
+        return null;
       }
     } else {
       return null;
     }
   }
 
-  // Partir por "+" y filtrar items que parezcan basura bancaria
   const items = p.split(/\s*\+\s*/).filter((it) => {
     const itClean = clean(it);
     if (!itClean) return false;
@@ -707,17 +823,25 @@ function parsearPedidoConfirmado(texto) {
   const calce = get(/Calce:\s*([^\n]+)/i);
   const totalRaw = get(/Total:\s*([^\n]+)/i);
 
-  // 🆕 Limpiar producto de datos bancarios ANTES de validar
   const producto = limpiarProducto(productoRaw);
 
   const esProductoValido = (p) => {
     if (!p) return false;
     if (p.length > 200) return false;
     const blacklist = [
-      "nunca decir", "ir directo", "→", "gracias por tu audio",
-      "entendi que queres", "asuncion, hernandarias", "ypane, villeta",
-      "datos para transferencia", "titular:", "alias:", "cuenta:",
-      "banco familiar", "banco continental",
+      "nunca decir",
+      "ir directo",
+      "→",
+      "gracias por tu audio",
+      "entendi que queres",
+      "asuncion, hernandarias",
+      "ypane, villeta",
+      "datos para transferencia",
+      "titular:",
+      "alias:",
+      "cuenta:",
+      "banco familiar",
+      "banco continental",
     ];
     const pn = normalize(p);
     return !blacklist.some((b) => pn.includes(b));
@@ -727,8 +851,17 @@ function parsearPedidoConfirmado(texto) {
     if (!n) return false;
     if (n.length > 60) return false;
     const malosInicios = [
-      "yo ", "es ", "dale ", "el de ", "la ", "no ", "si ",
-      "quiero", "queria", "necesito", "me ",
+      "yo ",
+      "es ",
+      "dale ",
+      "el de ",
+      "la ",
+      "no ",
+      "si ",
+      "quiero",
+      "queria",
+      "necesito",
+      "me ",
     ];
     const nn = normalize(n);
     return !malosInicios.some((m) => nn.startsWith(m));
@@ -776,8 +909,7 @@ function parsearPedidoConfirmado(texto) {
 }
 
 // ───────────────────────────────────────────────────────────
-// 🛒 Helpers para manejar el campo "product" como carrito
-// Formato: "Veneno de Abeja x2 + Plantilla Ortopiex x1"
+// 🛒 Helpers carrito
 // ───────────────────────────────────────────────────────────
 
 function parsearCarrito(productString) {
@@ -793,7 +925,6 @@ function parsearCarrito(productString) {
     })
     .filter((it) => {
       if (!it.name) return false;
-      // 🆕 filtrar items que sean datos bancarios
       const itn = normalize(it.name);
       const blacklist = ["datos para transferencia", "titular", "banco ", "cuenta:", "alias:"];
       return !blacklist.some((b) => itn.includes(b));
@@ -812,18 +943,14 @@ function buscarItemEnCarrito(carrito, productName) {
   return carrito.findIndex((it) => normalize(it.name) === target);
 }
 
-// 🆕 Parsea "A x1 + B x2" como múltiples items individuales
 function expandirItemsDelMensaje(productoFinal, quantityFallback) {
   const items = parsearCarrito(productoFinal);
   if (items.length === 0) return [];
-  // Si solo hay 1 item y no traía xN explícito, usar quantityFallback
   if (items.length === 1 && !/x\s*\d+\s*$/i.test(productoFinal)) {
     items[0].qty = quantityFallback || items[0].qty || 1;
   }
   return items;
 }
-
-// ───────────────────────────────────────────────────────────
 
 async function yaExistePedidoParaMensaje(messageId) {
   if (!messageId) return false;
@@ -857,18 +984,12 @@ async function detectarYGuardarPedidoConfirmado({
       return;
     }
 
-    // 🆕 Expandir productos múltiples ("A x1 + B x1") en items separados
     const itemsNuevos = expandirItemsDelMensaje(datos.product, datos.quantity);
     if (itemsNuevos.length === 0) {
       console.log("🚫 No quedaron items válidos tras expandir");
       return;
     }
 
-    // Buscar pedido reciente del mismo cliente (última 1 hora)
-    // Si pasó más de 1h desde el último pedido → se considera un pedido NUEVO,
-    // aunque el cliente vuelva a escribir el mismo número.
-    // Además solo agrupamos si el pedido sigue en estado "confirmado" (carrito abierto).
-    // Si ya está "cargado", "droppx" o cualquier estado cerrado, no se toca: se crea uno nuevo.
     const hace1hora = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const { data: reciente } = await supabase
       .from("orders")
@@ -881,7 +1002,6 @@ async function detectarYGuardarPedidoConfirmado({
       .limit(1)
       .maybeSingle();
 
-    // ─── No hay pedido reciente → crear uno nuevo ───
     if (!reciente) {
       const cantidadTotal = itemsNuevos.reduce((s, it) => s + it.qty, 0);
       const insertPayload = {
@@ -916,8 +1036,6 @@ async function detectarYGuardarPedidoConfirmado({
       return;
     }
 
-    // ─── Hay pedido reciente → modo carrito ───
-    // 🆕 Limpiar el carrito existente de basura bancaria que pudiera haberse colado antes
     const carrito = parsearCarrito(reciente.product);
     let totalActual = reciente.total_amount || 0;
     const cambios = [];
@@ -938,7 +1056,6 @@ async function detectarYGuardarPedidoConfirmado({
       }
     }
 
-    // Total: si el mensaje trae un total nuevo y mayor, usarlo (es el total acumulado del bot)
     if (datos.total_amount && datos.total_amount > totalActual) {
       totalActual = datos.total_amount;
     }
@@ -1037,6 +1154,8 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// PROCESAR MENSAJE ENTRANTE
+// ═══════════════════════════════════════════════════════════
 
 async function procesar(req, message, userId, from) {
   try {
@@ -1044,41 +1163,95 @@ async function procesar(req, message, userId, from) {
 
     let texto = "";
     let mediaUrl = null;
+    let messageType = "text";
+    let mediaId = null;
+    let mimeType = null;
 
     if (tipoMsg === "text") {
       texto = clean(message.text?.body || "");
+      messageType = "text";
     } else if (tipoMsg === "image") {
       texto = clean(message.image?.caption || "[imagen]");
-      mediaUrl = message.image?.id ? `wa_media:${message.image.id}` : null;
+      mediaId = message.image?.id || null;
+      mimeType = message.image?.mime_type || "image/jpeg";
+      messageType = "image";
+    } else if (tipoMsg === "audio") {
+      texto = "[audio]";
+      mediaId = message.audio?.id || null;
+      mimeType = message.audio?.mime_type || "audio/ogg";
+      messageType = "audio";
+    } else if (tipoMsg === "voice") {
+      texto = "[nota de voz]";
+      mediaId = message.voice?.id || null;
+      mimeType = message.voice?.mime_type || "audio/ogg";
+      messageType = "audio";
+    } else if (tipoMsg === "video") {
+      texto = clean(message.video?.caption || "[video]");
+      mediaId = message.video?.id || null;
+      mimeType = message.video?.mime_type || "video/mp4";
+      messageType = "video";
+    } else if (tipoMsg === "document") {
+      texto = clean(
+        message.document?.caption || message.document?.filename || "[documento]"
+      );
+      mediaId = message.document?.id || null;
+      mimeType = message.document?.mime_type || "application/octet-stream";
+      messageType = "document";
+    } else if (tipoMsg === "sticker") {
+      texto = "[sticker]";
+      mediaId = message.sticker?.id || null;
+      mimeType = message.sticker?.mime_type || "image/webp";
+      messageType = "image";
     } else {
+      console.log(`⚠️ Tipo de mensaje no soportado: ${tipoMsg}`);
       return;
     }
-
-    if (!texto && !mediaUrl) return;
-
-    console.log("━━━━━━━━━━━━━━━━━━━━━━");
-    console.log("📩 WhatsApp recibido:", from, texto, mediaUrl ? "(con media)" : "");
 
     if (await isDuplicateMessage(message.id)) {
       console.log("⚠️ Duplicado ignorado");
       return;
     }
 
+    // 🆕 Si hay media, descargarla y subirla a Storage ANTES de guardar
+    if (mediaId) {
+      mediaUrl = await descargarYSubirMedia({ userId, mediaId, mimeType, from });
+      if (!mediaUrl) {
+        console.log("⚠️ No se pudo subir media, se guarda mensaje sin URL");
+      }
+    }
+
+    console.log("━━━━━━━━━━━━━━━━━━━━━━");
+    console.log(
+      `📩 WhatsApp ${messageType}:`,
+      from,
+      texto,
+      mediaUrl ? `→ ${mediaUrl.slice(0, 60)}...` : ""
+    );
+
     const sourceMessageId = await saveReceivedMessage({
-      userId, from,
+      userId,
+      from,
       message: texto,
-      messageType: tipoMsg === "image" ? "image" : "text",
+      messageType,
       mediaUrl,
       waMessageId: message.id || null,
     });
 
-    if (tipoMsg === "image" && mediaUrl) {
+    // Imagen → asociar a pedido como comprobante (si aplica) y NO llamar a Gemini
+    if (messageType === "image" && mediaUrl) {
       asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch((e) =>
         console.error("comprobante bg error:", e)
       );
       return;
     }
 
+    // Audio/video/document → guardado, no se procesa con IA todavía
+    if (messageType !== "text") {
+      console.log(`ℹ️ Mensaje ${messageType} guardado, no se procesa con IA`);
+      return;
+    }
+
+    // ─── Solo TEXT a partir de acá ───
     const disparado = await evaluarDisparadores({ userId, from, texto });
     if (disparado) {
       console.log("✅ Disparador atendió el mensaje. No se llama a Gemini.");
@@ -1093,7 +1266,11 @@ async function procesar(req, message, userId, from) {
       data = await llamarChatIA({ req, userId, texto, from, ctx, history });
     } catch (err) {
       console.error("❌ chat-ia error:", err);
-      await enviarMensaje(userId, from, "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente.");
+      await enviarMensaje(
+        userId,
+        from,
+        "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente."
+      );
       return;
     }
 
@@ -1103,7 +1280,8 @@ async function procesar(req, message, userId, from) {
       const sent = await enviarMensaje(userId, from, data.response);
       if (sent) {
         await saveReceivedMessage({
-          userId, from,
+          userId,
+          from,
           message: data.response,
           messageType: "out_text",
         });
@@ -1120,13 +1298,23 @@ async function procesar(req, message, userId, from) {
       return;
     }
 
-    const fallback = "👋 Hola! ¿En qué puedo ayudarte hoy?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
+    const fallback =
+      "👋 Hola! ¿En qué puedo ayudarte hoy?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
     await enviarMensaje(userId, from, fallback);
-    await saveReceivedMessage({ userId, from, message: fallback, messageType: "out_text" });
+    await saveReceivedMessage({
+      userId,
+      from,
+      message: fallback,
+      messageType: "out_text",
+    });
   } catch (err) {
     console.error("❌ procesar error:", err);
   }
 }
+
+// ═══════════════════════════════════════════════════════════
+// HANDLER PRINCIPAL
+// ═══════════════════════════════════════════════════════════
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -1138,14 +1326,16 @@ export default async function handler(req, res) {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
-    if (mode === "subscribe" && token === VERIFY_TOKEN) return res.status(200).send(challenge);
+    if (mode === "subscribe" && token === VERIFY_TOKEN)
+      return res.status(200).send(challenge);
     return res.status(403).send("Token inválido");
   }
 
   if (req.method === "POST") {
     try {
       const body = req.body;
-      if (body.object !== "whatsapp_business_account") return res.status(404).send("Not WhatsApp");
+      if (body.object !== "whatsapp_business_account")
+        return res.status(404).send("Not WhatsApp");
 
       for (const entry of body.entry || []) {
         for (const change of entry.changes || []) {
