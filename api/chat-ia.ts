@@ -1,3 +1,4 @@
+// api/chat-ia.ts
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -200,7 +201,7 @@ async function safeUpsertOrder(
 
     const payload: any = {
       user_id: userId,
-      from_number: from, // ✅ FIX: columna NOT NULL
+      from_number: from,
       phone: order.phone || from,
       product: order.product || null,
       producto: order.product || null,
@@ -241,6 +242,28 @@ async function safeUpsertOrder(
   }
 }
 
+// ───────── MEDIA HELPERS ─────────
+
+async function fetchMediaAsBase64(
+  url: string
+): Promise<{ data: string; mime: string } | null> {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) {
+      console.error("❌ fetchMedia:", r.status, url.slice(0, 80));
+      return null;
+    }
+    const mime = r.headers.get("content-type") || "application/octet-stream";
+    const buf = Buffer.from(await r.arrayBuffer());
+    return { data: buf.toString("base64"), mime: mime.split(";")[0].trim() };
+  } catch (e) {
+    console.error("❌ fetchMediaAsBase64:", e);
+    return null;
+  }
+}
+
+// ───────── GEMINI ─────────
+
 async function callGemini({
   apiKey,
   model,
@@ -279,26 +302,147 @@ async function callGemini({
   }
 
   const c = data?.candidates?.[0];
-  const text = clean(c?.content?.parts?.map((p: any) => p.text || "").join("") || "");
+  const text = clean(
+    c?.content?.parts?.map((p: any) => p.text || "").join("") || ""
+  );
   console.log("🧠 finishReason:", c?.finishReason, "len:", text.length);
   return text;
 }
+
+// Llama a Gemini con imagen y le pide JSON: kind + transcript
+async function analyzeImageWithGemini({
+  apiKey,
+  model,
+  imageBase64,
+  mime,
+  caption,
+  productList,
+}: any): Promise<{
+  kind: "payment_proof" | "product" | "other";
+  transcript: string;
+}> {
+  const system = `
+Sos un clasificador. Recibís una IMAGEN enviada por un cliente de WhatsApp a una tienda paraguaya (Mega Todo Store).
+Devolvé EXCLUSIVAMENTE un JSON válido con esta forma:
+{"kind":"payment_proof"|"product"|"other","transcript":"..."}
+
+Reglas para "kind":
+- "payment_proof" → si la imagen es captura/foto de transferencia bancaria, billetera (Tigo Money, Personal Pay, Ueno, Zimple), depósito, comprobante de pago, ticket bancario.
+- "product" → si la imagen muestra un producto/envase (ej. crema, frasco, suplemento, etc.) o el cliente pregunta sobre él.
+- "other" → cualquier otra cosa.
+
+"transcript": describí brevemente en español lo que ves (máx 200 chars). Si es comprobante: monto, banco/billetera, fecha si se ve. Si es producto: qué producto parece y rasgos visibles.
+
+Caption del cliente (puede estar vacío): "${clean(caption) || "(vacío)"}"
+Catálogo de productos (referencia): ${productList.slice(0, 800)}
+
+NO devuelvas texto fuera del JSON.
+`.trim();
+
+  const contents = [
+    {
+      role: "user",
+      parts: [
+        { inlineData: { mimeType: mime, data: imageBase64 } },
+        { text: caption ? `Caption: ${caption}` : "Analizá la imagen." },
+      ],
+    },
+  ];
+
+  const raw = await callGemini({
+    apiKey,
+    model,
+    system,
+    contents,
+    temperature: 0.1,
+    maxTokens: 512,
+  });
+
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error("no json");
+    const parsed = JSON.parse(match[0]);
+    const kind =
+      parsed.kind === "payment_proof" ||
+      parsed.kind === "product" ||
+      parsed.kind === "other"
+        ? parsed.kind
+        : "other";
+    return { kind, transcript: clean(parsed.transcript) };
+  } catch {
+    console.warn("⚠️ analyzeImage no parseó JSON, raw:", raw.slice(0, 200));
+    return { kind: "other", transcript: clean(raw).slice(0, 200) };
+  }
+}
+
+// Transcribe audio con Gemini
+async function transcribeAudioWithGemini({
+  apiKey,
+  model,
+  audioBase64,
+  mime,
+}: any): Promise<string> {
+  const system =
+    "Transcribí el audio al español tal cual lo dijo el hablante. Devolvé SOLO la transcripción en texto plano, sin comillas ni comentarios.";
+
+  const contents = [
+    {
+      role: "user",
+      parts: [
+        { inlineData: { mimeType: mime, data: audioBase64 } },
+        { text: "Transcribí este audio." },
+      ],
+    },
+  ];
+
+  const txt = await callGemini({
+    apiKey,
+    model,
+    system,
+    contents,
+    temperature: 0.1,
+    maxTokens: 1024,
+  });
+  return clean(txt);
+}
+
+// ───────── HANDLER ─────────
 
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST")
     return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    const { user_id, message, from_number, context, history } = req.body;
-    const texto = clean(message);
+    const {
+      user_id,
+      message,
+      from_number,
+      context,
+      history,
+      media_url,
+      media_type,
+      mime_type,
+    } = req.body;
+
+    let texto = clean(message);
     const fromNumber = clean(from_number);
-    console.log("🧠 CHAT-IA:", texto, "from:", fromNumber);
+    const mediaUrl = clean(media_url);
+    const mediaType = clean(media_type); // "image" | "audio" | ""
+    const mimeHint = clean(mime_type);
 
-    if (!user_id || !texto)
-      return res.status(400).json({ error: "Faltan user_id o message" });
+    console.log(
+      "🧠 CHAT-IA:",
+      texto || "(sin texto)",
+      "from:",
+      fromNumber,
+      mediaType ? `media=${mediaType}` : ""
+    );
 
+    if (!user_id) return res.status(400).json({ error: "Falta user_id" });
     if (!fromNumber)
       return res.status(400).json({ error: "Falta from_number" });
+    if (!texto && !mediaUrl)
+      return res.status(400).json({ error: "Faltan message o media" });
 
     const { data: iaConfig } = await supabase
       .from("chat_ia_gemini")
@@ -308,7 +452,9 @@ export default async function handler(req: any, res: any) {
       .maybeSingle();
 
     if (!iaConfig?.api_key)
-      return res.json({ response: "⚠️ La IA no está configurada o desactivada." });
+      return res.json({
+        response: "⚠️ La IA no está configurada o desactivada.",
+      });
 
     const { data: trainingRow } = await supabase
       .from("training_data")
@@ -323,6 +469,79 @@ export default async function handler(req: any, res: any) {
     if (!fullTraining)
       return res.json({ response: "⚠️ No encontré entrenamiento activo." });
 
+    const apiKey = iaConfig.api_key;
+    const model = iaConfig.model || "gemini-2.5-flash";
+
+    let isPaymentProof = false;
+    let imageNote = "";
+
+    // ─── IMAGEN ───
+    if (mediaUrl && mediaType === "image") {
+      const fetched = await fetchMediaAsBase64(mediaUrl);
+      if (fetched) {
+        const mime = mimeHint || fetched.mime || "image/jpeg";
+        const analysis = await analyzeImageWithGemini({
+          apiKey,
+          model,
+          imageBase64: fetched.data,
+          mime,
+          caption: texto,
+          productList: fullTraining,
+        });
+
+        console.log("🖼️ Vision:", analysis.kind, "|", analysis.transcript);
+
+        if (analysis.kind === "payment_proof") {
+          isPaymentProof = true;
+          // Respuesta directa, sin pasar por el flujo normal
+          const replyPago = `¡Perfecto! 🙏 Recibí tu comprobante (${
+            analysis.transcript || "transferencia"
+          }). Ya estamos verificando el pago y enseguida te confirmamos el envío 🚚✨`;
+          return res.json({
+            response: replyPago,
+            is_payment_proof: true,
+            context: {
+              ...(context || {}),
+              last_topic: "comprobante",
+              updated_at: new Date().toISOString(),
+            },
+          });
+        } else if (analysis.kind === "product") {
+          // Inyectamos la descripción como si el cliente lo hubiera escrito
+          imageNote = `[el cliente envió una FOTO. Descripción: ${analysis.transcript}]`;
+          texto = texto
+            ? `${texto}\n${imageNote}`
+            : `Mandé una foto. ${analysis.transcript}`;
+        } else {
+          imageNote = `[el cliente envió una imagen: ${analysis.transcript}]`;
+          texto = texto || `Te mandé una imagen. ${analysis.transcript}`;
+        }
+      } else {
+        texto = texto || "Te mandé una imagen pero no pudiste descargarla.";
+      }
+    }
+
+    // ─── AUDIO ───
+    if (mediaUrl && mediaType === "audio") {
+      const fetched = await fetchMediaAsBase64(mediaUrl);
+      if (fetched) {
+        const mime = mimeHint || fetched.mime || "audio/ogg";
+        const transcript = await transcribeAudioWithGemini({
+          apiKey,
+          model,
+          audioBase64: fetched.data,
+          mime,
+        });
+        console.log("🎙️ Transcripción:", transcript.slice(0, 200));
+        texto = transcript || texto || "Te mandé un audio.";
+      } else {
+        texto = texto || "Te mandé un audio pero no pudiste descargarlo.";
+      }
+    }
+
+    if (!texto) texto = "(mensaje sin texto)";
+
+    // ─── FLUJO DE VENTA NORMAL ───
     const oldOrder = context?.order_data || {};
     const product = detectProduct(
       texto,
@@ -383,6 +602,7 @@ REGLAS:
 8. Catálogo: ${CATALOG_URL}
 9. Español paraguayo, natural, con emojis.
 10. NUNCA respondas vacío.
+11. Si el mensaje viene de una FOTO o AUDIO transcripto, respondé naturalmente como si el cliente te hubiera escrito eso mismo.
 `.trim();
 
     const contents = (history || [])
@@ -396,8 +616,8 @@ REGLAS:
     contents.push({ role: "user", parts: [{ text: texto }] });
 
     let response = await callGemini({
-      apiKey: iaConfig.api_key,
-      model: iaConfig.model || "gemini-2.5-flash",
+      apiKey,
+      model,
       system,
       contents,
       temperature: iaConfig.temperature ?? 0.3,
@@ -407,8 +627,8 @@ REGLAS:
     if (!response) {
       console.warn("⚠️ Vacío, reintentando...");
       response = await callGemini({
-        apiKey: iaConfig.api_key,
-        model: iaConfig.model || "gemini-2.5-flash",
+        apiKey,
+        model,
         system,
         contents,
         temperature: 0.3,
@@ -429,6 +649,7 @@ REGLAS:
       response:
         response || `📋 Te invito a revisar nuestro catálogo:\n${CATALOG_URL}`,
       context: newContext,
+      is_payment_proof: isPaymentProof,
     });
   } catch (error: any) {
     console.error("❌ chat-ia:", error);
