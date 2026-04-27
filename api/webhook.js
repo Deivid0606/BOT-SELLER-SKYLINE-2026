@@ -1,5 +1,5 @@
-// api/webhook.js — webhook_v13.js
-// WhatsApp Cloud API → Triggers → Gemini
+// api/webhook.js — webhook_v14.js
+// WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 
 import { createClient } from "@supabase/supabase-js";
@@ -201,7 +201,7 @@ async function enviarMedia(userId, to, mediaUrl, mediaType = "image", caption = 
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🆕 DESCARGA MEDIA DE WHATSAPP Y LA SUBE A SUPABASE STORAGE
+// DESCARGA MEDIA DE WHATSAPP Y LA SUBE A SUPABASE STORAGE
 // ═══════════════════════════════════════════════════════════
 
 async function descargarYSubirMedia({ userId, mediaId, mimeType, from }) {
@@ -220,7 +220,6 @@ async function descargarYSubirMedia({ userId, mediaId, mimeType, from }) {
     }
     const token = config.permanent_token.trim();
 
-    // 1) Pedir URL temporal a Meta
     const metaRes = await fetch(`https://graph.facebook.com/v22.0/${mediaId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -236,7 +235,6 @@ async function descargarYSubirMedia({ userId, mediaId, mimeType, from }) {
       return null;
     }
 
-    // 2) Descargar binario (también requiere el token)
     const binRes = await fetch(downloadUrl, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -247,7 +245,6 @@ async function descargarYSubirMedia({ userId, mediaId, mimeType, from }) {
     const arrayBuffer = await binRes.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // 3) Determinar extensión
     const extMap = {
       "audio/ogg": "ogg",
       "audio/ogg; codecs=opus": "ogg",
@@ -265,7 +262,6 @@ async function descargarYSubirMedia({ userId, mediaId, mimeType, from }) {
     const baseMime = String(realMime).split(";")[0].trim().toLowerCase();
     const ext = extMap[baseMime] || extMap[realMime] || "bin";
 
-    // 4) Subir a Storage (bucket: comprobantes)
     const path = `wa-incoming/${userId}/${from}/${Date.now()}-${mediaId}.${ext}`;
     const { error: upErr } = await supabase.storage
       .from("comprobantes")
@@ -282,7 +278,7 @@ async function descargarYSubirMedia({ userId, mediaId, mimeType, from }) {
     const { data: pub } = supabase.storage.from("comprobantes").getPublicUrl(path);
     const publicUrl = pub?.publicUrl || null;
     console.log(`✅ Media subida: ${baseMime} → ${publicUrl}`);
-    return publicUrl;
+    return { url: publicUrl, mime: baseMime };
   } catch (err) {
     console.error("❌ descargarYSubirMedia error:", err);
     return null;
@@ -692,10 +688,20 @@ async function evaluarDisparadores({ userId, from, texto }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// LLAMADA A CHAT-IA
+// LLAMADA A CHAT-IA (texto + media opcional)
 // ═══════════════════════════════════════════════════════════
 
-async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
+async function llamarChatIA({
+  req,
+  userId,
+  texto,
+  from,
+  ctx,
+  history,
+  mediaUrl = null,
+  mediaType = null,
+  mimeType = null,
+}) {
   const host = req.headers.host;
   const protocol = req.headers["x-forwarded-proto"] || "https";
   if (!host) throw new Error("No se detectó host");
@@ -710,6 +716,9 @@ async function llamarChatIA({ req, userId, texto, from, ctx, history }) {
       from_number: from,
       context: ctx || {},
       history: history || [],
+      media_url: mediaUrl,
+      media_type: mediaType, // "image" | "audio"
+      mime_type: mimeType,
     }),
   });
   const raw = await resIA.text();
@@ -1125,12 +1134,12 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 
     if (!pedido) {
       console.log("ℹ️ Comprobante recibido pero no hay pedido confirmado reciente");
-      return;
+      return false;
     }
 
     if (pedido.comprobante_url) {
       console.log("ℹ️ El pedido ya tiene comprobante, no sobrescribo");
-      return;
+      return true;
     }
 
     const { error } = await supabase
@@ -1144,12 +1153,14 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 
     if (error) {
       console.error("❌ Error asociando comprobante:", error);
-      return;
+      return false;
     }
 
     console.log(`💳 Comprobante asociado al pedido ${pedido.id}`);
+    return true;
   } catch (err) {
     console.error("❌ asociarComprobanteAlPedido error:", err);
+    return false;
   }
 }
 
@@ -1171,17 +1182,17 @@ async function procesar(req, message, userId, from) {
       texto = clean(message.text?.body || "");
       messageType = "text";
     } else if (tipoMsg === "image") {
-      texto = clean(message.image?.caption || "[imagen]");
+      texto = clean(message.image?.caption || "");
       mediaId = message.image?.id || null;
       mimeType = message.image?.mime_type || "image/jpeg";
       messageType = "image";
     } else if (tipoMsg === "audio") {
-      texto = "[audio]";
+      texto = "";
       mediaId = message.audio?.id || null;
       mimeType = message.audio?.mime_type || "audio/ogg";
       messageType = "audio";
     } else if (tipoMsg === "voice") {
-      texto = "[nota de voz]";
+      texto = "";
       mediaId = message.voice?.id || null;
       mimeType = message.voice?.mime_type || "audio/ogg";
       messageType = "audio";
@@ -1212,10 +1223,14 @@ async function procesar(req, message, userId, from) {
       return;
     }
 
-    // 🆕 Si hay media, descargarla y subirla a Storage ANTES de guardar
+    // Si hay media, descargarla y subirla a Storage ANTES de guardar
+    let mediaMime = mimeType;
     if (mediaId) {
-      mediaUrl = await descargarYSubirMedia({ userId, mediaId, mimeType, from });
-      if (!mediaUrl) {
+      const result = await descargarYSubirMedia({ userId, mediaId, mimeType, from });
+      if (result) {
+        mediaUrl = result.url;
+        mediaMime = result.mime || mimeType;
+      } else {
         console.log("⚠️ No se pudo subir media, se guarda mensaje sin URL");
       }
     }
@@ -1228,85 +1243,195 @@ async function procesar(req, message, userId, from) {
       mediaUrl ? `→ ${mediaUrl.slice(0, 60)}...` : ""
     );
 
+    const textoParaGuardar =
+      texto ||
+      (messageType === "image"
+        ? "[imagen]"
+        : messageType === "audio"
+        ? "[audio]"
+        : messageType === "video"
+        ? "[video]"
+        : messageType === "document"
+        ? "[documento]"
+        : "");
+
     const sourceMessageId = await saveReceivedMessage({
       userId,
       from,
-      message: texto,
+      message: textoParaGuardar,
       messageType,
       mediaUrl,
       waMessageId: message.id || null,
     });
 
-    // Imagen → asociar a pedido como comprobante (si aplica) y NO llamar a Gemini
+    // ─── TEXTO: triggers + IA ───
+    if (messageType === "text") {
+      const disparado = await evaluarDisparadores({ userId, from, texto });
+      if (disparado) {
+        console.log("✅ Disparador atendió el mensaje. No se llama a Gemini.");
+        return;
+      }
+
+      const ctx = await getContexto(userId, from);
+      const history = await getHistory(userId, from);
+
+      let data = {};
+      try {
+        data = await llamarChatIA({ req, userId, texto, from, ctx, history });
+      } catch (err) {
+        console.error("❌ chat-ia error:", err);
+        await enviarMensaje(
+          userId,
+          from,
+          "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente."
+        );
+        return;
+      }
+
+      if (data?.context) await saveContexto(userId, from, data.context);
+
+      if (data?.response) {
+        const sent = await enviarMensaje(userId, from, data.response);
+        if (sent) {
+          await saveReceivedMessage({
+            userId,
+            from,
+            message: data.response,
+            messageType: "out_text",
+          });
+
+          if (esMensajePedidoConfirmado(data.response)) {
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: data.response,
+              sourceMessageId: null,
+            });
+          }
+        }
+        return;
+      }
+
+      const fallback =
+        "👋 Hola! ¿En qué puedo ayudarte hoy?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
+      await enviarMensaje(userId, from, fallback);
+      await saveReceivedMessage({
+        userId,
+        from,
+        message: fallback,
+        messageType: "out_text",
+      });
+      return;
+    }
+
+    // ─── IMAGEN: comprobante + IA Vision ───
     if (messageType === "image" && mediaUrl) {
+      // Intento heurístico de asociar como comprobante (no bloquea)
       asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch((e) =>
         console.error("comprobante bg error:", e)
       );
-      return;
-    }
 
-    // Audio/video/document → guardado, no se procesa con IA todavía
-    if (messageType !== "text") {
-      console.log(`ℹ️ Mensaje ${messageType} guardado, no se procesa con IA`);
-      return;
-    }
+      const ctx = await getContexto(userId, from);
+      const history = await getHistory(userId, from);
 
-    // ─── Solo TEXT a partir de acá ───
-    const disparado = await evaluarDisparadores({ userId, from, texto });
-    if (disparado) {
-      console.log("✅ Disparador atendió el mensaje. No se llama a Gemini.");
-      return;
-    }
-
-    const ctx = await getContexto(userId, from);
-    const history = await getHistory(userId, from);
-
-    let data = {};
-    try {
-      data = await llamarChatIA({ req, userId, texto, from, ctx, history });
-    } catch (err) {
-      console.error("❌ chat-ia error:", err);
-      await enviarMensaje(
-        userId,
-        from,
-        "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente."
-      );
-      return;
-    }
-
-    if (data?.context) await saveContexto(userId, from, data.context);
-
-    if (data?.response) {
-      const sent = await enviarMensaje(userId, from, data.response);
-      if (sent) {
-        await saveReceivedMessage({
+      let data = {};
+      try {
+        data = await llamarChatIA({
+          req,
           userId,
+          texto: texto || "",
           from,
-          message: data.response,
-          messageType: "out_text",
+          ctx,
+          history,
+          mediaUrl,
+          mediaType: "image",
+          mimeType: mediaMime,
         });
+      } catch (err) {
+        console.error("❌ chat-ia (image) error:", err);
+        return;
+      }
 
-        if (esMensajePedidoConfirmado(data.response)) {
-          await detectarYGuardarPedidoConfirmado({
+      if (data?.context) await saveContexto(userId, from, data.context);
+
+      // Si la IA confirma que es comprobante, asegurar la asociación
+      if (data?.is_payment_proof) {
+        await asociarComprobanteAlPedido({ userId, from, mediaUrl });
+      }
+
+      if (data?.response) {
+        const sent = await enviarMensaje(userId, from, data.response);
+        if (sent) {
+          await saveReceivedMessage({
             userId,
             from,
-            textoMensaje: data.response,
-            sourceMessageId: null,
+            message: data.response,
+            messageType: "out_text",
           });
+
+          if (esMensajePedidoConfirmado(data.response)) {
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: data.response,
+              sourceMessageId: null,
+            });
+          }
         }
       }
       return;
     }
 
-    const fallback =
-      "👋 Hola! ¿En qué puedo ayudarte hoy?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
-    await enviarMensaje(userId, from, fallback);
-    await saveReceivedMessage({
-      userId,
-      from,
-      message: fallback,
-      messageType: "out_text",
-    });
+    // ─── AUDIO: IA transcribe + responde ───
+    if (messageType === "audio" && mediaUrl) {
+      const ctx = await getContexto(userId, from);
+      const history = await getHistory(userId, from);
+
+      let data = {};
+      try {
+        data = await llamarChatIA({
+          req,
+          userId,
+          texto: "",
+          from,
+          ctx,
+          history,
+          mediaUrl,
+          mediaType: "audio",
+          mimeType: mediaMime,
+        });
+      } catch (err) {
+        console.error("❌ chat-ia (audio) error:", err);
+        return;
+      }
+
+      if (data?.context) await saveContexto(userId, from, data.context);
+
+      if (data?.response) {
+        const sent = await enviarMensaje(userId, from, data.response);
+        if (sent) {
+          await saveReceivedMessage({
+            userId,
+            from,
+            message: data.response,
+            messageType: "out_text",
+          });
+
+          if (esMensajePedidoConfirmado(data.response)) {
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: data.response,
+              sourceMessageId: null,
+            });
+          }
+        }
+      }
+      return;
+    }
+
+    // ─── Otros (video/document/sticker): solo guardar ───
+    console.log(`ℹ️ Mensaje ${messageType} guardado, no se procesa con IA`);
   } catch (err) {
     console.error("❌ procesar error:", err);
   }
