@@ -256,11 +256,22 @@ export default function InboxPage() {
   };
 
   const loadMessages = async () => {
+    if (!user) {
+      setDbMessages([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
+
+    // 🔧 FIX: Supabase corta en 1000 filas por defecto.
+    // Traemos los 10.000 más recientes filtrados por el user actual,
+    // y los re-ordenamos ascendente para que el chat se vea bien.
     const { data, error } = await supabase
       .from("received_messages")
       .select("*")
-      .order("created_at", { ascending: true });
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(10000);
 
     if (error) {
       console.error("Error cargando mensajes:", error);
@@ -268,7 +279,14 @@ export default function InboxPage() {
       setLoading(false);
       return;
     }
-    setDbMessages((data || []) as DbMessage[]);
+
+    const ordered = ((data || []) as DbMessage[]).sort((a, b) => {
+      const da = new Date(a.created_at || 0).getTime();
+      const db = new Date(b.created_at || 0).getTime();
+      return da - db;
+    });
+
+    setDbMessages(ordered);
     setLoading(false);
   };
 
