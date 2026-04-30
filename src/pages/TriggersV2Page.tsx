@@ -1357,7 +1357,7 @@ export default function TriggersV2Page() {
                                                 : "ej. no quiero, cancelar, no gracias"
                                             }
                                             value={editingTrigger.secondary.conditionValues.join(
-                                              ", "
+                                              " , "
                                             )}
                                             onChange={(e) =>
                                               setEditingTrigger({
