@@ -1,6 +1,7 @@
-// api/webhook.js — webhook_v14.js
+// api/webhook.js — webhook_v15.js
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
+// + FIX: disparador secundario respeta el contexto del último producto
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -563,6 +564,9 @@ function matchSecundario(secundario, textoNorm) {
   return valores.some((v) => matchKeywords(v, tipo, textoNorm));
 }
 
+// ✅ FIX: el disparador secundario SOLO matchea si el cliente venía hablando
+// de ese mismo producto (last_trigger en el contexto). Esto evita que escribir
+// solo una ciudad como "Córdoba" dispare el secundario de un producto al azar.
 async function evaluarDisparadores({ userId, from, texto }) {
   try {
     const { data: triggers, error } = await supabase
@@ -579,14 +583,30 @@ async function evaluarDisparadores({ userId, from, texto }) {
 
     const textoNorm = normalize(texto);
 
-    for (const trig of triggers) {
+    // 🆕 Leer contexto para saber qué producto venía hablando el cliente
+    const ctx = await getContexto(userId, from);
+    const lastTrigger = ctx?.last_trigger || null;
+
+    // 🆕 Poner el trigger del contexto PRIMERO (tiene prioridad)
+    const triggersOrdenados = [...triggers].sort((a, b) => {
+      if (a.name === lastTrigger) return -1;
+      if (b.name === lastTrigger) return 1;
+      return 0;
+    });
+
+    for (const trig of triggersOrdenados) {
       const matchPrimary = matchKeywords(trig.condition, trig.type, textoNorm);
-      const matchSecondary = matchSecundario(trig.secondary, textoNorm);
+
+      // 🆕 El secundario SOLO matchea si el cliente venía hablando de ESTE trigger
+      // (o si también está matcheando el primario en este mismo mensaje).
+      const secundarioPermitido = matchPrimary || lastTrigger === trig.name;
+      const matchSecondary =
+        secundarioPermitido && matchSecundario(trig.secondary, textoNorm);
 
       if (!matchPrimary && !matchSecondary) continue;
 
       console.log(
-        `🎯 Disparador MATCH: "${trig.name}" → primary=${matchPrimary} secondary=${matchSecondary}`
+        `🎯 Disparador MATCH: "${trig.name}" → primary=${matchPrimary} secondary=${matchSecondary} (lastTrigger=${lastTrigger})`
       );
 
       if (trig.no_repeat) {
@@ -676,7 +696,8 @@ async function evaluarDisparadores({ userId, from, texto }) {
         console.log("⚠️ post-trigger pedido check error:", e.message);
       }
 
-      await saveContexto(userId, from, { last_trigger: trig.name });
+      // 🆕 Guardar contexto fusionado (no pisa otros campos como order_data)
+      await saveContexto(userId, from, { ...ctx, last_trigger: trig.name });
       return true;
     }
 
