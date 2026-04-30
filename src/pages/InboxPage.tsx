@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Search,
@@ -121,7 +120,6 @@ function hexToRgba(hex: string, alpha: number) {
 
 export default function InboxPage() {
   const { user } = useAuth();
-  const [searchParams, setSearchParams] = useSearchParams();
 
   const [selectedChat, setSelectedChat] = useState<number>(0);
   const [searchQuery, setSearchQuery] = useState("");
@@ -303,29 +301,6 @@ export default function InboxPage() {
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [user]);
-
-  // 📞 Abrir chat automáticamente cuando se llega desde Pedidos (?phone=...)
-  useEffect(() => {
-    const phoneParam = searchParams.get("phone");
-    if (!phoneParam) return;
-    if (chats.length === 0) return;
-
-    const normalize = (s: string) => (s || "").replace(/\D/g, "");
-    const target = normalize(phoneParam);
-
-    const idx = chats.findIndex((c) => {
-      const n = normalize(c.number);
-      return n === target || n.endsWith(target) || target.endsWith(n);
-    });
-
-    if (idx >= 0) {
-      setSelectedChat(idx);
-      setFilterTag(null);
-      setFilterDate(undefined);
-      setSearchQuery("");
-      setSearchParams({}, { replace: true });
-    }
-  }, [searchParams, chats, setSearchParams]);
 
   // ✅ Index de búsqueda: número → texto concatenado de TODOS sus mensajes
   const chatSearchIndex = useMemo(() => {
