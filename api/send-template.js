@@ -1,7 +1,3 @@
-
-
-
-
 // api/send-template.js
 import { createClient } from '@supabase/supabase-js';
 
