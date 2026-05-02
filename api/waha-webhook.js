@@ -1,7 +1,5 @@
 // api/waha-webhook.js
-// Webhook de WAHA → traduce payload al formato Meta y reusa procesar() de webhook.js
-// Eventos manejados: message, session.status
-// ✅ SOLUCIONADO: Usa sesión 'default' y rutea por número de teléfono para multitenencia
+// ✅ CONFIGURACIÓN CORRECTA PARA WAHA EN RAILWAY
 
 import { createClient } from "@supabase/supabase-js";
 import { procesar } from "./webhook.js";
@@ -11,9 +9,9 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const WAHA_API_KEY = process.env.WAHA_API_KEY;
+const WAHA_BASE_URL = "https://waha-production-d6eb.up.railway.app";
+const WAHA_API_KEY = "884b70d0e02a36e041df0d7c3fd424e2";
 
-// Convierte un msg de WAHA al formato esperado por procesar() (formato Meta)
 function wahaToMeta(wahaMsg) {
   const fromRaw = wahaMsg.from || "";
   const from = fromRaw.replace(/@c\.us$/, "").replace(/@s\.whatsapp\.net$/, "");
@@ -67,31 +65,15 @@ function wahaToMeta(wahaMsg) {
   };
 }
 
-// Obtener userId por número de teléfono (para multitenencia con sesión 'default')
 async function getUserIdByPhoneNumber(phoneNumber) {
   if (!phoneNumber) return null;
   
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from("whatsapp_qr_sessions")
     .select("user_id")
     .eq("connected_phone", phoneNumber)
     .maybeSingle();
   
-  if (error) {
-    console.error("❌ Error buscando userId por teléfono:", error);
-    return null;
-  }
-  
-  return data?.user_id || null;
-}
-
-// Fallback: obtener userId por session (para compatibilidad)
-async function getUserIdBySession(sessionName) {
-  const { data } = await supabase
-    .from("whatsapp_qr_sessions")
-    .select("user_id")
-    .eq("session_name", sessionName)
-    .maybeSingle();
   return data?.user_id || null;
 }
 
@@ -99,26 +81,24 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Api-Key");
+  
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
 
-  // Validar API key
-  const apiKey = req.headers["x-api-key"] || req.headers["x-webhook-key"];
-  if (WAHA_API_KEY && apiKey && apiKey !== WAHA_API_KEY) {
-    console.log("❌ WAHA webhook: API key inválida");
+  const apiKey = req.headers["x-api-key"];
+  if (apiKey !== WAHA_API_KEY) {
+    console.log("❌ API key inválida");
     return res.status(401).send("Unauthorized");
   }
 
   try {
     const body = req.body;
     const event = body?.event;
-    const sessionName = body?.session || "default";
     const payload = body?.payload || body;
+    const sessionName = body?.session || "default";
 
     console.log(`📡 WAHA event: ${event} | session: ${sessionName}`);
-    console.log(`📦 Payload preview:`, JSON.stringify(payload).substring(0, 200));
 
-    // ─── EVENTO: cambio de estado de sesión ───
     if (event === "session.status") {
       const wahaStatus = payload.status;
       let dbStatus = "disconnected";
@@ -128,9 +108,8 @@ export default async function handler(req, res) {
       else if (wahaStatus === "FAILED") dbStatus = "failed";
       else if (wahaStatus === "STOPPED") dbStatus = "disconnected";
 
-      const connectedPhone = payload.me?.id?.replace(/@c\.us$/, "").replace(/@s\.whatsapp\.net$/, "") || null;
+      const connectedPhone = payload.me?.id?.replace(/@c\.us$/, "") || null;
 
-      // Actualizar la sesión
       await supabase
         .from("whatsapp_qr_sessions")
         .update({
@@ -138,71 +117,29 @@ export default async function handler(req, res) {
           connected_phone: connectedPhone,
           last_event_at: new Date().toISOString(),
           ...(dbStatus === "connected" ? { connected_at: new Date().toISOString() } : {}),
-          ...(dbStatus === "disconnected" || dbStatus === "failed" ? { connected_phone: null, last_qr: null } : {})
         })
         .eq("session_name", sessionName);
 
-      console.log(`✅ Estado actualizado: ${dbStatus} | Teléfono: ${connectedPhone}`);
+      console.log(`✅ Estado actualizado: ${dbStatus}`);
       return res.status(200).send("OK");
     }
 
-    // ─── EVENTO: mensaje entrante ───
     if (event === "message" || event === "message.any") {
-      // Ignorar mensajes propios
       if (payload.fromMe) {
-        console.log("⏭️ Ignorando mensaje propio (fromMe)");
         return res.status(200).send("OK (fromMe)");
       }
 
-      // Obtener el número de teléfono destino (el número conectado)
-      const toPhone = (payload.to || payload.recipient || payload.chatId || "")
-        .replace(/@c\.us$/, "")
-        .replace(/@s\.whatsapp\.net$/, "");
-      
-      const fromPhone = (payload.from || "")
-        .replace(/@c\.us$/, "")
-        .replace(/@s\.whatsapp\.net$/, "");
-
-      console.log(`📞 Mensaje de: ${fromPhone} | para: ${toPhone}`);
-
-      // Buscar el usuario por el número de teléfono destino
-      let userId = await getUserIdByPhoneNumber(toPhone);
-      
-      // Fallback: buscar por sessionName
-      if (!userId && sessionName) {
-        console.log(`⚠️ No encontrado por teléfono, buscando por session: ${sessionName}`);
-        userId = await getUserIdBySession(sessionName);
-      }
+      const toPhone = payload.to?.replace(/@c\.us$/, "").replace(/@s\.whatsapp\.net$/, "");
+      const userId = await getUserIdByPhoneNumber(toPhone);
 
       if (!userId) {
-        console.log(`⚠️ No se encontró usuario para teléfono: ${toPhone} | session: ${sessionName}`);
-        // Guardar mensaje huérfano para depuración
-        const { error: insertError } = await supabase
-          .from("inbox_messages")
-          .insert({
-            user_id: null,
-            source: "whatsapp",
-            platform: "waha",
-            sender_id: fromPhone,
-            from_number: fromPhone,
-            message: payload.body || "[mensaje huérfano]",
-            message_type: "text",
-            wa_message_id: payload.id,
-            is_read: false,
-            is_processed: true,
-            created_at: new Date().toISOString()
-          });
-        
-        if (insertError) {
-          console.error("❌ Error guardando mensaje huérfano:", insertError);
-        }
+        console.log(`⚠️ No se encontró usuario para: ${toPhone}`);
         return res.status(200).send("OK (no user)");
       }
 
-      console.log(`✅ Usuario encontrado: ${userId}`);
+      console.log(`✅ Mensaje para usuario: ${userId}`);
 
       const metaMsg = wahaToMeta(payload);
-
       const fakeReq = {
         headers: {
           host: req.headers.host,
@@ -210,15 +147,10 @@ export default async function handler(req, res) {
         },
       };
 
-      console.log(`🚀 Procesando mensaje para usuario ${userId}...`);
       await procesar(fakeReq, metaMsg, userId, metaMsg.from);
-      console.log(`✅ Mensaje procesado exitosamente`);
-      
       return res.status(200).send("OK");
     }
 
-    // Otros eventos: ignorar silenciosamente
-    console.log(`ℹ️ Evento ignorado: ${event}`);
     return res.status(200).send("OK (ignored)");
   } catch (err) {
     console.error("❌ waha-webhook error:", err);
