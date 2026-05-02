@@ -1189,7 +1189,7 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 // PROCESAR MENSAJE ENTRANTE
 // ═══════════════════════════════════════════════════════════
 
-async function procesar(req, message, userId, from) {
+export async function procesar(req, message, userId, from) {
   try {
     const tipoMsg = message.type;
 
