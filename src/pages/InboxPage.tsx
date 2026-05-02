@@ -438,13 +438,19 @@ export default function InboxPage() {
   const hasActiveFilters = !!(filterTag || filterDate);
 
   // ============================================================
-  // 🔧 FUNCIÓN CORREGIDA - AHORA ENVÍA tenant_id
+  // 🔧 FUNCIÓN CORREGIDA - NO BLOQUEA SI NO HAY tenant_id
   // ============================================================
   const handleSendMessage = async () => {
     if (!selectedNumber) {
       toast({ title: "Selecciona un chat", description: "Primero selecciona un chat para responder.", variant: "destructive" });
       return;
     }
+
+    if (!user?.id) {
+      toast({ title: "Sesión inválida", description: "Vuelve a iniciar sesión para enviar mensajes.", variant: "destructive" });
+      return;
+    }
+
     if (!messageInput.trim() && !selectedFile && !selectedTemplateMedia) {
       toast({ title: "Mensaje vacío", description: "Escribe un mensaje, selecciona un archivo o una plantilla.", variant: "destructive" });
       return;
@@ -452,16 +458,16 @@ export default function InboxPage() {
 
     try {
       setSending(true);
-      
-      // 🔥 OBTENER tenant_id DEL USUARIO LOGUEADO
+
+      // ✅ Obtener perfil sin romper si no existe tenant_id
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("tenant_id, connection_type")
-        .eq("id", user?.id)
-        .single();
+        .eq("id", user.id)
+        .maybeSingle();
 
-      if (profileError || !profile?.tenant_id) {
-        throw new Error("Usuario no tiene configuración de WhatsApp. Verifica tu perfil.");
+      if (profileError) {
+        console.warn("⚠️ No se pudo leer profiles, se enviará solo con user_id:", profileError);
       }
 
       const textToSend = messageInput.trim();
@@ -470,7 +476,7 @@ export default function InboxPage() {
 
       if (selectedFile) {
         const fileExt = selectedFile.file.name.split(".").pop();
-        const fileName = `${user?.id}/${Date.now()}.${fileExt}`;
+        const fileName = `${user.id}/${Date.now()}.${fileExt}`;
         const folder = selectedFile.type === "image" ? "images" : selectedFile.type === "video" ? "videos" : "others";
         const filePath = `${folder}/${fileName}`;
 
@@ -485,20 +491,24 @@ export default function InboxPage() {
         mediaType = selectedTemplateMedia.type;
       }
 
-      // 🔥 PAYLOAD CORREGIDO - INCLUYE tenant_id
+      // ✅ Payload flexible: manda tenant_id si existe, pero NO bloquea si está vacío
       const payload: any = {
-        user_id: user?.id ?? null,
-        tenant_id: profile.tenant_id,  // ✅ AHORA SÍ ENVÍA EL tenant_id
-        connection_type: profile.connection_type,  // ✅ También el tipo de conexión
+        user_id: user.id,
+        tenant_id: profile?.tenant_id ?? null,
+        connection_type: profile?.connection_type ?? null,
         to: selectedNumber,
         message: textToSend,
       };
+
       if (mediaUrl && mediaType) {
         payload.media_url = mediaUrl;
         payload.media_type = mediaType;
       }
 
-      console.log("📤 Enviando mensaje con payload:", { ...payload, message: payload.message?.substring(0, 50) });
+      console.log("📤 Enviando mensaje con payload:", {
+        ...payload,
+        message: payload.message?.substring(0, 50),
+      });
 
       const response = await fetch("/api/send-whatsapp", {
         method: "POST",
@@ -508,10 +518,16 @@ export default function InboxPage() {
 
       const rawText = await response.text();
       let result: any = {};
-      try { result = rawText ? JSON.parse(rawText) : {}; }
-      catch { throw new Error(rawText || "La API devolvió una respuesta inválida"); }
 
-      if (!response.ok) throw new Error(result?.error || "No se pudo enviar el mensaje");
+      try {
+        result = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        throw new Error(rawText || "La API devolvió una respuesta inválida");
+      }
+
+      if (!response.ok) {
+        throw new Error(result?.error || "No se pudo enviar el mensaje");
+      }
 
       setMessageInput("");
       setSelectedFile(null);
