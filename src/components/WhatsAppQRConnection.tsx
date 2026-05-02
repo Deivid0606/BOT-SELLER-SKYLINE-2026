@@ -1,18 +1,33 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import {
-  QrCode, RefreshCw, LogOut, CheckCircle2, AlertCircle, Loader2,
+  QrCode,
+  RefreshCw,
+  LogOut,
+  CheckCircle2,
+  AlertCircle,
+  Loader2,
 } from "lucide-react";
 import QRCode from "qrcode";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 
-type SessionStatus = "disconnected" | "starting" | "pending_qr" | "connected" | "failed";
+type SessionStatus =
+  | "disconnected"
+  | "starting"
+  | "pending_qr"
+  | "connected"
+  | "failed";
 type Provider = "meta" | "waha";
 
 interface QRSession {
@@ -21,16 +36,18 @@ interface QRSession {
   connected_phone: string | null;
 }
 
-export default function WhatsAppQRConnection() {
+export function WhatsAppQRConnection() {
   const { user } = useAuth();
   const [provider, setProvider] = useState<Provider>("meta");
   const [session, setSession] = useState<QRSession>({
-    status: "disconnected", last_qr: null, connected_phone: null,
+    status: "disconnected",
+    last_qr: null,
+    connected_phone: null,
   });
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [savingProvider, setSavingProvider] = useState(false);
-  const pollRef = useRef<NodeJS.Timeout | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Cargar provider actual + sesión QR
   useEffect(() => {
@@ -41,20 +58,23 @@ export default function WhatsAppQRConnection() {
         .select("provider")
         .eq("user_id", user.id)
         .maybeSingle();
-      if (cfg?.provider) setProvider(cfg.provider as Provider);
+      if ((cfg as any)?.provider) setProvider((cfg as any).provider as Provider);
 
       const { data: qrSess } = await supabase
         .from("whatsapp_qr_sessions")
         .select("status, last_qr, connected_phone")
         .eq("user_id", user.id)
         .maybeSingle();
-      if (qrSess) setSession(qrSess as QRSession);
+      if (qrSess) setSession(qrSess as unknown as QRSession);
     })();
   }, [user?.id]);
 
   // Renderizar QR a imagen cuando cambia last_qr
   useEffect(() => {
-    if (!session.last_qr) { setQrDataUrl(null); return; }
+    if (!session.last_qr) {
+      setQrDataUrl(null);
+      return;
+    }
     QRCode.toDataURL(session.last_qr, { width: 320, margin: 2 })
       .then(setQrDataUrl)
       .catch(() => setQrDataUrl(null));
@@ -66,14 +86,12 @@ export default function WhatsAppQRConnection() {
     pollRef.current = setInterval(async () => {
       if (!user?.id) return;
       try {
-        // Refrescar QR
         const qrRes = await fetch("/api/waha-qr", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "get-qr", user_id: user.id }),
         }).then((r) => r.json());
 
-        // Refrescar status
         const stRes = await fetch("/api/waha-qr", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -89,7 +107,10 @@ export default function WhatsAppQRConnection() {
 
         if (stRes?.status === "connected") {
           if (pollRef.current) clearInterval(pollRef.current);
-          toast({ title: "✅ WhatsApp conectado", description: stRes.phone || "" });
+          toast({
+            title: "✅ WhatsApp conectado",
+            description: stRes.phone || "",
+          });
         }
       } catch (e) {
         console.error("polling error", e);
@@ -97,21 +118,35 @@ export default function WhatsAppQRConnection() {
     }, 3000);
   }, [user?.id]);
 
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+  useEffect(
+    () => () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    },
+    []
+  );
 
   const handleProviderChange = async (newProv: Provider) => {
     if (!user?.id) return;
     setSavingProvider(true);
     const { error } = await supabase
       .from("whatsapp_config")
-      .upsert({ user_id: user.id, provider: newProv }, { onConflict: "user_id" });
+      .upsert(
+        { user_id: user.id, provider: newProv } as any,
+        { onConflict: "user_id" }
+      );
     setSavingProvider(false);
     if (error) {
-      toast({ title: "Error guardando provider", description: error.message, variant: "destructive" });
+      toast({
+        title: "Error guardando provider",
+        description: error.message,
+        variant: "destructive",
+      });
       return;
     }
     setProvider(newProv);
-    toast({ title: `Proveedor cambiado a ${newProv === "meta" ? "Meta API" : "QR"}` });
+    toast({
+      title: `Proveedor cambiado a ${newProv === "meta" ? "Meta API" : "QR"}`,
+    });
   };
 
   const handleGenerateQR = async () => {
@@ -127,9 +162,16 @@ export default function WhatsAppQRConnection() {
       if (!r.ok) throw new Error(j.error || "Error");
       setSession((p) => ({ ...p, status: "starting" }));
       startPolling();
-      toast({ title: "Iniciando sesión...", description: "El QR aparecerá en unos segundos" });
+      toast({
+        title: "Iniciando sesión...",
+        description: "El QR aparecerá en unos segundos",
+      });
     } catch (e: any) {
-      toast({ title: "Error", description: e.message, variant: "destructive" });
+      toast({
+        title: "Error",
+        description: e.message,
+        variant: "destructive",
+      });
     } finally {
       setLoading(false);
     }
@@ -144,7 +186,11 @@ export default function WhatsAppQRConnection() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "logout", user_id: user.id }),
       });
-      setSession({ status: "disconnected", last_qr: null, connected_phone: null });
+      setSession({
+        status: "disconnected",
+        last_qr: null,
+        connected_phone: null,
+      });
       setQrDataUrl(null);
       if (pollRef.current) clearInterval(pollRef.current);
       toast({ title: "Sesión cerrada" });
@@ -155,14 +201,30 @@ export default function WhatsAppQRConnection() {
 
   const StatusBadge = () => {
     if (session.status === "connected")
-      return <Badge className="bg-green-600"><CheckCircle2 className="w-3 h-3 mr-1" />Conectado</Badge>;
+      return (
+        <Badge className="bg-emerald-500/15 text-emerald-500 border-emerald-500/30">
+          <CheckCircle2 className="h-3 w-3 mr-1" /> Conectado
+        </Badge>
+      );
     if (session.status === "pending_qr")
-      return <Badge variant="outline"><QrCode className="w-3 h-3 mr-1" />Escaneá el QR</Badge>;
+      return (
+        <Badge variant="secondary">
+          <QrCode className="h-3 w-3 mr-1" /> Escaneá el QR
+        </Badge>
+      );
     if (session.status === "starting")
-      return <Badge variant="outline"><Loader2 className="w-3 h-3 mr-1 animate-spin" />Iniciando...</Badge>;
+      return (
+        <Badge variant="secondary">
+          <Loader2 className="h-3 w-3 mr-1 animate-spin" /> Iniciando...
+        </Badge>
+      );
     if (session.status === "failed")
-      return <Badge variant="destructive"><AlertCircle className="w-3 h-3 mr-1" />Error</Badge>;
-    return <Badge variant="secondary">Desconectado</Badge>;
+      return (
+        <Badge variant="destructive">
+          <AlertCircle className="h-3 w-3 mr-1" /> Error
+        </Badge>
+      );
+    return <Badge variant="outline">Desconectado</Badge>;
   };
 
   return (
@@ -176,64 +238,106 @@ export default function WhatsAppQRConnection() {
       <CardContent className="space-y-6">
         {/* Selector de provider */}
         <div className="space-y-3">
-          <Label className="text-sm font-medium">Proveedor</Label>
+          <Label className="text-sm">Proveedor</Label>
           <RadioGroup
             value={provider}
             onValueChange={(v) => handleProviderChange(v as Provider)}
             disabled={savingProvider}
-            className="grid grid-cols-2 gap-3"
+            className="grid grid-cols-1 md:grid-cols-2 gap-3"
           >
-            <label className={`flex items-start gap-2 p-3 border rounded-lg cursor-pointer ${provider === "meta" ? "border-primary bg-primary/5" : ""}`}>
-              <RadioGroupItem value="meta" id="meta" />
-              <div className="flex-1">
-                <div className="font-medium text-sm">Meta API (oficial)</div>
-                <div className="text-xs text-muted-foreground">Requiere número verificado y cuenta business</div>
+            <Label
+              htmlFor="prov-meta"
+              className={`flex items-start gap-3 p-4 rounded-lg border cursor-pointer transition-colors ${
+                provider === "meta"
+                  ? "border-primary bg-primary/5"
+                  : "border-border hover:bg-secondary/40"
+              }`}
+            >
+              <RadioGroupItem value="meta" id="prov-meta" className="mt-1" />
+              <div>
+                <p className="text-sm font-medium">Meta API (oficial)</p>
+                <p className="text-xs text-muted-foreground">
+                  Requiere número verificado y cuenta business
+                </p>
               </div>
-            </label>
-            <label className={`flex items-start gap-2 p-3 border rounded-lg cursor-pointer ${provider === "waha" ? "border-primary bg-primary/5" : ""}`}>
-              <RadioGroupItem value="waha" id="waha" />
-              <div className="flex-1">
-                <div className="font-medium text-sm">QR (WhatsApp Web)</div>
-                <div className="text-xs text-muted-foreground">Escaneá el QR desde tu celular</div>
+            </Label>
+            <Label
+              htmlFor="prov-waha"
+              className={`flex items-start gap-3 p-4 rounded-lg border cursor-pointer transition-colors ${
+                provider === "waha"
+                  ? "border-primary bg-primary/5"
+                  : "border-border hover:bg-secondary/40"
+              }`}
+            >
+              <RadioGroupItem value="waha" id="prov-waha" className="mt-1" />
+              <div>
+                <p className="text-sm font-medium">QR (WhatsApp Web)</p>
+                <p className="text-xs text-muted-foreground">
+                  Escaneá el QR desde tu celular
+                </p>
               </div>
-            </label>
+            </Label>
           </RadioGroup>
         </div>
 
         {/* Solo muestro QR UI si provider === waha */}
         {provider === "waha" && (
-          <div className="space-y-4 pt-4 border-t">
+          <div className="border-t border-border pt-6">
             {session.status === "connected" ? (
-              <div className="text-center space-y-3">
-                <CheckCircle2 className="w-16 h-16 text-green-600 mx-auto" />
+              <div className="flex flex-col items-center text-center gap-4 py-6">
+                <CheckCircle2 className="h-14 w-14 text-emerald-500" />
                 <div>
                   <p className="font-medium">WhatsApp conectado</p>
                   {session.connected_phone && (
-                    <p className="text-sm text-muted-foreground">+{session.connected_phone}</p>
+                    <p className="text-sm text-muted-foreground">
+                      +{session.connected_phone}
+                    </p>
                   )}
                 </div>
-                <Button variant="outline" onClick={handleLogout} disabled={loading}>
-                  <LogOut className="w-4 h-4 mr-2" />Cerrar sesión
+                <Button
+                  variant="outline"
+                  onClick={handleLogout}
+                  disabled={loading}
+                >
+                  <LogOut className="h-4 w-4 mr-2" /> Cerrar sesión
                 </Button>
               </div>
             ) : qrDataUrl ? (
-              <div className="text-center space-y-3">
-                <img src={qrDataUrl} alt="QR" className="mx-auto rounded-lg border" />
-                <p className="text-sm text-muted-foreground">
+              <div className="flex flex-col items-center text-center gap-4 py-2">
+                <img
+                  src={qrDataUrl}
+                  alt="QR WhatsApp"
+                  className="rounded-lg border border-border"
+                  width={280}
+                  height={280}
+                />
+                <p className="text-xs text-muted-foreground max-w-xs">
                   Abrí WhatsApp → Dispositivos vinculados → Vincular dispositivo
                 </p>
-                <Button variant="outline" size="sm" onClick={handleGenerateQR} disabled={loading}>
-                  <RefreshCw className="w-3 h-3 mr-1" />Refrescar
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleGenerateQR}
+                  disabled={loading}
+                >
+                  <RefreshCw
+                    className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`}
+                  />
+                  Refrescar
                 </Button>
               </div>
             ) : (
-              <div className="text-center space-y-3 py-6">
-                <QrCode className="w-16 h-16 text-muted-foreground mx-auto" />
-                <p className="text-sm text-muted-foreground">
+              <div className="flex flex-col items-center text-center gap-4 py-6">
+                <QrCode className="h-14 w-14 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground max-w-sm">
                   Hacé clic para generar el QR y vincular tu WhatsApp
                 </p>
                 <Button onClick={handleGenerateQR} disabled={loading}>
-                  {loading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <QrCode className="w-4 h-4 mr-2" />}
+                  {loading ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <QrCode className="h-4 w-4 mr-2" />
+                  )}
                   Generar QR
                 </Button>
               </div>
@@ -244,3 +348,5 @@ export default function WhatsAppQRConnection() {
     </Card>
   );
 }
+
+export default WhatsAppQRConnection;
