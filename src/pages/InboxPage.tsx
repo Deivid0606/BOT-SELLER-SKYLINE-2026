@@ -263,9 +263,11 @@ export default function InboxPage() {
     }
     setLoading(true);
 
-    // 🔧 AHORA USA inbox_messages en lugar de received_messages
+    // 🔧 FIX: Supabase corta en 1000 filas por defecto.
+    // Traemos los 10.000 más recientes filtrados por el user actual,
+    // y los re-ordenamos ascendente para que el chat se vea bien.
     const { data, error } = await supabase
-      .from("inbox_messages")
+      .from("received_messages")
       .select("*")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false })
@@ -290,11 +292,10 @@ export default function InboxPage() {
 
   useEffect(() => {
     loadMessages();
-    // 🔧 AHORA USA inbox_messages para el canal de tiempo real
     const channel = supabase
-      .channel("inbox_messages_realtime_inbox_pro")
+      .channel("received_messages_realtime_inbox_pro")
       .on("postgres_changes",
-        { event: "*", schema: "public", table: "inbox_messages" },
+        { event: "*", schema: "public", table: "received_messages" },
         () => { loadMessages(); }
       )
       .subscribe();
@@ -418,9 +419,8 @@ export default function InboxPage() {
 
       if (idsToUpdate.length === 0) return;
 
-      // 🔧 AHORA USA inbox_messages
       const { error } = await supabase
-        .from("inbox_messages")
+        .from("received_messages")
         .update({ is_processed: true })
         .in("id", idsToUpdate);
 
@@ -539,12 +539,7 @@ export default function InboxPage() {
   const handleDeleteChat = async () => {
     if (!selectedNumber) return;
     if (!window.confirm(`¿Eliminar todos los mensajes de ${selectedNumber}?`)) return;
-    // 🔧 AHORA USA inbox_messages y filtra por user_id
-    const { error } = await supabase
-      .from("inbox_messages")
-      .delete()
-      .eq("from_number", selectedNumber)
-      .eq("user_id", user!.id);
+    const { error } = await supabase.from("received_messages").delete().eq("from_number", selectedNumber);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     toast({ title: "🗑️ Conversación eliminada" });
     await loadMessages();
@@ -554,12 +549,7 @@ export default function InboxPage() {
   const handleClearChat = async () => {
     if (!selectedNumber) return;
     if (!window.confirm(`¿Limpiar mensajes de ${selectedNumber}?`)) return;
-    // 🔧 AHORA USA inbox_messages y filtra por user_id
-    const { error } = await supabase
-      .from("inbox_messages")
-      .delete()
-      .eq("from_number", selectedNumber)
-      .eq("user_id", user!.id);
+    const { error } = await supabase.from("received_messages").delete().eq("from_number", selectedNumber);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     toast({ title: "🧹 Chat limpiado" });
     await loadMessages();
