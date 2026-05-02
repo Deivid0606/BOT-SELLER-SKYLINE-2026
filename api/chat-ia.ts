@@ -262,7 +262,7 @@ async function fetchMediaAsBase64(
   }
 }
 
-// ───────── GEMINI ─────────
+// ───────── GEMINI - CORREGIDO (v1 en lugar de v1beta) ─────────
 
 async function callGemini({
   apiKey,
@@ -286,8 +286,9 @@ async function callGemini({
     body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
   }
 
+  // 🔥 CORREGIDO: v1 en lugar de v1beta
   const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -470,7 +471,8 @@ export default async function handler(req: any, res: any) {
       return res.json({ response: "⚠️ No encontré entrenamiento activo." });
 
     const apiKey = iaConfig.api_key;
-    const model = iaConfig.model || "gemini-2.5-flash";
+    // 🔥 CORREGIDO: modelo por defecto válido
+    const model = iaConfig.model || "gemini-1.5-flash";
 
     let isPaymentProof = false;
     let imageNote = "";
