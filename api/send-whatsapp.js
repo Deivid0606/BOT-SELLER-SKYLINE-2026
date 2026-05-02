@@ -10,20 +10,14 @@ const WAHA_BASE_URL = process.env.WAHA_BASE_URL;
 const WAHA_API_KEY = process.env.WAHA_API_KEY;
 
 // ─────────────────────────────────────────────
-// CONFIG
+// CONFIG (SOLO USER_ID)
 // ─────────────────────────────────────────────
-async function getConfig({ userId, tenantId }) {
-  let query = supabase
+async function getConfig(userId) {
+  const { data, error } = await supabase
     .from("whatsapp_config")
-    .select("phone_number_id, permanent_token, provider, waha_session");
-
-  if (tenantId) {
-    query = query.eq("tenant_id", tenantId);
-  } else {
-    query = query.eq("user_id", userId);
-  }
-
-  const { data, error } = await query.maybeSingle();
+    .select("phone_number_id, permanent_token, provider, waha_session")
+    .eq("user_id", userId)
+    .maybeSingle();
 
   if (error) {
     console.error("❌ Error buscando config:", error);
@@ -71,10 +65,7 @@ async function metaSendText(config, to, text) {
     }
   );
 
-  if (!r.ok) {
-    const err = await r.text();
-    throw new Error(err);
-  }
+  if (!r.ok) throw new Error(await r.text());
 }
 
 async function metaSendMedia(config, to, url, type, caption = "") {
@@ -97,10 +88,7 @@ async function metaSendMedia(config, to, url, type, caption = "") {
     }
   );
 
-  if (!r.ok) {
-    const err = await r.text();
-    throw new Error(err);
-  }
+  if (!r.ok) throw new Error(await r.text());
 }
 
 // ─────────────────────────────────────────────
@@ -144,7 +132,6 @@ export default async function handler(req, res) {
 
     const to = body.to;
     const userId = body.user_id;
-    const tenantId = body.tenant_id || null;
     const message = body.message || "";
     const mediaUrl = body.media_url;
     const mediaType = body.media_type;
@@ -153,7 +140,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Faltan datos" });
     }
 
-    const config = await getConfig({ userId, tenantId });
+    const config = await getConfig(userId);
 
     if (!config) {
       return res.status(400).json({
@@ -161,7 +148,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 🔥 CORRECCIÓN CLAVE
+    // 🔥 PRIORIDAD CORRECTA
     const provider = body.connection_type || config.provider || "meta";
 
     console.log("🧠 Provider:", {
@@ -172,11 +159,10 @@ export default async function handler(req, res) {
 
     const cleanTo = cleanPhone(to);
 
+    // ───── WAHA ─────
     if (provider === "waha") {
       if (!config.waha_session) {
-        return res.status(400).json({
-          error: "WAHA no configurado",
-        });
+        return res.status(400).json({ error: "WAHA no configurado" });
       }
 
       if (mediaUrl) {
@@ -184,11 +170,12 @@ export default async function handler(req, res) {
       } else {
         await wahaSendText(config.waha_session, cleanTo, message);
       }
-    } else {
+    }
+
+    // ───── META ─────
+    else {
       if (!config.phone_number_id || !config.permanent_token) {
-        return res.status(400).json({
-          error: "Meta no configurado",
-        });
+        return res.status(400).json({ error: "Meta no configurado" });
       }
 
       if (mediaUrl) {
