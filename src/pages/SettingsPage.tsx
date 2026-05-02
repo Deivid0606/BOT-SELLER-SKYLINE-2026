@@ -4,7 +4,6 @@ import { Globe, Bot, Users, Key, Copy, Check, MessageSquare, Sheet, Timer, QrCod
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
-import { WhatsAppQRConnection } from "@/components/WhatsAppQRConnection";
 import { OrderNotificationsConfig } from "@/components/OrderNotificationsConfig";
 
 export default function SettingsPage() {
@@ -33,11 +32,19 @@ export default function SettingsPage() {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"whatsapp" | "qr" | "ia" | "chat">("whatsapp");
   const [showApiKey, setShowApiKey] = useState(false);
+  
+  // Estado para QR
+  const [qrStatus, setQrStatus] = useState<string>("disconnected");
+  const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [connectedPhone, setConnectedPhone] = useState<string | null>(null);
+  const [qrMessage, setQrMessage] = useState<string>("");
+  const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (!user) return;
 
-    // Cargar configuración de WhatsApp (maybeSingle para no romper si no existe)
+    // Cargar configuración de WhatsApp
     supabase
       .from("whatsapp_config")
       .select("*")
@@ -60,7 +67,7 @@ export default function SettingsPage() {
         setLoading(false);
       });
 
-    // Cargar configuración de IA (solo lectura, NO insertar acá)
+    // Cargar configuración de IA
     const loadIAConfig = async () => {
       const { data, error } = await supabase
         .from("chat_ia_gemini")
@@ -83,11 +90,151 @@ export default function SettingsPage() {
           max_tokens: data.max_tokens ?? 2048,
         });
       }
-      // Si no existe la fila, dejamos defaults. Se creará al guardar (upsert).
     };
 
     loadIAConfig();
   }, [user]);
+
+  // Verificar estado del QR al montar y cuando cambia la pestaña
+  useEffect(() => {
+    if (activeTab === "qr" && user) {
+      checkQrStatus();
+      startPolling();
+    } else {
+      stopPolling();
+    }
+    
+    return () => stopPolling();
+  }, [activeTab, user]);
+
+  const startPolling = () => {
+    if (pollingInterval) clearInterval(pollingInterval);
+    const interval = setInterval(() => {
+      checkQrStatus();
+    }, 5000);
+    setPollingInterval(interval);
+  };
+
+  const stopPolling = () => {
+    if (pollingInterval) {
+      clearInterval(pollingInterval);
+      setPollingInterval(null);
+    }
+  };
+
+  const checkQrStatus = async () => {
+    if (!user) return;
+    
+    try {
+      const response = await fetch('/api/waha-qr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'status', user_id: user.id })
+      });
+      const data = await response.json();
+      setQrStatus(data.status);
+      setConnectedPhone(data.phone);
+      
+      // Si está conectado, detener polling y limpiar QR
+      if (data.status === 'connected') {
+        setQrImageUrl(null);
+        setQrMessage('');
+        if (pollingInterval) stopPolling();
+      }
+    } catch (err) {
+      console.error('Error checking QR status:', err);
+    }
+  };
+
+  const handleStartQr = async () => {
+    if (!user) return;
+    setQrLoading(true);
+    setQrImageUrl(null);
+    setQrMessage('');
+    
+    try {
+      // 1. Iniciar sesión
+      const startRes = await fetch('/api/waha-qr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'start', user_id: user.id })
+      });
+      
+      if (!startRes.ok) {
+        throw new Error('Error al iniciar sesión');
+      }
+      
+      // 2. Esperar un poco y obtener QR
+      setTimeout(async () => {
+        try {
+          const qrRes = await fetch('/api/waha-qr', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'get-qr', user_id: user.id })
+          });
+          const qrData = await qrRes.json();
+          
+          if (qrData.alreadyConnected) {
+            setQrStatus('connected');
+            setConnectedPhone(qrData.phone);
+            setQrMessage(qrData.message || 'WhatsApp ya está conectado');
+            toast({ title: "✅ Conectado", description: `WhatsApp conectado: ${qrData.phone}` });
+          } else if (qrData.qrImageUrl) {
+            setQrImageUrl(qrData.qrImageUrl);
+            setQrStatus('pending_qr');
+            setQrMessage(qrData.message || 'Escanea el QR con WhatsApp');
+            toast({ title: "QR Generado", description: "Escanea el código QR con tu WhatsApp" });
+          } else if (qrData.qr) {
+            // Fallback: convertir texto a URL de imagen
+            const fallbackUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrData.qr)}`;
+            setQrImageUrl(fallbackUrl);
+            setQrStatus('pending_qr');
+          } else {
+            setQrMessage(qrData.message || 'Esperando QR... Asegúrate que WAHA esté corriendo');
+            toast({ title: "⚠️ Error", description: qrData.message || 'No se pudo obtener el QR', variant: "destructive" });
+          }
+        } catch (err) {
+          console.error('Error getting QR:', err);
+          setQrMessage('Error al obtener el QR');
+        }
+        setQrLoading(false);
+      }, 2000);
+      
+    } catch (err) {
+      console.error('Error starting QR:', err);
+      setQrMessage('Error al iniciar la conexión');
+      toast({ title: "Error", description: "No se pudo iniciar la conexión", variant: "destructive" });
+      setQrLoading(false);
+    }
+  };
+
+  const handleLogoutQr = async () => {
+    if (!user) return;
+    setQrLoading(true);
+    
+    try {
+      const response = await fetch('/api/waha-qr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'logout', user_id: user.id })
+      });
+      
+      if (response.ok) {
+        setQrStatus('disconnected');
+        setQrImageUrl(null);
+        setConnectedPhone(null);
+        setQrMessage('');
+        toast({ title: "✅ Desconectado", description: "Sesión cerrada correctamente" });
+        startPolling();
+      } else {
+        throw new Error('Error al cerrar sesión');
+      }
+    } catch (err) {
+      console.error('Error logging out:', err);
+      toast({ title: "Error", description: "No se pudo cerrar la sesión", variant: "destructive" });
+    }
+    setQrLoading(false);
+  };
 
   const handleSave = async () => {
     if (!user) return;
@@ -185,17 +332,19 @@ export default function SettingsPage() {
     <div className="space-y-6 max-w-3xl">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold font-heading text-gradient">Ajustes</h1>
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-        >
-          {saving ? (
-            <div className="h-4 w-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
-          ) : (
-            "Guardar"
-          )}
-        </button>
+        {activeTab !== "qr" && (
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+          >
+            {saving ? (
+              <div className="h-4 w-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+            ) : (
+              "Guardar"
+            )}
+          </button>
+        )}
       </div>
 
       <div className="flex border-b border-border">
@@ -297,7 +446,93 @@ export default function SettingsPage() {
           </>
         )}
 
-        {activeTab === "qr" && <WhatsAppQRConnection />}
+        {activeTab === "qr" && (
+          <div className="bg-card border border-border rounded-lg p-6 space-y-6">
+            <div className="text-center space-y-3">
+              <h3 className="font-heading font-semibold text-lg">Conexión WhatsApp con QR</h3>
+              <p className="text-sm text-muted-foreground">
+                Escanea el código QR con tu WhatsApp para conectar el número
+              </p>
+            </div>
+
+            {/* Estado de conexión */}
+            <div className="flex items-center justify-center gap-2">
+              <div className={`w-2 h-2 rounded-full animate-pulse ${
+                qrStatus === 'connected' ? 'bg-emerald-500' : 
+                qrStatus === 'pending_qr' ? 'bg-yellow-500' : 
+                qrStatus === 'starting' ? 'bg-blue-500' : 'bg-red-500'
+              }`} />
+              <span className="text-sm font-medium">
+                {qrStatus === 'connected' ? `✅ Conectado - ${connectedPhone || 'WhatsApp'}` :
+                 qrStatus === 'pending_qr' ? '📱 Esperando escaneo...' :
+                 qrStatus === 'starting' ? '🔄 Iniciando conexión...' :
+                 qrStatus === 'failed' ? '❌ Error de conexión' :
+                 '⚫ Desconectado'}
+              </span>
+            </div>
+
+            {/* QR Image */}
+            {qrImageUrl && (
+              <div className="flex flex-col items-center gap-4">
+                <div className="bg-white p-4 rounded-xl shadow-lg">
+                  <img 
+                    src={qrImageUrl} 
+                    alt="WhatsApp QR Code" 
+                    className="w-64 h-64 object-contain"
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Abrí WhatsApp → Menú → WhatsApp Web → Escanear código
+                </p>
+              </div>
+            )}
+
+            {/* Mensaje de estado */}
+            {qrMessage && !qrImageUrl && qrStatus !== 'connected' && (
+              <div className="bg-secondary/30 border border-border rounded-lg p-4 text-center">
+                <p className="text-sm text-muted-foreground">{qrMessage}</p>
+              </div>
+            )}
+
+            {/* Botones de acción */}
+            <div className="flex gap-3 justify-center">
+              {(qrStatus === 'disconnected' || qrStatus === 'failed') && (
+                <button
+                  onClick={handleStartQr}
+                  disabled={qrLoading}
+                  className="flex items-center gap-2 px-6 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+                >
+                  {qrLoading ? (
+                    <div className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <QrCode className="h-4 w-4" />
+                  )}
+                  {qrLoading ? "Generando..." : "Generar QR"}
+                </button>
+              )}
+              
+              {(qrStatus === 'connected' || qrStatus === 'pending_qr') && (
+                <button
+                  onClick={handleLogoutQr}
+                  disabled={qrLoading}
+                  className="flex items-center gap-2 px-6 py-2 rounded-lg bg-destructive text-destructive-foreground text-sm font-medium hover:bg-destructive/90 transition-colors"
+                >
+                  Desconectar
+                </button>
+              )}
+            </div>
+
+            {/* Instrucciones */}
+            {qrStatus !== 'connected' && (
+              <div className="bg-secondary/20 border border-border rounded-lg p-4">
+                <p className="text-xs text-muted-foreground">
+                  💡 <span className="font-medium">Consejo:</span> Si el QR no aparece, asegurate de que WAHA esté corriendo en tu servidor.
+                  Podés ver los logs de WAHA para obtener el QR manualmente.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         {activeTab === "ia" && (
           <div className="space-y-4">
