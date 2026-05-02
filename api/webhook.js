@@ -2,6 +2,7 @@
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
+// + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -564,9 +565,6 @@ function matchSecundario(secundario, textoNorm) {
   return valores.some((v) => matchKeywords(v, tipo, textoNorm));
 }
 
-// ✅ FIX: el disparador secundario SOLO matchea si el cliente venía hablando
-// de ese mismo producto (last_trigger en el contexto). Esto evita que escribir
-// solo una ciudad como "Córdoba" dispare el secundario de un producto al azar.
 async function evaluarDisparadores({ userId, from, texto }) {
   try {
     const { data: triggers, error } = await supabase
@@ -582,12 +580,9 @@ async function evaluarDisparadores({ userId, from, texto }) {
     if (!triggers || triggers.length === 0) return false;
 
     const textoNorm = normalize(texto);
-
-    // 🆕 Leer contexto para saber qué producto venía hablando el cliente
     const ctx = await getContexto(userId, from);
     const lastTrigger = ctx?.last_trigger || null;
 
-    // 🆕 Poner el trigger del contexto PRIMERO (tiene prioridad)
     const triggersOrdenados = [...triggers].sort((a, b) => {
       if (a.name === lastTrigger) return -1;
       if (b.name === lastTrigger) return 1;
@@ -596,9 +591,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
 
     for (const trig of triggersOrdenados) {
       const matchPrimary = matchKeywords(trig.condition, trig.type, textoNorm);
-
-      // 🆕 El secundario SOLO matchea si el cliente venía hablando de ESTE trigger
-      // (o si también está matcheando el primario en este mismo mensaje).
       const secundarioPermitido = matchPrimary || lastTrigger === trig.name;
       const matchSecondary =
         secundarioPermitido && matchSecundario(trig.secondary, textoNorm);
@@ -696,7 +688,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         console.log("⚠️ post-trigger pedido check error:", e.message);
       }
 
-      // 🆕 Guardar contexto fusionado (no pisa otros campos como order_data)
       await saveContexto(userId, from, { ...ctx, last_trigger: trig.name });
       return true;
     }
@@ -738,7 +729,7 @@ async function llamarChatIA({
       context: ctx || {},
       history: history || [],
       media_url: mediaUrl,
-      media_type: mediaType, // "image" | "audio"
+      media_type: mediaType,
       mime_type: mimeType,
     }),
   });
@@ -754,7 +745,7 @@ async function llamarChatIA({
 }
 
 // ═══════════════════════════════════════════════════════════
-// DETECTOR DE PEDIDOS CONFIRMADOS (Opción C — Mixto)
+// DETECTOR DE PEDIDOS CONFIRMADOS
 // ═══════════════════════════════════════════════════════════
 
 function esMensajePedidoConfirmado(texto) {
@@ -937,10 +928,6 @@ function parsearPedidoConfirmado(texto) {
     total_amount: totalNum,
   };
 }
-
-// ───────────────────────────────────────────────────────────
-// 🛒 Helpers carrito
-// ───────────────────────────────────────────────────────────
 
 function parsearCarrito(productString) {
   if (!productString) return [];
@@ -1186,7 +1173,7 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// PROCESAR MENSAJE ENTRANTE
+// PROCESAR MENSAJE ENTRANTE - ✅ AHORA RETORNA LA RESPUESTA
 // ═══════════════════════════════════════════════════════════
 
 export async function procesar(req, message, userId, from) {
@@ -1236,12 +1223,12 @@ export async function procesar(req, message, userId, from) {
       messageType = "image";
     } else {
       console.log(`⚠️ Tipo de mensaje no soportado: ${tipoMsg}`);
-      return;
+      return { response: null, error: "Tipo no soportado" };
     }
 
     if (await isDuplicateMessage(message.id)) {
       console.log("⚠️ Duplicado ignorado");
-      return;
+      return { response: null, error: "Duplicado" };
     }
 
     // Si hay media, descargarla y subirla a Storage ANTES de guardar
@@ -1276,7 +1263,7 @@ export async function procesar(req, message, userId, from) {
         ? "[documento]"
         : "");
 
-    const sourceMessageId = await saveReceivedMessage({
+    await saveReceivedMessage({
       userId,
       from,
       message: textoParaGuardar,
@@ -1290,7 +1277,7 @@ export async function procesar(req, message, userId, from) {
       const disparado = await evaluarDisparadores({ userId, from, texto });
       if (disparado) {
         console.log("✅ Disparador atendió el mensaje. No se llama a Gemini.");
-        return;
+        return { response: null, handled_by: "trigger", error: null };
       }
 
       const ctx = await getContexto(userId, from);
@@ -1301,12 +1288,15 @@ export async function procesar(req, message, userId, from) {
         data = await llamarChatIA({ req, userId, texto, from, ctx, history });
       } catch (err) {
         console.error("❌ chat-ia error:", err);
-        await enviarMensaje(
+        const fallbackMsg = "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente.";
+        await enviarMensaje(userId, from, fallbackMsg);
+        await saveReceivedMessage({
           userId,
           from,
-          "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente."
-        );
-        return;
+          message: fallbackMsg,
+          messageType: "out_text",
+        });
+        return { response: fallbackMsg, error: err.message };
       }
 
       if (data?.context) await saveContexto(userId, from, data.context);
@@ -1330,11 +1320,11 @@ export async function procesar(req, message, userId, from) {
             });
           }
         }
-        return;
+        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
+        return { response: data.response, context: data.context, is_payment_proof: data.is_payment_proof };
       }
 
-      const fallback =
-        "👋 Hola! ¿En qué puedo ayudarte hoy?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
+      const fallback = "👋 Hola! ¿En qué puedo ayudarte hoy?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
       await enviarMensaje(userId, from, fallback);
       await saveReceivedMessage({
         userId,
@@ -1342,12 +1332,11 @@ export async function procesar(req, message, userId, from) {
         message: fallback,
         messageType: "out_text",
       });
-      return;
+      return { response: fallback, error: null };
     }
 
     // ─── IMAGEN: comprobante + IA Vision ───
     if (messageType === "image" && mediaUrl) {
-      // Intento heurístico de asociar como comprobante (no bloquea)
       asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch((e) =>
         console.error("comprobante bg error:", e)
       );
@@ -1370,12 +1359,11 @@ export async function procesar(req, message, userId, from) {
         });
       } catch (err) {
         console.error("❌ chat-ia (image) error:", err);
-        return;
+        return { response: null, error: err.message };
       }
 
       if (data?.context) await saveContexto(userId, from, data.context);
 
-      // Si la IA confirma que es comprobante, asegurar la asociación
       if (data?.is_payment_proof) {
         await asociarComprobanteAlPedido({ userId, from, mediaUrl });
       }
@@ -1399,8 +1387,10 @@ export async function procesar(req, message, userId, from) {
             });
           }
         }
+        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
+        return { response: data.response, context: data.context, is_payment_proof: data.is_payment_proof };
       }
-      return;
+      return { response: null, error: null };
     }
 
     // ─── AUDIO: IA transcribe + responde ───
@@ -1423,7 +1413,7 @@ export async function procesar(req, message, userId, from) {
         });
       } catch (err) {
         console.error("❌ chat-ia (audio) error:", err);
-        return;
+        return { response: null, error: err.message };
       }
 
       if (data?.context) await saveContexto(userId, from, data.context);
@@ -1447,14 +1437,18 @@ export async function procesar(req, message, userId, from) {
             });
           }
         }
+        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
+        return { response: data.response, context: data.context };
       }
-      return;
+      return { response: null, error: null };
     }
 
     // ─── Otros (video/document/sticker): solo guardar ───
     console.log(`ℹ️ Mensaje ${messageType} guardado, no se procesa con IA`);
+    return { response: null, error: null, handled_by: "no_ia" };
   } catch (err) {
     console.error("❌ procesar error:", err);
+    return { response: null, error: err.message };
   }
 }
 
