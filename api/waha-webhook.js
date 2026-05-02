@@ -1,6 +1,6 @@
 // api/waha-webhook.js
 // Webhook de WAHA → traduce payload al formato Meta y reusa procesar() de webhook.js
-// Eventos manejados: message, session.status
+// AHORA CON ENVÍO DE RESPUESTAS INCLUIDO ✅
 
 import { createClient } from "@supabase/supabase-js";
 import { procesar } from "./webhook.js";
@@ -10,8 +10,84 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const WAHA_BASE_URL = process.env.WAHA_BASE_URL;
+const WAHA_BASE_URL = process.env.WAHA_BASE_URL || "http://localhost:3000";
 const WAHA_API_KEY = process.env.WAHA_API_KEY;
+
+// ✅ NUEVA FUNCIÓN: Enviar mensaje por WAHA
+async function enviarPorWAHA(chatId, texto) {
+  try {
+    // WAHA espera chatId con @c.us o @lid
+    let chatIdFormateado = chatId;
+    if (!chatId.includes("@c.us") && !chatId.includes("@lid")) {
+      chatIdFormateado = `${chatId}@c.us`;
+    }
+
+    const url = `${WAHA_BASE_URL}/api/sendText`;
+    const payload = {
+      chatId: chatIdFormateado,
+      text: texto,
+    };
+
+    console.log(`📤 Enviando a WAHA: ${url}`, { chatId: chatIdFormateado, textoLength: texto.length });
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(WAHA_API_KEY && { "X-Api-Key": WAHA_API_KEY }),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`WAHA error ${response.status}: ${errorText}`);
+    }
+
+    const data = await response.json();
+    console.log(`✅ Mensaje enviado por WAHA: ${data.id || "ok"}`);
+    return data;
+  } catch (error) {
+    console.error(`❌ Error enviando por WAHA a ${chatId}:`, error);
+    throw error;
+  }
+}
+
+// ✅ NUEVA FUNCIÓN: Enviar imagen por WAHA (para comprobantes)
+async function enviarImagenPorWAHA(chatId, imageUrl, caption = "") {
+  try {
+    let chatIdFormateado = chatId;
+    if (!chatId.includes("@c.us") && !chatId.includes("@lid")) {
+      chatIdFormateado = `${chatId}@c.us`;
+    }
+
+    const url = `${WAHA_BASE_URL}/api/sendImage`;
+    const payload = {
+      chatId: chatIdFormateado,
+      image: imageUrl,
+      caption: caption,
+    };
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(WAHA_API_KEY && { "X-Api-Key": WAHA_API_KEY }),
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      throw new Error(`WAHA image error ${response.status}`);
+    }
+
+    console.log(`✅ Imagen enviada por WAHA a ${chatIdFormateado}`);
+    return await response.json();
+  } catch (error) {
+    console.error(`❌ Error enviando imagen a ${chatId}:`, error);
+    throw error;
+  }
+}
 
 // Convierte un msg de WAHA al formato esperado por procesar() (formato Meta)
 function wahaToMeta(wahaMsg) {
@@ -67,6 +143,36 @@ function wahaToMeta(wahaMsg) {
       _waha_url: mediaUrl,
     },
   };
+}
+
+// ✅ NUEVA FUNCIÓN: Procesar y responder (captura la respuesta)
+async function procesarYResponder(fakeReq, metaMsg, userId, fromNumber) {
+  try {
+    // Llamar al procesador original (webhook.js)
+    const respuesta = await procesar(fakeReq, metaMsg, userId, fromNumber);
+    
+    // 🔥 CRÍTICO: procesar() debe devolver la respuesta generada
+    // Si no devuelve nada, necesitamos interceptar la respuesta
+    if (respuesta && respuesta.response) {
+      console.log(`💬 Respuesta generada para ${fromNumber}: ${respuesta.response.slice(0, 100)}...`);
+      
+      // Enviar respuesta por WAHA
+      await enviarPorWAHA(fromNumber, respuesta.response);
+      
+      // Si hay imagen de comprobante, enviarla también
+      if (respuesta.is_payment_proof && respuesta.image_url) {
+        await enviarImagenPorWAHA(fromNumber, respuesta.image_url, "Comprobante recibido ✅");
+      }
+      
+      return respuesta;
+    }
+    
+    console.warn(`⚠️ No se generó respuesta para ${fromNumber}`);
+    return null;
+  } catch (error) {
+    console.error(`❌ Error procesando mensaje de ${fromNumber}:`, error);
+    throw error;
+  }
 }
 
 async function getUserIdBySession(sessionName) {
@@ -136,15 +242,19 @@ export default async function handler(req, res) {
         .update(update)
         .eq("session_name", sessionName);
 
+      console.log(`✅ Sesión ${sessionName} ahora está: ${dbStatus}`);
       return res.status(200).send("OK");
     }
 
-    // ─── EVENTO: mensaje entrante ───
+    // ─── EVENTO: mensaje entrante (AHORA CON RESPUESTA) ───
     if (event === "message" || event === "message.any") {
       // Ignorar mensajes propios (fromMe)
       if (payload.fromMe) {
+        console.log(`📌 Ignorando mensaje propio de ${payload.from}`);
         return res.status(200).send("OK (fromMe)");
       }
+
+      console.log(`📨 Procesando mensaje de ${payload.from}: ${payload.body?.slice(0, 100) || "(media)"}`);
 
       const metaMsg = wahaToMeta(payload);
 
@@ -156,7 +266,9 @@ export default async function handler(req, res) {
         },
       };
 
-      await procesar(fakeReq, metaMsg, userId, metaMsg.from);
+      // ✅ AHORA SÍ: Procesar Y ENVIAR RESPUESTA
+      await procesarYResponder(fakeReq, metaMsg, userId, metaMsg.from);
+      
       return res.status(200).send("OK");
     }
 
