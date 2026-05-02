@@ -5,7 +5,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
 import { WhatsAppQRConnection } from "@/components/WhatsAppQRConnection";
-import { BaileysServerConfig } from "@/components/BaileysServerConfig";
 import { OrderNotificationsConfig } from "@/components/OrderNotificationsConfig";
 
 export default function SettingsPage() {
@@ -176,8 +175,10 @@ export default function SettingsPage() {
 
   const webhookFullUrl = `${window.location.origin}/api/webhook/${config.webhook_url}`;
 
+  // ✅ Cambio 2: array tabs con la nueva pestaña "QR"
   const tabs = [
     { id: "whatsapp" as const, label: "API Meta", icon: MessageSquare },
+    { id: "qr" as const, label: "QR WhatsApp", icon: QrCode },
     { id: "ia" as const, label: "IA", icon: Bot },
     { id: "chat" as const, label: "Chat", icon: Globe },
   ];
@@ -304,6 +305,11 @@ export default function SettingsPage() {
 
             <OrderNotificationsConfig />
           </>
+        )}
+
+        {/* ✅ Cambio 3: render de la pestaña QR */}
+        {activeTab === "qr" && (
+          <WhatsAppQRConnection />
         )}
 
         {activeTab === "ia" && (
