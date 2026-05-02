@@ -1,168 +1,169 @@
-// api/waha-webhook.js - VERSIÓN FINAL 100% FUNCIONAL
-// ✅ QR recibe mensajes ✅ Responde automáticamente ✅ Números normales (sin @lid)
+// api/waha-webhook.js
+// Webhook de WAHA → traduce payload al formato Meta y reusa procesar() de webhook.js
+// Eventos manejados: message, session.status
 
 import { createClient } from "@supabase/supabase-js";
+import { procesar } from "./webhook.js";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const WAHA_BASE_URL = process.env.WAHA_BASE_URL || "http://localhost:3000";
+const WAHA_BASE_URL = process.env.WAHA_BASE_URL;
+const WAHA_API_KEY = process.env.WAHA_API_KEY;
 
-// Enviar mensaje por WAHA
-async function enviarPorWAHA(chatId, texto) {
-  try {
-    let chatIdFormateado = chatId;
-    if (!chatId.includes("@c.us") && !chatId.includes("@lid")) {
-      chatIdFormateado = `${chatId}@c.us`;
-    }
+// Convierte un msg de WAHA al formato esperado por procesar() (formato Meta)
+function wahaToMeta(wahaMsg) {
+  // wahaMsg.from = "595981XXXXXX@c.us" → "595981XXXXXX"
+  const fromRaw = wahaMsg.from || "";
+  const from = fromRaw.replace(/@c\.us$/, "").replace(/@s\.whatsapp\.net$/, "");
 
-    const response = await fetch(`${WAHA_BASE_URL}/api/sendText`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chatId: chatIdFormateado,
-        text: texto,
-      }),
-    });
+  const base = {
+    id: wahaMsg.id,
+    from,
+    timestamp: String(wahaMsg.timestamp || Math.floor(Date.now() / 1000)),
+  };
 
-    if (!response.ok) {
-      const error = await response.text();
-      console.error("❌ WAHA error:", error);
-      return false;
-    }
+  const hasMedia = !!wahaMsg.hasMedia || !!wahaMsg.media;
+  const mediaUrl = wahaMsg.media?.url || null;
+  const mimeType = wahaMsg.media?.mimetype || wahaMsg.mediaMimeType || null;
+  const caption = wahaMsg.caption || wahaMsg.body || "";
 
-    console.log(`✅ Mensaje enviado a ${chatIdFormateado}`);
-    return true;
-  } catch (error) {
-    console.error("❌ Error enviando:", error.message);
-    return false;
+  // Detectar tipo
+  if (!hasMedia) {
+    return { ...base, type: "text", text: { body: wahaMsg.body || "" } };
   }
+
+  if (mimeType?.startsWith("image/")) {
+    return {
+      ...base,
+      type: "image",
+      image: { id: wahaMsg.id, mime_type: mimeType, caption, _waha_url: mediaUrl },
+    };
+  }
+  if (mimeType?.startsWith("audio/")) {
+    return {
+      ...base,
+      type: "audio",
+      audio: { id: wahaMsg.id, mime_type: mimeType, _waha_url: mediaUrl },
+    };
+  }
+  if (mimeType?.startsWith("video/")) {
+    return {
+      ...base,
+      type: "video",
+      video: { id: wahaMsg.id, mime_type: mimeType, caption, _waha_url: mediaUrl },
+    };
+  }
+  return {
+    ...base,
+    type: "document",
+    document: {
+      id: wahaMsg.id,
+      mime_type: mimeType || "application/octet-stream",
+      filename: wahaMsg.media?.filename || "archivo",
+      caption,
+      _waha_url: mediaUrl,
+    },
+  };
 }
 
-// Obtener userId
-async function getUserId() {
-  const { data: session } = await supabase
+async function getUserIdBySession(sessionName) {
+  const { data } = await supabase
     .from("whatsapp_qr_sessions")
     .select("user_id")
-    .eq("session_name", "default")
-    .eq("status", "connected")
+    .eq("session_name", sessionName)
     .maybeSingle();
-  
-  if (session?.user_id) {
-    return session.user_id;
-  }
-  return "c206b0dc-7c6a-4dee-a91e-3e9ffafe5048";
-}
-
-// Limpiar número para guardar en BD (número normal)
-function limpiarNumero(from) {
-  // Si es @lid (ID largo estilo 123906065187008@lid)
-  if (from.includes("@lid")) {
-    // Extraer solo los números del ID largo
-    const match = from.match(/(\d+)/);
-    if (match) {
-      return match[1]; // Devuelve solo los dígitos
-    }
-    return from.replace("@lid", "");
-  }
-  // Si es @c.us (número normal)
-  if (from.includes("@c.us")) {
-    return from.replace("@c.us", "");
-  }
-  // Si viene sin sufijo, devolver igual
-  return from;
-}
-
-// Limpiar ID para enviar respuesta (mantener @lid o @c.us)
-function limpiarIdParaRespuesta(from) {
-  // Si ya tiene @lid o @c.us, devolver igual
-  if (from.includes("@lid") || from.includes("@c.us")) {
-    return from;
-  }
-  // Si es número normal, agregar @c.us
-  if (/^\d+$/.test(from)) {
-    return `${from}@c.us`;
-  }
-  return from;
+  return data?.user_id || null;
 }
 
 export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Api-Key");
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).end();
+  if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
+
+  // Validar API key (WAHA puede mandarla como header)
+  const apiKey = req.headers["x-api-key"] || req.headers["x-webhook-key"];
+  if (WAHA_API_KEY && apiKey && apiKey !== WAHA_API_KEY) {
+    console.log("❌ WAHA webhook: API key inválida");
+    return res.status(401).send("Unauthorized");
+  }
 
   try {
     const body = req.body;
     const event = body?.event;
+    const sessionName = body?.session;
     const payload = body?.payload || {};
 
-    console.log(`📡 WAHA event: ${event}`);
+    console.log(`📡 WAHA event: ${event} | session: ${sessionName}`);
 
-    if (event === "message" || event === "message.any") {
-      if (payload.fromMe) {
-        console.log("📌 Mensaje propio, ignorado");
-        return res.status(200).send("OK");
-      }
+    if (!sessionName) return res.status(400).send("Missing session");
 
-      const mensaje = payload.body || "";
-      const fromOriginal = payload.from || "";
-
-      if (!mensaje) {
-        console.log("⚠️ Mensaje sin texto, ignorado");
-        return res.status(200).send("OK");
-      }
-
-      // 🔥 Limpiar el número para guardar en BD (número normal)
-      const numeroNormal = limpiarNumero(fromOriginal);
-      
-      console.log(`📨 QR Mensaje de: ${fromOriginal}`);
-      console.log(`📨 Número normal para BD: ${numeroNormal}`);
-      console.log(`📨 Mensaje: "${mensaje}"`);
-
-      const userId = await getUserId();
-      console.log(`👤 userId: ${userId}`);
-
-      // Llamar a chat-ia con número normal
-      const vercelUrl = process.env.VERCEL_URL || req.headers.host || "bot-seller-skyline-2026.vercel.app";
-      const chatIaUrl = `https://${vercelUrl}/api/chat-ia`;
-
-      console.log(`📡 Llamando a chat-ia: ${chatIaUrl}`);
-
-      const iaResponse = await fetch(chatIaUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: userId,
-          from_number: numeroNormal,  // Enviamos número normal
-          message: mensaje,
-          context: null,
-          history: [],
-        }),
-      });
-
-      const iaData = await iaResponse.json();
-      const respuesta = iaData.response;
-
-      if (respuesta) {
-        console.log(`💬 Respuesta generada: "${respuesta.slice(0, 80)}..."`);
-        // Enviar respuesta usando el ID original (con @lid o @c.us)
-        await enviarPorWAHA(fromOriginal, respuesta);
-      } else {
-        console.log("⚠️ No se generó respuesta - chat-ia respondió:", JSON.stringify(iaData));
-      }
-
-      return res.status(200).send("OK");
+    const userId = await getUserIdBySession(sessionName);
+    if (!userId) {
+      console.log(`⚠️ WAHA: sesión ${sessionName} no asociada a ningún usuario`);
+      return res.status(200).send("OK (no user)");
     }
 
+    // ─── EVENTO: cambio de estado de sesión ───
     if (event === "session.status") {
-      console.log(`📊 Estado sesión: ${payload.status}`);
+      const wahaStatus = payload.status; // STARTING | SCAN_QR_CODE | WORKING | FAILED | STOPPED
+      let dbStatus = "disconnected";
+      if (wahaStatus === "STARTING") dbStatus = "starting";
+      else if (wahaStatus === "SCAN_QR_CODE") dbStatus = "pending_qr";
+      else if (wahaStatus === "WORKING") dbStatus = "connected";
+      else if (wahaStatus === "FAILED") dbStatus = "failed";
+      else if (wahaStatus === "STOPPED") dbStatus = "disconnected";
+
+      const update = {
+        status: dbStatus,
+        last_event_at: new Date().toISOString(),
+      };
+      if (dbStatus === "connected") {
+        update.connected_at = new Date().toISOString();
+        update.connected_phone = payload.me?.id?.replace(/@c\.us$/, "") || null;
+        update.last_qr = null;
+      }
+      if (dbStatus === "disconnected" || dbStatus === "failed") {
+        update.last_qr = null;
+        update.connected_phone = null;
+      }
+      await supabase
+        .from("whatsapp_qr_sessions")
+        .update(update)
+        .eq("session_name", sessionName);
+
       return res.status(200).send("OK");
     }
 
-    return res.status(200).send("OK");
+    // ─── EVENTO: mensaje entrante ───
+    if (event === "message" || event === "message.any") {
+      // Ignorar mensajes propios (fromMe)
+      if (payload.fromMe) {
+        return res.status(200).send("OK (fromMe)");
+      }
+
+      const metaMsg = wahaToMeta(payload);
+
+      // Inyectar req mínimo para que procesar() pueda llamar a chat-ia
+      const fakeReq = {
+        headers: {
+          host: req.headers.host,
+          "x-forwarded-proto": req.headers["x-forwarded-proto"] || "https",
+        },
+      };
+
+      await procesar(fakeReq, metaMsg, userId, metaMsg.from);
+      return res.status(200).send("OK");
+    }
+
+    // Otros eventos: ignorar silenciosamente
+    return res.status(200).send("OK (ignored)");
   } catch (err) {
-    console.error("❌ Error en webhook:", err);
-    return res.status(200).send("OK");
+    console.error("❌ waha-webhook error:", err);
+    return res.status(500).json({ error: "Error interno" });
   }
 }
