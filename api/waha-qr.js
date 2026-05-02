@@ -1,6 +1,10 @@
 // api/waha-qr.js
 // Endpoint que la UI usa para: start | get-qr | status | logout
 // Body: { action: 'start'|'get-qr'|'status'|'logout', user_id }
+//
+// ⚠️ WAHA Core solo soporta UNA sesión llamada "default".
+// Por eso usamos sessionName = "default" SIEMPRE, y guardamos el user_id
+// dueño de la sesión en la columna user_id de whatsapp_qr_sessions.
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -11,6 +15,9 @@ const supabase = createClient(
 
 const WAHA_BASE_URL = (process.env.WAHA_BASE_URL || "").replace(/\/$/, "");
 const WAHA_API_KEY = process.env.WAHA_API_KEY;
+
+// WAHA Core solo permite "default"
+const SESSION_NAME = "default";
 
 const wahaHeaders = () => ({
   "Content-Type": "application/json",
@@ -29,13 +36,15 @@ async function wahaFetch(path, options = {}) {
   return { ok: res.ok, status: res.status, data: json, raw: text };
 }
 
-const sessionNameForUser = (userId) => `user-${userId}`;
-
-async function ensureSessionRow(userId, sessionName) {
+async function upsertSessionRow(userId) {
   await supabase
     .from("whatsapp_qr_sessions")
     .upsert(
-      { user_id: userId, session_name: sessionName, status: "disconnected" },
+      {
+        user_id: userId,
+        session_name: SESSION_NAME,
+        status: "disconnected",
+      },
       { onConflict: "user_id" }
     );
 }
@@ -56,21 +65,19 @@ export default async function handler(req, res) {
     if (!userId) return res.status(400).json({ error: "user_id requerido" });
     if (!action) return res.status(400).json({ error: "action requerido" });
 
-    const sessionName = sessionNameForUser(userId);
-
     // ─── START: crear/iniciar sesión ───
     if (action === "start") {
-      await ensureSessionRow(userId, sessionName);
+      await upsertSessionRow(userId);
 
       // 1. Verificar si ya existe en WAHA
-      const existing = await wahaFetch(`/api/sessions/${sessionName}`);
+      const existing = await wahaFetch(`/api/sessions/${SESSION_NAME}`);
 
       if (!existing.ok || existing.status === 404) {
         // Crear sesión nueva
         const created = await wahaFetch(`/api/sessions`, {
           method: "POST",
           body: JSON.stringify({
-            name: sessionName,
+            name: SESSION_NAME,
             start: true,
             config: {
               webhooks: [
@@ -89,27 +96,34 @@ export default async function handler(req, res) {
         });
         if (!created.ok) {
           console.error("❌ WAHA create session:", created.status, created.raw);
-          return res.status(500).json({ error: "No se pudo crear la sesión", detail: created.raw });
+          return res
+            .status(500)
+            .json({ error: "No se pudo crear la sesión", detail: created.raw });
         }
       } else {
         // Si existe pero está parada, iniciar
         const status = existing.data?.status;
         if (status === "STOPPED" || status === "FAILED") {
-          await wahaFetch(`/api/sessions/${sessionName}/start`, { method: "POST" });
+          await wahaFetch(`/api/sessions/${SESSION_NAME}/start`, {
+            method: "POST",
+          });
         }
       }
 
       await supabase
         .from("whatsapp_qr_sessions")
-        .update({ status: "starting", last_event_at: new Date().toISOString() })
-        .eq("session_name", sessionName);
+        .update({
+          status: "starting",
+          last_event_at: new Date().toISOString(),
+        })
+        .eq("user_id", userId);
 
-      return res.status(200).json({ ok: true, session: sessionName });
+      return res.status(200).json({ ok: true, session: SESSION_NAME });
     }
 
     // ─── GET-QR: obtener QR (raw base64) ───
     if (action === "get-qr") {
-      const qrRes = await wahaFetch(`/api/${sessionName}/auth/qr?format=raw`);
+      const qrRes = await wahaFetch(`/api/${SESSION_NAME}/auth/qr?format=raw`);
       if (!qrRes.ok) {
         // 422 = ya conectado o no en estado SCAN_QR_CODE
         return res.status(200).json({ qr: null, status: qrRes.status });
@@ -123,14 +137,14 @@ export default async function handler(req, res) {
             qr_updated_at: new Date().toISOString(),
             status: "pending_qr",
           })
-          .eq("session_name", sessionName);
+          .eq("user_id", userId);
       }
       return res.status(200).json({ qr: qrValue });
     }
 
     // ─── STATUS: leer estado actual desde WAHA y reflejarlo en DB ───
     if (action === "status") {
-      const s = await wahaFetch(`/api/sessions/${sessionName}`);
+      const s = await wahaFetch(`/api/sessions/${SESSION_NAME}`);
       if (!s.ok) return res.status(200).json({ status: "disconnected" });
 
       const wahaStatus = s.data?.status;
@@ -148,17 +162,21 @@ export default async function handler(req, res) {
           status: dbStatus,
           connected_phone: phone,
           last_event_at: new Date().toISOString(),
-          ...(dbStatus === "connected" ? { connected_at: new Date().toISOString() } : {}),
+          ...(dbStatus === "connected"
+            ? { connected_at: new Date().toISOString() }
+            : {}),
         })
-        .eq("session_name", sessionName);
+        .eq("user_id", userId);
 
       return res.status(200).json({ status: dbStatus, phone });
     }
 
     // ─── LOGOUT: cerrar y borrar sesión ───
     if (action === "logout") {
-      await wahaFetch(`/api/sessions/${sessionName}/logout`, { method: "POST" });
-      await wahaFetch(`/api/sessions/${sessionName}`, { method: "DELETE" });
+      await wahaFetch(`/api/sessions/${SESSION_NAME}/logout`, {
+        method: "POST",
+      });
+      await wahaFetch(`/api/sessions/${SESSION_NAME}`, { method: "DELETE" });
 
       await supabase
         .from("whatsapp_qr_sessions")
@@ -168,7 +186,7 @@ export default async function handler(req, res) {
           connected_phone: null,
           last_event_at: new Date().toISOString(),
         })
-        .eq("session_name", sessionName);
+        .eq("user_id", userId);
 
       return res.status(200).json({ ok: true });
     }
