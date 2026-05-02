@@ -1,6 +1,7 @@
 // api/waha-qr.js
 // Endpoint que la UI usa para: start | get-qr | status | logout
 // ✅ SOLUCIONADO: Usa sesión 'default' para WAHA Core
+// ✅ SOLUCIONADO: Genera QR como imagen para mostrar en la UI
 // ✅ Multitenencia: múltiples usuarios comparten la sesión 'default'
 
 import { createClient } from "@supabase/supabase-js";
@@ -58,12 +59,34 @@ async function upsertSessionRow(userId) {
   }
 }
 
+// Función para convertir texto QR a imagen URL usando API gratuita
+function textToQrImageUrl(text) {
+  if (!text) return null;
+  return `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(text)}`;
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "POST,GET,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   
   if (req.method === "OPTIONS") return res.status(200).end();
+  
+  // Soporte GET para debugging y obtener QR como imagen directamente
+  if (req.method === "GET" && req.query.qr === "1") {
+    try {
+      const qrRes = await wahaFetch(`/api/sessions/${SESSION_NAME}/auth/qr`);
+      if (qrRes.ok && qrRes.data?.qr) {
+        const qrText = qrRes.data.qr;
+        const qrImageUrl = textToQrImageUrl(qrText);
+        return res.redirect(qrImageUrl);
+      }
+      return res.status(404).send("QR no disponible");
+    } catch (err) {
+      return res.status(500).send("Error obteniendo QR");
+    }
+  }
+  
   if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
 
   if (!WAHA_BASE_URL || !WAHA_API_KEY) {
@@ -127,14 +150,44 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, session: SESSION_NAME });
     }
 
-    // ─── GET-QR: obtener QR (raw base64) ───
+    // ─── GET-QR: obtener QR como texto y como imagen ───
     if (action === "get-qr") {
-      const qrRes = await wahaFetch(`/api/sessions/${SESSION_NAME}/auth/qr?format=raw`);
-      if (!qrRes.ok) {
-        return res.status(200).json({ qr: null, status: qrRes.status });
+      console.log("🔍 Obteniendo QR para sesión:", SESSION_NAME);
+      
+      // Intentar diferentes formatos que soporta WAHA
+      let qrValue = null;
+      let qrRaw = null;
+      
+      // Formato 1: QR estándar
+      const qrRes = await wahaFetch(`/api/sessions/${SESSION_NAME}/auth/qr`);
+      if (qrRes.ok && qrRes.data?.qr) {
+        qrValue = qrRes.data.qr;
+        console.log("✅ QR obtenido v1, longitud:", qrValue.length);
       }
-      const qrValue = qrRes.data?.value || qrRes.data?.qr || null;
-      if (qrValue) {
+      
+      // Formato 2: QR raw (base64)
+      if (!qrValue) {
+        const qrRawRes = await wahaFetch(`/api/sessions/${SESSION_NAME}/auth/qr?format=raw`);
+        if (qrRawRes.ok && (qrRawRes.data?.value || qrRawRes.data?.qr)) {
+          qrValue = qrRawRes.data?.value || qrRawRes.data?.qr;
+          qrRaw = qrValue;
+          console.log("✅ QR obtenido v2 (raw), longitud:", qrValue?.length);
+        }
+      }
+      
+      // Formato 3: QR como texto plano
+      if (!qrValue) {
+        const qrTextRes = await wahaFetch(`/api/sessions/${SESSION_NAME}/auth/qr?format=text`);
+        if (qrTextRes.ok && qrTextRes.raw) {
+          qrValue = qrTextRes.raw;
+          console.log("✅ QR obtenido v3 (texto), longitud:", qrValue?.length);
+        }
+      }
+      
+      // Si hay QR, convertirlo a imagen URL y guardar
+      if (qrValue && qrValue.length > 100) {
+        const qrImageUrl = textToQrImageUrl(qrValue);
+        
         await supabase
           .from("whatsapp_qr_sessions")
           .update({
@@ -143,8 +196,42 @@ export default async function handler(req, res) {
             status: "pending_qr",
           })
           .eq("user_id", userId);
+        
+        // Devolver tanto el texto como la URL de la imagen
+        return res.status(200).json({ 
+          qr: qrValue,
+          qrImageUrl: qrImageUrl,
+          message: "QR generado correctamente"
+        });
       }
-      return res.status(200).json({ qr: qrValue });
+      
+      // Verificar si ya está conectado
+      const sessionInfo = await wahaFetch(`/api/sessions/${SESSION_NAME}`);
+      if (sessionInfo.ok && sessionInfo.data?.status === "WORKING") {
+        const phone = sessionInfo.data?.me?.id?.replace(/@c\.us$/, "") || null;
+        await supabase
+          .from("whatsapp_qr_sessions")
+          .update({
+            status: "connected",
+            connected_phone: phone,
+            last_event_at: new Date().toISOString(),
+          })
+          .eq("user_id", userId);
+        
+        return res.status(200).json({ 
+          qr: null, 
+          alreadyConnected: true, 
+          phone: phone,
+          message: "WhatsApp ya está conectado"
+        });
+      }
+      
+      console.log("⚠️ No se pudo obtener QR, status:", qrRes.status);
+      return res.status(200).json({ 
+        qr: null, 
+        message: "Esperando QR... Asegúrate de que WAHA esté corriendo",
+        debug: { status: qrRes.status, sessionStatus: sessionInfo.data?.status }
+      });
     }
 
     // ─── STATUS: leer estado actual desde WAHA y reflejarlo en DB ───
