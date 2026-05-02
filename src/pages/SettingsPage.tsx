@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Globe, Bot, Users, Key, Copy, Check, MessageSquare, Sheet, Timer, QrCode } from "lucide-react";
+import { Globe, Bot, Users, Key, Copy, Check, MessageSquare, Sheet, Timer, QrCode, Download } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
@@ -40,6 +40,8 @@ export default function SettingsPage() {
   const [connectedPhone, setConnectedPhone] = useState<string | null>(null);
   const [qrMessage, setQrMessage] = useState<string>("");
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
+  const [showManualQrInput, setShowManualQrInput] = useState(false);
+  const [manualQrText, setManualQrText] = useState("");
 
   useEffect(() => {
     if (!user) return;
@@ -151,6 +153,7 @@ export default function SettingsPage() {
     setQrLoading(true);
     setQrImageUrl(null);
     setQrMessage('');
+    setShowManualQrInput(false);
     
     try {
       // 1. Iniciar sesión
@@ -185,17 +188,18 @@ export default function SettingsPage() {
             setQrMessage(qrData.message || 'Escanea el QR con WhatsApp');
             toast({ title: "QR Generado", description: "Escanea el código QR con tu WhatsApp" });
           } else if (qrData.qr) {
-            // Fallback: convertir texto a URL de imagen
             const fallbackUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(qrData.qr)}`;
             setQrImageUrl(fallbackUrl);
             setQrStatus('pending_qr');
           } else {
-            setQrMessage(qrData.message || 'Esperando QR... Asegúrate que WAHA esté corriendo');
-            toast({ title: "⚠️ Error", description: qrData.message || 'No se pudo obtener el QR', variant: "destructive" });
+            setQrMessage(qrData.message || 'No se pudo obtener el QR automáticamente. Podés ingresarlo manualmente desde los logs de Railway.');
+            setShowManualQrInput(true);
+            toast({ title: "⚠️ QR no disponible", description: "Revisa los logs de Railway para obtener el QR manualmente", variant: "destructive" });
           }
         } catch (err) {
           console.error('Error getting QR:', err);
-          setQrMessage('Error al obtener el QR');
+          setQrMessage('Error al obtener el QR. Revisa los logs de Railway.');
+          setShowManualQrInput(true);
         }
         setQrLoading(false);
       }, 2000);
@@ -205,6 +209,19 @@ export default function SettingsPage() {
       setQrMessage('Error al iniciar la conexión');
       toast({ title: "Error", description: "No se pudo iniciar la conexión", variant: "destructive" });
       setQrLoading(false);
+    }
+  };
+
+  const handleManualQrSubmit = () => {
+    if (manualQrText.trim()) {
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(manualQrText)}`;
+      setQrImageUrl(qrUrl);
+      setQrStatus('pending_qr');
+      setShowManualQrInput(false);
+      setManualQrText('');
+      toast({ title: "✅ QR Manual", description: "QR generado manualmente. Escanéalo con WhatsApp." });
+    } else {
+      toast({ title: "Error", description: "Pega el texto del QR", variant: "destructive" });
     }
   };
 
@@ -224,6 +241,7 @@ export default function SettingsPage() {
         setQrImageUrl(null);
         setConnectedPhone(null);
         setQrMessage('');
+        setShowManualQrInput(false);
         toast({ title: "✅ Desconectado", description: "Sesión cerrada correctamente" });
         startPolling();
       } else {
@@ -487,8 +505,34 @@ export default function SettingsPage() {
               </div>
             )}
 
+            {/* Input manual para QR */}
+            {showManualQrInput && !qrImageUrl && qrStatus !== 'connected' && (
+              <div className="space-y-3">
+                <p className="text-sm text-muted-foreground text-center">
+                  📋 Copia el QR de los logs de Railway y pégalo aquí:
+                </p>
+                <div className="flex gap-2">
+                  <textarea
+                    value={manualQrText}
+                    onChange={(e) => setManualQrText(e.target.value)}
+                    placeholder="Pega aquí el texto del QR (el bloque de caracteres especiales de los logs de Railway)"
+                    className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm font-mono resize-y min-h-[100px]"
+                  />
+                </div>
+                <div className="flex gap-2 justify-center">
+                  <button
+                    onClick={handleManualQrSubmit}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90"
+                  >
+                    <Download className="h-4 w-4" />
+                    Generar QR Manual
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Mensaje de estado */}
-            {qrMessage && !qrImageUrl && qrStatus !== 'connected' && (
+            {qrMessage && !qrImageUrl && qrStatus !== 'connected' && !showManualQrInput && (
               <div className="bg-secondary/30 border border-border rounded-lg p-4 text-center">
                 <p className="text-sm text-muted-foreground">{qrMessage}</p>
               </div>
@@ -524,11 +568,16 @@ export default function SettingsPage() {
 
             {/* Instrucciones */}
             {qrStatus !== 'connected' && (
-              <div className="bg-secondary/20 border border-border rounded-lg p-4">
+              <div className="bg-secondary/20 border border-border rounded-lg p-4 space-y-2">
                 <p className="text-xs text-muted-foreground">
-                  💡 <span className="font-medium">Consejo:</span> Si el QR no aparece, asegurate de que WAHA esté corriendo en tu servidor.
-                  Podés ver los logs de WAHA para obtener el QR manualmente.
+                  💡 <span className="font-medium">Consejo:</span> Si el QR no aparece automáticamente:
                 </p>
+                <ol className="text-xs text-muted-foreground list-decimal list-inside space-y-1 ml-2">
+                  <li>Ve a Railway → tu despliegue de WAHA → <span className="font-mono">Deploy Logs</span></li>
+                  <li>Busca un bloque grande de texto con caracteres especiales (es el QR)</li>
+                  <li>Copia TODO ese bloque (incluyendo los █████)</li>
+                  <li>Pégalo en el campo de arriba y haz clic en "Generar QR Manual"</li>
+                </ol>
               </div>
             )}
           </div>
