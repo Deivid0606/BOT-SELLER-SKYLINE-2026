@@ -263,9 +263,6 @@ export default function InboxPage() {
     }
     setLoading(true);
 
-    // 🔧 FIX: Supabase corta en 1000 filas por defecto.
-    // Traemos los 10.000 más recientes filtrados por el user actual,
-    // y los re-ordenamos ascendente para que el chat se vea bien.
     const { data, error } = await supabase
       .from("received_messages")
       .select("*")
@@ -302,7 +299,6 @@ export default function InboxPage() {
     return () => { supabase.removeChannel(channel); };
   }, [user]);
 
-  // ✅ Index de búsqueda: número → texto concatenado de TODOS sus mensajes
   const chatSearchIndex = useMemo(() => {
     const idx = new Map<string, string>();
     for (const msg of dbMessages) {
@@ -347,7 +343,6 @@ export default function InboxPage() {
   const filteredChats = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return chats.filter((chat) => {
-      // 🔍 Buscador EXTENDIDO: número, último mensaje y TODO el historial
       if (q) {
         const numberMatch = chat.number.toLowerCase().includes(q);
         const lastMsgMatch = chat.lastMsg.toLowerCase().includes(q);
@@ -442,6 +437,9 @@ export default function InboxPage() {
 
   const hasActiveFilters = !!(filterTag || filterDate);
 
+  // ============================================================
+  // 🔧 FUNCIÓN CORREGIDA - AHORA ENVÍA tenant_id
+  // ============================================================
   const handleSendMessage = async () => {
     if (!selectedNumber) {
       toast({ title: "Selecciona un chat", description: "Primero selecciona un chat para responder.", variant: "destructive" });
@@ -454,6 +452,18 @@ export default function InboxPage() {
 
     try {
       setSending(true);
+      
+      // 🔥 OBTENER tenant_id DEL USUARIO LOGUEADO
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("tenant_id, connection_type")
+        .eq("id", user?.id)
+        .single();
+
+      if (profileError || !profile?.tenant_id) {
+        throw new Error("Usuario no tiene configuración de WhatsApp. Verifica tu perfil.");
+      }
+
       const textToSend = messageInput.trim();
       let mediaUrl: string | null = null;
       let mediaType: string | null = null;
@@ -475,8 +485,11 @@ export default function InboxPage() {
         mediaType = selectedTemplateMedia.type;
       }
 
+      // 🔥 PAYLOAD CORREGIDO - INCLUYE tenant_id
       const payload: any = {
         user_id: user?.id ?? null,
+        tenant_id: profile.tenant_id,  // ✅ AHORA SÍ ENVÍA EL tenant_id
+        connection_type: profile.connection_type,  // ✅ También el tipo de conexión
         to: selectedNumber,
         message: textToSend,
       };
@@ -484,6 +497,8 @@ export default function InboxPage() {
         payload.media_url = mediaUrl;
         payload.media_type = mediaType;
       }
+
+      console.log("📤 Enviando mensaje con payload:", { ...payload, message: payload.message?.substring(0, 50) });
 
       const response = await fetch("/api/send-whatsapp", {
         method: "POST",
@@ -511,6 +526,7 @@ export default function InboxPage() {
       setSending(false);
     }
   };
+  // ============================================================
 
   const handlePauseAI = async () => {
     if (!selectedNumber) return;
@@ -675,7 +691,6 @@ export default function InboxPage() {
                 🧹 Limpiar
               </button>
 
-              {/* ✅ Select de etiquetar con color de fondo dinámico */}
               <select
                 onChange={(e) => { if (e.target.value) { handleSetTag(e.target.value); e.target.value = ""; } }}
                 defaultValue=""
@@ -859,7 +874,6 @@ export default function InboxPage() {
                         <div className="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground uppercase mb-1.5">
                           <Tag className="w-3 h-3" /> Etiqueta
                         </div>
-                        {/* ✅ Chips de filtro CON COLOR DE LA ETIQUETA */}
                         <div className="flex flex-wrap gap-1.5">
                           {allTags.map((tag) => {
                             const active = filterTag === tag.name;
@@ -911,7 +925,6 @@ export default function InboxPage() {
                 )}
               </AnimatePresence>
 
-              {/* 🔍 BUSCADOR */}
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
                 <input
