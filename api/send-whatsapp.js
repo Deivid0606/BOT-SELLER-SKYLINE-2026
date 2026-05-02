@@ -1,4 +1,5 @@
 // api/send-whatsapp.js
+// Envío saliente de WhatsApp con ruteo automático Meta ↔ WAHA
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -6,15 +7,24 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+const WAHA_BASE_URL = process.env.WAHA_BASE_URL; // ej: https://waha-production-d6eb.up.railway.app
+const WAHA_API_KEY = process.env.WAHA_API_KEY;
+
+// ─────────────────────────────────────────────
+// CONFIG
+// ─────────────────────────────────────────────
 async function getConfig(userId) {
   const { data } = await supabase
     .from('whatsapp_config')
-    .select('phone_number_id, permanent_token')
+    .select('phone_number_id, permanent_token, provider, waha_session')
     .eq('user_id', userId)
     .maybeSingle();
   return data;
 }
 
+// ─────────────────────────────────────────────
+// META (Cloud API)
+// ─────────────────────────────────────────────
 async function metaSendText(config, to, text) {
   const r = await fetch(
     `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
@@ -59,6 +69,68 @@ async function metaSendMedia(config, to, mediaUrl, type = 'image', caption = '')
   return r.ok;
 }
 
+// ─────────────────────────────────────────────
+// WAHA
+// ─────────────────────────────────────────────
+function wahaHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (WAHA_API_KEY) h['X-Api-Key'] = WAHA_API_KEY;
+  return h;
+}
+
+// WAHA espera el chatId en formato "549XXXXXXXXXX@c.us"
+function toChatId(phone) {
+  const clean = String(phone).replace(/[^0-9]/g, '');
+  return `${clean}@c.us`;
+}
+
+async function wahaSendText(session, to, text) {
+  const r = await fetch(`${WAHA_BASE_URL}/api/sendText`, {
+    method: 'POST',
+    headers: wahaHeaders(),
+    body: JSON.stringify({
+      session,
+      chatId: toChatId(to),
+      text,
+    }),
+  });
+  if (!r.ok) console.log('📤 WAHA text error:', await r.text());
+  return r.ok;
+}
+
+async function wahaSendImage(session, to, mediaUrl, caption = '') {
+  const r = await fetch(`${WAHA_BASE_URL}/api/sendImage`, {
+    method: 'POST',
+    headers: wahaHeaders(),
+    body: JSON.stringify({
+      session,
+      chatId: toChatId(to),
+      file: { url: mediaUrl },
+      caption: caption || undefined,
+    }),
+  });
+  if (!r.ok) console.log('📤 WAHA image error:', await r.text());
+  return r.ok;
+}
+
+async function wahaSendVideo(session, to, mediaUrl, caption = '') {
+  const r = await fetch(`${WAHA_BASE_URL}/api/sendVideo`, {
+    method: 'POST',
+    headers: wahaHeaders(),
+    body: JSON.stringify({
+      session,
+      chatId: toChatId(to),
+      file: { url: mediaUrl },
+      caption: caption || undefined,
+    }),
+  });
+  if (!r.ok) console.log('📤 WAHA video error:', await r.text());
+  return r.ok;
+}
+
+// ─────────────────────────────────────────────
+// HANDLER
+// ─────────────────────────────────────────────
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
@@ -86,28 +158,60 @@ export default async function handler(req, res) {
     if (!cleanTo) return res.status(400).json({ error: 'Invalid phone number' });
 
     const config = await getConfig(userId);
-    if (!config?.phone_number_id || !config?.permanent_token) {
+    if (!config) {
       return res.status(400).json({ error: 'WhatsApp no configurado para este usuario' });
     }
 
-    // 1) Imágenes (primera con caption si hay texto)
-    for (let i = 0; i < imageUrls.length; i++) {
-      const cap = i === 0 && message ? message : '';
-      await metaSendMedia(config, cleanTo, imageUrls[i], 'image', cap);
+    const provider = config.provider || 'meta';
+    console.log(`📤 Enviando vía ${provider} a ${cleanTo}`);
+
+    // ─── RUTEO POR PROVIDER ───
+    if (provider === 'waha') {
+      if (!WAHA_BASE_URL) {
+        return res.status(500).json({ error: 'WAHA_BASE_URL no configurado en el servidor' });
+      }
+      if (!config.waha_session) {
+        return res.status(400).json({ error: 'Sesión WAHA no configurada para este usuario' });
+      }
+
+      const session = config.waha_session;
+
+      // 1) Imágenes (primera con caption si hay texto)
+      for (let i = 0; i < imageUrls.length; i++) {
+        const cap = i === 0 && message ? message : '';
+        await wahaSendImage(session, cleanTo, imageUrls[i], cap);
+      }
+      // 2) Texto solo si no hubo imágenes
+      if (imageUrls.length === 0 && message) {
+        await wahaSendText(session, cleanTo, message);
+      }
+      // 3) Video
+      if (videoUrl) await wahaSendVideo(session, cleanTo, videoUrl, '');
+      // 4) Gif (lo mandamos como imagen, igual que con Meta)
+      if (gifUrl) await wahaSendImage(session, cleanTo, gifUrl, '');
+
+    } else {
+      // ─── META (default) ───
+      if (!config.phone_number_id || !config.permanent_token) {
+        return res.status(400).json({ error: 'Meta WhatsApp no configurado para este usuario' });
+      }
+
+      // 1) Imágenes
+      for (let i = 0; i < imageUrls.length; i++) {
+        const cap = i === 0 && message ? message : '';
+        await metaSendMedia(config, cleanTo, imageUrls[i], 'image', cap);
+      }
+      // 2) Texto solo si no hubo imágenes
+      if (imageUrls.length === 0 && message) {
+        await metaSendText(config, cleanTo, message);
+      }
+      // 3) Video
+      if (videoUrl) await metaSendMedia(config, cleanTo, videoUrl, 'video', '');
+      // 4) Gif
+      if (gifUrl) await metaSendMedia(config, cleanTo, gifUrl, 'image', '');
     }
 
-    // 2) Texto solo si no hubo imágenes
-    if (imageUrls.length === 0 && message) {
-      await metaSendText(config, cleanTo, message);
-    }
-
-    // 3) Video
-    if (videoUrl) await metaSendMedia(config, cleanTo, videoUrl, 'video', '');
-
-    // 4) Gif
-    if (gifUrl) await metaSendMedia(config, cleanTo, gifUrl, 'image', '');
-
-    // Guardar saliente (media_url es ARRAY, media_url_text es TEXT)
+    // ─── Guardar saliente en inbox_messages ───
     const allMedia = [...imageUrls, ...(videoUrl ? [videoUrl] : []), ...(gifUrl ? [gifUrl] : [])];
     await supabase.from('inbox_messages').insert({
       user_id: userId,
@@ -127,7 +231,7 @@ export default async function handler(req, res) {
       is_processed: true,
     });
 
-    return res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true, provider });
   } catch (err) {
     console.error('send-whatsapp error:', err);
     return res.status(500).json({ error: err.message });
