@@ -1,199 +1,164 @@
-// api/waha-qr.js
-// Endpoint que la UI usa para: start | get-qr | status | logout
-// Body: { action: 'start'|'get-qr'|'status'|'logout', user_id }
-//
-// ⚠️ WAHA Core solo soporta UNA sesión llamada "default".
-// Por eso usamos sessionName = "default" SIEMPRE, y guardamos el user_id
-// dueño de la sesión en la columna user_id de whatsapp_qr_sessions.
+// api/waha-webhook.js
+// Webhook de WAHA → traduce payload al formato Meta y reusa procesar() de webhook.js
+// ✅ SOLUCIONADO: Usa sesión 'default' y rutea por número de teléfono
 
 import { createClient } from "@supabase/supabase-js";
+import { procesar } from "./webhook.js";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const WAHA_BASE_URL = (process.env.WAHA_BASE_URL || "").replace(/\/$/, "");
 const WAHA_API_KEY = process.env.WAHA_API_KEY;
 
-// WAHA Core solo permite "default"
-const SESSION_NAME = "default";
+// Convierte un msg de WAHA al formato esperado por procesar() (formato Meta)
+function wahaToMeta(wahaMsg) {
+  const fromRaw = wahaMsg.from || "";
+  const from = fromRaw.replace(/@c\.us$/, "").replace(/@s\.whatsapp\.net$/, "");
 
-const wahaHeaders = () => ({
-  "Content-Type": "application/json",
-  "X-Api-Key": WAHA_API_KEY,
-});
+  const base = {
+    id: wahaMsg.id,
+    from,
+    timestamp: String(wahaMsg.timestamp || Math.floor(Date.now() / 1000)),
+  };
 
-async function wahaFetch(path, options = {}) {
-  const url = `${WAHA_BASE_URL}${path}`;
-  const res = await fetch(url, {
-    ...options,
-    headers: { ...wahaHeaders(), ...(options.headers || {}) },
-  });
-  const text = await res.text();
-  let json = null;
-  try { json = text ? JSON.parse(text) : null; } catch {}
-  return { ok: res.ok, status: res.status, data: json, raw: text };
+  const hasMedia = !!wahaMsg.hasMedia || !!wahaMsg.media;
+  const mediaUrl = wahaMsg.media?.url || null;
+  const mimeType = wahaMsg.media?.mimetype || wahaMsg.mediaMimeType || null;
+  const caption = wahaMsg.caption || wahaMsg.body || "";
+
+  if (!hasMedia) {
+    return { ...base, type: "text", text: { body: wahaMsg.body || "" } };
+  }
+
+  if (mimeType?.startsWith("image/")) {
+    return {
+      ...base,
+      type: "image",
+      image: { id: wahaMsg.id, mime_type: mimeType, caption, _waha_url: mediaUrl },
+    };
+  }
+  if (mimeType?.startsWith("audio/")) {
+    return {
+      ...base,
+      type: "audio",
+      audio: { id: wahaMsg.id, mime_type: mimeType, _waha_url: mediaUrl },
+    };
+  }
+  if (mimeType?.startsWith("video/")) {
+    return {
+      ...base,
+      type: "video",
+      video: { id: wahaMsg.id, mime_type: mimeType, caption, _waha_url: mediaUrl },
+    };
+  }
+  return {
+    ...base,
+    type: "document",
+    document: {
+      id: wahaMsg.id,
+      mime_type: mimeType || "application/octet-stream",
+      filename: wahaMsg.media?.filename || "archivo",
+      caption,
+      _waha_url: mediaUrl,
+    },
+  };
 }
 
-async function upsertSessionRow(userId) {
-  await supabase
+// Obtener userId por número de teléfono (para multitenencia)
+async function getUserIdByPhoneNumber(phoneNumber) {
+  const { data } = await supabase
     .from("whatsapp_qr_sessions")
-    .upsert(
-      {
-        user_id: userId,
-        session_name: SESSION_NAME,
-        status: "disconnected",
-      },
-      { onConflict: "user_id" }
-    );
+    .select("user_id")
+    .eq("connected_phone", phoneNumber)
+    .maybeSingle();
+  
+  return data?.user_id || null;
 }
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Api-Key");
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
 
-  if (!WAHA_BASE_URL || !WAHA_API_KEY) {
-    return res.status(500).json({ error: "WAHA no configurado en el servidor" });
+  const apiKey = req.headers["x-api-key"] || req.headers["x-webhook-key"];
+  if (WAHA_API_KEY && apiKey && apiKey !== WAHA_API_KEY) {
+    console.log("❌ WAHA webhook: API key inválida");
+    return res.status(401).send("Unauthorized");
   }
 
   try {
-    const { action, user_id: userId } = req.body || {};
-    if (!userId) return res.status(400).json({ error: "user_id requerido" });
-    if (!action) return res.status(400).json({ error: "action requerido" });
+    const body = req.body;
+    const event = body?.event;
+    const payload = body?.payload || body;
+    const sessionName = body?.session || "default";
 
-    // ─── START: crear/iniciar sesión ───
-    if (action === "start") {
-      await upsertSessionRow(userId);
+    console.log(`📡 WAHA event: ${event} | session: ${sessionName}`);
 
-      // 1. Verificar si ya existe en WAHA
-      const existing = await wahaFetch(`/api/sessions/${SESSION_NAME}`);
-
-      if (!existing.ok || existing.status === 404) {
-        // Crear sesión nueva
-        const created = await wahaFetch(`/api/sessions`, {
-          method: "POST",
-          body: JSON.stringify({
-            name: SESSION_NAME,
-            start: true,
-            config: {
-              webhooks: [
-                {
-                  url: `https://${req.headers.host}/api/waha-webhook`,
-                  events: ["message", "session.status"],
-                  hmac: null,
-                  retries: { policy: "linear", delaySeconds: 2, attempts: 3 },
-                  customHeaders: [
-                    { name: "X-Api-Key", value: WAHA_API_KEY },
-                  ],
-                },
-              ],
-            },
-          }),
-        });
-        if (!created.ok) {
-          console.error("❌ WAHA create session:", created.status, created.raw);
-          return res
-            .status(500)
-            .json({ error: "No se pudo crear la sesión", detail: created.raw });
-        }
-      } else {
-        // Si existe pero está parada, iniciar
-        const status = existing.data?.status;
-        if (status === "STOPPED" || status === "FAILED") {
-          await wahaFetch(`/api/sessions/${SESSION_NAME}/start`, {
-            method: "POST",
-          });
-        }
-      }
-
-      await supabase
-        .from("whatsapp_qr_sessions")
-        .update({
-          status: "starting",
-          last_event_at: new Date().toISOString(),
-        })
-        .eq("user_id", userId);
-
-      return res.status(200).json({ ok: true, session: SESSION_NAME });
-    }
-
-    // ─── GET-QR: obtener QR (raw base64) ───
-    if (action === "get-qr") {
-      const qrRes = await wahaFetch(`/api/${SESSION_NAME}/auth/qr?format=raw`);
-      if (!qrRes.ok) {
-        // 422 = ya conectado o no en estado SCAN_QR_CODE
-        return res.status(200).json({ qr: null, status: qrRes.status });
-      }
-      const qrValue = qrRes.data?.value || qrRes.data?.qr || null;
-      if (qrValue) {
-        await supabase
-          .from("whatsapp_qr_sessions")
-          .update({
-            last_qr: qrValue,
-            qr_updated_at: new Date().toISOString(),
-            status: "pending_qr",
-          })
-          .eq("user_id", userId);
-      }
-      return res.status(200).json({ qr: qrValue });
-    }
-
-    // ─── STATUS: leer estado actual desde WAHA y reflejarlo en DB ───
-    if (action === "status") {
-      const s = await wahaFetch(`/api/sessions/${SESSION_NAME}`);
-      if (!s.ok) return res.status(200).json({ status: "disconnected" });
-
-      const wahaStatus = s.data?.status;
+    // EVENTO: cambio de estado de sesión
+    if (event === "session.status") {
+      const wahaStatus = payload.status;
       let dbStatus = "disconnected";
       if (wahaStatus === "STARTING") dbStatus = "starting";
       else if (wahaStatus === "SCAN_QR_CODE") dbStatus = "pending_qr";
       else if (wahaStatus === "WORKING") dbStatus = "connected";
       else if (wahaStatus === "FAILED") dbStatus = "failed";
+      else if (wahaStatus === "STOPPED") dbStatus = "disconnected";
 
-      const phone = s.data?.me?.id?.replace(/@c\.us$/, "") || null;
+      const connectedPhone = payload.me?.id?.replace(/@c\.us$/, "") || null;
 
+      // Actualizar TODOS los usuarios que tienen esta sesión (si hay múltiples)
+      // En realidad como es 'default', actualizamos el estado general
       await supabase
         .from("whatsapp_qr_sessions")
         .update({
           status: dbStatus,
-          connected_phone: phone,
+          connected_phone: connectedPhone,
           last_event_at: new Date().toISOString(),
-          ...(dbStatus === "connected"
-            ? { connected_at: new Date().toISOString() }
-            : {}),
+          ...(dbStatus === "connected" ? { connected_at: new Date().toISOString() } : {}),
+          ...(dbStatus === "disconnected" ? { connected_phone: null } : {})
         })
-        .eq("user_id", userId);
+        .eq("session_name", sessionName);
 
-      return res.status(200).json({ status: dbStatus, phone });
+      return res.status(200).send("OK");
     }
 
-    // ─── LOGOUT: cerrar y borrar sesión ───
-    if (action === "logout") {
-      await wahaFetch(`/api/sessions/${SESSION_NAME}/logout`, {
-        method: "POST",
-      });
-      await wahaFetch(`/api/sessions/${SESSION_NAME}`, { method: "DELETE" });
+    // EVENTO: mensaje entrante
+    if (event === "message" || event === "message.any") {
+      if (payload.fromMe) {
+        return res.status(200).send("OK (fromMe)");
+      }
 
-      await supabase
-        .from("whatsapp_qr_sessions")
-        .update({
-          status: "disconnected",
-          last_qr: null,
-          connected_phone: null,
-          last_event_at: new Date().toISOString(),
-        })
-        .eq("user_id", userId);
+      // IMPORTANTE: Obtener userId por el número de teléfono conectado
+      const toPhone = payload.to?.replace(/@c\.us$/, "").replace(/@s\.whatsapp\.net$/, "");
+      const userId = await getUserIdByPhoneNumber(toPhone);
 
-      return res.status(200).json({ ok: true });
+      if (!userId) {
+        console.log(`⚠️ No se encontró usuario para el número: ${toPhone}`);
+        return res.status(200).send("OK (no user)");
+      }
+
+      console.log(`✅ Mensaje para usuario: ${userId} desde: ${payload.from}`);
+
+      const metaMsg = wahaToMeta(payload);
+
+      const fakeReq = {
+        headers: {
+          host: req.headers.host,
+          "x-forwarded-proto": req.headers["x-forwarded-proto"] || "https",
+        },
+      };
+
+      await procesar(fakeReq, metaMsg, userId, metaMsg.from);
+      return res.status(200).send("OK");
     }
 
-    return res.status(400).json({ error: "Acción no reconocida" });
+    return res.status(200).send("OK (ignored)");
   } catch (err) {
-    console.error("❌ waha-qr error:", err);
-    return res.status(500).json({ error: err.message || "Error interno" });
+    console.error("❌ waha-webhook error:", err);
+    return res.status(500).json({ error: "Error interno" });
   }
 }
