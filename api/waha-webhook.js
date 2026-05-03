@@ -96,19 +96,22 @@ async function getUserId() {
 }
 
 // ─────────────────────────────────────────────
-// Guardar mensaje en la misma tabla que usa webhook.js
+// Guardar mensaje — usa la misma tabla que webhook.js (inbox_messages)
+// para que el historial sea compartido entre ambos canales
 // ─────────────────────────────────────────────
 async function saveMessage({ userId, from, message, messageType = "text", mediaUrl = null }) {
   try {
-    const direction = messageType === "out_text" ? "out" : "in";
-    await supabase.from("messages").insert({
+    const numero = String(from).replace(/@c\.us$|@lid$/, "");
+    await supabase.from("inbox_messages").insert({
       user_id: userId,
-      from_number: from.replace(/@c\.us$|@lid$/, ""),
+      source: "whatsapp_qr",
+      platform: "whatsapp",
+      sender_id: numero,       // mismo campo que usa webhook.js
+      sender_name: numero,
+      from_number: numero,
       message,
       message_type: messageType,
-      direction,
       media_url: mediaUrl || null,
-      channel: "waha_qr",        // ← distingue del canal Meta
       created_at: new Date().toISOString(),
     });
   } catch (err) {
@@ -120,34 +123,51 @@ async function saveMessage({ userId, from, message, messageType = "text", mediaU
 // Leer/guardar contexto de conversación (igual que webhook.js)
 // ─────────────────────────────────────────────
 async function getContexto(userId, from) {
-  const numero = from.replace(/@c\.us$|@lid$/, "");
+  const numero = String(from).replace(/@c\.us$|@lid$/, "");
   const { data } = await supabase
-    .from("conversation_context")
-    .select("context")
+    .from("chat_context")       // misma tabla que webhook.js
+    .select("*")
     .eq("user_id", userId)
     .eq("from_number", numero)
     .maybeSingle();
-  return data?.context || null;
+  return data || {};
 }
 
-async function saveContexto(userId, from, context) {
-  const numero = from.replace(/@c\.us$|@lid$/, "");
-  await supabase.from("conversation_context").upsert(
-    { user_id: userId, from_number: numero, context, updated_at: new Date().toISOString() },
+async function saveContexto(userId, from, ctx = {}) {
+  const numero = String(from).replace(/@c\.us$|@lid$/, "");
+  await supabase.from("chat_context").upsert(
+    {
+      user_id: userId,
+      from_number: numero,
+      last_topic: ctx?.last_topic || null,
+      last_trigger: ctx?.last_trigger || null,
+      current_product: ctx?.current_product || null,
+      step: ctx?.step || null,
+      order_data: ctx?.order_data || {},
+      updated_at: new Date().toISOString(),
+    },
     { onConflict: "user_id,from_number" }
   );
 }
 
 async function getHistory(userId, from) {
-  const numero = from.replace(/@c\.us$|@lid$/, "");
+  const numero = String(from).replace(/@c\.us$|@lid$/, "");
   const { data } = await supabase
-    .from("messages")
-    .select("message, direction, message_type")
+    .from("inbox_messages")
+    .select("message, message_type, created_at")
     .eq("user_id", userId)
-    .eq("from_number", numero)
+    .eq("sender_id", numero)
     .order("created_at", { ascending: false })
     .limit(20);
-  return (data || []).reverse();
+
+  // ✅ chat-ia.ts espera { role: "user"|"assistant", content: string }
+  return (data || [])
+    .reverse()
+    .filter((h) => h.message && h.message_type !== "image" && h.message_type !== "audio")
+    .map((h) => ({
+      role: (h.message_type || "").startsWith("out_") ? "assistant" : "user",
+      content: String(h.message),
+    }));
 }
 
 // ─────────────────────────────────────────────
