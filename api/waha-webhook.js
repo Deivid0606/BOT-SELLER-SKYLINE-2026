@@ -1,4 +1,4 @@
-// api/waha-webhook.js
+// api/waha-webhook.js — v3 FINAL
 // Recibe eventos de WAHA (QR) y los procesa usando la misma lógica
 // que webhook.js (Meta API), reutilizando procesar() y enviarMensaje().
 //
@@ -381,6 +381,14 @@ export default async function handler(req, res) {
         return;
       }
 
+
+      // Ignorar mensajes ACK/notificaciones sin cuerpo ni media
+      const hasText = texto && texto.trim().length > 0;
+      const hasMedia = payload.hasMedia && payload.media?.url;
+      if (!hasText && !hasMedia) {
+        console.log(`📌 Sin contenido (tipo: ${payload.type || "unknown"}), ignorado.`);
+        return;
+      }
       // Obtener user_id del dueño de la sesión
       const userId = await getUserId();
       if (!userId) {
