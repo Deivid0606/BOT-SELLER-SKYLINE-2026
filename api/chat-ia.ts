@@ -91,7 +91,7 @@ function getPriceLines(training: string): string[] {
 function extractProductNameFromLine(line: string): string {
   const c = line
     .replace(/^[-•\s]+/, "")
-    .replace(/[💙🦶🎯💰🔥✨]/g, "")
+    .replace(/[💙🦶🎯💰🔥✨⭐✅]/g, "")
     .trim();
 
   const parts = c.split(/—|-{2,}|–/);
@@ -205,9 +205,7 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   if (!quantity) {
     const q1 = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
 
-    if (q1) {
-      quantity = Number(q1[1]);
-    }
+    if (q1) quantity = Number(q1[1]);
   }
 
   if (
@@ -248,9 +246,7 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
       if (q2) {
         const num = Number(q2[1]);
 
-        if (num >= 1 && num <= 999) {
-          quantity = num;
-        }
+        if (num >= 1 && num <= 999) quantity = num;
       }
     }
   }
@@ -280,7 +276,6 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     "pte franco": "Presidente Franco",
     aregua: "Areguá",
     areguá: "Areguá",
-
     pjc: "Pedro Juan Caballero",
     "pedro juan": "Pedro Juan Caballero",
     "pedro juan caballero": "Pedro Juan Caballero",
@@ -371,11 +366,7 @@ async function safeUpsertOrder(
 ) {
   try {
     if (!order?.product) return null;
-
-    if (!from) {
-      console.error("❌ safeUpsertOrder: from_number vacío, abortando");
-      return null;
-    }
+    if (!from) return null;
 
     const { data: existing, error: findErr } = await supabase
       .from("orders")
@@ -549,21 +540,32 @@ async function analyzeImageWithGemini({
 }: any): Promise<{
   kind: "payment_proof" | "product" | "other";
   transcript: string;
+  amount: string;
+  matchedProduct: string;
 }> {
   const system = `
-Sos un clasificador. Recibís una IMAGEN enviada por un cliente de WhatsApp a una tienda paraguaya.
-Devolvé EXCLUSIVAMENTE un JSON válido con esta forma:
-{"kind":"payment_proof"|"product"|"other","transcript":"..."}
+Sos un clasificador de imágenes para una tienda de WhatsApp en Paraguay.
 
-Reglas:
-- "payment_proof" → comprobante, transferencia, billetera, depósito o ticket bancario.
-- "product" → imagen de producto, envase, caja, frasco o consulta visual de producto.
-- "other" → cualquier otra imagen.
+Devolvé EXCLUSIVAMENTE un JSON válido:
+{
+  "kind": "payment_proof" | "product" | "other",
+  "transcript": "descripción breve",
+  "amount": "monto si aparece, ejemplo 269.998",
+  "matchedProduct": "nombre del producto si coincide con catálogo"
+}
 
-"transcript": descripción breve en español, máximo 200 caracteres.
+REGLAS IMPORTANTES:
+- Si la imagen muestra comprobante, transferencia, ticket bancario, billetera, banco, monto enviado o destinatario → kind = "payment_proof".
+- Si la imagen muestra un producto físico, envase, caja, frasco, máquina, aparato o artículo de venta → kind = "product".
+- Si es producto, NUNCA clasifiques como comprobante aunque tenga números.
+- Si es comprobante, extraé el monto si aparece.
+- Si es producto, intentá identificarlo usando el catálogo de referencia.
+- Si no estás seguro, usá "other".
 
 Caption del cliente: "${clean(caption) || "(vacío)"}"
-Catálogo de referencia: ${productList.slice(0, 800)}
+
+Catálogo de referencia:
+${productList.slice(0, 3000)}
 
 NO devuelvas texto fuera del JSON.
 `.trim();
@@ -590,8 +592,8 @@ NO devuelvas texto fuera del JSON.
     model,
     system,
     contents,
-    temperature: 0.1,
-    maxTokens: 512,
+    temperature: 0.05,
+    maxTokens: 700,
   });
 
   try {
@@ -611,6 +613,8 @@ NO devuelvas texto fuera del JSON.
     return {
       kind,
       transcript: clean(parsed.transcript),
+      amount: clean(parsed.amount),
+      matchedProduct: clean(parsed.matchedProduct),
     };
   } catch {
     console.warn("⚠️ analyzeImage no parseó JSON:", raw.slice(0, 200));
@@ -618,6 +622,8 @@ NO devuelvas texto fuera del JSON.
     return {
       kind: "other",
       transcript: clean(raw).slice(0, 200),
+      amount: "",
+      matchedProduct: "",
     };
   }
 }
@@ -661,7 +667,7 @@ async function transcribeAudioWithGemini({
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL: COBERTURA + COMPROBANTE UNA SOLA VEZ + CANTIDAD");
+  console.log("🔥 VERSION FINAL: IMAGEN PRODUCTO + COMPROBANTE + MONTO + COBERTURA");
 
   if (req.method !== "POST") {
     return res.status(405).json({
@@ -687,30 +693,10 @@ export default async function handler(req: any, res: any) {
     const mediaType = clean(media_type);
     const mimeHint = clean(mime_type);
 
-    console.log(
-      "🧠 CHAT-IA:",
-      texto || "(sin texto)",
-      "from:",
-      fromNumber,
-      mediaType ? `media=${mediaType}` : ""
-    );
-
-    if (!user_id) {
-      return res.status(400).json({
-        error: "Falta user_id",
-      });
-    }
-
-    if (!fromNumber) {
-      return res.status(400).json({
-        error: "Falta from_number",
-      });
-    }
-
+    if (!user_id) return res.status(400).json({ error: "Falta user_id" });
+    if (!fromNumber) return res.status(400).json({ error: "Falta from_number" });
     if (!texto && !mediaUrl) {
-      return res.status(400).json({
-        error: "Faltan message o media",
-      });
+      return res.status(400).json({ error: "Faltan message o media" });
     }
 
     const { data: iaConfig } = await supabase
@@ -731,9 +717,7 @@ export default async function handler(req: any, res: any) {
       .select("id, intent, response, updated_at")
       .eq("user_id", user_id)
       .eq("is_active", true)
-      .order("updated_at", {
-        ascending: false,
-      })
+      .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
@@ -765,7 +749,7 @@ export default async function handler(req: any, res: any) {
       !!oldOrder?.city &&
       wasAskingQuantity;
 
-    const product = detectProduct(
+    let product = detectProduct(
       texto,
       fullTraining,
       context?.current_product || oldOrder?.product
@@ -806,9 +790,9 @@ export default async function handler(req: any, res: any) {
           productList: fullTraining,
         });
 
-        console.log("🖼️ Vision:", analysis.kind, "|", analysis.transcript);
+        console.log("🖼️ Vision:", analysis);
 
-        if (analysis.kind === "payment_proof" && isWaitingPaymentProof) {
+        if (analysis.kind === "payment_proof") {
           isPaymentProof = true;
 
           await safeUpsertOrder(
@@ -816,37 +800,53 @@ export default async function handler(req: any, res: any) {
             fromNumber,
             orderData,
             false,
-            "payment_verified"
+            isWaitingPaymentProof ? "payment_verified" : undefined
           );
 
-          const replyPago =
-            "¡Perfecto! 🙏 Recibí tu comprobante. Ya estamos verificando el pago y enseguida te confirmamos el envío 🚚✨";
+          const amountText = analysis.amount
+            ? ` por Gs. ${analysis.amount}`
+            : "";
 
           return res.json({
-            response: replyPago,
+            response: `¡Perfecto! 🙏 Recibí tu comprobante${amountText}. Ya estamos verificando el pago y enseguida te confirmamos el envío 🚚✨`,
             is_payment_proof: true,
             context: {
               ...(context || {}),
               current_product: orderData.product || context?.current_product || null,
-              step: "payment_verified",
-              tipo_cobertura: "sin_cobertura",
+              step: isWaitingPaymentProof ? "payment_verified" : previousStep || "selling",
+              tipo_cobertura: tipoCobertura || previousTipoCobertura || null,
               order_data: orderData,
               last_topic: "payment_verified",
+              payment_amount: analysis.amount || null,
               updated_at: new Date().toISOString(),
             },
           });
         }
 
-        if (analysis.kind === "payment_proof" && !isWaitingPaymentProof) {
-          texto = texto
-            ? `${texto}\n[El cliente envió una imagen que parece comprobante, pero NO corresponde validar porque no estábamos esperando comprobante.]`
-            : "El cliente envió una imagen que parece comprobante, pero no estábamos esperando comprobante.";
-        } else if (analysis.kind === "product") {
-          texto = texto
-            ? `${texto}\n[el cliente envió una FOTO. Descripción: ${analysis.transcript}]`
-            : `Mandé una foto. ${analysis.transcript}`;
+        if (analysis.kind === "product") {
+          const visionProduct =
+            detectProduct(
+              `${analysis.matchedProduct} ${analysis.transcript}`,
+              fullTraining,
+              ""
+            ) || analysis.matchedProduct;
+
+          product = visionProduct || product;
+
+          texto = `
+El cliente envió una FOTO DE PRODUCTO.
+Descripción detectada: ${analysis.transcript || "producto no identificado"}
+Producto detectado: ${product || "no identificado"}
+
+Si el producto detectado existe en el entrenamiento, respondé con su precio, promoción si existe y preguntá para qué ciudad sería el envío.
+Si no existe o no estás seguro, pedí el nombre del producto para confirmarle precio.
+`.trim();
         } else {
-          texto = texto || `Te mandé una imagen. ${analysis.transcript}`;
+          texto =
+            texto ||
+            `El cliente envió una imagen. Descripción: ${
+              analysis.transcript || "imagen no identificada"
+            }. Si no corresponde a producto ni comprobante, respondé de forma natural pidiendo más detalle.`;
         }
       } else {
         texto = texto || "Te mandé una imagen pero no pudiste descargarla.";
@@ -866,8 +866,6 @@ export default async function handler(req: any, res: any) {
           mime,
         });
 
-        console.log("🎙️ Transcripción:", transcript.slice(0, 200));
-
         texto = transcript || texto || "Te mandé un audio.";
       } else {
         texto = texto || "Te mandé un audio pero no pudiste descargarlo.";
@@ -881,6 +879,12 @@ export default async function handler(req: any, res: any) {
     if (isPureQuantityReply) {
       extracted.quantity = Number(String(message).trim());
     }
+
+    product = detectProduct(
+      texto,
+      fullTraining,
+      product || context?.current_product || oldOrder?.product
+    );
 
     orderData = mergeOrderData(
       oldOrder,
@@ -915,29 +919,13 @@ export default async function handler(req: any, res: any) {
 
     const isConfirming = step === "confirm_order" && wantsToBuy;
 
-    console.log("🧩 DEBUG FLUJO:", {
-      previousStep,
-      step,
-      texto,
-      lastAssistantMessage,
-      wasAskingQuantity,
-      isPureQuantityReply,
-      extractedQuantity: extracted.quantity,
-      orderQuantity: orderData.quantity,
-      product: orderData.product,
-      city: orderData.city,
-      tipoCobertura: finalTipoCobertura,
-    });
-
     if (shouldCollect) {
       await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
     }
 
     let cleanHistory = Array.isArray(history) ? history : [];
 
-    if (isPureQuantityReply) {
-      cleanHistory = [];
-    }
+    if (isPureQuantityReply) cleanHistory = [];
 
     const system = `
 Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento oficial del usuario.
@@ -966,28 +954,27 @@ ESTADO ACTUAL DEL CLIENTE:
 - Intención: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
 
 REGLAS TÉCNICAS OBLIGATORIAS:
-1. Si la última pregunta del bot fue sobre cantidad y el cliente respondió solo un número, ese número es la cantidad final exacta.
+1. Si la última pregunta fue sobre cantidad y el cliente respondió solo un número, ese número es la cantidad final exacta.
 2. Nunca concatenes cantidades.
 3. Nunca conviertas 1 en 11, 2 en 22, 3 en 33.
-4. La cantidad actual reemplaza cualquier cantidad anterior.
-5. Si Cantidad no está pendiente, usá exactamente esa cantidad.
-6. Si el paso actual es collecting_quantity, preguntá cuántas unidades quiere.
-7. Si el paso actual es collecting_name, pedí nombre completo.
-8. Si el paso actual es collecting_phone, pedí teléfono.
-9. Si el tipo de cobertura es sin_cobertura, NO pidas dirección exacta.
-10. Si el tipo de cobertura es sin_cobertura y ya tenés nombre y teléfono, pedí comprobante de transferencia.
-11. Si el paso actual es collecting_address, pedí dirección exacta SOLO si tiene cobertura.
-12. Si el paso actual es confirm_order, confirmá el pedido con la plantilla del entrenamiento.
-13. Si solo pregunta precio, respondé precio + CTA, sin pedir datos todavía.
-14. No repitas saludo si ya hubo conversación.
-15. No cambies de producto salvo que el cliente lo pida.
-16. Cerrá siempre con el siguiente paso.
-17. Catálogo: ${CATALOG_URL}
-18. Español paraguayo natural, con emojis.
-19. Nunca respondas vacío.
+4. Si Cantidad no está pendiente, usá exactamente esa cantidad.
+5. Si el paso actual es collecting_quantity, preguntá cuántas unidades quiere.
+6. Si el paso actual es collecting_name, pedí nombre completo.
+7. Si el paso actual es collecting_phone, pedí teléfono.
+8. Si el tipo de cobertura es sin_cobertura, NO pidas dirección exacta.
+9. Si el tipo de cobertura es sin_cobertura y ya tenés nombre y teléfono, pedí comprobante de transferencia.
+10. Si el paso actual es collecting_address, pedí dirección exacta SOLO si tiene cobertura.
+11. Si el paso actual es confirm_order, confirmá el pedido con la plantilla del entrenamiento.
+12. Si el cliente envía foto de producto y el producto existe en entrenamiento, respondé precio + promo + preguntá ciudad.
+13. Si el cliente envía foto de producto y no estás seguro del producto, pedí el nombre del producto.
+14. Si solo pregunta precio, respondé precio + CTA, sin pedir datos todavía.
+15. No repitas saludo si ya hubo conversación.
+16. No cambies de producto salvo que el cliente lo pida.
+17. Cerrá siempre con el siguiente paso.
+18. Catálogo: ${CATALOG_URL}
+19. Español paraguayo natural, con emojis.
 20. Pedro Juan Caballero / PJC es SIN COBERTURA.
-21. No valides comprobante si no estabas esperando comprobante.
-22. Si el paso anterior es payment_verified, NO vuelvas a validar comprobante.
+21. Si el paso anterior es payment_verified, NO vuelvas a validar comprobante.
 `.trim();
 
     const contents = cleanHistory
@@ -995,24 +982,16 @@ REGLAS TÉCNICAS OBLIGATORIAS:
       .filter((h: any) => clean(h?.content))
       .map((h: any) => ({
         role: h.role === "assistant" ? "model" : "user",
-        parts: [
-          {
-            text: clean(h.content),
-          },
-        ],
+        parts: [{ text: clean(h.content) }],
       }));
 
     const currentUserText = isPureQuantityReply
-      ? `El cliente eligió EXACTAMENTE ${orderData.quantity} unidades. No es 11. No es número concatenado. Mensaje original: "${texto}".`
+      ? `El cliente eligió EXACTAMENTE ${orderData.quantity} unidades. No es 11. Mensaje original: "${texto}".`
       : texto;
 
     contents.push({
       role: "user",
-      parts: [
-        {
-          text: currentUserText,
-        },
-      ],
+      parts: [{ text: currentUserText }],
     });
 
     let response = await callGemini({
@@ -1025,8 +1004,6 @@ REGLAS TÉCNICAS OBLIGATORIAS:
     });
 
     if (!response) {
-      console.warn("⚠️ Vacío, reintentando...");
-
       response = await callGemini({
         apiKey,
         model,
@@ -1040,7 +1017,12 @@ REGLAS TÉCNICAS OBLIGATORIAS:
     const newContext = {
       ...(context || {}),
       current_product: orderData.product || context?.current_product || null,
-      step: shouldCollect ? step : previousStep === "payment_verified" ? "payment_verified" : "selling",
+      step:
+        shouldCollect
+          ? step
+          : previousStep === "payment_verified"
+          ? "payment_verified"
+          : "selling",
       tipo_cobertura: finalTipoCobertura || null,
       order_data: orderData,
       last_topic:
