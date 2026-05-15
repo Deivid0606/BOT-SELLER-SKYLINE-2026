@@ -20,62 +20,24 @@ const normalize = (t: string): string =>
     .trim();
 
 const ZONAS_COBERTURA = [
-  "Altos",
-  "Areguá",
-  "Asunción",
-  "Atyrá",
-  "Benjamín Aceval",
-  "Caacupé",
-  "Capiatá",
-  "Ciudad del Este",
-  "Colonia Yguazú",
-  "Emboscada",
-  "Eusebio Ayala",
-  "Fernando de la Mora",
-  "Guarambaré",
-  "Hernandarias",
-  "Itá",
-  "Itacurubí de la Cordillera",
-  "Itauguá",
-  "J. Augusto Saldívar",
-  "Juan León Mallorquín",
-  "Lambaré",
-  "Limpio",
-  "Loma Grande",
-  "Luque",
-  "Mariano Roque Alonso",
-  "Minga Guazú",
-  "Nueva Italia",
-  "Ñemby",
-  "Paraguarí",
-  "Pirayú",
-  "Piribebuy",
-  "Presidente Franco",
-  "Puerto Presidente Franco",
-  "Remansito",
-  "San Alberto",
-  "San Antonio",
-  "San Bernardino",
-  "San Lorenzo",
-  "Santa Rita",
-  "Tobatí",
-  "Villa Elisa",
-  "Villa Hayes",
-  "Villarrica",
-  "Villeta",
-  "Yaguarón",
-  "Yguazú",
-  "Ypacaraí",
-  "Ypané",
+  "Altos", "Areguá", "Asunción", "Atyrá", "Benjamín Aceval", "Caacupé",
+  "Capiatá", "Ciudad del Este", "Colonia Yguazú", "Emboscada", "Eusebio Ayala",
+  "Fernando de la Mora", "Guarambaré", "Hernandarias", "Itá",
+  "Itacurubí de la Cordillera", "Itauguá", "J. Augusto Saldívar",
+  "Juan León Mallorquín", "Lambaré", "Limpio", "Loma Grande", "Luque",
+  "Mariano Roque Alonso", "Minga Guazú", "Nueva Italia", "Ñemby", "Paraguarí",
+  "Pirayú", "Piribebuy", "Presidente Franco", "Puerto Presidente Franco",
+  "Remansito", "San Alberto", "San Antonio", "San Bernardino", "San Lorenzo",
+  "Santa Rita", "Tobatí", "Villa Elisa", "Villa Hayes", "Villarrica",
+  "Villeta", "Yaguarón", "Yguazú", "Ypacaraí", "Ypané",
 ];
 
 function getTipoCobertura(city: string): "con_cobertura" | "sin_cobertura" | "" {
   if (!city) return "";
-
   const c = normalize(city);
-  const tieneCobertura = ZONAS_COBERTURA.some((z) => normalize(z) === c);
-
-  return tieneCobertura ? "con_cobertura" : "sin_cobertura";
+  return ZONAS_COBERTURA.some((z) => normalize(z) === c)
+    ? "con_cobertura"
+    : "sin_cobertura";
 }
 
 function extractBankReceiverFromTraining(training: string): string {
@@ -84,9 +46,7 @@ function extractBankReceiverFromTraining(training: string): string {
     training.match(/a nombre de\s*[:\-]?\s*([^\n\r]+)/i)?.[1] ||
     "";
 
-  return clean(titular)
-    .replace(/[✅📲💳]/g, "")
-    .trim();
+  return clean(titular).replace(/[✅📲💳]/g, "").trim();
 }
 
 function getPriceLines(training: string): string[] {
@@ -116,16 +76,36 @@ function detectProduct(text: string, training: string, prev?: string) {
   for (const line of lines) {
     const name = extractProductNameFromLine(line);
     const n = normalize(name);
-
     if (!n || n.length < 3) continue;
 
     const words = n.split(" ").filter((w) => w.length >= 4);
+    const msgWords = msg.split(" ").filter((w) => w.length >= 4);
+
     let score = 0;
 
-    if (msg.includes(n)) score += 20;
+    if (msg.includes(n)) score += 30;
+    if (n.includes(msg) && msg.length >= 4) score += 20;
 
     for (const w of words) {
-      if (msg.includes(w)) score += 4;
+      if (msg.includes(w)) score += 6;
+    }
+
+    for (const mw of msgWords) {
+      if (n.includes(mw)) score += 5;
+    }
+
+    if (
+      msg.includes("afilador") &&
+      (n.includes("afilador") || n.includes("cuchillo") || n.includes("cuchillos"))
+    ) {
+      score += 40;
+    }
+
+    if (
+      msg.includes("sharpener") &&
+      (n.includes("afilador") || n.includes("cuchillo") || n.includes("cuchillos"))
+    ) {
+      score += 35;
     }
 
     if (score > bestScore) {
@@ -134,7 +114,7 @@ function detectProduct(text: string, training: string, prev?: string) {
     }
   }
 
-  if (bestScore >= 4) return best;
+  if (bestScore >= 5) return best;
   return clean(prev || "");
 }
 
@@ -151,11 +131,8 @@ function isPriceIntent(text: string) {
 
 function isBuyIntent(text: string) {
   const m = normalize(text);
-
   return (
-    /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo|mandame|dame)\b/.test(
-      m
-    ) ||
+    /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo|mandame|dame)\b/.test(m) ||
     /\b\d+\s*(unidad|unidades|u)\b/.test(m) ||
     /^\d+$/.test(m)
   );
@@ -163,7 +140,6 @@ function isBuyIntent(text: string) {
 
 function getLastAssistantMessage(history: any[]) {
   if (!Array.isArray(history)) return "";
-
   const last = history
     .filter((h: any) => h?.role === "assistant" || h?.role === "model")
     .slice(-1)[0];
@@ -173,7 +149,6 @@ function getLastAssistantMessage(history: any[]) {
 
 function botWasAskingQuantity(history: any[]) {
   const lastAssistantMessage = normalize(getLastAssistantMessage(history));
-
   return (
     lastAssistantMessage.includes("cuantas unidades") ||
     lastAssistantMessage.includes("cuantos unidades") ||
@@ -197,7 +172,6 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     currentStep === "esperando_cantidad"
   ) {
     const onlyNumber = norm.match(/^\s*(\d{1,3})\s*$/);
-
     if (onlyNumber) {
       const num = Number(onlyNumber[1]);
       if (num >= 1 && num <= 999) quantity = num;
@@ -214,17 +188,8 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     /\b(uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/.test(norm)
   ) {
     const words: Record<string, number> = {
-      uno: 1,
-      una: 1,
-      dos: 2,
-      tres: 3,
-      cuatro: 4,
-      cinco: 5,
-      seis: 6,
-      siete: 7,
-      ocho: 8,
-      nueve: 9,
-      diez: 10,
+      uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
+      seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10,
     };
 
     for (const [word, num] of Object.entries(words)) {
@@ -237,13 +202,10 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
 
   if (!quantity) {
     const looksLikeQuantity =
-      /\b(quiero|llevo|mandame|dame|solo|solamente|nomas|nomás|unidad|unidades|u)\b/.test(
-        norm
-      );
+      /\b(quiero|llevo|mandame|dame|solo|solamente|nomas|nomás|unidad|unidades|u)\b/.test(norm);
 
     if (looksLikeQuantity) {
       const q2 = norm.match(/\b(\d{1,3})\b/);
-
       if (q2) {
         const num = Number(q2[1]);
         if (num >= 1 && num <= 999) quantity = num;
@@ -291,8 +253,7 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   }
 
   const address =
-    text.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)
-      ?.[1] || "";
+    text.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1] || "";
 
   let name = "";
 
@@ -428,7 +389,6 @@ async function safeUpsertOrder(
         .eq("id", existing.id);
 
       if (error) console.error("❌ updateOrder:", error);
-
       return existing.id;
     }
 
@@ -505,9 +465,7 @@ async function callGemini({
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }
   );
@@ -544,34 +502,42 @@ async function analyzeImageWithGemini({
   amount: string;
   receiverName: string;
   matchedProduct: string;
+  productName: string;
+  productPrice: string;
+  promoText: string;
 }> {
   const system = `
-Sos un clasificador de imágenes para una tienda de WhatsApp en Paraguay.
+Sos un clasificador visual de productos y comprobantes para una tienda de WhatsApp en Paraguay.
 
 Devolvé EXCLUSIVAMENTE un JSON válido:
 {
   "kind": "payment_proof" | "product" | "other",
   "transcript": "descripción breve",
-  "amount": "monto si aparece, ejemplo 269.998",
+  "amount": "monto si es comprobante, ejemplo 345.900",
   "receiverName": "nombre de quien recibió el pago si aparece",
-  "matchedProduct": "nombre del producto si coincide con catálogo"
+  "matchedProduct": "nombre del producto si coincide con el catálogo",
+  "productName": "nombre genérico del producto visto en la imagen",
+  "productPrice": "precio visible si aparece en la imagen, ejemplo 129.900",
+  "promoText": "promoción visible si aparece, ejemplo PROMO 2 UNIDADES"
 }
 
-REGLAS:
-- Si la imagen muestra comprobante, transferencia, ticket bancario, billetera, banco, monto enviado o destinatario → kind = "payment_proof".
-- Si es comprobante, extraé el monto enviado.
-- Si es comprobante, extraé el nombre del receptor/destinatario/beneficiario si aparece.
+REGLAS IMPORTANTES:
+- Si ves transferencia, banco, comprobante, destinatario, nro de comprobante o monto enviado → kind = "payment_proof".
+- Si es comprobante, extraé amount y receiverName.
 - El receptor esperado según entrenamiento es: "${expectedReceiverName || "no especificado"}".
-- Si el nombre del receptor aparece parecido al esperado, usá el nombre esperado del entrenamiento.
-- Si la imagen muestra producto físico, envase, caja, frasco, máquina, aparato o artículo de venta → kind = "product".
-- Si es producto, NUNCA clasifiques como comprobante aunque tenga números.
-- Si es producto, intentá identificarlo usando el catálogo.
-- Si no estás seguro, usá "other".
+- Si el receptor aparece parecido al esperado, devolvé el nombre esperado del entrenamiento.
+- Si ves un producto físico, artículo, herramienta, máquina, envase, caja, frasco, accesorio o promo comercial → kind = "product".
+- Si es producto, NUNCA lo clasifiques como comprobante aunque tenga precio, números o texto de promo.
+- Si ves un afilador de cuchillos, sharpener, herramienta negra/roja con ranuras para cuchillos → productName = "Afilador de Cuchillos".
+- Si ves una imagen con texto "PROMO 2 UNIDADES 129.900Gs" y un producto físico → kind = "product", productPrice = "129.900", promoText = "PROMO 2 UNIDADES".
+- Si el producto no está en catálogo, igual identificá el productName genérico visual.
+- matchedProduct solo va si encontrás coincidencia clara con el catálogo.
+- Si no estás seguro, usá kind = "other".
 
 Caption del cliente: "${clean(caption) || "(vacío)"}"
 
 Catálogo / entrenamiento:
-${productList.slice(0, 3500)}
+${productList.slice(0, 5000)}
 
 NO devuelvas texto fuera del JSON.
 `.trim();
@@ -598,13 +564,12 @@ NO devuelvas texto fuera del JSON.
     model,
     system,
     contents,
-    temperature: 0.05,
-    maxTokens: 700,
+    temperature: 0.02,
+    maxTokens: 900,
   });
 
   try {
     const match = raw.match(/\{[\s\S]*\}/);
-
     if (!match) throw new Error("no json");
 
     const parsed = JSON.parse(match[0]);
@@ -622,6 +587,9 @@ NO devuelvas texto fuera del JSON.
       amount: clean(parsed.amount),
       receiverName: clean(parsed.receiverName),
       matchedProduct: clean(parsed.matchedProduct),
+      productName: clean(parsed.productName),
+      productPrice: clean(parsed.productPrice),
+      promoText: clean(parsed.promoText),
     };
   } catch {
     console.warn("⚠️ analyzeImage no parseó JSON:", raw.slice(0, 200));
@@ -632,6 +600,9 @@ NO devuelvas texto fuera del JSON.
       amount: "",
       receiverName: "",
       matchedProduct: "",
+      productName: "",
+      productPrice: "",
+      promoText: "",
     };
   }
 }
@@ -655,9 +626,7 @@ async function transcribeAudioWithGemini({
             data: audioBase64,
           },
         },
-        {
-          text: "Transcribí este audio.",
-        },
+        { text: "Transcribí este audio." },
       ],
     },
   ];
@@ -675,12 +644,10 @@ async function transcribeAudioWithGemini({
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL: PRODUCTO + COMPROBANTE + MONTO + RECEPTOR");
+  console.log("🔥 VERSION FINAL: VISION PRODUCTOS + PRECIOS + COMPROBANTES");
 
   if (req.method !== "POST") {
-    return res.status(405).json({
-      error: "Method not allowed",
-    });
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
@@ -846,29 +813,72 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
         }
 
         if (analysis.kind === "product") {
-          const visionProduct =
-            detectProduct(
-              `${analysis.matchedProduct} ${analysis.transcript}`,
-              fullTraining,
-              ""
-            ) || analysis.matchedProduct;
+          const productSignal = [
+            analysis.matchedProduct,
+            analysis.productName,
+            analysis.transcript,
+            analysis.promoText,
+          ]
+            .filter(Boolean)
+            .join(" ");
 
-          product = visionProduct || product;
+          const catalogProduct = detectProduct(productSignal, fullTraining, "");
+
+          const visualProduct =
+            catalogProduct ||
+            analysis.matchedProduct ||
+            analysis.productName ||
+            "";
+
+          product = visualProduct || product;
+
+          const hasVisiblePrice = !!analysis.productPrice;
+
+          if (!catalogProduct && visualProduct && hasVisiblePrice) {
+            const promoLine = analysis.promoText
+              ? `🔥 ${analysis.promoText} → ${analysis.productPrice} Gs`
+              : `💰 Precio: ${analysis.productPrice} Gs`;
+
+            return res.json({
+              response: `Sí 😊 es ${visualProduct}.
+
+${promoLine}
+
+📍 ¿Para qué ciudad sería el envío?`,
+              context: {
+                ...(context || {}),
+                current_product: visualProduct,
+                step: "collecting_city",
+                tipo_cobertura: previousTipoCobertura || null,
+                order_data: {
+                  ...(orderData || {}),
+                  product: visualProduct,
+                },
+                last_topic: visualProduct,
+                updated_at: new Date().toISOString(),
+              },
+              is_payment_proof: false,
+            });
+          }
 
           texto = `
 El cliente envió una FOTO DE PRODUCTO.
 Descripción detectada: ${analysis.transcript || "producto no identificado"}
-Producto detectado: ${product || "no identificado"}
+Producto visual detectado: ${visualProduct || "no identificado"}
+Producto del catálogo detectado: ${catalogProduct || "no encontrado"}
+Precio visible en imagen: ${analysis.productPrice || "no visible"}
+Promo visible en imagen: ${analysis.promoText || "no visible"}
 
-Si el producto detectado existe en el entrenamiento, respondé con su nombre, precio, promoción si existe y preguntá para qué ciudad sería el envío.
-Si no existe o no estás seguro, pedí el nombre del producto para confirmarle precio.
+Si hay producto del catálogo detectado, respondé con su nombre, precio exacto del entrenamiento, promoción si existe y preguntá para qué ciudad sería el envío.
+Si no hay producto del catálogo pero hay producto visual y precio visible, respondé con ese producto y precio visible.
+Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 `.trim();
         } else {
           texto =
             texto ||
             `El cliente envió una imagen. Descripción: ${
               analysis.transcript || "imagen no identificada"
-            }. Si no corresponde a producto ni comprobante, respondé pidiendo más detalle.`;
+            }. Si no corresponde a producto ni comprobante, pedí más detalle.`;
         }
       } else {
         texto = texto || "Te mandé una imagen pero no pudiste descargarla.";
@@ -950,9 +960,7 @@ Si no existe o no estás seguro, pedí el nombre del producto para confirmarle p
 
     const system = `
 Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento oficial del usuario.
-NO inventes precios.
-NO inventes datos.
-NO agregues reglas externas.
+NO inventes precios si no hay precio visible ni precio en entrenamiento.
 NO muestres variables internas.
 
 ═══════════════════════════════════
@@ -987,16 +995,17 @@ REGLAS TÉCNICAS:
 9. Si el tipo de cobertura es sin_cobertura y ya tenés nombre y teléfono, pedí comprobante de transferencia.
 10. Si el paso actual es collecting_address, pedí dirección exacta SOLO si tiene cobertura.
 11. Si el paso actual es confirm_order, confirmá el pedido con la plantilla del entrenamiento.
-12. Si el cliente envía foto de producto y el producto existe en entrenamiento, respondé nombre + precio + promo + preguntá ciudad.
-13. Si el cliente envía foto de producto y no estás seguro del producto, pedí el nombre del producto.
-14. Si solo pregunta precio, respondé precio + CTA, sin pedir datos todavía.
-15. No repitas saludo si ya hubo conversación.
-16. No cambies de producto salvo que el cliente lo pida.
-17. Cerrá siempre con el siguiente paso.
-18. Catálogo: ${CATALOG_URL}
-19. Español paraguayo natural, con emojis.
-20. Pedro Juan Caballero / PJC es SIN COBERTURA.
-21. Si el paso anterior es payment_verified, NO vuelvas a validar comprobante.
+12. Si el cliente envía foto de producto y se detecta producto del catálogo, respondé nombre + precio + promo + preguntá ciudad.
+13. Si el cliente envía foto de producto, hay precio visible y producto visual detectado, respondé ese producto y ese precio.
+14. Si no hay precio visible ni producto seguro, pedí el nombre del producto.
+15. Si solo pregunta precio, respondé precio + CTA, sin pedir datos todavía.
+16. No repitas saludo si ya hubo conversación.
+17. No cambies de producto salvo que el cliente lo pida.
+18. Cerrá siempre con el siguiente paso.
+19. Catálogo: ${CATALOG_URL}
+20. Español paraguayo natural, con emojis.
+21. Pedro Juan Caballero / PJC es SIN COBERTURA.
+22. Si el paso anterior es payment_verified, NO vuelvas a validar comprobante.
 `.trim();
 
     const contents = cleanHistory
