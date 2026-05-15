@@ -77,31 +77,35 @@ function extractData(msg: string) {
   const text = clean(msg);
   const norm = normalize(text);
   const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
-
-  // ✅ FIX: extracción de cantidad robusta, sin concatenación
+  
   let quantity = 0;
-
-  // 1. "2 unidades", "3 u", etc.
+  
+  // REGLA 1: "2 unidades", "3 u", etc.
   const q1 = norm.match(/\b(\d+)\s*(unidad|unidades|u)\b/);
-  if (q1) {
-    quantity = parseInt(q1[1], 10);
+  if (q1) quantity = Number(q1[1]);
+  
+  // REGLA 2: "dos", "tres" (palabras)
+  if (!quantity && /\b(uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/.test(norm)) {
+    const words: Record<string, number> = {
+      uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
+      seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10
+    };
+    for (const [word, num] of Object.entries(words)) {
+      if (norm.includes(word)) {
+        quantity = num;
+        break;
+      }
+    }
   }
-
-  // 2. Palabras escritas
-  if (!quantity && /\buno\b|\buna\b/.test(norm)) quantity = 1;
-  if (!quantity && /\bdos\b/.test(norm)) quantity = 2;
-  if (!quantity && /\btres\b/.test(norm)) quantity = 3;
-  if (!quantity && /\bcuatro\b/.test(norm)) quantity = 4;
-  if (!quantity && /\bcinco\b/.test(norm)) quantity = 5;
-
-  // 3. ✅ CLAVE: número suelto exacto ("1", "2", "3", "1 nomas", "solo 2", etc.)
+  
+  // REGLA 3: NÚMERO SOLO - "1", "2", "3"
   if (!quantity) {
-    const soloNumero = norm.match(/(?:^|\s)(\d+)(?:\s|$)/);
+    const soloNumero = norm.match(/\b(\d+)\b/);
     if (soloNumero) {
-      const n = parseInt(soloNumero[1], 10);
-      // Evitar tomar números de teléfono (>6 dígitos) o direcciones grandes
-      if (n > 0 && n <= 9999 && soloNumero[1].length <= 4) {
-        quantity = n;
+      const num = Number(soloNumero[1]);
+      // Solo si es un número razonable (1-99) y NO es parte de otro contexto
+      if (num >= 1 && num <= 99 && !norm.includes("precio") && !norm.includes("cuesta")) {
+        quantity = num;
       }
     }
   }
@@ -109,16 +113,12 @@ function extractData(msg: string) {
   const cityAliases: Record<string, string> = {
     asuncion: "Asunción",
     capiata: "Capiatá",
-    capilata: "Capiatá",
-    kapiata: "Capiatá",
     cde: "Ciudad del Este",
     "ciudad del este": "Ciudad del Este",
     luque: "Luque",
     ita: "Itá",
     lambare: "Lambaré",
     "san lorenzo": "San Lorenzo",
-    sanlo: "San Lorenzo",
-    "san lorenso": "San Lorenzo",
     fdm: "Fernando de la Mora",
     "fernando de la mora": "Fernando de la Mora",
     nemby: "Ñemby",
@@ -128,10 +128,8 @@ function extractData(msg: string) {
     hernandarias: "Hernandarias",
     "presidente franco": "Presidente Franco",
     "pte franco": "Presidente Franco",
-    pjc: "Pedro Juan Caballero",
     aregua: "Areguá",
     "areguá": "Areguá",
-    mra: "Mariano Roque Alonso",
   };
 
   let city = "";
@@ -166,12 +164,9 @@ function extractData(msg: string) {
 }
 
 function mergeOrderData(old: any, ext: any, product: string) {
-  // ✅ FIX: parseInt fuerza que la cantidad siempre sea número entero,
-  // evitando que un string "1" del contexto cause concatenación "1"+"1"="11"
-  const oldQty = parseInt(String(old?.quantity || "0"), 10) || 0;
   return {
     product: product || old?.product || "",
-    quantity: ext.quantity || oldQty || 1,
+    quantity: ext.quantity || old?.quantity || 1,
     city: ext.city || old?.city || "",
     customer_name: ext.name || old?.customer_name || "",
     phone: ext.phone || old?.phone || "",
@@ -341,7 +336,6 @@ async function callGemini({
   return text;
 }
 
-// Llama a Gemini con imagen y le pide JSON: kind + transcript
 async function analyzeImageWithGemini({
   apiKey,
   model,
@@ -407,7 +401,6 @@ NO devuelvas texto fuera del JSON.
   }
 }
 
-// Transcribe audio con Gemini
 async function transcribeAudioWithGemini({
   apiKey,
   model,
@@ -459,7 +452,7 @@ export default async function handler(req: any, res: any) {
     let texto = clean(message);
     const fromNumber = clean(from_number);
     const mediaUrl = clean(media_url);
-    const mediaType = clean(media_type); // "image" | "audio" | ""
+    const mediaType = clean(media_type);
     const mimeHint = clean(mime_type);
 
     console.log(
@@ -525,7 +518,6 @@ export default async function handler(req: any, res: any) {
 
         if (analysis.kind === "payment_proof") {
           isPaymentProof = true;
-          // Respuesta directa, sin pasar por el flujo normal
           const replyPago = `¡Perfecto! 🙏 Recibí tu comprobante (${
             analysis.transcript || "transferencia"
           }). Ya estamos verificando el pago y enseguida te confirmamos el envío 🚚✨`;
@@ -539,7 +531,6 @@ export default async function handler(req: any, res: any) {
             },
           });
         } else if (analysis.kind === "product") {
-          // Inyectamos la descripción como si el cliente lo hubiera escrito
           imageNote = `[el cliente envió una FOTO. Descripción: ${analysis.transcript}]`;
           texto = texto
             ? `${texto}\n${imageNote}`
