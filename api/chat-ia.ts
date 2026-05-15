@@ -73,12 +73,20 @@ function getTipoCobertura(city: string): "con_cobertura" | "sin_cobertura" | "" 
   if (!city) return "";
 
   const c = normalize(city);
-
-  const tieneCobertura = ZONAS_COBERTURA.some(
-    (z) => normalize(z) === c
-  );
+  const tieneCobertura = ZONAS_COBERTURA.some((z) => normalize(z) === c);
 
   return tieneCobertura ? "con_cobertura" : "sin_cobertura";
+}
+
+function extractBankReceiverFromTraining(training: string): string {
+  const titular =
+    training.match(/titular\s*[:\-]\s*([^\n\r]+)/i)?.[1] ||
+    training.match(/a nombre de\s*[:\-]?\s*([^\n\r]+)/i)?.[1] ||
+    "";
+
+  return clean(titular)
+    .replace(/[✅📲💳]/g, "")
+    .trim();
 }
 
 function getPriceLines(training: string): string[] {
@@ -112,7 +120,6 @@ function detectProduct(text: string, training: string, prev?: string) {
     if (!n || n.length < 3) continue;
 
     const words = n.split(" ").filter((w) => w.length >= 4);
-
     let score = 0;
 
     if (msg.includes(n)) score += 20;
@@ -128,13 +135,11 @@ function detectProduct(text: string, training: string, prev?: string) {
   }
 
   if (bestScore >= 4) return best;
-
   return clean(prev || "");
 }
 
 function isPriceIntent(text: string) {
   const m = normalize(text);
-
   return (
     m.includes("precio") ||
     m.includes("cuanto") ||
@@ -195,16 +200,12 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
 
     if (onlyNumber) {
       const num = Number(onlyNumber[1]);
-
-      if (num >= 1 && num <= 999) {
-        quantity = num;
-      }
+      if (num >= 1 && num <= 999) quantity = num;
     }
   }
 
   if (!quantity) {
     const q1 = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
-
     if (q1) quantity = Number(q1[1]);
   }
 
@@ -245,7 +246,6 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
 
       if (q2) {
         const num = Number(q2[1]);
-
         if (num >= 1 && num <= 999) quantity = num;
       }
     }
@@ -537,10 +537,12 @@ async function analyzeImageWithGemini({
   mime,
   caption,
   productList,
+  expectedReceiverName,
 }: any): Promise<{
   kind: "payment_proof" | "product" | "other";
   transcript: string;
   amount: string;
+  receiverName: string;
   matchedProduct: string;
 }> {
   const system = `
@@ -551,21 +553,25 @@ Devolvé EXCLUSIVAMENTE un JSON válido:
   "kind": "payment_proof" | "product" | "other",
   "transcript": "descripción breve",
   "amount": "monto si aparece, ejemplo 269.998",
+  "receiverName": "nombre de quien recibió el pago si aparece",
   "matchedProduct": "nombre del producto si coincide con catálogo"
 }
 
-REGLAS IMPORTANTES:
+REGLAS:
 - Si la imagen muestra comprobante, transferencia, ticket bancario, billetera, banco, monto enviado o destinatario → kind = "payment_proof".
-- Si la imagen muestra un producto físico, envase, caja, frasco, máquina, aparato o artículo de venta → kind = "product".
+- Si es comprobante, extraé el monto enviado.
+- Si es comprobante, extraé el nombre del receptor/destinatario/beneficiario si aparece.
+- El receptor esperado según entrenamiento es: "${expectedReceiverName || "no especificado"}".
+- Si el nombre del receptor aparece parecido al esperado, usá el nombre esperado del entrenamiento.
+- Si la imagen muestra producto físico, envase, caja, frasco, máquina, aparato o artículo de venta → kind = "product".
 - Si es producto, NUNCA clasifiques como comprobante aunque tenga números.
-- Si es comprobante, extraé el monto si aparece.
-- Si es producto, intentá identificarlo usando el catálogo de referencia.
+- Si es producto, intentá identificarlo usando el catálogo.
 - Si no estás seguro, usá "other".
 
 Caption del cliente: "${clean(caption) || "(vacío)"}"
 
-Catálogo de referencia:
-${productList.slice(0, 3000)}
+Catálogo / entrenamiento:
+${productList.slice(0, 3500)}
 
 NO devuelvas texto fuera del JSON.
 `.trim();
@@ -614,6 +620,7 @@ NO devuelvas texto fuera del JSON.
       kind,
       transcript: clean(parsed.transcript),
       amount: clean(parsed.amount),
+      receiverName: clean(parsed.receiverName),
       matchedProduct: clean(parsed.matchedProduct),
     };
   } catch {
@@ -623,6 +630,7 @@ NO devuelvas texto fuera del JSON.
       kind: "other",
       transcript: clean(raw).slice(0, 200),
       amount: "",
+      receiverName: "",
       matchedProduct: "",
     };
   }
@@ -667,7 +675,7 @@ async function transcribeAudioWithGemini({
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL: IMAGEN PRODUCTO + COMPROBANTE + MONTO + COBERTURA");
+  console.log("🔥 VERSION FINAL: PRODUCTO + COMPROBANTE + MONTO + RECEPTOR");
 
   if (req.method !== "POST") {
     return res.status(405).json({
@@ -695,6 +703,7 @@ export default async function handler(req: any, res: any) {
 
     if (!user_id) return res.status(400).json({ error: "Falta user_id" });
     if (!fromNumber) return res.status(400).json({ error: "Falta from_number" });
+
     if (!texto && !mediaUrl) {
       return res.status(400).json({ error: "Faltan message o media" });
     }
@@ -728,6 +737,8 @@ export default async function handler(req: any, res: any) {
         response: "⚠️ No encontré entrenamiento activo.",
       });
     }
+
+    const expectedReceiverName = extractBankReceiverFromTraining(fullTraining);
 
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
@@ -788,6 +799,7 @@ export default async function handler(req: any, res: any) {
           mime,
           caption: texto,
           productList: fullTraining,
+          expectedReceiverName,
         });
 
         console.log("🖼️ Vision:", analysis);
@@ -807,8 +819,17 @@ export default async function handler(req: any, res: any) {
             ? ` por Gs. ${analysis.amount}`
             : "";
 
+          const receiver =
+            analysis.receiverName ||
+            expectedReceiverName ||
+            "nuestro titular";
+
           return res.json({
-            response: `¡Perfecto! 🙏 Recibí tu comprobante${amountText}. Ya estamos verificando el pago y enseguida te confirmamos el envío 🚚✨`,
+            response: `¡Perfecto! 🙏 Recibimos tu comprobante${amountText} a nombre de ${receiver}.
+
+Ya estamos verificando el pago ✅
+
+Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu comprobante de encomienda 🚚✨`,
             is_payment_proof: true,
             context: {
               ...(context || {}),
@@ -818,6 +839,7 @@ export default async function handler(req: any, res: any) {
               order_data: orderData,
               last_topic: "payment_verified",
               payment_amount: analysis.amount || null,
+              payment_receiver: receiver,
               updated_at: new Date().toISOString(),
             },
           });
@@ -838,7 +860,7 @@ El cliente envió una FOTO DE PRODUCTO.
 Descripción detectada: ${analysis.transcript || "producto no identificado"}
 Producto detectado: ${product || "no identificado"}
 
-Si el producto detectado existe en el entrenamiento, respondé con su precio, promoción si existe y preguntá para qué ciudad sería el envío.
+Si el producto detectado existe en el entrenamiento, respondé con su nombre, precio, promoción si existe y preguntá para qué ciudad sería el envío.
 Si no existe o no estás seguro, pedí el nombre del producto para confirmarle precio.
 `.trim();
         } else {
@@ -846,7 +868,7 @@ Si no existe o no estás seguro, pedí el nombre del producto para confirmarle p
             texto ||
             `El cliente envió una imagen. Descripción: ${
               analysis.transcript || "imagen no identificada"
-            }. Si no corresponde a producto ni comprobante, respondé de forma natural pidiendo más detalle.`;
+            }. Si no corresponde a producto ni comprobante, respondé pidiendo más detalle.`;
         }
       } else {
         texto = texto || "Te mandé una imagen pero no pudiste descargarla.";
@@ -924,7 +946,6 @@ Si no existe o no estás seguro, pedí el nombre del producto para confirmarle p
     }
 
     let cleanHistory = Array.isArray(history) ? history : [];
-
     if (isPureQuantityReply) cleanHistory = [];
 
     const system = `
@@ -948,12 +969,13 @@ ESTADO ACTUAL DEL CLIENTE:
 - Nombre: ${orderData.customer_name || "pendiente"}
 - Teléfono: ${orderData.phone || "pendiente"}
 - Dirección: ${orderData.address || "pendiente"}
+- Titular esperado para transferencia: ${expectedReceiverName || "pendiente"}
 - Paso anterior: ${previousStep || "ninguno"}
 - Paso actual: ${step}
 - Última pregunta del bot: ${lastAssistantMessage || "ninguna"}
 - Intención: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
 
-REGLAS TÉCNICAS OBLIGATORIAS:
+REGLAS TÉCNICAS:
 1. Si la última pregunta fue sobre cantidad y el cliente respondió solo un número, ese número es la cantidad final exacta.
 2. Nunca concatenes cantidades.
 3. Nunca conviertas 1 en 11, 2 en 22, 3 en 33.
@@ -965,7 +987,7 @@ REGLAS TÉCNICAS OBLIGATORIAS:
 9. Si el tipo de cobertura es sin_cobertura y ya tenés nombre y teléfono, pedí comprobante de transferencia.
 10. Si el paso actual es collecting_address, pedí dirección exacta SOLO si tiene cobertura.
 11. Si el paso actual es confirm_order, confirmá el pedido con la plantilla del entrenamiento.
-12. Si el cliente envía foto de producto y el producto existe en entrenamiento, respondé precio + promo + preguntá ciudad.
+12. Si el cliente envía foto de producto y el producto existe en entrenamiento, respondé nombre + precio + promo + preguntá ciudad.
 13. Si el cliente envía foto de producto y no estás seguro del producto, pedí el nombre del producto.
 14. Si solo pregunta precio, respondé precio + CTA, sin pedir datos todavía.
 15. No repitas saludo si ya hubo conversación.
