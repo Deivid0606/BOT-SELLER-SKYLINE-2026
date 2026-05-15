@@ -281,7 +281,6 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     aregua: "Areguá",
     areguá: "Areguá",
 
-    // SIN COBERTURA
     pjc: "Pedro Juan Caballero",
     "pedro juan": "Pedro Juan Caballero",
     "pedro juan caballero": "Pedro Juan Caballero",
@@ -367,7 +366,8 @@ async function safeUpsertOrder(
   userId: string,
   from: string,
   order: any,
-  confirm = false
+  confirm = false,
+  forcedStatus?: string
 ) {
   try {
     if (!order?.product) return null;
@@ -390,6 +390,7 @@ async function safeUpsertOrder(
         "collecting_phone",
         "collecting_address",
         "waiting_payment_proof",
+        "payment_verified",
         "confirm_pending",
       ])
       .order("created_at", { ascending: false })
@@ -405,11 +406,12 @@ async function safeUpsertOrder(
     const step = nextStep(order, tipoCobertura);
 
     const finalStatus =
-      confirm && step === "confirm_order"
+      forcedStatus ||
+      (confirm && step === "confirm_order"
         ? "confirmed"
         : step === "confirm_order"
         ? "confirm_pending"
-        : step;
+        : step);
 
     const payload: any = {
       user_id: userId,
@@ -659,7 +661,7 @@ async function transcribeAudioWithGemini({
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION CORREGIDA COBERTURA + COMPROBANTE + CANTIDAD");
+  console.log("🔥 VERSION FINAL: COBERTURA + COMPROBANTE UNA SOLA VEZ + CANTIDAD");
 
   if (req.method !== "POST") {
     return res.status(405).json({
@@ -787,11 +789,7 @@ export default async function handler(req: any, res: any) {
 
     const isWaitingPaymentProof =
       tipoCobertura === "sin_cobertura" &&
-      (
-        previousStep === "waiting_payment_proof" ||
-        previousStep === "confirm_pending" ||
-        context?.last_topic === "comprobante"
-      );
+      previousStep === "waiting_payment_proof";
 
     if (mediaUrl && mediaType === "image") {
       const fetched = await fetchMediaAsBase64(mediaUrl);
@@ -813,7 +811,16 @@ export default async function handler(req: any, res: any) {
         if (analysis.kind === "payment_proof" && isWaitingPaymentProof) {
           isPaymentProof = true;
 
-          const replyPago = `¡Perfecto! 🙏 Recibí tu comprobante. Ya estamos verificando el pago y enseguida te confirmamos el envío 🚚✨`;
+          await safeUpsertOrder(
+            user_id,
+            fromNumber,
+            orderData,
+            false,
+            "payment_verified"
+          );
+
+          const replyPago =
+            "¡Perfecto! 🙏 Recibí tu comprobante. Ya estamos verificando el pago y enseguida te confirmamos el envío 🚚✨";
 
           return res.json({
             response: replyPago,
@@ -821,10 +828,10 @@ export default async function handler(req: any, res: any) {
             context: {
               ...(context || {}),
               current_product: orderData.product || context?.current_product || null,
-              step: "payment_proof_received",
+              step: "payment_verified",
               tipo_cobertura: "sin_cobertura",
               order_data: orderData,
-              last_topic: "comprobante",
+              last_topic: "payment_verified",
               updated_at: new Date().toISOString(),
             },
           });
@@ -980,6 +987,7 @@ REGLAS TÉCNICAS OBLIGATORIAS:
 19. Nunca respondas vacío.
 20. Pedro Juan Caballero / PJC es SIN COBERTURA.
 21. No valides comprobante si no estabas esperando comprobante.
+22. Si el paso anterior es payment_verified, NO vuelvas a validar comprobante.
 `.trim();
 
     const contents = cleanHistory
@@ -1032,11 +1040,13 @@ REGLAS TÉCNICAS OBLIGATORIAS:
     const newContext = {
       ...(context || {}),
       current_product: orderData.product || context?.current_product || null,
-      step: shouldCollect ? step : "selling",
+      step: shouldCollect ? step : previousStep === "payment_verified" ? "payment_verified" : "selling",
       tipo_cobertura: finalTipoCobertura || null,
       order_data: orderData,
       last_topic:
-        step === "waiting_payment_proof"
+        previousStep === "payment_verified"
+          ? "payment_verified"
+          : step === "waiting_payment_proof"
           ? "comprobante"
           : orderData.product || context?.last_topic || "ENTRENAMIENTO",
       updated_at: new Date().toISOString(),
