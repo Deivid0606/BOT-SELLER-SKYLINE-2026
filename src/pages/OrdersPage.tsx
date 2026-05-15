@@ -244,20 +244,28 @@ export default function OrdersPage() {
   }
 
   function abrirEcommerce(o: Order) {
+    const numeroCompra = o.from_number || o.phone || "";
+
+    const observacion = `Forma de pago: ${o.metodo_pago || "efectivo"}`;
+
     const params = new URLSearchParams({
       view: "create-order",
       nombre: o.customer_name || "",
-      telefono: o.phone || o.from_number || "",
+      telefono: numeroCompra,
       ciudad: o.city || "",
       calle: o.address || "",
       producto: o.product || "",
       cantidad: String(o.quantity || 1),
       total: o.total_amount || "",
       pago: o.metodo_pago || "",
+      observacion,
       origen: "seller-skyline",
     });
 
-    window.open(`${ECOMMERCE_URL}/?${params.toString()}`, "_blank");
+    window.open(
+      `${ECOMMERCE_URL}/?${params.toString()}`,
+      "_blank"
+    );
   }
 
   const filtered = orders.filter((o) => {
