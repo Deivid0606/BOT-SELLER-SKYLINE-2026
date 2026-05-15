@@ -17,6 +17,7 @@ import {
   MessageSquare,
   ReceiptText,
   Phone,
+  ShoppingCart,
 } from "lucide-react";
 
 type Order = {
@@ -36,6 +37,8 @@ type Order = {
   detected_by_ai: boolean | null;
   created_at: string;
 };
+
+const ECOMMERCE_URL = "https://www.el-ecommercedcanpgroup.com";
 
 const HIDDEN_STATUSES = [
   "collecting_name",
@@ -240,6 +243,22 @@ export default function OrdersPage() {
     navigate(`/inbox?phone=${encodeURIComponent(phone)}`);
   }
 
+  function abrirEcommerce(o: Order) {
+    const params = new URLSearchParams({
+      nombre: o.customer_name || "",
+      telefono: o.phone || o.from_number || "",
+      ciudad: o.city || "",
+      calle: o.address || "",
+      producto: o.product || "",
+      cantidad: String(o.quantity || 1),
+      total: o.total_amount || "",
+      pago: o.metodo_pago || "",
+      origen: "seller-skyline",
+    });
+
+    window.open(`${ECOMMERCE_URL}/create-order?${params.toString()}`, "_blank");
+  }
+
   const filtered = orders.filter((o) => {
     const tel = o.phone || o.from_number || "";
 
@@ -408,6 +427,15 @@ export default function OrdersPage() {
                     )}
 
                     <div className="mt-4 flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        className="h-8 rounded-md bg-orange-500/20 px-3 text-xs text-orange-300 hover:bg-orange-500/30"
+                        onClick={() => abrirEcommerce(o)}
+                      >
+                        <ShoppingCart className="mr-1.5 h-3.5 w-3.5" />
+                        Ecommerce
+                      </Button>
+
                       <Button
                         size="sm"
                         variant="outline"
