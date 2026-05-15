@@ -245,6 +245,7 @@ export default function OrdersPage() {
 
   function abrirEcommerce(o: Order) {
     const params = new URLSearchParams({
+      view: "create-order",
       nombre: o.customer_name || "",
       telefono: o.phone || o.from_number || "",
       ciudad: o.city || "",
@@ -256,7 +257,7 @@ export default function OrdersPage() {
       origen: "seller-skyline",
     });
 
-    window.open(`${ECOMMERCE_URL}/create-order?${params.toString()}`, "_blank");
+    window.open(`${ECOMMERCE_URL}/?${params.toString()}`, "_blank");
   }
 
   const filtered = orders.filter((o) => {
