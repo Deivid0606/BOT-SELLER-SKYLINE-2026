@@ -7,6 +7,7 @@ const supabase = createClient(
 );
 
 const CATALOG_URL = "https://cat-logomegatodo-com.vercel.app/";
+
 const clean = (t: any): string => String(t || "").trim();
 
 const normalize = (t: string): string =>
@@ -26,7 +27,11 @@ function getPriceLines(training: string): string[] {
 }
 
 function extractProductNameFromLine(line: string): string {
-  const c = line.replace(/^[-•\s]+/, "").replace(/[💙🦶🎯💰🔥✨]/g, "").trim();
+  const c = line
+    .replace(/^[-•\s]+/, "")
+    .replace(/[💙🦶🎯💰🔥✨]/g, "")
+    .trim();
+
   const parts = c.split(/—|-{2,}|–/);
   return clean(parts[0] || c);
 }
@@ -34,27 +39,40 @@ function extractProductNameFromLine(line: string): string {
 function detectProduct(text: string, training: string, prev?: string) {
   const msg = normalize(text);
   const lines = getPriceLines(training);
+
   let best = "";
   let bestScore = 0;
+
   for (const line of lines) {
     const name = extractProductNameFromLine(line);
     const n = normalize(name);
+
     if (!n || n.length < 3) continue;
+
     const words = n.split(" ").filter((w) => w.length >= 4);
+
     let score = 0;
+
     if (msg.includes(n)) score += 20;
-    for (const w of words) if (msg.includes(w)) score += 4;
+
+    for (const w of words) {
+      if (msg.includes(w)) score += 4;
+    }
+
     if (score > bestScore) {
       bestScore = score;
       best = name;
     }
   }
+
   if (bestScore >= 4) return best;
+
   return clean(prev || "");
 }
 
 function isPriceIntent(text: string) {
   const m = normalize(text);
+
   return (
     m.includes("precio") ||
     m.includes("cuanto") ||
@@ -66,46 +84,91 @@ function isPriceIntent(text: string) {
 
 function isBuyIntent(text: string) {
   const m = normalize(text);
+
   return (
-    /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo)\b/.test(
+    /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo|mandame|dame)\b/.test(
       m
-    ) || /\b\d+\s*(unidad|unidades|u)\b/.test(m)
+    ) ||
+    /\b\d+\s*(unidad|unidades|u)\b/.test(m) ||
+    /^\d+$/.test(m)
   );
 }
 
-function extractData(msg: string) {
+function extractData(msg: string, currentStep?: string) {
   const text = clean(msg);
   const norm = normalize(text);
+
   const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
-  
+
   let quantity = 0;
-  
+
+  // CASO ESPECIAL: si el sistema está esperando cantidad
+  // y el cliente manda solo un número, ese número reemplaza la cantidad.
+  if (currentStep === "collecting_quantity" || currentStep === "esperando_cantidad") {
+    const onlyNumber = norm.match(/^\s*(\d{1,3})\s*$/);
+
+    if (onlyNumber) {
+      const num = Number(onlyNumber[1]);
+
+      if (num >= 1 && num <= 999) {
+        quantity = num;
+      }
+    }
+  }
+
   // REGLA 1: "2 unidades", "3 u", etc.
-  const q1 = norm.match(/\b(\d+)\s*(unidad|unidades|u)\b/);
-  if (q1) quantity = Number(q1[1]);
-  
-  // REGLA 2: "dos", "tres" (palabras)
-  if (!quantity && /\b(uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/.test(norm)) {
+  if (!quantity) {
+    const q1 = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
+
+    if (q1) {
+      quantity = Number(q1[1]);
+    }
+  }
+
+  // REGLA 2: "uno", "dos", "tres", etc.
+  if (
+    !quantity &&
+    /\b(uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/.test(norm)
+  ) {
     const words: Record<string, number> = {
-      uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
-      seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10
+      uno: 1,
+      una: 1,
+      dos: 2,
+      tres: 3,
+      cuatro: 4,
+      cinco: 5,
+      seis: 6,
+      siete: 7,
+      ocho: 8,
+      nueve: 9,
+      diez: 10,
     };
+
     for (const [word, num] of Object.entries(words)) {
-      if (norm.includes(word)) {
+      if (new RegExp(`\\b${word}\\b`).test(norm)) {
         quantity = num;
         break;
       }
     }
   }
-  
-  // REGLA 3: NÚMERO SOLO - "1", "2", "3"
+
+  // REGLA 3: números dentro de frases de compra.
+  // Ej: "quiero 1", "mandame 2", "solo 3"
   if (!quantity) {
-    const soloNumero = norm.match(/\b(\d+)\b/);
-    if (soloNumero) {
-      const num = Number(soloNumero[1]);
-      // Solo si es un número razonable (1-99) y NO es parte de otro contexto
-      if (num >= 1 && num <= 99 && !norm.includes("precio") && !norm.includes("cuesta")) {
-        quantity = num;
+    const looksLikeQuantity =
+      /\b(quiero|llevo|mandame|dame|solo|solamente|nomas|nomás|unidad|unidades|u)\b/.test(
+        norm
+      );
+
+    if (looksLikeQuantity) {
+      const q2 = norm.match(/\b(\d{1,3})\b/);
+
+      if (q2) {
+        const num = Number(q2[1]);
+
+        if (num >= 1 && num <= 999) {
+          quantity = num;
+        }
       }
     }
   }
@@ -113,15 +176,20 @@ function extractData(msg: string) {
   const cityAliases: Record<string, string> = {
     asuncion: "Asunción",
     capiata: "Capiatá",
+    capilata: "Capiatá",
+    kapiata: "Capiatá",
     cde: "Ciudad del Este",
     "ciudad del este": "Ciudad del Este",
     luque: "Luque",
     ita: "Itá",
     lambare: "Lambaré",
     "san lorenzo": "San Lorenzo",
+    sanlo: "San Lorenzo",
+    "san lorenso": "San Lorenzo",
     fdm: "Fernando de la Mora",
     "fernando de la mora": "Fernando de la Mora",
     nemby: "Ñemby",
+    ñemby: "Ñemby",
     ypane: "Ypané",
     limpio: "Limpio",
     "villa elisa": "Villa Elisa",
@@ -129,10 +197,11 @@ function extractData(msg: string) {
     "presidente franco": "Presidente Franco",
     "pte franco": "Presidente Franco",
     aregua: "Areguá",
-    "areguá": "Areguá",
+    areguá: "Areguá",
   };
 
   let city = "";
+
   for (const [k, v] of Object.entries(cityAliases)) {
     if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`, "i").test(norm)) {
       city = v;
@@ -141,12 +210,15 @@ function extractData(msg: string) {
   }
 
   const address =
-    text.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1] ||
-    "";
+    text.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)
+      ?.[1] || "";
 
   let name = "";
-  const nameMatch =
-    text.match(/(?:soy|me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i)?.[1];
+
+  const nameMatch = text.match(
+    /(?:soy|me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i
+  )?.[1];
+
   if (nameMatch) {
     name = clean(nameMatch).replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "").trim();
   } else if (
@@ -160,13 +232,25 @@ function extractData(msg: string) {
     name = text;
   }
 
-  return { quantity, city, name, phone, address: clean(address) };
+  return {
+    quantity,
+    city,
+    name,
+    phone,
+    address: clean(address),
+  };
 }
 
 function mergeOrderData(old: any, ext: any, product: string) {
+  const oldQuantity =
+    typeof old?.quantity === "number" && old.quantity > 0 ? old.quantity : 0;
+
+  const newQuantity =
+    typeof ext?.quantity === "number" && ext.quantity > 0 ? ext.quantity : 0;
+
   return {
     product: product || old?.product || "",
-    quantity: ext.quantity || old?.quantity || 1,
+    quantity: newQuantity || oldQuantity || 0,
     city: ext.city || old?.city || "",
     customer_name: ext.name || old?.customer_name || "",
     phone: ext.phone || old?.phone || "",
@@ -177,6 +261,7 @@ function mergeOrderData(old: any, ext: any, product: string) {
 function nextStep(o: any) {
   if (!o.product) return "selling";
   if (!o.city) return "collecting_city";
+  if (!o.quantity) return "collecting_quantity";
   if (!o.customer_name) return "collecting_name";
   if (!o.phone) return "collecting_phone";
   if (!o.address) return "collecting_address";
@@ -191,6 +276,7 @@ async function safeUpsertOrder(
 ) {
   try {
     if (!order?.product) return null;
+
     if (!from) {
       console.error("❌ safeUpsertOrder: from_number vacío, abortando");
       return null;
@@ -205,6 +291,7 @@ async function safeUpsertOrder(
         "draft",
         "collecting_name",
         "collecting_city",
+        "collecting_quantity",
         "collecting_phone",
         "collecting_address",
         "confirm_pending",
@@ -219,6 +306,7 @@ async function safeUpsertOrder(
     }
 
     const step = nextStep(order);
+
     const finalStatus =
       confirm && step === "confirm_order"
         ? "confirmed"
@@ -236,7 +324,7 @@ async function safeUpsertOrder(
       city: order.city || null,
       ciudad: order.city || null,
       address: order.address || null,
-      quantity: order.quantity || 1,
+      quantity: order.quantity || null,
       total_amount: order.total_amount || null,
       status: finalStatus,
       fecha: new Date().toISOString(),
@@ -248,7 +336,9 @@ async function safeUpsertOrder(
         .from("orders")
         .update(payload)
         .eq("id", existing.id);
+
       if (error) console.error("❌ updateOrder:", error);
+
       return existing.id;
     }
 
@@ -262,6 +352,7 @@ async function safeUpsertOrder(
       console.error("❌ insertOrder:", error);
       return null;
     }
+
     return data?.id || null;
   } catch (e) {
     console.error("❌ safeUpsertOrder:", e);
@@ -269,27 +360,29 @@ async function safeUpsertOrder(
   }
 }
 
-// ───────── MEDIA HELPERS ─────────
-
 async function fetchMediaAsBase64(
   url: string
 ): Promise<{ data: string; mime: string } | null> {
   try {
     const r = await fetch(url);
+
     if (!r.ok) {
       console.error("❌ fetchMedia:", r.status, url.slice(0, 80));
       return null;
     }
+
     const mime = r.headers.get("content-type") || "application/octet-stream";
     const buf = Buffer.from(await r.arrayBuffer());
-    return { data: buf.toString("base64"), mime: mime.split(";")[0].trim() };
+
+    return {
+      data: buf.toString("base64"),
+      mime: mime.split(";")[0].trim(),
+    };
   } catch (e) {
     console.error("❌ fetchMediaAsBase64:", e);
     return null;
   }
 }
-
-// ───────── GEMINI ─────────
 
 async function callGemini({
   apiKey,
@@ -300,7 +393,9 @@ async function callGemini({
   maxTokens,
 }: any) {
   const body: any = {
-    systemInstruction: { parts: [{ text: system }] },
+    systemInstruction: {
+      parts: [{ text: system }],
+    },
     contents,
     generationConfig: {
       temperature,
@@ -309,30 +404,39 @@ async function callGemini({
       topK: 40,
     },
   };
+
   if (String(model).includes("2.5")) {
-    body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    body.generationConfig.thinkingConfig = {
+      thinkingBudget: 0,
+    };
   }
 
   const r = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify(body),
     }
   );
 
   const data = await r.json();
+
   if (!r.ok) {
     console.error("❌ Gemini:", JSON.stringify(data).slice(0, 800));
     return "";
   }
 
   const c = data?.candidates?.[0];
+
   const text = clean(
     c?.content?.parts?.map((p: any) => p.text || "").join("") || ""
   );
+
   console.log("🧠 finishReason:", c?.finishReason, "len:", text.length);
+
   return text;
 }
 
@@ -348,19 +452,19 @@ async function analyzeImageWithGemini({
   transcript: string;
 }> {
   const system = `
-Sos un clasificador. Recibís una IMAGEN enviada por un cliente de WhatsApp a una tienda paraguaya (Mega Todo Store).
+Sos un clasificador. Recibís una IMAGEN enviada por un cliente de WhatsApp a una tienda paraguaya.
 Devolvé EXCLUSIVAMENTE un JSON válido con esta forma:
 {"kind":"payment_proof"|"product"|"other","transcript":"..."}
 
-Reglas para "kind":
-- "payment_proof" → si la imagen es captura/foto de transferencia bancaria, billetera (Tigo Money, Personal Pay, Ueno, Zimple), depósito, comprobante de pago, ticket bancario.
-- "product" → si la imagen muestra un producto/envase (ej. crema, frasco, suplemento, etc.) o el cliente pregunta sobre él.
-- "other" → cualquier otra cosa.
+Reglas:
+- "payment_proof" → comprobante, transferencia, billetera, depósito o ticket bancario.
+- "product" → imagen de producto, envase, caja, frasco o consulta visual de producto.
+- "other" → cualquier otra imagen.
 
-"transcript": describí brevemente en español lo que ves (máx 200 chars). Si es comprobante: monto, banco/billetera, fecha si se ve. Si es producto: qué producto parece y rasgos visibles.
+"transcript": descripción breve en español, máximo 200 caracteres.
 
-Caption del cliente (puede estar vacío): "${clean(caption) || "(vacío)"}"
-Catálogo de productos (referencia): ${productList.slice(0, 800)}
+Caption del cliente: "${clean(caption) || "(vacío)"}"
+Catálogo de referencia: ${productList.slice(0, 800)}
 
 NO devuelvas texto fuera del JSON.
 `.trim();
@@ -369,8 +473,15 @@ NO devuelvas texto fuera del JSON.
     {
       role: "user",
       parts: [
-        { inlineData: { mimeType: mime, data: imageBase64 } },
-        { text: caption ? `Caption: ${caption}` : "Analizá la imagen." },
+        {
+          inlineData: {
+            mimeType: mime,
+            data: imageBase64,
+          },
+        },
+        {
+          text: caption ? `Caption: ${caption}` : "Analizá la imagen.",
+        },
       ],
     },
   ];
@@ -386,18 +497,29 @@ NO devuelvas texto fuera del JSON.
 
   try {
     const match = raw.match(/\{[\s\S]*\}/);
+
     if (!match) throw new Error("no json");
+
     const parsed = JSON.parse(match[0]);
+
     const kind =
       parsed.kind === "payment_proof" ||
       parsed.kind === "product" ||
       parsed.kind === "other"
         ? parsed.kind
         : "other";
-    return { kind, transcript: clean(parsed.transcript) };
+
+    return {
+      kind,
+      transcript: clean(parsed.transcript),
+    };
   } catch {
-    console.warn("⚠️ analyzeImage no parseó JSON, raw:", raw.slice(0, 200));
-    return { kind: "other", transcript: clean(raw).slice(0, 200) };
+    console.warn("⚠️ analyzeImage no parseó JSON:", raw.slice(0, 200));
+
+    return {
+      kind: "other",
+      transcript: clean(raw).slice(0, 200),
+    };
   }
 }
 
@@ -408,14 +530,21 @@ async function transcribeAudioWithGemini({
   mime,
 }: any): Promise<string> {
   const system =
-    "Transcribí el audio al español tal cual lo dijo el hablante. Devolvé SOLO la transcripción en texto plano, sin comillas ni comentarios.";
+    "Transcribí el audio al español tal cual lo dijo el hablante. Devolvé SOLO la transcripción en texto plano.";
 
   const contents = [
     {
       role: "user",
       parts: [
-        { inlineData: { mimeType: mime, data: audioBase64 } },
-        { text: "Transcribí este audio." },
+        {
+          inlineData: {
+            mimeType: mime,
+            data: audioBase64,
+          },
+        },
+        {
+          text: "Transcribí este audio.",
+        },
       ],
     },
   ];
@@ -428,14 +557,16 @@ async function transcribeAudioWithGemini({
     temperature: 0.1,
     maxTokens: 1024,
   });
+
   return clean(txt);
 }
 
-// ───────── HANDLER ─────────
-
 export default async function handler(req: any, res: any) {
-  if (req.method !== "POST")
-    return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") {
+    return res.status(405).json({
+      error: "Method not allowed",
+    });
+  }
 
   try {
     const {
@@ -463,11 +594,23 @@ export default async function handler(req: any, res: any) {
       mediaType ? `media=${mediaType}` : ""
     );
 
-    if (!user_id) return res.status(400).json({ error: "Falta user_id" });
-    if (!fromNumber)
-      return res.status(400).json({ error: "Falta from_number" });
-    if (!texto && !mediaUrl)
-      return res.status(400).json({ error: "Faltan message o media" });
+    if (!user_id) {
+      return res.status(400).json({
+        error: "Falta user_id",
+      });
+    }
+
+    if (!fromNumber) {
+      return res.status(400).json({
+        error: "Falta from_number",
+      });
+    }
+
+    if (!texto && !mediaUrl) {
+      return res.status(400).json({
+        error: "Faltan message o media",
+      });
+    }
 
     const { data: iaConfig } = await supabase
       .from("chat_ia_gemini")
@@ -476,35 +619,42 @@ export default async function handler(req: any, res: any) {
       .eq("is_active", true)
       .maybeSingle();
 
-    if (!iaConfig?.api_key)
+    if (!iaConfig?.api_key) {
       return res.json({
         response: "⚠️ La IA no está configurada o desactivada.",
       });
+    }
 
     const { data: trainingRow } = await supabase
       .from("training_data")
       .select("id, intent, response, updated_at")
       .eq("user_id", user_id)
       .eq("is_active", true)
-      .order("updated_at", { ascending: false })
+      .order("updated_at", {
+        ascending: false,
+      })
       .limit(1)
       .maybeSingle();
 
     const fullTraining = clean(trainingRow?.response);
-    if (!fullTraining)
-      return res.json({ response: "⚠️ No encontré entrenamiento activo." });
+
+    if (!fullTraining) {
+      return res.json({
+        response: "⚠️ No encontré entrenamiento activo.",
+      });
+    }
 
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
     let isPaymentProof = false;
-    let imageNote = "";
 
-    // ─── IMAGEN ───
     if (mediaUrl && mediaType === "image") {
       const fetched = await fetchMediaAsBase64(mediaUrl);
+
       if (fetched) {
         const mime = mimeHint || fetched.mime || "image/jpeg";
+
         const analysis = await analyzeImageWithGemini({
           apiKey,
           model,
@@ -518,9 +668,11 @@ export default async function handler(req: any, res: any) {
 
         if (analysis.kind === "payment_proof") {
           isPaymentProof = true;
+
           const replyPago = `¡Perfecto! 🙏 Recibí tu comprobante (${
             analysis.transcript || "transferencia"
           }). Ya estamos verificando el pago y enseguida te confirmamos el envío 🚚✨`;
+
           return res.json({
             response: replyPago,
             is_payment_proof: true,
@@ -530,13 +682,13 @@ export default async function handler(req: any, res: any) {
               updated_at: new Date().toISOString(),
             },
           });
-        } else if (analysis.kind === "product") {
-          imageNote = `[el cliente envió una FOTO. Descripción: ${analysis.transcript}]`;
+        }
+
+        if (analysis.kind === "product") {
           texto = texto
-            ? `${texto}\n${imageNote}`
+            ? `${texto}\n[el cliente envió una FOTO. Descripción: ${analysis.transcript}]`
             : `Mandé una foto. ${analysis.transcript}`;
         } else {
-          imageNote = `[el cliente envió una imagen: ${analysis.transcript}]`;
           texto = texto || `Te mandé una imagen. ${analysis.transcript}`;
         }
       } else {
@@ -544,18 +696,21 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // ─── AUDIO ───
     if (mediaUrl && mediaType === "audio") {
       const fetched = await fetchMediaAsBase64(mediaUrl);
+
       if (fetched) {
         const mime = mimeHint || fetched.mime || "audio/ogg";
+
         const transcript = await transcribeAudioWithGemini({
           apiKey,
           model,
           audioBase64: fetched.data,
           mime,
         });
+
         console.log("🎙️ Transcripción:", transcript.slice(0, 200));
+
         texto = transcript || texto || "Te mandé un audio.";
       } else {
         texto = texto || "Te mandé un audio pero no pudiste descargarlo.";
@@ -564,20 +719,24 @@ export default async function handler(req: any, res: any) {
 
     if (!texto) texto = "(mensaje sin texto)";
 
-    // ─── FLUJO DE VENTA NORMAL ───
     const oldOrder = context?.order_data || {};
+    const previousStep = clean(context?.step);
+
     const product = detectProduct(
       texto,
       fullTraining,
       context?.current_product || oldOrder?.product
     );
 
-    const extracted = extractData(texto);
+    const extracted = extractData(texto, previousStep);
+
     const orderData = mergeOrderData(oldOrder, extracted, product);
+
     const step = nextStep(orderData);
 
     const wantsToBuy = isBuyIntent(texto);
     const asksPrice = isPriceIntent(texto);
+
     const hasOrderData =
       !!extracted.quantity ||
       !!extracted.city ||
@@ -587,7 +746,10 @@ export default async function handler(req: any, res: any) {
 
     const shouldCollect =
       !!orderData.product &&
-      (wantsToBuy || hasOrderData || context?.step?.startsWith("collecting"));
+      (wantsToBuy ||
+        hasOrderData ||
+        previousStep.startsWith("collecting") ||
+        previousStep === "esperando_cantidad");
 
     const isConfirming = step === "confirm_order" && wantsToBuy;
 
@@ -595,48 +757,85 @@ export default async function handler(req: any, res: any) {
       await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
     }
 
+    const isPureQuantityReply =
+      (previousStep === "collecting_quantity" ||
+        previousStep === "esperando_cantidad") &&
+      /^\s*\d{1,3}\s*$/.test(texto);
+
+    let cleanHistory = Array.isArray(history) ? history : [];
+
+    if (isPureQuantityReply) {
+      cleanHistory = [];
+    }
+
     const system = `
-Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento al pie de la letra: tono, emojis, plantillas, precios, ciudades con cobertura, formato de cierre. NO inventes precios ni datos.
+Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento oficial del usuario.
+NO inventes precios.
+NO inventes datos.
+NO agregues reglas externas.
+NO muestres variables internas.
 
 ═══════════════════════════════════
-ENTRENAMIENTO OFICIAL (FUENTE DE VERDAD):
+ENTRENAMIENTO OFICIAL DEL USUARIO:
 ═══════════════════════════════════
 ${fullTraining}
 ═══════════════════════════════════
 
 ESTADO ACTUAL DEL CLIENTE:
 - Producto: ${orderData.product || "ninguno"}
-- Cantidad: ${orderData.quantity || 1}
+- Cantidad: ${orderData.quantity || "pendiente"}
 - Ciudad: ${orderData.city || "pendiente"}
 - Nombre: ${orderData.customer_name || "pendiente"}
 - Teléfono: ${orderData.phone || "pendiente"}
 - Dirección: ${orderData.address || "pendiente"}
-- Paso: ${step}
+- Paso anterior: ${previousStep || "ninguno"}
+- Paso actual: ${step}
 - Intención: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
 
-REGLAS:
-1. Usá EXACTAMENTE plantillas, emojis y tono del entrenamiento.
-2. Si solo pregunta precio → respondé con el precio + CTA, NO pidas datos todavía.
-3. Si quiere comprar o ya pasó datos → pedí SOLO el dato que falta (siguiente: ${step}).
-4. Si están todos los datos (paso "confirm_order") → confirmá con plantilla ✅ PEDIDO CONFIRMADO.
-5. NO repitas saludo si ya hubo conversación.
-6. NO cambies de producto salvo que el cliente lo pida.
-7. Cerrá SIEMPRE con siguiente paso o CTA.
-8. Catálogo: ${CATALOG_URL}
-9. Español paraguayo, natural, con emojis.
-10. NUNCA respondas vacío.
-11. Si el mensaje viene de una FOTO o AUDIO transcripto, respondé naturalmente como si el cliente te hubiera escrito eso mismo.
+REGLAS TÉCNICAS OBLIGATORIAS:
+1. Si el paso anterior era collecting_quantity o esperando_cantidad y el cliente respondió solo un número, ese número es la cantidad final exacta.
+2. Nunca concatenes cantidades.
+3. Nunca conviertas 1 en 11, 2 en 22, 3 en 33.
+4. La cantidad actual reemplaza cualquier cantidad anterior.
+5. Si Cantidad no está pendiente, usá exactamente esa cantidad.
+6. Si el paso actual es collecting_quantity, preguntá cuántas unidades quiere.
+7. Si el paso actual es collecting_name, pedí nombre completo.
+8. Si el paso actual es collecting_phone, pedí teléfono.
+9. Si el paso actual es collecting_address, pedí dirección exacta.
+10. Si el paso actual es confirm_order, confirmá el pedido con la plantilla del entrenamiento.
+11. Si solo pregunta precio, respondé precio + CTA, sin pedir datos todavía.
+12. No repitas saludo si ya hubo conversación.
+13. No cambies de producto salvo que el cliente lo pida.
+14. Cerrá siempre con el siguiente paso.
+15. Catálogo: ${CATALOG_URL}
+16. Español paraguayo natural, con emojis.
+17. Nunca respondas vacío.
 `.trim();
 
-    const contents = (history || [])
-      .slice(-12)
+    const contents = cleanHistory
+      .slice(-8)
       .filter((h: any) => clean(h?.content))
       .map((h: any) => ({
         role: h.role === "assistant" ? "model" : "user",
-        parts: [{ text: clean(h.content) }],
+        parts: [
+          {
+            text: clean(h.content),
+          },
+        ],
       }));
 
-    contents.push({ role: "user", parts: [{ text: texto }] });
+    const currentUserText = isPureQuantityReply
+      ? `El cliente respondió a la pregunta de cantidad. Cantidad final exacta: ${orderData.quantity}. Mensaje original: "${texto}".`
+      : texto;
+
+    contents.push({
+      role: "user",
+      parts: [
+        {
+          text: currentUserText,
+        },
+      ],
+    });
 
     let response = await callGemini({
       apiKey,
@@ -649,6 +848,7 @@ REGLAS:
 
     if (!response) {
       console.warn("⚠️ Vacío, reintentando...");
+
       response = await callGemini({
         apiKey,
         model,
@@ -676,6 +876,9 @@ REGLAS:
     });
   } catch (error: any) {
     console.error("❌ chat-ia:", error);
-    return res.status(500).json({ error: error.message || "Error interno" });
+
+    return res.status(500).json({
+      error: error.message || "Error interno",
+    });
   }
 }
