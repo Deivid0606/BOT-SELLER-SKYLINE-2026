@@ -94,7 +94,29 @@ function isBuyIntent(text: string) {
   );
 }
 
-function extractData(msg: string, currentStep?: string) {
+function getLastAssistantMessage(history: any[]) {
+  if (!Array.isArray(history)) return "";
+
+  const last = history
+    .filter((h: any) => h?.role === "assistant" || h?.role === "model")
+    .slice(-1)[0];
+
+  return clean(last?.content);
+}
+
+function botWasAskingQuantity(history: any[]) {
+  const lastAssistantMessage = normalize(getLastAssistantMessage(history));
+
+  return (
+    lastAssistantMessage.includes("cuantas unidades") ||
+    lastAssistantMessage.includes("cuantos unidades") ||
+    lastAssistantMessage.includes("cantidad") ||
+    lastAssistantMessage.includes("cuantas queres") ||
+    lastAssistantMessage.includes("cuantas te gustaria")
+  );
+}
+
+function extractData(msg: string, currentStep?: string, forceQuantityMode = false) {
   const text = clean(msg);
   const norm = normalize(text);
 
@@ -102,9 +124,11 @@ function extractData(msg: string, currentStep?: string) {
 
   let quantity = 0;
 
-  // CASO ESPECIAL: si el sistema está esperando cantidad
-  // y el cliente manda solo un número, ese número reemplaza la cantidad.
-  if (currentStep === "collecting_quantity" || currentStep === "esperando_cantidad") {
+  if (
+    forceQuantityMode ||
+    currentStep === "collecting_quantity" ||
+    currentStep === "esperando_cantidad"
+  ) {
     const onlyNumber = norm.match(/^\s*(\d{1,3})\s*$/);
 
     if (onlyNumber) {
@@ -116,7 +140,6 @@ function extractData(msg: string, currentStep?: string) {
     }
   }
 
-  // REGLA 1: "2 unidades", "3 u", etc.
   if (!quantity) {
     const q1 = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
 
@@ -125,7 +148,6 @@ function extractData(msg: string, currentStep?: string) {
     }
   }
 
-  // REGLA 2: "uno", "dos", "tres", etc.
   if (
     !quantity &&
     /\b(uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/.test(norm)
@@ -152,8 +174,6 @@ function extractData(msg: string, currentStep?: string) {
     }
   }
 
-  // REGLA 3: números dentro de frases de compra.
-  // Ej: "quiero 1", "mandame 2", "solo 3"
   if (!quantity) {
     const looksLikeQuantity =
       /\b(quiero|llevo|mandame|dame|solo|solamente|nomas|nomás|unidad|unidades|u)\b/.test(
@@ -241,7 +261,7 @@ function extractData(msg: string, currentStep?: string) {
   };
 }
 
-function mergeOrderData(old: any, ext: any, product: string) {
+function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = false) {
   const oldQuantity =
     typeof old?.quantity === "number" && old.quantity > 0 ? old.quantity : 0;
 
@@ -250,7 +270,7 @@ function mergeOrderData(old: any, ext: any, product: string) {
 
   return {
     product: product || old?.product || "",
-    quantity: newQuantity || oldQuantity || 0,
+    quantity: replaceQuantity ? newQuantity || 0 : newQuantity || oldQuantity || 0,
     city: ext.city || old?.city || "",
     customer_name: ext.name || old?.customer_name || "",
     phone: ext.phone || old?.phone || "",
@@ -562,6 +582,8 @@ async function transcribeAudioWithGemini({
 }
 
 export default async function handler(req: any, res: any) {
+  console.log("🔥 VERSION CORREGIDA CANTIDAD ACTIVADA");
+
   if (req.method !== "POST") {
     return res.status(405).json({
       error: "Method not allowed",
@@ -722,15 +744,35 @@ export default async function handler(req: any, res: any) {
     const oldOrder = context?.order_data || {};
     const previousStep = clean(context?.step);
 
+    const lastAssistantMessage = getLastAssistantMessage(history || []);
+    const wasAskingQuantity = botWasAskingQuantity(history || []);
+
+    const isOnlyNumber = /^\s*\d{1,3}\s*$/.test(texto);
+
+    const isPureQuantityReply =
+      isOnlyNumber &&
+      !!oldOrder?.product &&
+      !!oldOrder?.city &&
+      wasAskingQuantity;
+
     const product = detectProduct(
       texto,
       fullTraining,
       context?.current_product || oldOrder?.product
     );
 
-    const extracted = extractData(texto, previousStep);
+    const extracted = extractData(texto, previousStep, isPureQuantityReply);
 
-    const orderData = mergeOrderData(oldOrder, extracted, product);
+    if (isPureQuantityReply) {
+      extracted.quantity = Number(texto.trim());
+    }
+
+    const orderData = mergeOrderData(
+      oldOrder,
+      extracted,
+      product,
+      isPureQuantityReply
+    );
 
     const step = nextStep(orderData);
 
@@ -749,18 +791,27 @@ export default async function handler(req: any, res: any) {
       (wantsToBuy ||
         hasOrderData ||
         previousStep.startsWith("collecting") ||
-        previousStep === "esperando_cantidad");
+        previousStep === "esperando_cantidad" ||
+        isPureQuantityReply);
 
     const isConfirming = step === "confirm_order" && wantsToBuy;
+
+    console.log("🧩 DEBUG FLUJO:", {
+      previousStep,
+      step,
+      texto,
+      lastAssistantMessage,
+      wasAskingQuantity,
+      isPureQuantityReply,
+      extractedQuantity: extracted.quantity,
+      orderQuantity: orderData.quantity,
+      product: orderData.product,
+      city: orderData.city,
+    });
 
     if (shouldCollect) {
       await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
     }
-
-    const isPureQuantityReply =
-      (previousStep === "collecting_quantity" ||
-        previousStep === "esperando_cantidad") &&
-      /^\s*\d{1,3}\s*$/.test(texto);
 
     let cleanHistory = Array.isArray(history) ? history : [];
 
@@ -790,10 +841,11 @@ ESTADO ACTUAL DEL CLIENTE:
 - Dirección: ${orderData.address || "pendiente"}
 - Paso anterior: ${previousStep || "ninguno"}
 - Paso actual: ${step}
+- Última pregunta del bot: ${lastAssistantMessage || "ninguna"}
 - Intención: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
 
 REGLAS TÉCNICAS OBLIGATORIAS:
-1. Si el paso anterior era collecting_quantity o esperando_cantidad y el cliente respondió solo un número, ese número es la cantidad final exacta.
+1. Si la última pregunta del bot fue sobre cantidad y el cliente respondió solo un número, ese número es la cantidad final exacta.
 2. Nunca concatenes cantidades.
 3. Nunca conviertas 1 en 11, 2 en 22, 3 en 33.
 4. La cantidad actual reemplaza cualquier cantidad anterior.
@@ -825,7 +877,7 @@ REGLAS TÉCNICAS OBLIGATORIAS:
       }));
 
     const currentUserText = isPureQuantityReply
-      ? `El cliente respondió a la pregunta de cantidad. Cantidad final exacta: ${orderData.quantity}. Mensaje original: "${texto}".`
+      ? `El cliente eligió EXACTAMENTE ${orderData.quantity} unidades. No es 11. No es número concatenado. Mensaje original: "${texto}".`
       : texto;
 
     contents.push({
