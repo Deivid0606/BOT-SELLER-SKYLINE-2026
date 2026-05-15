@@ -115,7 +115,13 @@ function InfoBox({
         <Icon className="h-3.5 w-3.5" />
         {label}
       </div>
-      <div className={strong ? "text-base font-bold text-foreground" : "text-sm font-medium text-foreground"}>
+      <div
+        className={
+          strong
+            ? "text-base font-black text-foreground"
+            : "text-sm font-medium text-foreground"
+        }
+      >
         {value || "No especificado"}
       </div>
     </div>
@@ -294,7 +300,13 @@ export default function OrdersPage() {
                 </Button>
               ))}
 
-              <Button size="sm" variant="outline" onClick={load} disabled={loading} className="h-9 rounded-lg">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={load}
+                disabled={loading}
+                className="h-9 rounded-lg"
+              >
                 <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
                 Refrescar
               </Button>
@@ -327,6 +339,7 @@ export default function OrdersPage() {
               const Icon = cfg.icon;
               const compraDesde = o.from_number || o.phone || null;
               const telefonoCliente = o.phone || o.from_number || null;
+
               const fecha = new Date(o.created_at).toLocaleString("es-PY", {
                 day: "2-digit",
                 month: "2-digit",
@@ -362,7 +375,7 @@ export default function OrdersPage() {
                           </div>
 
                           <p className="mt-1 text-xs text-muted-foreground">
-                            Pedido registrado · {fecha}
+                            Pedido registrado
                           </p>
                         </div>
                       </div>
@@ -374,49 +387,50 @@ export default function OrdersPage() {
                     </div>
 
                     <div className="space-y-4 p-4">
+                      <div className="rounded-2xl border border-border/70 bg-background/40 p-4">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          Compra desde
+                        </p>
+                        <p className="mt-1 text-lg font-black">
+                          {compraDesde || "No disponible"}
+                        </p>
+
+                        <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+                          <Clock className="h-4 w-4" />
+                          {fecha}
+                        </div>
+                      </div>
+
                       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                        <InfoBox icon={Phone} label="Compra desde" value={compraDesde} />
+                        <InfoBox icon={User} label="Nombre y apellido" value={o.customer_name} />
                         <InfoBox icon={Phone} label="Número de celular" value={telefonoCliente} />
                         <InfoBox icon={MapPin} label="Ciudad" value={o.city} />
                         <InfoBox icon={MapPin} label="Calle / ubicación" value={o.address} />
                       </div>
 
                       <div className="rounded-2xl border border-border/70 bg-background/40 p-4">
-                        <div className="mb-3 flex items-center justify-between gap-3">
-                          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                            <ShoppingBag className="h-4 w-4" />
-                            Detalle del pedido
-                          </div>
-
-                          <Badge variant="outline" className="rounded-md">
-                            <Hash className="mr-1 h-3.5 w-3.5" />
-                            Cantidad: {o.quantity || 1}
-                          </Badge>
+                        <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                          <ShoppingBag className="h-4 w-4" />
+                          Producto
                         </div>
 
                         <p className="text-base font-bold leading-snug">
                           {o.product || "Producto no especificado"}
                         </p>
 
-                        <div className="mt-4 grid grid-cols-2 gap-3">
-                          <div className="rounded-xl bg-muted/25 p-3">
-                            <p className="text-[11px] font-semibold uppercase text-muted-foreground">
-                              Monto a pagar
-                            </p>
-                            <p className="mt-1 text-xl font-black">
-                              {o.total_amount ? `${o.total_amount} Gs` : "—"}
-                            </p>
-                          </div>
-
-                          <div className="rounded-xl bg-muted/25 p-3">
-                            <p className="text-[11px] font-semibold uppercase text-muted-foreground">
-                              Forma de pago
-                            </p>
-                            <p className="mt-1 flex items-center gap-1 text-sm font-bold capitalize">
-                              <CreditCard className="h-4 w-4" />
-                              {o.metodo_pago || "No especificado"}
-                            </p>
-                          </div>
+                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+                          <InfoBox icon={Hash} label="Cantidad" value={o.quantity || 1} />
+                          <InfoBox
+                            icon={ReceiptText}
+                            label="Monto a pagar"
+                            value={o.total_amount ? `${o.total_amount} Gs` : "No especificado"}
+                            strong
+                          />
+                          <InfoBox
+                            icon={CreditCard}
+                            label="Forma de pago"
+                            value={o.metodo_pago || "No especificado"}
+                          />
                         </div>
                       </div>
 
