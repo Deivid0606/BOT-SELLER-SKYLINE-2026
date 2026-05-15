@@ -19,6 +19,68 @@ const normalize = (t: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
+const ZONAS_COBERTURA = [
+  "Altos",
+  "Areguá",
+  "Asunción",
+  "Atyrá",
+  "Benjamín Aceval",
+  "Caacupé",
+  "Capiatá",
+  "Ciudad del Este",
+  "Colonia Yguazú",
+  "Emboscada",
+  "Eusebio Ayala",
+  "Fernando de la Mora",
+  "Guarambaré",
+  "Hernandarias",
+  "Itá",
+  "Itacurubí de la Cordillera",
+  "Itauguá",
+  "J. Augusto Saldívar",
+  "Juan León Mallorquín",
+  "Lambaré",
+  "Limpio",
+  "Loma Grande",
+  "Luque",
+  "Mariano Roque Alonso",
+  "Minga Guazú",
+  "Nueva Italia",
+  "Ñemby",
+  "Paraguarí",
+  "Pirayú",
+  "Piribebuy",
+  "Presidente Franco",
+  "Puerto Presidente Franco",
+  "Remansito",
+  "San Alberto",
+  "San Antonio",
+  "San Bernardino",
+  "San Lorenzo",
+  "Santa Rita",
+  "Tobatí",
+  "Villa Elisa",
+  "Villa Hayes",
+  "Villarrica",
+  "Villeta",
+  "Yaguarón",
+  "Yguazú",
+  "Ypacaraí",
+  "Ypané",
+];
+
+function getTipoCobertura(city: string): "con_cobertura" | "sin_cobertura" | "" {
+  if (!city) return "";
+
+  const c = normalize(city);
+
+  const tieneCobertura = ZONAS_COBERTURA.some(
+    (z) => normalize(z) === c
+  );
+
+  return tieneCobertura ? "con_cobertura" : "sin_cobertura";
+}
+
 function getPriceLines(training: string): string[] {
   return training
     .split("\n")
@@ -218,6 +280,11 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     "pte franco": "Presidente Franco",
     aregua: "Areguá",
     areguá: "Areguá",
+
+    // SIN COBERTURA
+    pjc: "Pedro Juan Caballero",
+    "pedro juan": "Pedro Juan Caballero",
+    "pedro juan caballero": "Pedro Juan Caballero",
   };
 
   let city = "";
@@ -278,13 +345,21 @@ function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = f
   };
 }
 
-function nextStep(o: any) {
+function nextStep(o: any, tipoCobertura?: string) {
   if (!o.product) return "selling";
   if (!o.city) return "collecting_city";
   if (!o.quantity) return "collecting_quantity";
+
+  if (tipoCobertura === "sin_cobertura") {
+    if (!o.customer_name) return "collecting_name";
+    if (!o.phone) return "collecting_phone";
+    return "waiting_payment_proof";
+  }
+
   if (!o.customer_name) return "collecting_name";
   if (!o.phone) return "collecting_phone";
   if (!o.address) return "collecting_address";
+
   return "confirm_order";
 }
 
@@ -314,6 +389,7 @@ async function safeUpsertOrder(
         "collecting_quantity",
         "collecting_phone",
         "collecting_address",
+        "waiting_payment_proof",
         "confirm_pending",
       ])
       .order("created_at", { ascending: false })
@@ -325,7 +401,8 @@ async function safeUpsertOrder(
       return null;
     }
 
-    const step = nextStep(order);
+    const tipoCobertura = getTipoCobertura(order.city);
+    const step = nextStep(order, tipoCobertura);
 
     const finalStatus =
       confirm && step === "confirm_order"
@@ -582,7 +659,7 @@ async function transcribeAudioWithGemini({
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION CORREGIDA CANTIDAD ACTIVADA");
+  console.log("🔥 VERSION CORREGIDA COBERTURA + COMPROBANTE + CANTIDAD");
 
   if (req.method !== "POST") {
     return res.status(405).json({
@@ -669,7 +746,52 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
+    const oldOrder = context?.order_data || {};
+    const previousStep = clean(context?.step);
+    const previousTipoCobertura = clean(context?.tipo_cobertura);
+
     let isPaymentProof = false;
+
+    const lastAssistantMessage = getLastAssistantMessage(history || []);
+    const wasAskingQuantity = botWasAskingQuantity(history || []);
+
+    const isOnlyNumber = /^\s*\d{1,3}\s*$/.test(texto);
+
+    const isPureQuantityReply =
+      isOnlyNumber &&
+      !!oldOrder?.product &&
+      !!oldOrder?.city &&
+      wasAskingQuantity;
+
+    const product = detectProduct(
+      texto,
+      fullTraining,
+      context?.current_product || oldOrder?.product
+    );
+
+    let extracted = extractData(texto, previousStep, isPureQuantityReply);
+
+    if (isPureQuantityReply) {
+      extracted.quantity = Number(texto.trim());
+    }
+
+    let orderData = mergeOrderData(
+      oldOrder,
+      extracted,
+      product,
+      isPureQuantityReply
+    );
+
+    const tipoCobertura =
+      getTipoCobertura(orderData.city) || previousTipoCobertura || "";
+
+    const isWaitingPaymentProof =
+      tipoCobertura === "sin_cobertura" &&
+      (
+        previousStep === "waiting_payment_proof" ||
+        previousStep === "confirm_pending" ||
+        context?.last_topic === "comprobante"
+      );
 
     if (mediaUrl && mediaType === "image") {
       const fetched = await fetchMediaAsBase64(mediaUrl);
@@ -688,25 +810,31 @@ export default async function handler(req: any, res: any) {
 
         console.log("🖼️ Vision:", analysis.kind, "|", analysis.transcript);
 
-        if (analysis.kind === "payment_proof") {
+        if (analysis.kind === "payment_proof" && isWaitingPaymentProof) {
           isPaymentProof = true;
 
-          const replyPago = `¡Perfecto! 🙏 Recibí tu comprobante (${
-            analysis.transcript || "transferencia"
-          }). Ya estamos verificando el pago y enseguida te confirmamos el envío 🚚✨`;
+          const replyPago = `¡Perfecto! 🙏 Recibí tu comprobante. Ya estamos verificando el pago y enseguida te confirmamos el envío 🚚✨`;
 
           return res.json({
             response: replyPago,
             is_payment_proof: true,
             context: {
               ...(context || {}),
+              current_product: orderData.product || context?.current_product || null,
+              step: "payment_proof_received",
+              tipo_cobertura: "sin_cobertura",
+              order_data: orderData,
               last_topic: "comprobante",
               updated_at: new Date().toISOString(),
             },
           });
         }
 
-        if (analysis.kind === "product") {
+        if (analysis.kind === "payment_proof" && !isWaitingPaymentProof) {
+          texto = texto
+            ? `${texto}\n[El cliente envió una imagen que parece comprobante, pero NO corresponde validar porque no estábamos esperando comprobante.]`
+            : "El cliente envió una imagen que parece comprobante, pero no estábamos esperando comprobante.";
+        } else if (analysis.kind === "product") {
           texto = texto
             ? `${texto}\n[el cliente envió una FOTO. Descripción: ${analysis.transcript}]`
             : `Mandé una foto. ${analysis.transcript}`;
@@ -741,40 +869,23 @@ export default async function handler(req: any, res: any) {
 
     if (!texto) texto = "(mensaje sin texto)";
 
-    const oldOrder = context?.order_data || {};
-    const previousStep = clean(context?.step);
-
-    const lastAssistantMessage = getLastAssistantMessage(history || []);
-    const wasAskingQuantity = botWasAskingQuantity(history || []);
-
-    const isOnlyNumber = /^\s*\d{1,3}\s*$/.test(texto);
-
-    const isPureQuantityReply =
-      isOnlyNumber &&
-      !!oldOrder?.product &&
-      !!oldOrder?.city &&
-      wasAskingQuantity;
-
-    const product = detectProduct(
-      texto,
-      fullTraining,
-      context?.current_product || oldOrder?.product
-    );
-
-    const extracted = extractData(texto, previousStep, isPureQuantityReply);
+    extracted = extractData(texto, previousStep, isPureQuantityReply);
 
     if (isPureQuantityReply) {
-      extracted.quantity = Number(texto.trim());
+      extracted.quantity = Number(String(message).trim());
     }
 
-    const orderData = mergeOrderData(
+    orderData = mergeOrderData(
       oldOrder,
       extracted,
       product,
       isPureQuantityReply
     );
 
-    const step = nextStep(orderData);
+    const finalTipoCobertura =
+      getTipoCobertura(orderData.city) || previousTipoCobertura || "";
+
+    const step = nextStep(orderData, finalTipoCobertura);
 
     const wantsToBuy = isBuyIntent(texto);
     const asksPrice = isPriceIntent(texto);
@@ -792,6 +903,7 @@ export default async function handler(req: any, res: any) {
         hasOrderData ||
         previousStep.startsWith("collecting") ||
         previousStep === "esperando_cantidad" ||
+        previousStep === "waiting_payment_proof" ||
         isPureQuantityReply);
 
     const isConfirming = step === "confirm_order" && wantsToBuy;
@@ -807,6 +919,7 @@ export default async function handler(req: any, res: any) {
       orderQuantity: orderData.quantity,
       product: orderData.product,
       city: orderData.city,
+      tipoCobertura: finalTipoCobertura,
     });
 
     if (shouldCollect) {
@@ -836,6 +949,7 @@ ESTADO ACTUAL DEL CLIENTE:
 - Producto: ${orderData.product || "ninguno"}
 - Cantidad: ${orderData.quantity || "pendiente"}
 - Ciudad: ${orderData.city || "pendiente"}
+- Tipo de cobertura: ${finalTipoCobertura || "pendiente"}
 - Nombre: ${orderData.customer_name || "pendiente"}
 - Teléfono: ${orderData.phone || "pendiente"}
 - Dirección: ${orderData.address || "pendiente"}
@@ -853,15 +967,19 @@ REGLAS TÉCNICAS OBLIGATORIAS:
 6. Si el paso actual es collecting_quantity, preguntá cuántas unidades quiere.
 7. Si el paso actual es collecting_name, pedí nombre completo.
 8. Si el paso actual es collecting_phone, pedí teléfono.
-9. Si el paso actual es collecting_address, pedí dirección exacta.
-10. Si el paso actual es confirm_order, confirmá el pedido con la plantilla del entrenamiento.
-11. Si solo pregunta precio, respondé precio + CTA, sin pedir datos todavía.
-12. No repitas saludo si ya hubo conversación.
-13. No cambies de producto salvo que el cliente lo pida.
-14. Cerrá siempre con el siguiente paso.
-15. Catálogo: ${CATALOG_URL}
-16. Español paraguayo natural, con emojis.
-17. Nunca respondas vacío.
+9. Si el tipo de cobertura es sin_cobertura, NO pidas dirección exacta.
+10. Si el tipo de cobertura es sin_cobertura y ya tenés nombre y teléfono, pedí comprobante de transferencia.
+11. Si el paso actual es collecting_address, pedí dirección exacta SOLO si tiene cobertura.
+12. Si el paso actual es confirm_order, confirmá el pedido con la plantilla del entrenamiento.
+13. Si solo pregunta precio, respondé precio + CTA, sin pedir datos todavía.
+14. No repitas saludo si ya hubo conversación.
+15. No cambies de producto salvo que el cliente lo pida.
+16. Cerrá siempre con el siguiente paso.
+17. Catálogo: ${CATALOG_URL}
+18. Español paraguayo natural, con emojis.
+19. Nunca respondas vacío.
+20. Pedro Juan Caballero / PJC es SIN COBERTURA.
+21. No valides comprobante si no estabas esperando comprobante.
 `.trim();
 
     const contents = cleanHistory
@@ -912,11 +1030,15 @@ REGLAS TÉCNICAS OBLIGATORIAS:
     }
 
     const newContext = {
-      ...context,
+      ...(context || {}),
       current_product: orderData.product || context?.current_product || null,
       step: shouldCollect ? step : "selling",
+      tipo_cobertura: finalTipoCobertura || null,
       order_data: orderData,
-      last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
+      last_topic:
+        step === "waiting_payment_proof"
+          ? "comprobante"
+          : orderData.product || context?.last_topic || "ENTRENAMIENTO",
       updated_at: new Date().toISOString(),
     };
 
