@@ -16,12 +16,7 @@ import {
   Truck,
   MessageSquare,
   ReceiptText,
-  Bot,
   Phone,
-  MapPin,
-  User,
-  Calendar,
-  DollarSign,
 } from "lucide-react";
 
 type Order = {
@@ -52,47 +47,87 @@ const HIDDEN_STATUSES = [
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
   confirmado: {
     label: "Confirmado",
-    color: "bg-green-500 text-white",
+    color: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
     icon: Check,
   },
   confirmed: {
     label: "Confirmado",
-    color: "bg-green-500 text-white",
+    color: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
     icon: Check,
   },
   pendiente: {
     label: "Pendiente",
-    color: "bg-yellow-500 text-white",
+    color: "border-amber-500/40 bg-amber-500/10 text-amber-400",
     icon: RefreshCw,
   },
   pending: {
     label: "Pendiente",
-    color: "bg-yellow-500 text-white",
+    color: "border-amber-500/40 bg-amber-500/10 text-amber-400",
     icon: RefreshCw,
   },
   cargado: {
     label: "Cargado",
-    color: "bg-blue-500 text-white",
+    color: "border-emerald-500/50 bg-emerald-500/10 text-emerald-400",
     icon: Package,
   },
   cancelado: {
     label: "Cancelado",
-    color: "bg-red-500 text-white",
+    color: "border-red-500/40 bg-red-500/10 text-red-400",
     icon: XCircle,
   },
   droppx: {
     label: "Droppx",
-    color: "bg-purple-500 text-white",
+    color: "border-blue-500/40 bg-blue-500/10 text-blue-400",
     icon: Truck,
   },
 };
+
+const FILTERS = [
+  { key: "todos", label: "Todos" },
+  { key: "confirmados", label: "Confirmados" },
+  { key: "pendientes", label: "Pendientes" },
+  { key: "cargados", label: "Cargados" },
+  { key: "cancelados", label: "Cancelados" },
+  { key: "droppx", label: "Droppx" },
+] as const;
+
+function valueOrDash(value: string | number | null | undefined) {
+  return value || "—";
+}
+
+function normalizeStatus(status: string) {
+  if (status === "confirmed") return "confirmado";
+  if (status === "pending") return "pendiente";
+  return status;
+}
+
+function DetailLine({
+  label,
+  value,
+  strong = false,
+}: {
+  label: string;
+  value: string | number | null | undefined;
+  strong?: boolean;
+}) {
+  return (
+    <p className="text-sm leading-relaxed text-foreground">
+      <span className="font-bold">{label}: </span>
+      <span className={strong ? "font-extrabold" : "font-medium"}>
+        {valueOrDash(value)}
+      </span>
+    </p>
+  );
+}
 
 export default function OrdersPage() {
   const navigate = useNavigate();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<string>("todos");
+  const [filter, setFilter] = useState<
+    "todos" | "confirmados" | "pendientes" | "cargados" | "cancelados" | "droppx"
+  >("todos");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -124,8 +159,12 @@ export default function OrdersPage() {
     };
   }, [load]);
 
-  async function setOrderStatus(order: Order, newStatus: "cargado" | "cancelado" | "droppx") {
+  async function setOrderStatus(
+    order: Order,
+    newStatus: "pendiente" | "cargado" | "cancelado" | "droppx"
+  ) {
     const labelMap: Record<string, string> = {
+      pendiente: "PEDIDO PENDIENTE",
       cargado: "PEDIDO CARGADO",
       cancelado: "PEDIDO CANCELADO",
       droppx: "PEDIDO A DROPPX",
@@ -146,15 +185,16 @@ export default function OrdersPage() {
         .from("tags")
         .select("id, name")
         .eq("user_id", order.user_id)
-        .in("name", ["PEDIDO CARGADO", "PEDIDO CANCELADO", "PEDIDO A DROPPX"]);
+        .in("name", [
+          "PEDIDO PENDIENTE",
+          "PEDIDO CARGADO",
+          "PEDIDO CANCELADO",
+          "PEDIDO A DROPPX",
+        ]);
 
       const newTag = pedidoTags?.find((t) => t.name === labelName);
 
-      if (!newTag) {
-        throw new Error(`Etiqueta "${labelName}" no encontrada. Creala en Etiquetas.`);
-      }
-
-      if (phone) {
+      if (newTag && phone) {
         const oldPedidoTagIds = pedidoTags?.map((t) => t.id) || [];
 
         if (oldPedidoTagIds.length > 0) {
@@ -172,7 +212,7 @@ export default function OrdersPage() {
         });
       }
 
-      toast.success(`✅ ${labelName}`);
+      toast.success(`Pedido marcado como ${labelName}`);
       load();
     } catch (err: any) {
       toast.error("Error: " + err.message);
@@ -196,244 +236,240 @@ export default function OrdersPage() {
       toast.error("Este pedido no tiene teléfono");
       return;
     }
+
     navigate(`/inbox?phone=${encodeURIComponent(phone)}`);
   }
 
-  const getStatusCount = (status: string) => {
-    if (status === "confirmados") return orders.filter(o => o.status === "confirmado" || o.status === "confirmed").length;
-    if (status === "pendientes") return orders.filter(o => o.status === "pendiente" || o.status === "pending").length;
-    if (status === "cargados") return orders.filter(o => o.status === "cargado").length;
-    if (status === "cancelados") return orders.filter(o => o.status === "cancelado").length;
-    if (status === "droppx") return orders.filter(o => o.status === "droppx").length;
-    return orders.length;
-  };
-
   const filtered = orders.filter((o) => {
     const tel = o.phone || o.from_number || "";
+
     const matchSearch =
       !search ||
       o.customer_name?.toLowerCase().includes(search.toLowerCase()) ||
       tel.includes(search) ||
       o.product?.toLowerCase().includes(search.toLowerCase()) ||
-      o.city?.toLowerCase().includes(search.toLowerCase());
+      o.city?.toLowerCase().includes(search.toLowerCase()) ||
+      o.address?.toLowerCase().includes(search.toLowerCase());
+
+    const status = normalizeStatus(o.status);
 
     const matchFilter =
       filter === "todos" ||
-      (filter === "confirmados" && (o.status === "confirmado" || o.status === "confirmed")) ||
-      (filter === "pendientes" && (o.status === "pendiente" || o.status === "pending")) ||
-      (filter === "cargados" && o.status === "cargado") ||
-      (filter === "cancelados" && o.status === "cancelado") ||
-      (filter === "droppx" && o.status === "droppx");
+      (filter === "confirmados" && status === "confirmado") ||
+      (filter === "pendientes" && status === "pendiente") ||
+      (filter === "cargados" && status === "cargado") ||
+      (filter === "cancelados" && status === "cancelado") ||
+      (filter === "droppx" && status === "droppx");
 
     return matchSearch && matchFilter;
   });
 
-  const formatDate = (date: string) => {
-    return new Date(date).toLocaleString("es-PY", {
-      day: "2-digit",
-      month: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  };
-
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-7xl mx-auto px-4 py-6">
-        {/* Header */}
-        <div className="mb-6">
-          <h1 className="text-2xl font-bold text-gray-900">Pedidos</h1>
-          <p className="text-sm text-gray-500 mt-1">Gestioná todos los pedidos de tus clientes</p>
-        </div>
+    <div className="min-h-screen bg-background px-5 py-5">
+      <div className="w-full space-y-5">
+        <div className="flex flex-col gap-4 border-b border-border/60 pb-5 xl:flex-row xl:items-center xl:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Pedidos</h1>
+            <p className="text-sm text-muted-foreground">
+              Panel operativo de pedidos, pagos y despacho.
+            </p>
+          </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-3 md:grid-cols-6 gap-3 mb-6">
-          {[
-            { key: "todos", label: "Todos", color: "bg-gray-500" },
-            { key: "pendientes", label: "Pendientes", color: "bg-yellow-500" },
-            { key: "confirmados", label: "Confirmados", color: "bg-green-500" },
-            { key: "cargados", label: "Cargados", color: "bg-blue-500" },
-            { key: "droppx", label: "Droppx", color: "bg-purple-500" },
-            { key: "cancelados", label: "Cancelados", color: "bg-red-500" },
-          ].map((stat) => (
-            <button
-              key={stat.key}
-              onClick={() => setFilter(stat.key)}
-              className={`bg-white rounded-lg p-3 text-center shadow-sm border transition-all ${
-                filter === stat.key ? "border-blue-500 ring-2 ring-blue-500 ring-opacity-50" : "border-gray-200"
-              }`}
-            >
-              <div className={`text-2xl font-bold ${stat.color.replace("bg-", "text-")}`}>
-                {getStatusCount(stat.key)}
-              </div>
-              <div className="text-xs text-gray-600 mt-1">{stat.label}</div>
-            </button>
-          ))}
-        </div>
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+            <div className="relative w-full xl:w-[390px]">
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Buscar cliente, teléfono, producto o ciudad"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-10 pl-9"
+              />
+            </div>
 
-        {/* Search */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-            <Input
-              placeholder="Buscar por nombre, teléfono o producto..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-9"
-            />
+            <div className="flex flex-wrap gap-2">
+              {FILTERS.map((item) => (
+                <Button
+                  key={item.key}
+                  size="sm"
+                  variant={filter === item.key ? "default" : "outline"}
+                  onClick={() => setFilter(item.key)}
+                  className="h-9 rounded-full px-4"
+                >
+                  {item.label}
+                </Button>
+              ))}
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={load}
+                disabled={loading}
+                className="h-9 rounded-full px-4"
+              >
+                <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                Refrescar
+              </Button>
+            </div>
           </div>
         </div>
 
-        {/* Orders List */}
         {loading ? (
-          <div className="text-center py-12">
-            <RefreshCw className="h-8 w-8 animate-spin mx-auto text-gray-400" />
-            <p className="text-gray-500 mt-2">Cargando pedidos...</p>
-          </div>
+          <Card className="border-border/60">
+            <CardContent className="p-10 text-center text-muted-foreground">
+              Cargando pedidos...
+            </CardContent>
+          </Card>
         ) : filtered.length === 0 ? (
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
-            <Package className="h-12 w-12 mx-auto text-gray-300" />
-            <p className="text-gray-500 mt-3">No hay pedidos para mostrar</p>
-          </div>
+          <Card className="border-border/60">
+            <CardContent className="p-10 text-center text-muted-foreground">
+              No hay pedidos para mostrar.
+            </CardContent>
+          </Card>
         ) : (
-          <div className="space-y-4">
-            {filtered.map((order) => {
-              const cfg = STATUS_CONFIG[order.status] || {
-                label: order.status,
-                color: "bg-gray-500 text-white",
-                icon: Check,
-              };
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+            {filtered.map((o) => {
+              const status = normalizeStatus(o.status);
+              const cfg =
+                STATUS_CONFIG[status] || {
+                  label: status,
+                  color: "border-gray-500/40 bg-gray-500/10 text-gray-400",
+                  icon: Check,
+                };
+
               const Icon = cfg.icon;
-              const phoneNumber = order.phone || order.from_number;
+              const compraDesde = o.from_number || o.phone || null;
+              const telefonoCliente = o.phone || o.from_number || null;
+
+              const fecha = new Date(o.created_at).toLocaleString("es-PY", {
+                day: "numeric",
+                month: "numeric",
+                year: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+              });
 
               return (
-                <div key={order.id} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-                  {/* Header */}
-                  <div className="p-4 border-b border-gray-100 flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <h3 className="font-semibold text-gray-900">{order.customer_name || "Cliente"}</h3>
-                        {order.detected_by_ai && (
-                          <Badge variant="outline" className="text-xs">
-                            <Bot className="h-3 w-3 mr-1" />
-                            Auto
-                          </Badge>
-                        )}
-                        <Badge className={cfg.color}>
-                          <Icon className="h-3 w-3 mr-1" />
-                          {cfg.label}
-                        </Badge>
-                      </div>
-                      <div className="flex items-center gap-4 text-xs text-gray-500">
-                        <span className="flex items-center gap-1">
-                          <Calendar className="h-3 w-3" />
-                          {formatDate(order.created_at)}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <Package className="h-3 w-3" />
-                          {order.product || "Producto"}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
+                <Card
+                  key={o.id}
+                  className="overflow-hidden rounded-xl border border-slate-800 bg-[#0b1020] shadow-sm transition hover:border-emerald-500/40"
+                >
+                  <div className="h-1 w-full bg-emerald-500" />
 
-                  {/* Details */}
-                  <div className="p-4 space-y-2">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      <div className="flex items-start gap-2">
-                        <User className="h-4 w-4 text-gray-400 mt-0.5" />
-                        <div>
-                          <p className="text-xs text-gray-500">Cliente</p>
-                          <p className="text-sm text-gray-900">{order.customer_name || "—"}</p>
+                  <CardContent className="p-4">
+                    <div className="mb-4 flex items-start justify-between gap-3">
+                      <div>
+                        <div className="flex items-center gap-2 text-xs text-slate-400">
+                          <Phone className="h-3.5 w-3.5 text-pink-400" />
+                          <span>Desde</span>
                         </div>
-                      </div>
-                      
-                      <div className="flex items-start gap-2">
-                        <Phone className="h-4 w-4 text-gray-400 mt-0.5" />
-                        <div>
-                          <p className="text-xs text-gray-500">Teléfono</p>
-                          <p className="text-sm text-gray-900">{phoneNumber || "—"}</p>
+
+                        <div className="mt-1 text-lg font-black leading-none text-white">
+                          {valueOrDash(compraDesde)}
                         </div>
                       </div>
 
-                      <div className="flex items-start gap-2">
-                        <MapPin className="h-4 w-4 text-gray-400 mt-0.5" />
-                        <div>
-                          <p className="text-xs text-gray-500">Ubicación</p>
-                          <p className="text-sm text-gray-900">
-                            {order.city && order.address ? `${order.city}, ${order.address}` : order.city || order.address || "—"}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex items-start gap-2">
-                        <DollarSign className="h-4 w-4 text-gray-400 mt-0.5" />
-                        <div>
-                          <p className="text-xs text-gray-500">Total</p>
-                          <p className="text-sm font-semibold text-gray-900">
-                            {order.total_amount ? `${Number(order.total_amount).toLocaleString()} Gs` : "—"}
-                          </p>
-                        </div>
-                      </div>
+                      <Badge className={`${cfg.color} rounded-full border px-3 py-1`}>
+                        <Icon className="mr-1 h-3.5 w-3.5" />
+                        {cfg.label}
+                      </Badge>
                     </div>
 
-                    {order.metodo_pago && (
-                      <div className="text-xs text-gray-600 mt-2 pt-2 border-t border-gray-100">
-                        <span className="font-medium">Pago:</span> {order.metodo_pago}
-                      </div>
-                    )}
-                  </div>
+                    <div className="mb-3">
+                      <h2 className="text-base font-black leading-snug text-white">
+                        {valueOrDash(o.product)}
+                      </h2>
+                      <p className="mt-1 text-xs font-medium text-slate-400">{fecha}</p>
+                    </div>
 
-                  {/* Actions */}
-                  <div className="bg-gray-50 px-4 py-3 flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" onClick={() => irAlChat(phoneNumber)}>
-                      <MessageSquare className="h-4 w-4 mr-1" />
-                      Chat
-                    </Button>
+                    <div className="space-y-0.5">
+                      <DetailLine label="Cliente" value={o.customer_name} />
+                      <DetailLine label="Ciudad" value={o.city} />
+                      <DetailLine label="Dirección" value={o.address} />
+                      <DetailLine label="Tel" value={telefonoCliente} />
+                      <DetailLine label="Cant" value={o.quantity || 1} />
+                      <DetailLine
+                        label="Total"
+                        value={o.total_amount ? `${o.total_amount} Gs` : null}
+                        strong
+                      />
+                      <DetailLine label="Pago" value={o.metodo_pago} />
+                    </div>
 
-                    {order.comprobante_url && (
+                    {o.comprobante_url && (
                       <a
-                        href={order.comprobante_url}
+                        href={o.comprobante_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="inline-flex items-center px-3 py-1 text-sm font-medium rounded-md border border-gray-300 bg-white hover:bg-gray-50"
+                        className="mt-3 inline-flex h-8 items-center rounded-full border border-emerald-500/60 bg-emerald-500/10 px-3 text-xs font-bold text-emerald-300 hover:bg-emerald-500/15"
                       >
-                        <ReceiptText className="h-4 w-4 mr-1" />
+                        <ReceiptText className="mr-2 h-3.5 w-3.5" />
                         Comprobante
                       </a>
                     )}
 
-                    {order.status !== "cargado" && (
-                      <Button size="sm" className="bg-blue-600 hover:bg-blue-700" onClick={() => setOrderStatus(order, "cargado")}>
-                        <Package className="h-4 w-4 mr-1" />
-                        Cargado
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 rounded-md border-slate-700 bg-slate-900 px-3 text-xs text-white hover:bg-slate-800"
+                        onClick={() => irAlChat(telefonoCliente)}
+                      >
+                        <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+                        Chat
                       </Button>
-                    )}
 
-                    {order.status !== "droppx" && (
-                      <Button size="sm" className="bg-purple-600 hover:bg-purple-700" onClick={() => setOrderStatus(order, "droppx")}>
-                        <Truck className="h-4 w-4 mr-1" />
-                        Droppx
+                      {status !== "pendiente" && (
+                        <Button
+                          size="sm"
+                          className="h-8 rounded-md bg-amber-500/20 px-3 text-xs text-amber-300 hover:bg-amber-500/30"
+                          onClick={() => setOrderStatus(o, "pendiente")}
+                        >
+                          🟡 Pendiente
+                        </Button>
+                      )}
+
+                      {status !== "cargado" && (
+                        <Button
+                          size="sm"
+                          className="h-8 rounded-md bg-emerald-500/20 px-3 text-xs text-emerald-300 hover:bg-emerald-500/30"
+                          onClick={() => setOrderStatus(o, "cargado")}
+                        >
+                          ✅ Cargado
+                        </Button>
+                      )}
+
+                      {status !== "droppx" && (
+                        <Button
+                          size="sm"
+                          className="h-8 rounded-md bg-blue-500/20 px-3 text-xs text-blue-300 hover:bg-blue-500/30"
+                          onClick={() => setOrderStatus(o, "droppx")}
+                        >
+                          🚚 Droppx
+                        </Button>
+                      )}
+
+                      {status !== "cancelado" && (
+                        <Button
+                          size="sm"
+                          className="h-8 rounded-md bg-red-500/20 px-3 text-xs text-red-300 hover:bg-red-500/30"
+                          onClick={() => setOrderStatus(o, "cancelado")}
+                        >
+                          ❌ Cancelado
+                        </Button>
+                      )}
+
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="h-8 rounded-md px-3 text-xs"
+                        onClick={() => remove(o.id)}
+                      >
+                        <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                        Eliminar
                       </Button>
-                    )}
-
-                    {order.status !== "cancelado" && (
-                      <Button size="sm" variant="outline" className="border-red-300 text-red-600 hover:bg-red-50" onClick={() => setOrderStatus(order, "cancelado")}>
-                        <XCircle className="h-4 w-4 mr-1" />
-                        Cancelar
-                      </Button>
-                    )}
-
-                    <Button size="sm" variant="destructive" onClick={() => remove(order.id)}>
-                      <Trash2 className="h-4 w-4 mr-1" />
-                      Eliminar
-                    </Button>
-
-                    <Button size="sm" variant="ghost" onClick={load}>
-                      <RefreshCw className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
+                    </div>
+                  </CardContent>
+                </Card>
               );
             })}
           </div>
