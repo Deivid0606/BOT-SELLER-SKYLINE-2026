@@ -77,21 +77,48 @@ function extractData(msg: string) {
   const text = clean(msg);
   const norm = normalize(text);
   const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
+
+  // ✅ FIX: extracción de cantidad robusta, sin concatenación
   let quantity = 0;
+
+  // 1. "2 unidades", "3 u", etc.
   const q1 = norm.match(/\b(\d+)\s*(unidad|unidades|u)\b/);
-  if (q1) quantity = Number(q1[1]);
+  if (q1) {
+    quantity = parseInt(q1[1], 10);
+  }
+
+  // 2. Palabras escritas
   if (!quantity && /\buno\b|\buna\b/.test(norm)) quantity = 1;
   if (!quantity && /\bdos\b/.test(norm)) quantity = 2;
+  if (!quantity && /\btres\b/.test(norm)) quantity = 3;
+  if (!quantity && /\bcuatro\b/.test(norm)) quantity = 4;
+  if (!quantity && /\bcinco\b/.test(norm)) quantity = 5;
+
+  // 3. ✅ CLAVE: número suelto exacto ("1", "2", "3", "1 nomas", "solo 2", etc.)
+  if (!quantity) {
+    const soloNumero = norm.match(/(?:^|\s)(\d+)(?:\s|$)/);
+    if (soloNumero) {
+      const n = parseInt(soloNumero[1], 10);
+      // Evitar tomar números de teléfono (>6 dígitos) o direcciones grandes
+      if (n > 0 && n <= 9999 && soloNumero[1].length <= 4) {
+        quantity = n;
+      }
+    }
+  }
 
   const cityAliases: Record<string, string> = {
     asuncion: "Asunción",
     capiata: "Capiatá",
+    capilata: "Capiatá",
+    kapiata: "Capiatá",
     cde: "Ciudad del Este",
     "ciudad del este": "Ciudad del Este",
     luque: "Luque",
     ita: "Itá",
     lambare: "Lambaré",
     "san lorenzo": "San Lorenzo",
+    sanlo: "San Lorenzo",
+    "san lorenso": "San Lorenzo",
     fdm: "Fernando de la Mora",
     "fernando de la mora": "Fernando de la Mora",
     nemby: "Ñemby",
@@ -101,8 +128,10 @@ function extractData(msg: string) {
     hernandarias: "Hernandarias",
     "presidente franco": "Presidente Franco",
     "pte franco": "Presidente Franco",
+    pjc: "Pedro Juan Caballero",
     aregua: "Areguá",
     "areguá": "Areguá",
+    mra: "Mariano Roque Alonso",
   };
 
   let city = "";
@@ -137,9 +166,12 @@ function extractData(msg: string) {
 }
 
 function mergeOrderData(old: any, ext: any, product: string) {
+  // ✅ FIX: parseInt fuerza que la cantidad siempre sea número entero,
+  // evitando que un string "1" del contexto cause concatenación "1"+"1"="11"
+  const oldQty = parseInt(String(old?.quantity || "0"), 10) || 0;
   return {
     product: product || old?.product || "",
-    quantity: ext.quantity || old?.quantity || 1,
+    quantity: ext.quantity || oldQty || 1,
     city: ext.city || old?.city || "",
     customer_name: ext.name || old?.customer_name || "",
     phone: ext.phone || old?.phone || "",
