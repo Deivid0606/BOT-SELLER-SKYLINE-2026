@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import {
@@ -15,14 +14,6 @@ import {
   XCircle,
   Truck,
   MessageSquare,
-  Phone,
-  MapPin,
-  CreditCard,
-  User,
-  ShoppingBag,
-  Hash,
-  Clock,
-  Bot,
   ReceiptText,
 } from "lucide-react";
 
@@ -51,40 +42,40 @@ const HIDDEN_STATUSES = [
   "collecting_phone",
 ];
 
-const STATUS_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
+const STATUS_CONFIG: Record<string, { label: string; className: string; icon: any }> = {
   confirmado: {
     label: "Confirmado",
-    color: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25",
+    className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
     icon: Check,
   },
   confirmed: {
     label: "Confirmado",
-    color: "bg-emerald-500/10 text-emerald-400 border-emerald-500/25",
+    className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
     icon: Check,
   },
   pendiente: {
     label: "Pendiente",
-    color: "bg-amber-500/10 text-amber-400 border-amber-500/25",
+    className: "border-amber-500/30 bg-amber-500/10 text-amber-400",
     icon: RefreshCw,
   },
   pending: {
     label: "Pendiente",
-    color: "bg-amber-500/10 text-amber-400 border-amber-500/25",
+    className: "border-amber-500/30 bg-amber-500/10 text-amber-400",
     icon: RefreshCw,
   },
   cargado: {
     label: "Cargado",
-    color: "bg-blue-500/10 text-blue-400 border-blue-500/25",
+    className: "border-blue-500/30 bg-blue-500/10 text-blue-400",
     icon: Package,
   },
   cancelado: {
     label: "Cancelado",
-    color: "bg-red-500/10 text-red-400 border-red-500/25",
+    className: "border-red-500/30 bg-red-500/10 text-red-400",
     icon: XCircle,
   },
   droppx: {
-    label: "A Droppx",
-    color: "bg-purple-500/10 text-purple-400 border-purple-500/25",
+    label: "Droppx",
+    className: "border-purple-500/30 bg-purple-500/10 text-purple-400",
     icon: Truck,
   },
 };
@@ -98,38 +89,18 @@ const FILTERS = [
   { key: "droppx", label: "Droppx" },
 ] as const;
 
-function InfoBox({
-  icon: Icon,
-  label,
-  value,
-  strong = false,
-}: {
-  icon: any;
-  label: string;
-  value: string | number | null | undefined;
-  strong?: boolean;
-}) {
-  return (
-    <div className="rounded-xl border border-border/60 bg-background/35 p-3">
-      <div className="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-        <Icon className="h-3.5 w-3.5" />
-        {label}
-      </div>
-      <div
-        className={
-          strong
-            ? "text-base font-black text-foreground"
-            : "text-sm font-medium text-foreground"
-        }
-      >
-        {value || "No especificado"}
-      </div>
-    </div>
-  );
+function cleanMoney(value: string | null) {
+  if (!value) return "—";
+  return `${value} Gs`;
+}
+
+function cleanText(value: string | number | null | undefined) {
+  return value || "—";
 }
 
 export default function OrdersPage() {
   const navigate = useNavigate();
+
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -215,7 +186,7 @@ export default function OrdersPage() {
         });
       }
 
-      toast.success(`Marcado como ${labelName} ✅`);
+      toast.success(`Marcado como ${labelName}`);
       load();
     } catch (err: any) {
       toast.error("Error: " + err.message);
@@ -266,18 +237,18 @@ export default function OrdersPage() {
   });
 
   return (
-    <div className="min-h-screen bg-background px-5 py-5">
-      <div className="w-full space-y-5">
+    <div className="min-h-screen bg-background px-6 py-5">
+      <div className="space-y-5">
         <div className="flex flex-col gap-4 border-b border-border/60 pb-5 xl:flex-row xl:items-center xl:justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Pedidos</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">Pedidos</h1>
             <p className="text-sm text-muted-foreground">
-              Panel operativo de pedidos, pagos y despacho.
+              Gestión operativa de pedidos, cobros y despacho.
             </p>
           </div>
 
           <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
-            <div className="relative w-full xl:w-[360px]">
+            <div className="relative w-full xl:w-[380px]">
               <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
                 placeholder="Buscar cliente, teléfono, producto o ciudad"
@@ -294,7 +265,7 @@ export default function OrdersPage() {
                   size="sm"
                   variant={filter === item.key ? "default" : "outline"}
                   onClick={() => setFilter(item.key)}
-                  className="h-9 rounded-lg"
+                  className="h-9 rounded-md"
                 >
                   {item.label}
                 </Button>
@@ -305,7 +276,7 @@ export default function OrdersPage() {
                 variant="outline"
                 onClick={load}
                 disabled={loading}
-                className="h-9 rounded-lg"
+                className="h-9 rounded-md"
               >
                 <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />
                 Refrescar
@@ -314,194 +285,159 @@ export default function OrdersPage() {
           </div>
         </div>
 
-        {loading ? (
-          <Card className="border-border/60">
-            <CardContent className="p-10 text-center text-muted-foreground">
+        <div className="rounded-xl border border-border/70 bg-card shadow-sm">
+          <div className="grid grid-cols-[70px_190px_150px_140px_160px_1fr_90px_130px_120px_130px_260px] border-b border-border/70 bg-muted/25 px-4 py-3 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div>Pedido</div>
+            <div>Compra desde</div>
+            <div>Cliente</div>
+            <div>Celular</div>
+            <div>Ciudad</div>
+            <div>Calle / ubicación</div>
+            <div>Cant.</div>
+            <div>Monto</div>
+            <div>Pago</div>
+            <div>Estado</div>
+            <div>Acciones</div>
+          </div>
+
+          {loading ? (
+            <div className="p-10 text-center text-sm text-muted-foreground">
               Cargando pedidos...
-            </CardContent>
-          </Card>
-        ) : filtered.length === 0 ? (
-          <Card className="border-border/60">
-            <CardContent className="p-10 text-center text-muted-foreground">
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="p-10 text-center text-sm text-muted-foreground">
               No hay pedidos para mostrar.
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3">
-            {filtered.map((o, index) => {
-              const cfg =
-                STATUS_CONFIG[o.status] || {
-                  label: o.status,
-                  color: "bg-gray-500/10 text-gray-400 border-gray-500/25",
-                  icon: Check,
-                };
+            </div>
+          ) : (
+            <div className="divide-y divide-border/60">
+              {filtered.map((o, index) => {
+                const cfg =
+                  STATUS_CONFIG[o.status] || {
+                    label: o.status,
+                    className: "border-gray-500/30 bg-gray-500/10 text-gray-400",
+                    icon: Check,
+                  };
 
-              const Icon = cfg.icon;
-              const compraDesde = o.from_number || o.phone || null;
-              const telefonoCliente = o.phone || o.from_number || null;
+                const Icon = cfg.icon;
+                const compraDesde = o.from_number || o.phone || null;
+                const telefonoCliente = o.phone || o.from_number || null;
 
-              const fecha = new Date(o.created_at).toLocaleString("es-PY", {
-                day: "2-digit",
-                month: "2-digit",
-                year: "numeric",
-                hour: "2-digit",
-                minute: "2-digit",
-              });
+                const fecha = new Date(o.created_at).toLocaleString("es-PY", {
+                  day: "2-digit",
+                  month: "2-digit",
+                  year: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                });
 
-              return (
-                <Card
-                  key={o.id}
-                  className="overflow-hidden border-border/70 bg-card shadow-sm transition hover:border-primary/35 hover:shadow-md"
-                >
-                  <CardContent className="p-0">
-                    <div className="flex items-center justify-between border-b border-border/60 bg-muted/20 px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-sm font-bold text-primary">
-                          #{index + 1}
-                        </div>
+                return (
+                  <div
+                    key={o.id}
+                    className="grid grid-cols-[70px_190px_150px_140px_160px_1fr_90px_130px_120px_130px_260px] items-center px-4 py-4 text-sm transition hover:bg-muted/20"
+                  >
+                    <div>
+                      <div className="font-semibold">#{index + 1}</div>
+                      <div className="mt-1 text-[11px] text-muted-foreground">{fecha}</div>
+                    </div>
 
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="font-bold leading-none">
-                              {o.customer_name || "Cliente sin nombre"}
-                            </p>
+                    <div>
+                      <div className="font-semibold">{cleanText(compraDesde)}</div>
+                      <div className="mt-1 text-[11px] text-muted-foreground">Origen WhatsApp</div>
+                    </div>
 
-                            {o.detected_by_ai && (
-                              <Badge variant="outline" className="h-5 gap-1 rounded-md px-1.5 text-[10px]">
-                                <Bot className="h-3 w-3" />
-                                AUTO
-                              </Badge>
-                            )}
-                          </div>
+                    <div className="font-medium">{cleanText(o.customer_name)}</div>
 
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            Pedido registrado
-                          </p>
-                        </div>
+                    <div>{cleanText(telefonoCliente)}</div>
+
+                    <div>{cleanText(o.city)}</div>
+
+                    <div>
+                      <div className="line-clamp-2 text-sm">{cleanText(o.address)}</div>
+                      <div className="mt-1 line-clamp-1 text-xs font-medium text-foreground">
+                        {cleanText(o.product)}
                       </div>
+                    </div>
 
-                      <Badge className={`${cfg.color} gap-1 rounded-md border px-2.5 py-1`}>
+                    <div className="font-semibold">{o.quantity || 1}</div>
+
+                    <div className="font-bold">{cleanMoney(o.total_amount)}</div>
+
+                    <div className="capitalize">{cleanText(o.metodo_pago)}</div>
+
+                    <div>
+                      <Badge className={`${cfg.className} gap-1 rounded-md border px-2 py-1`}>
                         <Icon className="h-3.5 w-3.5" />
                         {cfg.label}
                       </Badge>
                     </div>
 
-                    <div className="space-y-4 p-4">
-                      <div className="rounded-2xl border border-border/70 bg-background/40 p-4">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                          Compra desde
-                        </p>
-                        <p className="mt-1 text-lg font-black">
-                          {compraDesde || "No disponible"}
-                        </p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 px-2"
+                        onClick={() => irAlChat(telefonoCliente)}
+                      >
+                        <MessageSquare className="h-4 w-4" />
+                      </Button>
 
-                        <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
-                          <Clock className="h-4 w-4" />
-                          {fecha}
-                        </div>
-                      </div>
+                      {o.comprobante_url && (
+                        <a
+                          href={o.comprobante_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex h-8 items-center justify-center rounded-md border border-border bg-background px-2 hover:bg-muted"
+                        >
+                          <ReceiptText className="h-4 w-4" />
+                        </a>
+                      )}
 
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                        <InfoBox icon={User} label="Nombre y apellido" value={o.customer_name} />
-                        <InfoBox icon={Phone} label="Número de celular" value={telefonoCliente} />
-                        <InfoBox icon={MapPin} label="Ciudad" value={o.city} />
-                        <InfoBox icon={MapPin} label="Calle / ubicación" value={o.address} />
-                      </div>
+                      {o.status !== "cargado" && (
+                        <Button
+                          size="sm"
+                          className="h-8 bg-blue-600 px-2 hover:bg-blue-700"
+                          onClick={() => setOrderStatus(o, "cargado")}
+                        >
+                          <Package className="h-4 w-4" />
+                        </Button>
+                      )}
 
-                      <div className="rounded-2xl border border-border/70 bg-background/40 p-4">
-                        <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                          <ShoppingBag className="h-4 w-4" />
-                          Producto
-                        </div>
+                      {o.status !== "droppx" && (
+                        <Button
+                          size="sm"
+                          className="h-8 bg-purple-600 px-2 hover:bg-purple-700"
+                          onClick={() => setOrderStatus(o, "droppx")}
+                        >
+                          <Truck className="h-4 w-4" />
+                        </Button>
+                      )}
 
-                        <p className="text-base font-bold leading-snug">
-                          {o.product || "Producto no especificado"}
-                        </p>
+                      {o.status !== "cancelado" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 border-red-500/40 px-2 text-red-400 hover:bg-red-500/10"
+                          onClick={() => setOrderStatus(o, "cancelado")}
+                        >
+                          <XCircle className="h-4 w-4" />
+                        </Button>
+                      )}
 
-                        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-                          <InfoBox icon={Hash} label="Cantidad" value={o.quantity || 1} />
-                          <InfoBox
-                            icon={ReceiptText}
-                            label="Monto a pagar"
-                            value={o.total_amount ? `${o.total_amount} Gs` : "No especificado"}
-                            strong
-                          />
-                          <InfoBox
-                            icon={CreditCard}
-                            label="Forma de pago"
-                            value={o.metodo_pago || "No especificado"}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-4">
-                        <div className="flex flex-wrap gap-2">
-                          <Button size="sm" variant="outline" onClick={() => irAlChat(telefonoCliente)}>
-                            <MessageSquare className="mr-2 h-4 w-4" />
-                            Ver chat
-                          </Button>
-
-                          {o.comprobante_url && (
-                            <a
-                              href={o.comprobante_url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex h-9 items-center rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-muted"
-                            >
-                              <ReceiptText className="mr-2 h-4 w-4" />
-                              Comprobante
-                            </a>
-                          )}
-                        </div>
-
-                        <div className="flex flex-wrap gap-2">
-                          {o.status !== "cargado" && (
-                            <Button
-                              size="sm"
-                              className="bg-blue-600 hover:bg-blue-700"
-                              onClick={() => setOrderStatus(o, "cargado")}
-                            >
-                              <Package className="mr-2 h-4 w-4" />
-                              Cargado
-                            </Button>
-                          )}
-
-                          {o.status !== "droppx" && (
-                            <Button
-                              size="sm"
-                              className="bg-purple-600 hover:bg-purple-700"
-                              onClick={() => setOrderStatus(o, "droppx")}
-                            >
-                              <Truck className="mr-2 h-4 w-4" />
-                              Droppx
-                            </Button>
-                          )}
-
-                          {o.status !== "cancelado" && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="border-red-500/40 text-red-400 hover:bg-red-500/10 hover:text-red-300"
-                              onClick={() => setOrderStatus(o, "cancelado")}
-                            >
-                              <XCircle className="mr-2 h-4 w-4" />
-                              Cancelar
-                            </Button>
-                          )}
-
-                          <Button size="sm" variant="destructive" onClick={() => remove(o.id)}>
-                            <Trash2 className="mr-2 h-4 w-4" />
-                            Eliminar
-                          </Button>
-                        </div>
-                      </div>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="h-8 px-2"
+                        onClick={() => remove(o.id)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
                     </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-        )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
