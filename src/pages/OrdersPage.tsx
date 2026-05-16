@@ -246,7 +246,7 @@ export default function OrdersPage() {
   function abrirEcommerce(o: Order) {
     const numeroCompra = o.from_number || o.phone || "";
 
-    const observacion = `Forma de pago: ${o.metodo_pago || "efectivo"}`;
+    const observacion = `Producto: ${o.product || "Sin producto"} | Forma de pago: ${o.metodo_pago || "efectivo"}`;
 
     const params = new URLSearchParams({
       view: "create-order",
