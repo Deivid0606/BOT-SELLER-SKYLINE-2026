@@ -121,7 +121,7 @@ function hexToRgba(hex: string, alpha: number) {
 export default function InboxPage() {
   const { user } = useAuth();
 
-  const [selectedChat, setSelectedChat] = useState<number>(0);
+  const [selectedChatNumber, setSelectedChatNumber] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [messageInput, setMessageInput] = useState("");
   const [showTemplates, setShowTemplates] = useState(false);
@@ -361,7 +361,12 @@ export default function InboxPage() {
     });
   }, [chats, searchQuery, filterTag, filterDate, contactTagsMap, chatSearchIndex]);
 
-  const selectedNumber = filteredChats[selectedChat]?.number;
+  const selectedNumber = selectedChatNumber;
+
+  const selectedChatData = useMemo(() => {
+    if (!selectedNumber) return null;
+    return filteredChats.find((chat) => chat.number === selectedNumber) || null;
+  }, [filteredChats, selectedNumber]);
 
   const currentMessages = useMemo<Message[]>(() => {
     if (!selectedNumber) return [];
@@ -402,8 +407,16 @@ export default function InboxPage() {
   }, [dbMessages, selectedNumber]);
 
   useEffect(() => {
-    if (selectedChat >= filteredChats.length) setSelectedChat(0);
-  }, [filteredChats.length, selectedChat]);
+    if (filteredChats.length === 0) {
+      if (selectedChatNumber !== null) setSelectedChatNumber(null);
+      return;
+    }
+
+    const selectedExists = filteredChats.some((chat) => chat.number === selectedChatNumber);
+    if (!selectedChatNumber || !selectedExists) {
+      setSelectedChatNumber(filteredChats[0].number);
+    }
+  }, [filteredChats, selectedChatNumber]);
 
   useEffect(() => {
     const markAsProcessed = async () => {
@@ -575,7 +588,7 @@ export default function InboxPage() {
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     toast({ title: "🗑️ Conversación eliminada" });
     await loadMessages();
-    setSelectedChat(0);
+    setSelectedChatNumber(null);
   };
 
   const handleClearChat = async () => {
@@ -676,11 +689,11 @@ export default function InboxPage() {
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
             <div className="border-b border-border/40 px-6 py-3 flex items-center gap-3 shrink-0">
               <div className="w-9 h-9 rounded-full bg-primary/15 flex items-center justify-center text-xs font-semibold text-primary">
-                {filteredChats[selectedChat]?.number?.slice(-2) || "--"}
+                {selectedChatData?.number?.slice(-2) || "--"}
               </div>
               <div className="flex-1">
                 <div className="text-sm font-medium">
-                  {filteredChats[selectedChat]?.number || "Sin chat seleccionado"}
+                  {selectedChatData?.number || "Sin chat seleccionado"}
                 </div>
               </div>
               <div className="flex items-center gap-1">
@@ -954,14 +967,14 @@ export default function InboxPage() {
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
-              {filteredChats.map((chat, i) => {
+              {filteredChats.map((chat) => {
                 const tagColor = getTagColor(chat.tag);
                 return (
                   <button
                     key={chat.number}
-                    onClick={() => setSelectedChat(i)}
+                    onClick={() => setSelectedChatNumber(chat.number)}
                     className={`w-full text-left px-4 py-3.5 border-b border-border/20 hover:bg-secondary/30 transition-all ${
-                      selectedChat === i ? "bg-primary/5 border-l-2 border-l-primary" : ""
+                      selectedChatNumber === chat.number ? "bg-primary/5 border-l-2 border-l-primary" : ""
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2 mb-1">
