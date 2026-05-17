@@ -52,6 +52,28 @@ function isInvalidProductCandidate(name: string): boolean {
   return false;
 }
 
+
+function isInvalidCartProduct(name: string): boolean {
+  const raw = clean(name);
+  const n = normalize(raw);
+
+  if (!n) return true;
+  if (n.length < 4) return true;
+
+  // Basura común que Gemini o el historial pueden convertir accidentalmente en producto.
+  if (/^(cliente|nombre|contacto|telefono|teléfono|ubicacion|ubicación|direccion|dirección)\b/i.test(raw)) return true;
+  if (/\b(quiero|cantidad|total|precio|delivery|envio|envío|pago al recibir|contra entrega)\b/.test(n)) return true;
+  if (/^x\d+$/.test(n)) return true;
+  if (/^\d+\s*(unidad|unidades|u|kit|kits)$/.test(n)) return true;
+  if (/^kit\s*x\s*4\s*unidades$/.test(n)) return true;
+  if (/^pack\s*x\s*4\s*unidades$/.test(n)) return true;
+
+  // Ejemplos tipo “1 unidad”, “2 unidades”, “3 unidades” nunca son productos.
+  if (/\d+\s*(unidad|unidades).*(\d+\s*(unidad|unidades))/.test(n)) return true;
+
+  return false;
+}
+
 const ZONAS_COBERTURA = [
   "Altos", "Areguá", "Asunción", "Atyrá", "Benjamín Aceval", "Caacupé",
   "Capiatá", "Ciudad del Este", "Colonia Yguazú", "Emboscada", "Eusebio Ayala",
@@ -565,9 +587,9 @@ function getCartItems(order: any): CartItem[] {
         total: Number.isFinite(total) ? total : 0,
       };
     })
-    .filter((i: CartItem) => i.product && i.quantity > 0);
+    .filter((i: CartItem) => i.product && i.quantity > 0 && !isInvalidCartProduct(i.product));
 
-  if (!items.length && order?.product && safeQuantity(order?.quantity) > 0) {
+  if (!items.length && order?.product && !isInvalidCartProduct(order.product) && safeQuantity(order?.quantity) > 0) {
     items.push({
       product: clean(order.product),
       quantity: safeQuantity(order.quantity),
@@ -597,7 +619,7 @@ function addOrReplaceCartItem(
   const q = safeQuantity(quantity);
   const t = Number(total || 0);
 
-  if (!cleanProduct || q < 1) return items;
+  if (!cleanProduct || q < 1 || isInvalidCartProduct(cleanProduct)) return items;
 
   const next = [...items];
   const idx = next.findIndex((i) => sameProduct(i.product, cleanProduct));
@@ -1431,7 +1453,37 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     const wantsAddMore = isAddMoreIntent(texto);
     const asksPriceNow = isPriceIntent(texto);
-    let cartItems = getCartItems(oldOrder);
+
+    // Si el cliente inicia una consulta/pedido de producto nuevo, NO arrastramos carrito viejo.
+    // Esto evita casos como: soporte para lavarropas → aparece tabla/veneno/cliente viejo.
+    const isFreshProductSearch =
+      !!product &&
+      !wantsAddMore &&
+      !isPureQuantityReply &&
+      !isPackReferenceText(texto) &&
+      !effectivePreviousStep.startsWith("collecting") &&
+      effectivePreviousStep !== "esperando_cantidad" &&
+      effectivePreviousStep !== "waiting_payment_proof";
+
+    let cartItems = isFreshProductSearch ? [] : getCartItems(oldOrder);
+
+    // Si estamos esperando cantidad de un producto activo, mantenemos solo ese producto.
+    // Esto limpia carritos contaminados que ya venían del contexto anterior.
+    if (
+      product &&
+      (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")
+    ) {
+      cartItems = cartItems.filter((i) => sameProduct(i.product, product));
+    }
+
+    if (isFreshProductSearch) {
+      orderData.items = [];
+      orderData.customer_name = "";
+      orderData.phone = "";
+      orderData.address = "";
+      orderData.quantity = safeQuantity(extracted.quantity);
+      orderData.total_amount = 0;
+    }
 
     // Si el cliente dice "también la tabla" y no especifica cantidad, asumimos 1 unidad.
     if (wantsAddMore && product && !orderData.quantity) {
@@ -1505,6 +1557,36 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
           tipo_cobertura: finalTipoCobertura || null,
           order_data: orderData,
           last_topic: orderData.product || product || context?.last_topic || "ENTRENAMIENTO",
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    // Respuesta determinística para productos que ya vienen como KIT/PACK x4.
+    // "Kit x 4 unidades" significa 1 kit, no 4 kits.
+    if (
+      isPackReferenceText(texto) &&
+      orderData.quantity > 0 &&
+      orderData.product &&
+      (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")
+    ) {
+      const exactTotal = calculateTotal(orderData.product, 1, fullTraining);
+      orderData.quantity = 1;
+      if (exactTotal) orderData.total_amount = exactTotal;
+      orderData.items = addOrReplaceCartItem([], orderData.product, 1, orderData.total_amount, "replace");
+
+      await safeUpsertOrder(user_id, fromNumber, orderData, false);
+
+      return res.json({
+        response: buildOrderSummaryResponse(orderData, finalTipoCobertura),
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || context?.current_product || null,
+          step: nextStep(orderData, finalTipoCobertura),
+          tipo_cobertura: finalTipoCobertura || null,
+          order_data: orderData,
+          last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
@@ -1666,6 +1748,8 @@ REGLAS TÉCNICAS (MUY IMPORTANTES):
 16. Si el cliente dice "también", "tambien", "agrega", "sumá", "y la", "y el", NO confirmes todavía: agregá el producto al carrito y mostrá el resumen completo.
 17. Si hay varios productos, mostrá todos los items con subtotales y el total general.
 18. Nunca borres items anteriores salvo que el cliente pida cancelar o cambiar.
+19. Si el cliente inicia con otro producto nuevo y NO dice también/agrega/sumá, empezá pedido nuevo y no arrastres carrito viejo.
+20. Si el cliente responde "Kit x 4 unidades", "x4" o "las 4 unidades", significa 1 kit, no 4 kits.
 `.trim();
 
     const contents = cleanHistory
