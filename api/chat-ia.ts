@@ -354,26 +354,34 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   };
 }
 
+function safeQuantity(value: any): number {
+  const raw = String(value ?? "").trim();
+  if (!raw) return 0;
+
+  const match = raw.match(/^\d{1,3}$/);
+  if (!match) return 0;
+
+  const n = Number(match[0]);
+  if (!Number.isFinite(n) || n < 1 || n > 999) return 0;
+
+  return n;
+}
+
 // FUNCIÓN CORREGIDA - EVITA CONCATENACIÓN DE CANTIDADES
 function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = false): any {
-  const oldQuantity =
-    typeof old?.quantity === "number" && old.quantity > 0 ? old.quantity : 0;
+  const oldQuantity = safeQuantity(old?.quantity);
+  const newQuantity = safeQuantity(ext?.quantity);
 
-  const newQuantity =
-    typeof ext?.quantity === "number" && ext.quantity > 0 ? ext.quantity : 0;
-
-  // CRÍTICO: Si replaceQuantity es true, SOLO usamos newQuantity
-  let finalQuantity = 0;
-  
-  if (replaceQuantity) {
-    // Modo reemplazo total: solo la nueva cantidad
-    finalQuantity = newQuantity;
-  } else if (newQuantity > 0) {
-    // Si hay nueva cantidad, la nueva reemplaza a la vieja (no suma)
-    finalQuantity = newQuantity;
-  } else {
-    finalQuantity = oldQuantity;
-  }
+  // CRÍTICO:
+  // - Nunca sumamos ni concatenamos cantidades.
+  // - Si viene una cantidad nueva válida, reemplaza a la anterior.
+  // - Si replaceQuantity está activo pero no vino cantidad nueva, conservamos la anterior.
+  const finalQuantity =
+    newQuantity > 0
+      ? newQuantity
+      : replaceQuantity
+      ? oldQuantity
+      : oldQuantity;
 
   return {
     product: product || old?.product || "",
@@ -929,12 +937,12 @@ export default async function handler(req: any, res: any) {
 
     const isOnlyNumber = /^\s*\d{1,3}\s*$/.test(texto);
 
-    // CRÍTICO: Si ya hay cantidad en el pedido, no es una respuesta de cantidad
+    // CRÍTICO: Si el bot preguntó cantidad y el cliente responde solo un número,
+    // ese número reemplaza cualquier cantidad previa. Nunca se concatena.
     const isPureQuantityReply =
       isOnlyNumber &&
       !!oldOrder?.product &&
       !!oldOrder?.city &&
-      !oldOrder?.quantity && // ← CLAVE: no permitir si ya hay cantidad
       (
         wasAskingQuantity ||
         previousStep === "collecting_quantity" ||
@@ -966,12 +974,11 @@ export default async function handler(req: any, res: any) {
 
     const baseOrderBeforeMedia = productChangedBeforeMedia ? {} : oldOrder;
 
-    // CRÍTICO: Usar replaceQuantity = true para evitar concatenación
     let orderData = mergeOrderData(
       baseOrderBeforeMedia,
       extracted,
       product,
-      true  // ← FORZAR reemplazo de cantidad
+      isPureQuantityReply
     );
 
     const tipoCobertura =
@@ -1159,13 +1166,14 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     const effectivePreviousStep = productChanged ? "" : previousStep;
     const effectivePreviousTipoCobertura = productChanged ? "" : previousTipoCobertura;
 
-    // CRÍTICO: Usar replaceQuantity = true SIEMPRE para respuestas de cantidad
     orderData = mergeOrderData(
       baseOrder,
       extracted,
       product,
-      isPureQuantityReply  // ← true para respuestas de cantidad
+      isPureQuantityReply || safeQuantity(extracted.quantity) > 0
     );
+
+    orderData.quantity = safeQuantity(orderData.quantity);
 
     const calculatedTotal = calculateTotal(
       orderData.product,
@@ -1202,6 +1210,29 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
         isPureQuantityReply);
 
     const isConfirming = step === "confirm_order" && wantsToBuy;
+
+    // Seguridad extra: si justo respondió cantidad, nunca dejamos que Gemini arme la cantidad.
+    // Devolvemos una respuesta determinística con la cantidad exacta.
+    if (isPureQuantityReply && orderData.quantity > 0 && orderData.product && orderData.city) {
+      const exactTotal = calculateTotal(orderData.product, orderData.quantity, fullTraining);
+      if (exactTotal) orderData.total_amount = exactTotal;
+
+      await safeUpsertOrder(user_id, fromNumber, orderData, false);
+
+      return res.json({
+        response: buildOrderSummaryResponse(orderData, finalTipoCobertura),
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || context?.current_product || null,
+          step: nextStep(orderData, finalTipoCobertura),
+          tipo_cobertura: finalTipoCobertura || null,
+          order_data: orderData,
+          last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
 
     // Limpiar nombre inválido
     const invalidCustomerName =
