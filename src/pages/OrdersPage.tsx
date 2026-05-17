@@ -1,9 +1,8 @@
-// CAMBIOS PRINCIPALES:
-// 1. Se eliminó Pendientes de las cards superiores.
-// 2. Se eliminó Pendientes de los filtros.
-// 3. Layout más centrado y moderno.
-// 4. Ingresos corregido visualmente para que no se rompa.
-// 5. No se tocaron los colores base de la app.
+// CAMBIOS:
+// 1. "Desde" ahora muestra SIEMPRE order.from_number primero.
+// 2. phone del cliente queda como dato secundario, no rompe la card.
+// 3. Se agregaron truncate / break-words donde podía estirarse.
+// 4. No se tocaron colores base ni estructura de UI.
 
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
@@ -248,10 +247,12 @@ export default function OrdersPage() {
   }
 
   function openEcommerce(order: Order) {
+    const realChatNumber = order.from_number || order.phone || "";
+
     const params = new URLSearchParams({
       view: "create-order",
       nombre: order.customer_name || "",
-      telefono: order.phone || order.from_number || "",
+      telefono: realChatNumber,
       ciudad: order.city || "",
       calle: order.address || "",
       producto: order.product || "",
@@ -411,27 +412,32 @@ export default function OrdersPage() {
               const status = normalizeStatus(order.status);
               const config = STATUS_CONFIG[status] || STATUS_CONFIG.pendiente;
               const Icon = config.icon;
-              const phoneNumber = order.phone || order.from_number;
+
+              const chatNumber = order.from_number || order.phone || "";
+              const customerPhone = order.phone || "";
 
               return (
                 <Card key={order.id} className="group overflow-hidden rounded-2xl">
                   <CardContent className="p-5">
                     <div className="mb-4 flex items-start justify-between gap-3">
-                      <div>
+                      <div className="min-w-0 flex-1">
                         <p className="text-xs text-muted-foreground">Desde</p>
-                        <p className="font-mono text-sm font-semibold">
-                          {phoneNumber || "—"}
+                        <p
+                          className="max-w-[150px] truncate font-mono text-sm font-semibold"
+                          title={chatNumber || "—"}
+                        >
+                          {chatNumber || "—"}
                         </p>
                       </div>
 
-                      <Badge className={config.color}>
+                      <Badge className={`${config.color} shrink-0`}>
                         <Icon className="mr-1 h-3 w-3" />
                         {config.label}
                       </Badge>
                     </div>
 
                     <div className="mb-3">
-                      <h3 className="line-clamp-2 font-semibold">
+                      <h3 className="line-clamp-2 break-words font-semibold">
                         {order.product || "Producto sin especificar"}
                       </h3>
                       <p className="mt-1 text-xs text-muted-foreground">
@@ -441,14 +447,16 @@ export default function OrdersPage() {
 
                     <div className="mb-3 space-y-2 text-sm">
                       <div className="flex items-center gap-2 text-muted-foreground">
-                        <User className="h-3.5 w-3.5" />
-                        <span>{order.customer_name || "Sin nombre"}</span>
+                        <User className="h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">
+                          {order.customer_name || "Sin nombre"}
+                        </span>
                       </div>
 
                       {order.city && (
                         <div className="flex items-center gap-2 text-muted-foreground">
-                          <MapPin className="h-3.5 w-3.5" />
-                          <span>{order.city}</span>
+                          <MapPin className="h-3.5 w-3.5 shrink-0" />
+                          <span className="min-w-0 truncate">{order.city}</span>
                         </div>
                       )}
 
@@ -457,7 +465,7 @@ export default function OrdersPage() {
                           {formatCurrency(order.total_amount)} Gs
                         </span>
 
-                        <span className="text-xs text-muted-foreground">
+                        <span className="shrink-0 text-xs text-muted-foreground">
                           {formatDate(order.created_at)}
                         </span>
                       </div>
@@ -466,7 +474,7 @@ export default function OrdersPage() {
                     {order.address && (
                       <div className="mb-3 rounded-xl bg-muted/50 p-3">
                         <p className="text-xs text-muted-foreground">Dirección</p>
-                        <p className="text-sm">{order.address}</p>
+                        <p className="break-words text-sm">{order.address}</p>
                       </div>
                     )}
 
@@ -485,7 +493,7 @@ export default function OrdersPage() {
                         size="sm"
                         variant="outline"
                         className="flex-1 rounded-xl"
-                        onClick={() => openChat(phoneNumber)}
+                        onClick={() => openChat(chatNumber || customerPhone)}
                       >
                         <MessageSquare className="mr-2 h-3.5 w-3.5" />
                         Chat
