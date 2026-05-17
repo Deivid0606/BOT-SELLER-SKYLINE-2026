@@ -83,8 +83,8 @@ function detectProduct(
     const n = normalize(name);
     if (!n || n.length < 3) continue;
 
-    const words = n.split(" " ).filter((w) => w.length >= 4);
-    const msgWords = msg.split(" " ).filter((w) => w.length >= 4);
+    const words = n.split(" ").filter((w) => w.length >= 4);
+    const msgWords = msg.split(" ").filter((w) => w.length >= 4);
 
     let score = 0;
 
@@ -121,8 +121,6 @@ function detectProduct(
 
   if (bestScore >= 5) return best;
 
-  // Respuestas cortas como "quiero", "sí", "dale" deben usar
-  // el producto mencionado en la ÚLTIMA respuesta del bot, no un producto viejo del contexto.
   if (lastAssistantMessage) {
     const assistantNorm = normalize(lastAssistantMessage);
     let assistantBest = "";
@@ -136,7 +134,7 @@ function detectProduct(
       let score = 0;
       if (assistantNorm.includes(n)) score += 50;
 
-      const words = n.split(" " ).filter((w) => w.length >= 4);
+      const words = n.split(" ").filter((w) => w.length >= 4);
       for (const w of words) {
         if (assistantNorm.includes(w)) score += 10;
       }
@@ -164,7 +162,6 @@ function sameProduct(a: string, b: string): boolean {
   if (!na || !nb) return false;
   return na === nb || na.includes(nb) || nb.includes(na);
 }
-
 
 function isPriceIntent(text: string) {
   const m = normalize(text);
@@ -236,8 +233,17 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     /\b(uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/.test(norm)
   ) {
     const words: Record<string, number> = {
-      uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
-      seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10,
+      uno: 1,
+      una: 1,
+      dos: 2,
+      tres: 3,
+      cuatro: 4,
+      cinco: 5,
+      seis: 6,
+      siete: 7,
+      ocho: 8,
+      nueve: 9,
+      diez: 10,
     };
 
     for (const [word, num] of Object.entries(words)) {
@@ -286,6 +292,9 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     "pte franco": "Presidente Franco",
     aregua: "Areguá",
     areguá: "Areguá",
+    sanber: "San Bernardino",
+    "san ber": "San Bernardino",
+    "san bernardino": "San Bernardino",
     pjc: "Pedro Juan Caballero",
     "pedro juan": "Pedro Juan Caballero",
     "pedro juan caballero": "Pedro Juan Caballero",
@@ -305,17 +314,31 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
 
   let name = "";
 
+  const invalidName =
+    /\d/.test(text) ||
+    norm.includes("unidad") ||
+    norm.includes("unidades") ||
+    norm.includes("precio") ||
+    norm.includes("delivery") ||
+    norm.includes("envio") ||
+    norm.includes("envío") ||
+    norm.includes("ubicacion") ||
+    norm.includes("ubicación") ||
+    norm.includes("direccion") ||
+    norm.includes("dirección");
+
   const nameMatch = text.match(
     /(?:soy|me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i
   )?.[1];
 
-  if (nameMatch) {
+  if (nameMatch && !invalidName) {
     name = clean(nameMatch).replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "").trim();
   } else if (
+    !invalidName &&
     /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,60}$/.test(text) &&
     !city &&
     !phone &&
-    !norm.includes("precio") &&
+    !quantity &&
     !norm.includes("hola") &&
     !norm.includes("si")
   ) {
@@ -365,8 +388,6 @@ function calculateTotal(product: string, quantity: number, training: string): nu
 
   const p = normalize(product);
 
-  // Catálogo protegido: evita que Gemini use promos de otro producto.
-  // Agregá acá cualquier producto con precio/promo especial cuando sea necesario.
   const protectedCatalog = [
     {
       keys: ["veneno de abeja"],
@@ -412,7 +433,6 @@ function calculateTotal(product: string, quantity: number, training: string): nu
     }
   }
 
-  // Fallback dinámico: busca el producto y un precio cercano en el entrenamiento.
   const lines = training.split("\n").map((l) => clean(l)).filter(Boolean);
   let unitPrice = 0;
   let promoPrice = 0;
@@ -883,6 +903,7 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
+    // ========== BLOQUE REEMPLAZADO (INICIO) ==========
     const oldOrder = context?.order_data || {};
     const previousStep = clean(context?.step);
     const previousTipoCobertura = clean(context?.tipo_cobertura);
@@ -898,7 +919,11 @@ export default async function handler(req: any, res: any) {
       isOnlyNumber &&
       !!oldOrder?.product &&
       !!oldOrder?.city &&
-      wasAskingQuantity;
+      (
+        wasAskingQuantity ||
+        previousStep === "collecting_quantity" ||
+        previousStep === "esperando_cantidad"
+      );
 
     let product = detectProduct(
       texto,
@@ -911,6 +936,8 @@ export default async function handler(req: any, res: any) {
 
     if (isPureQuantityReply) {
       extracted.quantity = Number(texto.trim());
+      extracted.name = "";
+      extracted.address = "";
     }
 
     const productChangedBeforeMedia =
@@ -933,6 +960,7 @@ export default async function handler(req: any, res: any) {
     const isWaitingPaymentProof =
       tipoCobertura === "sin_cobertura" &&
       previousStep === "waiting_payment_proof";
+    // ========== BLOQUE REEMPLAZADO (FIN) ==========
 
     if (mediaUrl && mediaType === "image") {
       const fetched = await fetchMediaAsBase64(mediaUrl);
@@ -1152,6 +1180,57 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     const isConfirming = step === "confirm_order" && wantsToBuy;
 
+    // ========== NUEVO BLOQUE: Limpiar nombre inválido ==========
+    const invalidCustomerName =
+      !!orderData.customer_name &&
+      (
+        /\d/.test(orderData.customer_name) ||
+        normalize(orderData.customer_name).includes("unidad") ||
+        normalize(orderData.customer_name).includes("unidades")
+      );
+
+    if (invalidCustomerName) {
+      orderData.customer_name = "";
+    }
+    // ========== FIN NUEVO BLOQUE ==========
+
+    // ========== NUEVO BLOQUE: Respuesta temprana si falta nombre ==========
+    if (
+      orderData.product &&
+      orderData.city &&
+      orderData.quantity &&
+      orderData.total_amount &&
+      !orderData.customer_name &&
+      step === "collecting_name"
+    ) {
+      await safeUpsertOrder(user_id, fromNumber, orderData, false);
+
+      return res.json({
+        response: `Perfecto 😊 ya tengo:
+
+📦 ${orderData.product}
+🔢 Cantidad: ${orderData.quantity}
+📍 Ciudad: ${orderData.city}
+💰 Total: ${formatGs(orderData.total_amount)} Gs
+
+Ahora pasame tu nombre y apellido para agendar el pedido 🙏`,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || context?.current_product || null,
+          step: "collecting_name",
+          tipo_cobertura: finalTipoCobertura || null,
+          order_data: {
+            ...orderData,
+            customer_name: "",
+          },
+          last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+    // ========== FIN NUEVO BLOQUE ==========
+
     if (shouldCollect) {
       await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
     }
@@ -1243,10 +1322,10 @@ REGLAS TÉCNICAS:
 25. Nunca reutilices promociones de otros productos.
 26. Si el cliente responde "quiero", "sí", "dale" u otra respuesta corta, usá el producto de la última respuesta del bot.
 27. Si el producto cambió, NO arrastres cantidad, ciudad, nombre, teléfono ni dirección de otro producto anterior.
-23. Si Total calculado no está pendiente, usá EXACTAMENTE ese total.
-24. Nunca recalcules precios manualmente.
-25. Nunca reutilices promociones de otros productos.
-26. Para Peladora Automática: 1 unidad = 189.900 Gs y 2 unidades = 379.800 Gs, salvo que exista una promo explícita de Peladora.
+28. Si Total calculado no está pendiente, usá EXACTAMENTE ese total.
+29. Nunca recalcules precios manualmente.
+30. Nunca reutilices promociones de otros productos.
+31. Para Peladora Automática: 1 unidad = 189.900 Gs y 2 unidades = 379.800 Gs, salvo que exista una promo explícita de Peladora.
 `.trim();
 
     const contents = cleanHistory
