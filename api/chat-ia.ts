@@ -487,7 +487,164 @@ function calculateTotal(product: string, quantity: number, training: string): nu
   return null;
 }
 
+
+type CartItem = {
+  product: string;
+  quantity: number;
+  total: number;
+};
+
+function isAddMoreIntent(text: string): boolean {
+  const m = normalize(text);
+  return /\b(tambien|también|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí)\b/.test(m) ||
+    /\by\s+(la|el|los|las)\b/.test(m);
+}
+
+function getCartItems(order: any): CartItem[] {
+  const rawItems = Array.isArray(order?.items) ? order.items : [];
+
+  const items: CartItem[] = rawItems
+    .map((i: any) => {
+      const quantity = safeQuantity(i?.quantity);
+      const total = Number(i?.total || i?.total_amount || 0);
+      return {
+        product: clean(i?.product),
+        quantity,
+        total: Number.isFinite(total) ? total : 0,
+      };
+    })
+    .filter((i: CartItem) => i.product && i.quantity > 0);
+
+  if (!items.length && order?.product && safeQuantity(order?.quantity) > 0) {
+    items.push({
+      product: clean(order.product),
+      quantity: safeQuantity(order.quantity),
+      total: Number(order.total_amount || 0),
+    });
+  }
+
+  return items;
+}
+
+function cartGrandTotal(items: CartItem[]): number {
+  return items.reduce((acc, i) => acc + Number(i.total || 0), 0);
+}
+
+function cartTotalQuantity(items: CartItem[]): number {
+  return items.reduce((acc, i) => acc + safeQuantity(i.quantity), 0);
+}
+
+function addOrReplaceCartItem(
+  items: CartItem[],
+  product: string,
+  quantity: number,
+  total: number,
+  mode: "add" | "replace" = "replace"
+): CartItem[] {
+  const cleanProduct = clean(product);
+  const q = safeQuantity(quantity);
+  const t = Number(total || 0);
+
+  if (!cleanProduct || q < 1) return items;
+
+  const next = [...items];
+  const idx = next.findIndex((i) => sameProduct(i.product, cleanProduct));
+
+  if (idx >= 0) {
+    if (mode === "add") {
+      const newQty = safeQuantity(next[idx].quantity) + q;
+      next[idx] = {
+        product: next[idx].product,
+        quantity: newQty,
+        total: Number(next[idx].total || 0) + t,
+      };
+    } else {
+      next[idx] = {
+        product: cleanProduct,
+        quantity: q,
+        total: t,
+      };
+    }
+    return next;
+  }
+
+  next.push({ product: cleanProduct, quantity: q, total: t });
+  return next;
+}
+
+function normalizeOrderWithItems(order: any, training: string): any {
+  let items = getCartItems(order);
+
+  items = items.map((i) => {
+    const qty = safeQuantity(i.quantity);
+    const recalculated = calculateTotal(i.product, qty, training);
+    return {
+      product: i.product,
+      quantity: qty,
+      total: recalculated || Number(i.total || 0),
+    };
+  });
+
+  const total = cartGrandTotal(items);
+  const qty = cartTotalQuantity(items);
+  const summaryProduct = items.map((i) => `${i.product} x${i.quantity}`).join(" + ");
+
+  return {
+    ...(order || {}),
+    items,
+    product: order?.product || items[items.length - 1]?.product || summaryProduct || "",
+    quantity: order?.quantity ? safeQuantity(order.quantity) : qty,
+    total_amount: total || Number(order?.total_amount || 0),
+  };
+}
+
+function buildItemsLines(items: CartItem[]): string {
+  return items
+    .map((i) => `📦 ${i.product} x${i.quantity} → ${formatGs(i.total)} Gs`)
+    .join("\n");
+}
+
+function buildCartSummaryResponse(order: any, tipoCobertura: string) {
+  const items = getCartItems(order);
+  const total = cartGrandTotal(items) || Number(order?.total_amount || 0);
+  const tipoEnvio =
+    tipoCobertura === "sin_cobertura"
+      ? "Envío por transportadora / encomienda"
+      : "Envío GRATIS contra-entrega";
+
+  const lines = items.length
+    ? buildItemsLines(items)
+    : `📦 ${order.product}\n🔢 Cantidad: ${order.quantity}`;
+
+  return `🔥 Perfecto 😊
+
+Tu pedido queda así:
+
+${lines}
+
+💰 Total: ${formatGs(total)} Gs
+
+🚚 ${tipoEnvio}
+
+📎 Pasame TODO JUNTO en un solo mensaje:
+
+✅ nombre y apellido
+✅ dirección exacta o ubicación por Google Maps
+✅ número de celular
+
+📲 Si no enviás número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
+
+y agendamos tu entrega ✨`;
+}
+
+function buildAddedItemResponse(order: any, tipoCobertura: string) {
+  return buildCartSummaryResponse(order, tipoCobertura);
+}
+
 function buildOrderSummaryResponse(order: any, tipoCobertura: string) {
+  const items = getCartItems(order);
+  if (items.length > 1) return buildCartSummaryResponse(order, tipoCobertura);
+
   const total = Number(order?.total_amount || 0);
   const tipoEnvio =
     tipoCobertura === "sin_cobertura"
@@ -516,9 +673,12 @@ y agendamos tu entrega ✨`;
 }
 
 function nextStep(o: any, tipoCobertura?: string) {
-  if (!o.product) return "selling";
+  const items = getCartItems(o);
+  if (!o.product && !items.length) return "selling";
   if (!o.city) return "collecting_city";
-  if (!o.quantity) return "collecting_quantity";
+  // Si hay un producto activo nuevo, su cantidad debe pedirse aunque ya existan otros items en carrito.
+  if (o.product && !safeQuantity(o.quantity)) return "collecting_quantity";
+  if (!safeQuantity(o.quantity) && !items.length) return "collecting_quantity";
 
   if (tipoCobertura === "sin_cobertura") {
     if (!o.customer_name) return "collecting_name";
@@ -541,7 +701,8 @@ async function safeUpsertOrder(
   forcedStatus?: string
 ) {
   try {
-    if (!order?.product) return null;
+    const orderItems = getCartItems(order);
+    if (!order?.product && !orderItems.length) return null;
     if (!from) return null;
 
     const { data: existing, error: findErr } = await supabase
@@ -584,14 +745,14 @@ async function safeUpsertOrder(
       user_id: userId,
       from_number: from,
       phone: order.phone || from,
-      product: order.product || null,
-      producto: order.product || null,
+      product: orderItems.length > 1 ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ") : order.product || orderItems[0]?.product || null,
+      producto: orderItems.length > 1 ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ") : order.product || orderItems[0]?.product || null,
       customer_name: order.customer_name || null,
       city: order.city || null,
       ciudad: order.city || null,
       address: order.address || null,
-      quantity: order.quantity || null,
-      total_amount: order.total_amount || null,
+      quantity: orderItems.length ? cartTotalQuantity(orderItems) : order.quantity || null,
+      total_amount: orderItems.length ? cartGrandTotal(orderItems) : order.total_amount || null,
       status: finalStatus,
       fecha: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -859,7 +1020,7 @@ async function transcribeAudioWithGemini({
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL CORREGIDA - PROBLEMA 1->11 SOLUCIONADO");
+  console.log("🔥 VERSION FINAL CARRITO MULTIPLE + CANTIDAD 1 SOLUCIONADO");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -926,7 +1087,7 @@ export default async function handler(req: any, res: any) {
     const model = iaConfig.model || "gemini-2.5-flash";
 
     // ========== BLOQUE PRINCIPAL CORREGIDO ==========
-    const oldOrder = context?.order_data || {};
+    const oldOrder = normalizeOrderWithItems(context?.order_data || {}, fullTraining);
     const previousStep = clean(context?.step);
     const previousTipoCobertura = clean(context?.tipo_cobertura);
 
@@ -972,7 +1133,8 @@ export default async function handler(req: any, res: any) {
       !!oldOrder?.product &&
       !sameProduct(product, oldOrder.product);
 
-    const baseOrderBeforeMedia = productChangedBeforeMedia ? {} : oldOrder;
+    // No vaciamos el pedido si cambia el producto: preservamos items[] para carrito múltiple.
+    const baseOrderBeforeMedia = oldOrder;
 
     let orderData = mergeOrderData(
       baseOrderBeforeMedia,
@@ -1162,9 +1324,10 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       !!oldOrder?.product &&
       !sameProduct(product, oldOrder.product);
 
-    const baseOrder = productChanged ? {} : oldOrder;
-    const effectivePreviousStep = productChanged ? "" : previousStep;
-    const effectivePreviousTipoCobertura = productChanged ? "" : previousTipoCobertura;
+    // No vaciamos el pedido si cambia el producto: preservamos items[] para carrito múltiple.
+    const baseOrder = oldOrder;
+    const effectivePreviousStep = previousStep;
+    const effectivePreviousTipoCobertura = previousTipoCobertura;
 
     orderData = mergeOrderData(
       baseOrder,
@@ -1172,6 +1335,13 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       product,
       isPureQuantityReply || safeQuantity(extracted.quantity) > 0
     );
+
+    // Si el cliente cambió a otro producto pero todavía no dijo cantidad,
+    // NO heredamos la cantidad del producto anterior.
+    if (productChanged && !safeQuantity(extracted.quantity)) {
+      orderData.quantity = 0;
+      orderData.total_amount = 0;
+    }
 
     orderData.quantity = safeQuantity(orderData.quantity);
 
@@ -1183,6 +1353,43 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     if (calculatedTotal) {
       orderData.total_amount = calculatedTotal;
+    }
+
+    const wantsAddMore = isAddMoreIntent(texto);
+    const asksPriceNow = isPriceIntent(texto);
+    let cartItems = getCartItems(oldOrder);
+
+    // Si el cliente dice "también la tabla" y no especifica cantidad, asumimos 1 unidad.
+    if (wantsAddMore && product && !orderData.quantity) {
+      orderData.quantity = 1;
+      const totalForOne = calculateTotal(product, 1, fullTraining);
+      if (totalForOne) orderData.total_amount = totalForOne;
+    }
+
+    // Actualizamos el carrito solo cuando hay compra/cantidad/agregado, no cuando solo pregunta precio.
+    const shouldTouchCart =
+      !!product &&
+      safeQuantity(orderData.quantity) > 0 &&
+      !asksPriceNow &&
+      (isBuyIntent(texto) || wantsAddMore || isPureQuantityReply || safeQuantity(extracted.quantity) > 0);
+
+    if (shouldTouchCart) {
+      const itemTotal =
+        calculateTotal(product, safeQuantity(orderData.quantity), fullTraining) ||
+        Number(orderData.total_amount || 0);
+
+      cartItems = addOrReplaceCartItem(
+        cartItems,
+        product,
+        safeQuantity(orderData.quantity),
+        itemTotal,
+        "replace"
+      );
+    }
+
+    orderData.items = cartItems;
+    if (cartItems.length) {
+      orderData.total_amount = cartGrandTotal(cartItems);
     }
 
     const finalTipoCobertura =
@@ -1209,7 +1416,26 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
         effectivePreviousStep === "waiting_payment_proof" ||
         isPureQuantityReply);
 
-    const isConfirming = step === "confirm_order" && wantsToBuy;
+    const isConfirming = step === "confirm_order" && wantsToBuy && !wantsAddMore;
+
+    // Respuesta determinística para agregar otro producto al carrito.
+    if (wantsAddMore && product && orderData.items?.length) {
+      await safeUpsertOrder(user_id, fromNumber, orderData, false);
+
+      return res.json({
+        response: buildAddedItemResponse(orderData, finalTipoCobertura),
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || product || context?.current_product || null,
+          step: nextStep(orderData, finalTipoCobertura),
+          tipo_cobertura: finalTipoCobertura || null,
+          order_data: orderData,
+          last_topic: orderData.product || product || context?.last_topic || "ENTRENAMIENTO",
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
 
     // Seguridad extra: si justo respondió cantidad, nunca dejamos que Gemini arme la cantidad.
     // Devolvemos una respuesta determinística con la cantidad exacta.
@@ -1331,8 +1557,9 @@ ${fullTraining}
 ═══════════════════════════════════
 
 ESTADO ACTUAL DEL CLIENTE:
-- Producto: ${orderData.product || "ninguno"}
-- Cantidad: ${orderData.quantity || "pendiente"}
+- Producto activo: ${orderData.product || "ninguno"}
+- Cantidad producto activo: ${orderData.quantity || "pendiente"}
+- Carrito: ${getCartItems(orderData).length ? buildItemsLines(getCartItems(orderData)) : "vacío"}
 - Total calculado: ${orderData.total_amount ? formatGs(orderData.total_amount) + " Gs" : "pendiente"}
 - Ciudad: ${orderData.city || "pendiente"}
 - Tipo de cobertura: ${finalTipoCobertura || "pendiente"}
@@ -1362,6 +1589,9 @@ REGLAS TÉCNICAS (MUY IMPORTANTES):
 13. Catálogo: ${CATALOG_URL}
 14. Español paraguayo natural, con emojis.
 15. Pedro Juan Caballero / PJC es SIN COBERTURA.
+16. Si el cliente dice "también", "tambien", "agrega", "sumá", "y la", "y el", NO confirmes todavía: agregá el producto al carrito y mostrá el resumen completo.
+17. Si hay varios productos, mostrá todos los items con subtotales y el total general.
+18. Nunca borres items anteriores salvo que el cliente pida cancelar o cambiar.
 `.trim();
 
     const contents = cleanHistory
