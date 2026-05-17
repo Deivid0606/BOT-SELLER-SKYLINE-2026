@@ -66,7 +66,12 @@ function extractProductNameFromLine(line: string): string {
   return clean(parts[0] || c);
 }
 
-function detectProduct(text: string, training: string, prev?: string) {
+function detectProduct(
+  text: string,
+  training: string,
+  prev?: string,
+  lastAssistantMessage?: string
+) {
   const msg = normalize(text);
   const lines = getPriceLines(training);
 
@@ -78,20 +83,20 @@ function detectProduct(text: string, training: string, prev?: string) {
     const n = normalize(name);
     if (!n || n.length < 3) continue;
 
-    const words = n.split(" ").filter((w) => w.length >= 4);
-    const msgWords = msg.split(" ").filter((w) => w.length >= 4);
+    const words = n.split(" " ).filter((w) => w.length >= 4);
+    const msgWords = msg.split(" " ).filter((w) => w.length >= 4);
 
     let score = 0;
 
-    if (msg.includes(n)) score += 30;
+    if (msg.includes(n)) score += 50;
     if (n.includes(msg) && msg.length >= 4) score += 20;
 
     for (const w of words) {
-      if (msg.includes(w)) score += 6;
+      if (msg.includes(w)) score += 10;
     }
 
     for (const mw of msgWords) {
-      if (n.includes(mw)) score += 5;
+      if (n.includes(mw)) score += 8;
     }
 
     if (
@@ -115,8 +120,51 @@ function detectProduct(text: string, training: string, prev?: string) {
   }
 
   if (bestScore >= 5) return best;
+
+  // Respuestas cortas como "quiero", "sí", "dale" deben usar
+  // el producto mencionado en la ÚLTIMA respuesta del bot, no un producto viejo del contexto.
+  if (lastAssistantMessage) {
+    const assistantNorm = normalize(lastAssistantMessage);
+    let assistantBest = "";
+    let assistantScore = 0;
+
+    for (const line of lines) {
+      const name = extractProductNameFromLine(line);
+      const n = normalize(name);
+      if (!n || n.length < 3) continue;
+
+      let score = 0;
+      if (assistantNorm.includes(n)) score += 50;
+
+      const words = n.split(" " ).filter((w) => w.length >= 4);
+      for (const w of words) {
+        if (assistantNorm.includes(w)) score += 10;
+      }
+
+      if (assistantNorm.includes("peladora") && n.includes("peladora")) score += 60;
+      if (assistantNorm.includes("veneno") && n.includes("veneno")) score += 60;
+      if (assistantNorm.includes("afilador") && n.includes("afilador")) score += 60;
+      if (assistantNorm.includes("vital honey") && n.includes("vital honey")) score += 60;
+
+      if (score > assistantScore) {
+        assistantScore = score;
+        assistantBest = name;
+      }
+    }
+
+    if (assistantScore >= 10) return assistantBest;
+  }
+
   return clean(prev || "");
 }
+
+function sameProduct(a: string, b: string): boolean {
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (!na || !nb) return false;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
 
 function isPriceIntent(text: string) {
   const m = normalize(text);
@@ -283,7 +331,7 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   };
 }
 
-function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = false) {
+function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = false): any {
   const oldQuantity =
     typeof old?.quantity === "number" && old.quantity > 0 ? old.quantity : 0;
 
@@ -855,7 +903,8 @@ export default async function handler(req: any, res: any) {
     let product = detectProduct(
       texto,
       fullTraining,
-      context?.current_product || oldOrder?.product
+      context?.current_product || oldOrder?.product,
+      lastAssistantMessage
     );
 
     let extracted = extractData(texto, previousStep, isPureQuantityReply);
@@ -864,8 +913,15 @@ export default async function handler(req: any, res: any) {
       extracted.quantity = Number(texto.trim());
     }
 
+    const productChangedBeforeMedia =
+      !!product &&
+      !!oldOrder?.product &&
+      !sameProduct(product, oldOrder.product);
+
+    const baseOrderBeforeMedia = productChangedBeforeMedia ? {} : oldOrder;
+
     let orderData = mergeOrderData(
-      oldOrder,
+      baseOrderBeforeMedia,
       extracted,
       product,
       isPureQuantityReply
@@ -1040,11 +1096,21 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     product = detectProduct(
       texto,
       fullTraining,
-      product || context?.current_product || oldOrder?.product
+      product || context?.current_product || oldOrder?.product,
+      lastAssistantMessage
     );
 
+    const productChanged =
+      !!product &&
+      !!oldOrder?.product &&
+      !sameProduct(product, oldOrder.product);
+
+    const baseOrder = productChanged ? {} : oldOrder;
+    const effectivePreviousStep = productChanged ? "" : previousStep;
+    const effectivePreviousTipoCobertura = productChanged ? "" : previousTipoCobertura;
+
     orderData = mergeOrderData(
-      oldOrder,
+      baseOrder,
       extracted,
       product,
       isPureQuantityReply
@@ -1061,7 +1127,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     }
 
     const finalTipoCobertura =
-      getTipoCobertura(orderData.city) || previousTipoCobertura || "";
+      getTipoCobertura(orderData.city) || effectivePreviousTipoCobertura || "";
 
     const step = nextStep(orderData, finalTipoCobertura);
 
@@ -1079,9 +1145,9 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       !!orderData.product &&
       (wantsToBuy ||
         hasOrderData ||
-        previousStep.startsWith("collecting") ||
-        previousStep === "esperando_cantidad" ||
-        previousStep === "waiting_payment_proof" ||
+        effectivePreviousStep.startsWith("collecting") ||
+        effectivePreviousStep === "esperando_cantidad" ||
+        effectivePreviousStep === "waiting_payment_proof" ||
         isPureQuantityReply);
 
     const isConfirming = step === "confirm_order" && wantsToBuy;
@@ -1095,7 +1161,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       !!orderData.city &&
       !!orderData.quantity &&
       !!orderData.total_amount &&
-      (isPureQuantityReply || previousStep === "collecting_quantity" || previousStep === "esperando_cantidad") &&
+      (isPureQuantityReply || effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad") &&
       step !== "confirm_order" &&
       finalTipoCobertura !== "sin_cobertura";
 
@@ -1143,9 +1209,10 @@ ESTADO ACTUAL DEL CLIENTE:
 - Teléfono: ${orderData.phone || "pendiente"}
 - Dirección: ${orderData.address || "pendiente"}
 - Titular esperado para transferencia: ${expectedReceiverName || "pendiente"}
-- Paso anterior: ${previousStep || "ninguno"}
+- Paso anterior: ${effectivePreviousStep || "ninguno"}
 - Paso actual: ${step}
 - Última pregunta del bot: ${lastAssistantMessage || "ninguna"}
+- Producto cambió respecto al pedido anterior: ${productChanged ? "SÍ" : "NO"}
 - Intención: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
 
 REGLAS TÉCNICAS:
@@ -1171,6 +1238,11 @@ REGLAS TÉCNICAS:
 20. Español paraguayo natural, con emojis.
 21. Pedro Juan Caballero / PJC es SIN COBERTURA.
 22. Si el paso anterior es payment_verified, NO vuelvas a validar comprobante.
+23. Si existe Total calculado, usá EXACTAMENTE ese total.
+24. Nunca recalcules precios manualmente.
+25. Nunca reutilices promociones de otros productos.
+26. Si el cliente responde "quiero", "sí", "dale" u otra respuesta corta, usá el producto de la última respuesta del bot.
+27. Si el producto cambió, NO arrastres cantidad, ciudad, nombre, teléfono ni dirección de otro producto anterior.
 23. Si Total calculado no está pendiente, usá EXACTAMENTE ese total.
 24. Nunca recalcules precios manualmente.
 25. Nunca reutilices promociones de otros productos.
@@ -1220,13 +1292,13 @@ REGLAS TÉCNICAS:
       step:
         shouldCollect
           ? step
-          : previousStep === "payment_verified"
+          : effectivePreviousStep === "payment_verified"
           ? "payment_verified"
           : "selling",
       tipo_cobertura: finalTipoCobertura || null,
       order_data: orderData,
       last_topic:
-        previousStep === "payment_verified"
+        effectivePreviousStep === "payment_verified"
           ? "payment_verified"
           : step === "waiting_payment_proof"
           ? "comprobante"
