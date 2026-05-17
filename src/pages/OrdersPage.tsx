@@ -1,3 +1,10 @@
+// CAMBIOS PRINCIPALES:
+// 1. Se eliminó Pendientes de las cards superiores.
+// 2. Se eliminó Pendientes de los filtros.
+// 3. Layout más centrado y moderno.
+// 4. Ingresos corregido visualmente para que no se rompa.
+// 5. No se tocaron los colores base de la app.
+
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -16,17 +23,12 @@ import {
   Truck,
   MessageSquare,
   ReceiptText,
-  Phone,
   ShoppingCart,
   DollarSign,
   Calendar,
-  TrendingUp,
   Clock,
-  Filter,
-  ChevronRight,
   User,
   MapPin,
-  CreditCard,
 } from "lucide-react";
 import {
   Select,
@@ -63,47 +65,40 @@ const HIDDEN_STATUSES = [
   "collecting_phone",
 ];
 
-const STATUS_CONFIG: Record<string, { label: string; color: string; bgColor: string; icon: any }> = {
+const STATUS_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
   confirmado: {
     label: "Confirmado",
     color: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
-    bgColor: "bg-emerald-500/10",
     icon: Check,
   },
   confirmed: {
     label: "Confirmado",
     color: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
-    bgColor: "bg-emerald-500/10",
     icon: Check,
   },
   pendiente: {
     label: "Pendiente",
     color: "border-amber-500/40 bg-amber-500/10 text-amber-400",
-    bgColor: "bg-amber-500/10",
     icon: Clock,
   },
   pending: {
     label: "Pendiente",
     color: "border-amber-500/40 bg-amber-500/10 text-amber-400",
-    bgColor: "bg-amber-500/10",
     icon: Clock,
   },
   cargado: {
     label: "Cargado",
     color: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
-    bgColor: "bg-emerald-500/10",
     icon: Package,
   },
   cancelado: {
     label: "Cancelado",
     color: "border-red-500/40 bg-red-500/10 text-red-400",
-    bgColor: "bg-red-500/10",
     icon: XCircle,
   },
   droppx: {
     label: "Droppx",
     color: "border-blue-500/40 bg-blue-500/10 text-blue-400",
-    bgColor: "bg-blue-500/10",
     icon: Truck,
   },
 };
@@ -111,7 +106,6 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bgColor: str
 const FILTERS = [
   { id: "all", label: "Todos", icon: Package },
   { id: "confirmados", label: "Confirmados", icon: Check },
-  { id: "pendientes", label: "Pendientes", icon: Clock },
   { id: "cargados", label: "Cargados", icon: Package },
   { id: "cancelados", label: "Cancelados", icon: XCircle },
   { id: "droppx", label: "Droppx", icon: Truck },
@@ -121,22 +115,28 @@ function formatCurrency(value: string | number | null | undefined) {
   if (!value) return "0";
   const num = typeof value === "string" ? parseFloat(value) : value;
   if (isNaN(num)) return "0";
-  return num.toLocaleString("es-PY");
+
+  return num.toLocaleString("es-PY", {
+    maximumFractionDigits: 0,
+  });
 }
 
 function formatDate(dateString: string) {
   const date = new Date(dateString);
   const now = new Date();
-  const diffHours = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60));
-  
+  const diffHours = Math.floor(
+    (now.getTime() - date.getTime()) / (1000 * 60 * 60)
+  );
+
   if (diffHours < 1) return "Hace unos momentos";
   if (diffHours < 24) return `Hace ${diffHours} horas`;
-  return date.toLocaleDateString("es-PY", { 
-    day: "2-digit", 
-    month: "2-digit", 
+
+  return date.toLocaleDateString("es-PY", {
+    day: "2-digit",
+    month: "2-digit",
     year: "numeric",
     hour: "2-digit",
-    minute: "2-digit"
+    minute: "2-digit",
   });
 }
 
@@ -148,6 +148,7 @@ function normalizeStatus(status: string) {
 
 export default function OrdersPage() {
   const navigate = useNavigate();
+
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -166,11 +167,15 @@ export default function OrdersPage() {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       query = query.gte("created_at", today.toISOString());
-    } else if (dateFilter === "week") {
+    }
+
+    if (dateFilter === "week") {
       const weekAgo = new Date();
       weekAgo.setDate(weekAgo.getDate() - 7);
       query = query.gte("created_at", weekAgo.toISOString());
-    } else if (dateFilter === "month") {
+    }
+
+    if (dateFilter === "month") {
       const monthAgo = new Date();
       monthAgo.setMonth(monthAgo.getMonth() - 1);
       query = query.gte("created_at", monthAgo.toISOString());
@@ -192,7 +197,11 @@ export default function OrdersPage() {
 
     const channel = supabase
       .channel("orders")
-      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => loadOrders())
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "orders" },
+        () => loadOrders()
+      )
       .subscribe();
 
     return () => {
@@ -208,10 +217,10 @@ export default function OrdersPage() {
         .eq("id", order.id);
 
       if (error) throw error;
-      
+
       toast.success(`Pedido actualizado a ${STATUS_CONFIG[newStatus]?.label || newStatus}`);
       loadOrders();
-    } catch (err) {
+    } catch {
       toast.error("Error al actualizar el pedido");
     }
   }
@@ -220,7 +229,7 @@ export default function OrdersPage() {
     if (!confirm("¿Eliminar este pedido?")) return;
 
     const { error } = await supabase.from("orders").delete().eq("id", id);
-    
+
     if (error) {
       toast.error("Error al eliminar");
     } else {
@@ -234,6 +243,7 @@ export default function OrdersPage() {
       toast.error("No hay número de teléfono");
       return;
     }
+
     navigate(`/inbox?phone=${encodeURIComponent(phone)}`);
   }
 
@@ -255,24 +265,23 @@ export default function OrdersPage() {
     window.open(`${ECOMMERCE_URL}/?${params.toString()}`, "_blank");
   }
 
-  // Estadísticas
   const stats = {
     total: orders.length,
-    confirmados: orders.filter(o => normalizeStatus(o.status) === "confirmado").length,
-    pendientes: orders.filter(o => normalizeStatus(o.status) === "pendiente").length,
-    cargados: orders.filter(o => normalizeStatus(o.status) === "cargado").length,
-    cancelados: orders.filter(o => normalizeStatus(o.status) === "cancelado").length,
-    droppx: orders.filter(o => normalizeStatus(o.status) === "droppx").length,
+    confirmados: orders.filter((o) => normalizeStatus(o.status) === "confirmado").length,
+    cargados: orders.filter((o) => normalizeStatus(o.status) === "cargado").length,
+    cancelados: orders.filter((o) => normalizeStatus(o.status) === "cancelado").length,
+    droppx: orders.filter((o) => normalizeStatus(o.status) === "droppx").length,
     ingresos: orders.reduce((sum, o) => {
       const total = parseFloat(o.total_amount || "0");
       return sum + (isNaN(total) ? 0 : total);
     }, 0),
   };
 
-  // Filtrar pedidos
-  const filteredOrders = orders.filter(order => {
+  const filteredOrders = orders.filter((order) => {
     const searchTerm = search.toLowerCase();
-    const matchesSearch = !search || 
+
+    const matchesSearch =
+      !search ||
       order.customer_name?.toLowerCase().includes(searchTerm) ||
       order.phone?.toLowerCase().includes(searchTerm) ||
       order.from_number?.toLowerCase().includes(searchTerm) ||
@@ -280,9 +289,10 @@ export default function OrdersPage() {
       order.city?.toLowerCase().includes(searchTerm);
 
     const status = normalizeStatus(order.status);
-    const matchesFilter = activeFilter === "all" || 
+
+    const matchesFilter =
+      activeFilter === "all" ||
       (activeFilter === "confirmados" && status === "confirmado") ||
-      (activeFilter === "pendientes" && status === "pendiente") ||
       (activeFilter === "cargados" && status === "cargado") ||
       (activeFilter === "cancelados" && status === "cancelado") ||
       (activeFilter === "droppx" && status === "droppx");
@@ -292,152 +302,85 @@ export default function OrdersPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* Header */}
-        <div className="mb-8">
+      <div className="mx-auto flex max-w-6xl flex-col px-4 py-10 sm:px-6 lg:px-8">
+        <div className="mb-8 text-center">
           <h1 className="text-3xl font-bold tracking-tight">Pedidos</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             Panel operativo de pedidos, pagos y despacho
           </p>
         </div>
 
-        {/* Stats Grid */}
-        <div className="mb-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Total</p>
-                  <p className="text-2xl font-bold">{stats.total}</p>
-                </div>
-                <Package className="h-8 w-8 text-muted-foreground" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Confirmados</p>
-                  <p className="text-2xl font-bold text-emerald-500">{stats.confirmados}</p>
-                </div>
-                <Check className="h-8 w-8 text-emerald-500" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Pendientes</p>
-                  <p className="text-2xl font-bold text-amber-500">{stats.pendientes}</p>
-                </div>
-                <Clock className="h-8 w-8 text-amber-500" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Cargados</p>
-                  <p className="text-2xl font-bold text-emerald-500">{stats.cargados}</p>
-                </div>
-                <Package className="h-8 w-8 text-emerald-500" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Droppx</p>
-                  <p className="text-2xl font-bold text-blue-500">{stats.droppx}</p>
-                </div>
-                <Truck className="h-8 w-8 text-blue-500" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">Ingresos</p>
-                  <p className="text-lg font-bold text-purple-500">{formatCurrency(stats.ingresos)} Gs</p>
-                </div>
-                <DollarSign className="h-8 w-8 text-purple-500" />
-              </div>
-            </CardContent>
-          </Card>
+        <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <StatCard title="Total" value={stats.total} icon={Package} />
+          <StatCard title="Confirmados" value={stats.confirmados} icon={Check} valueClass="text-emerald-500" />
+          <StatCard title="Cargados" value={stats.cargados} icon={Package} valueClass="text-emerald-500" />
+          <StatCard title="Droppx" value={stats.droppx} icon={Truck} valueClass="text-blue-500" />
+          <StatCard
+            title="Ingresos"
+            value={`${formatCurrency(stats.ingresos)} Gs`}
+            icon={DollarSign}
+            valueClass="text-purple-500 text-xl break-words"
+          />
         </div>
 
-        {/* Filters Bar */}
-        <div className="mb-6 space-y-4">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="relative flex-1 max-w-md">
-              <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Buscar cliente, teléfono, producto o ciudad..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-9"
-              />
+        <Card className="mb-6">
+          <CardContent className="p-4">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="relative w-full lg:max-w-md">
+                <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar cliente, teléfono, producto o ciudad..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                {FILTERS.map((filter) => (
+                  <Button
+                    key={filter.id}
+                    variant={activeFilter === filter.id ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setActiveFilter(filter.id)}
+                    className="rounded-full"
+                  >
+                    <filter.icon className="mr-2 h-4 w-4" />
+                    {filter.label}
+                  </Button>
+                ))}
+              </div>
+
+              <div className="flex items-center justify-center gap-2">
+                <Select value={dateFilter} onValueChange={setDateFilter}>
+                  <SelectTrigger className="w-40">
+                    <Calendar className="mr-2 h-4 w-4" />
+                    <SelectValue placeholder="Fechas" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todo el tiempo</SelectItem>
+                    <SelectItem value="today">Hoy</SelectItem>
+                    <SelectItem value="week">Última semana</SelectItem>
+                    <SelectItem value="month">Último mes</SelectItem>
+                  </SelectContent>
+                </Select>
+
+                <Button variant="outline" size="icon" onClick={loadOrders} disabled={loading}>
+                  <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+                </Button>
+              </div>
             </div>
+          </CardContent>
+        </Card>
 
-            <div className="flex items-center gap-3">
-              <Select value={dateFilter} onValueChange={setDateFilter}>
-                <SelectTrigger className="w-36">
-                  <Calendar className="mr-2 h-4 w-4" />
-                  <SelectValue placeholder="Fechas" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todo el tiempo</SelectItem>
-                  <SelectItem value="today">Hoy</SelectItem>
-                  <SelectItem value="week">Última semana</SelectItem>
-                  <SelectItem value="month">Último mes</SelectItem>
-                </SelectContent>
-              </Select>
-
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={loadOrders}
-                disabled={loading}
-              >
-                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-              </Button>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            {FILTERS.map((filter) => (
-              <Button
-                key={filter.id}
-                variant={activeFilter === filter.id ? "default" : "outline"}
-                size="sm"
-                onClick={() => setActiveFilter(filter.id)}
-                className="rounded-full"
-              >
-                <filter.icon className="mr-2 h-4 w-4" />
-                {filter.label}
-              </Button>
-            ))}
-          </div>
-        </div>
-
-        {/* Results Count */}
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4 text-center">
           <p className="text-sm text-muted-foreground">
-            Mostrando <span className="font-semibold text-foreground">{filteredOrders.length}</span> de {orders.length} pedidos
+            Mostrando{" "}
+            <span className="font-semibold text-foreground">{filteredOrders.length}</span>{" "}
+            de {orders.length} pedidos
           </p>
         </div>
 
-        {/* Orders Grid */}
         {loading ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {[...Array(6)].map((_, i) => (
@@ -463,7 +406,7 @@ export default function OrdersPage() {
             </CardContent>
           </Card>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="mx-auto grid w-full max-w-5xl gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {filteredOrders.map((order) => {
               const status = normalizeStatus(order.status);
               const config = STATUS_CONFIG[status] || STATUS_CONFIG.pendiente;
@@ -471,27 +414,24 @@ export default function OrdersPage() {
               const phoneNumber = order.phone || order.from_number;
 
               return (
-                <Card key={order.id} className="group overflow-hidden">
-                  <div className={`h-1 w-full ${config.color.split(' ')[0]}`} />
-                  
+                <Card key={order.id} className="group overflow-hidden rounded-2xl">
                   <CardContent className="p-5">
-                    {/* Header */}
-                    <div className="mb-4 flex items-start justify-between">
+                    <div className="mb-4 flex items-start justify-between gap-3">
                       <div>
                         <p className="text-xs text-muted-foreground">Desde</p>
                         <p className="font-mono text-sm font-semibold">
                           {phoneNumber || "—"}
                         </p>
                       </div>
+
                       <Badge className={config.color}>
                         <Icon className="mr-1 h-3 w-3" />
                         {config.label}
                       </Badge>
                     </div>
 
-                    {/* Product */}
                     <div className="mb-3">
-                      <h3 className="font-semibold line-clamp-2">
+                      <h3 className="line-clamp-2 font-semibold">
                         {order.product || "Producto sin especificar"}
                       </h3>
                       <p className="mt-1 text-xs text-muted-foreground">
@@ -499,60 +439,58 @@ export default function OrdersPage() {
                       </p>
                     </div>
 
-                    {/* Customer Info */}
                     <div className="mb-3 space-y-2 text-sm">
                       <div className="flex items-center gap-2 text-muted-foreground">
                         <User className="h-3.5 w-3.5" />
                         <span>{order.customer_name || "Sin nombre"}</span>
                       </div>
+
                       {order.city && (
                         <div className="flex items-center gap-2 text-muted-foreground">
                           <MapPin className="h-3.5 w-3.5" />
                           <span>{order.city}</span>
                         </div>
                       )}
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <DollarSign className="h-3.5 w-3.5 text-emerald-500" />
-                          <span className="font-semibold text-emerald-500">
-                            {formatCurrency(order.total_amount)} Gs
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                          <Calendar className="h-3 w-3" />
-                          <span>{formatDate(order.created_at)}</span>
-                        </div>
+
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-emerald-500">
+                          {formatCurrency(order.total_amount)} Gs
+                        </span>
+
+                        <span className="text-xs text-muted-foreground">
+                          {formatDate(order.created_at)}
+                        </span>
                       </div>
                     </div>
 
-                    {/* Address */}
                     {order.address && (
-                      <div className="mb-3 rounded-lg bg-muted/50 p-2">
+                      <div className="mb-3 rounded-xl bg-muted/50 p-3">
                         <p className="text-xs text-muted-foreground">Dirección</p>
                         <p className="text-sm">{order.address}</p>
                       </div>
                     )}
 
-                    {/* Actions */}
                     <div className="mt-4 flex gap-2">
                       <Button
                         size="sm"
                         variant="outline"
-                        className="flex-1"
+                        className="flex-1 rounded-xl"
                         onClick={() => openEcommerce(order)}
                       >
                         <ShoppingCart className="mr-2 h-3.5 w-3.5" />
                         Ecommerce
                       </Button>
+
                       <Button
                         size="sm"
                         variant="outline"
-                        className="flex-1"
+                        className="flex-1 rounded-xl"
                         onClick={() => openChat(phoneNumber)}
                       >
                         <MessageSquare className="mr-2 h-3.5 w-3.5" />
                         Chat
                       </Button>
+
                       <Button
                         size="sm"
                         variant="ghost"
@@ -563,19 +501,7 @@ export default function OrdersPage() {
                       </Button>
                     </div>
 
-                    {/* Status Actions */}
                     <div className="mt-3 flex flex-wrap gap-1">
-                      {status !== "pendiente" && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 px-2 text-xs text-amber-500"
-                          onClick={() => updateStatus(order, "pendiente")}
-                        >
-                          <Clock className="mr-1 h-3 w-3" />
-                          Pendiente
-                        </Button>
-                      )}
                       {status !== "cargado" && (
                         <Button
                           size="sm"
@@ -587,6 +513,7 @@ export default function OrdersPage() {
                           Cargado
                         </Button>
                       )}
+
                       {status !== "droppx" && (
                         <Button
                           size="sm"
@@ -598,6 +525,7 @@ export default function OrdersPage() {
                           Droppx
                         </Button>
                       )}
+
                       {status !== "cancelado" && (
                         <Button
                           size="sm"
@@ -611,7 +539,6 @@ export default function OrdersPage() {
                       )}
                     </div>
 
-                    {/* Comprobante Link */}
                     {order.comprobante_url && (
                       <a
                         href={order.comprobante_url}
@@ -631,5 +558,36 @@ export default function OrdersPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function StatCard({
+  title,
+  value,
+  icon: Icon,
+  valueClass = "",
+}: {
+  title: string;
+  value: string | number;
+  icon: any;
+  valueClass?: string;
+}) {
+  return (
+    <Card className="rounded-2xl">
+      <CardContent className="p-5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-muted-foreground">{title}</p>
+            <p className={`mt-1 truncate text-2xl font-bold ${valueClass}`}>
+              {value}
+            </p>
+          </div>
+
+          <div className="rounded-xl bg-muted/50 p-2">
+            <Icon className="h-6 w-6 text-muted-foreground" />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
