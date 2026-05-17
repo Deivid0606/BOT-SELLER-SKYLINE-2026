@@ -66,55 +66,55 @@ const HIDDEN_STATUSES = [
 const STATUS_CONFIG: Record<string, { label: string; color: string; bgColor: string; icon: any }> = {
   confirmado: {
     label: "Confirmado",
-    color: "#10b981",
-    bgColor: "#10b98110",
+    color: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
+    bgColor: "bg-emerald-500/10",
     icon: Check,
   },
   confirmed: {
     label: "Confirmado",
-    color: "#10b981",
-    bgColor: "#10b98110",
+    color: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
+    bgColor: "bg-emerald-500/10",
     icon: Check,
   },
   pendiente: {
     label: "Pendiente",
-    color: "#f59e0b",
-    bgColor: "#f59e0b10",
+    color: "border-amber-500/40 bg-amber-500/10 text-amber-400",
+    bgColor: "bg-amber-500/10",
     icon: Clock,
   },
   pending: {
     label: "Pendiente",
-    color: "#f59e0b",
-    bgColor: "#f59e0b10",
+    color: "border-amber-500/40 bg-amber-500/10 text-amber-400",
+    bgColor: "bg-amber-500/10",
     icon: Clock,
   },
   cargado: {
     label: "Cargado",
-    color: "#10b981",
-    bgColor: "#10b98110",
+    color: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400",
+    bgColor: "bg-emerald-500/10",
     icon: Package,
   },
   cancelado: {
     label: "Cancelado",
-    color: "#ef4444",
-    bgColor: "#ef444410",
+    color: "border-red-500/40 bg-red-500/10 text-red-400",
+    bgColor: "bg-red-500/10",
     icon: XCircle,
   },
   droppx: {
     label: "Droppx",
-    color: "#3b82f6",
-    bgColor: "#3b82f610",
+    color: "border-blue-500/40 bg-blue-500/10 text-blue-400",
+    bgColor: "bg-blue-500/10",
     icon: Truck,
   },
 };
 
 const FILTERS = [
   { id: "all", label: "Todos", icon: Package },
-  { id: "confirmados", label: "Confirmados", icon: Check, color: "#10b981" },
-  { id: "pendientes", label: "Pendientes", icon: Clock, color: "#f59e0b" },
-  { id: "cargados", label: "Cargados", icon: Package, color: "#10b981" },
-  { id: "cancelados", label: "Cancelados", icon: XCircle, color: "#ef4444" },
-  { id: "droppx", label: "Droppx", icon: Truck, color: "#3b82f6" },
+  { id: "confirmados", label: "Confirmados", icon: Check },
+  { id: "pendientes", label: "Pendientes", icon: Clock },
+  { id: "cargados", label: "Cargados", icon: Package },
+  { id: "cancelados", label: "Cancelados", icon: XCircle },
+  { id: "droppx", label: "Droppx", icon: Truck },
 ];
 
 function formatCurrency(value: string | number | null | undefined) {
@@ -271,7 +271,6 @@ export default function OrdersPage() {
 
   // Filtrar pedidos
   const filteredOrders = orders.filter(order => {
-    // Búsqueda
     const searchTerm = search.toLowerCase();
     const matchesSearch = !search || 
       order.customer_name?.toLowerCase().includes(searchTerm) ||
@@ -280,7 +279,6 @@ export default function OrdersPage() {
       order.product?.toLowerCase().includes(searchTerm) ||
       order.city?.toLowerCase().includes(searchTerm);
 
-    // Filtro de estado
     const status = normalizeStatus(order.status);
     const matchesFilter = activeFilter === "all" || 
       (activeFilter === "confirmados" && status === "confirmado") ||
@@ -293,86 +291,84 @@ export default function OrdersPage() {
   });
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-50 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
+    <div className="min-h-screen bg-background">
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         {/* Header */}
-        <div className="mb-8 text-center">
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white">
-            Panel de Pedidos
-          </h1>
-          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
-            Gestión centralizada de tus ventas y envíos
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold tracking-tight">Pedidos</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Panel operativo de pedidos, pagos y despacho
           </p>
         </div>
 
         {/* Stats Grid */}
         <div className="mb-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-          <Card className="border-0 bg-white shadow-sm dark:bg-slate-900">
+          <Card>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-medium text-slate-500">Total</p>
-                  <p className="text-2xl font-bold text-slate-900 dark:text-white">{stats.total}</p>
+                  <p className="text-sm font-medium text-muted-foreground">Total</p>
+                  <p className="text-2xl font-bold">{stats.total}</p>
                 </div>
-                <Package className="h-8 w-8 text-slate-400" />
+                <Package className="h-8 w-8 text-muted-foreground" />
               </div>
             </CardContent>
           </Card>
 
-          <Card className="border-0 bg-white shadow-sm dark:bg-slate-900">
+          <Card>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-medium text-slate-500">Confirmados</p>
-                  <p className="text-2xl font-bold text-emerald-600">{stats.confirmados}</p>
+                  <p className="text-sm font-medium text-muted-foreground">Confirmados</p>
+                  <p className="text-2xl font-bold text-emerald-500">{stats.confirmados}</p>
                 </div>
                 <Check className="h-8 w-8 text-emerald-500" />
               </div>
             </CardContent>
           </Card>
 
-          <Card className="border-0 bg-white shadow-sm dark:bg-slate-900">
+          <Card>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-medium text-slate-500">Pendientes</p>
-                  <p className="text-2xl font-bold text-amber-600">{stats.pendientes}</p>
+                  <p className="text-sm font-medium text-muted-foreground">Pendientes</p>
+                  <p className="text-2xl font-bold text-amber-500">{stats.pendientes}</p>
                 </div>
                 <Clock className="h-8 w-8 text-amber-500" />
               </div>
             </CardContent>
           </Card>
 
-          <Card className="border-0 bg-white shadow-sm dark:bg-slate-900">
+          <Card>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-medium text-slate-500">Cargados</p>
-                  <p className="text-2xl font-bold text-emerald-600">{stats.cargados}</p>
+                  <p className="text-sm font-medium text-muted-foreground">Cargados</p>
+                  <p className="text-2xl font-bold text-emerald-500">{stats.cargados}</p>
                 </div>
                 <Package className="h-8 w-8 text-emerald-500" />
               </div>
             </CardContent>
           </Card>
 
-          <Card className="border-0 bg-white shadow-sm dark:bg-slate-900">
+          <Card>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-medium text-slate-500">Droppx</p>
-                  <p className="text-2xl font-bold text-blue-600">{stats.droppx}</p>
+                  <p className="text-sm font-medium text-muted-foreground">Droppx</p>
+                  <p className="text-2xl font-bold text-blue-500">{stats.droppx}</p>
                 </div>
                 <Truck className="h-8 w-8 text-blue-500" />
               </div>
             </CardContent>
           </Card>
 
-          <Card className="border-0 bg-white shadow-sm dark:bg-slate-900">
+          <Card>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-xs font-medium text-slate-500">Ingresos</p>
-                  <p className="text-lg font-bold text-purple-600">{formatCurrency(stats.ingresos)} Gs</p>
+                  <p className="text-sm font-medium text-muted-foreground">Ingresos</p>
+                  <p className="text-lg font-bold text-purple-500">{formatCurrency(stats.ingresos)} Gs</p>
                 </div>
                 <DollarSign className="h-8 w-8 text-purple-500" />
               </div>
@@ -383,23 +379,21 @@ export default function OrdersPage() {
         {/* Filters Bar */}
         <div className="mb-6 space-y-4">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            {/* Search */}
             <div className="relative flex-1 max-w-md">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Buscar pedido..."
+                placeholder="Buscar cliente, teléfono, producto o ciudad..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="pl-9 border-slate-200 dark:border-slate-800"
+                className="pl-9"
               />
             </div>
 
             <div className="flex items-center gap-3">
-              {/* Date Filter */}
               <Select value={dateFilter} onValueChange={setDateFilter}>
-                <SelectTrigger className="w-36 border-slate-200 dark:border-slate-800">
+                <SelectTrigger className="w-36">
                   <Calendar className="mr-2 h-4 w-4" />
-                  <SelectValue />
+                  <SelectValue placeholder="Fechas" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Todo el tiempo</SelectItem>
@@ -409,47 +403,37 @@ export default function OrdersPage() {
                 </SelectContent>
               </Select>
 
-              {/* Refresh Button */}
               <Button
                 variant="outline"
                 size="icon"
                 onClick={loadOrders}
                 disabled={loading}
-                className="border-slate-200 dark:border-slate-800"
               >
                 <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
               </Button>
             </div>
           </div>
 
-          {/* Status Filters */}
           <div className="flex flex-wrap gap-2">
-            {FILTERS.map((filter) => {
-              const isActive = activeFilter === filter.id;
-              return (
-                <button
-                  key={filter.id}
-                  onClick={() => setActiveFilter(filter.id)}
-                  className={`
-                    inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition-all
-                    ${isActive 
-                      ? "bg-slate-900 text-white shadow-md dark:bg-white dark:text-slate-900" 
-                      : "bg-white text-slate-600 hover:bg-slate-100 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
-                    }
-                  `}
-                >
-                  <filter.icon className="h-4 w-4" />
-                  {filter.label}
-                </button>
-              );
-            })}
+            {FILTERS.map((filter) => (
+              <Button
+                key={filter.id}
+                variant={activeFilter === filter.id ? "default" : "outline"}
+                size="sm"
+                onClick={() => setActiveFilter(filter.id)}
+                className="rounded-full"
+              >
+                <filter.icon className="mr-2 h-4 w-4" />
+                {filter.label}
+              </Button>
+            ))}
           </div>
         </div>
 
         {/* Results Count */}
         <div className="mb-4 flex items-center justify-between">
-          <p className="text-sm text-slate-500">
-            Mostrando <span className="font-semibold text-slate-900 dark:text-white">{filteredOrders.length}</span> de {orders.length} pedidos
+          <p className="text-sm text-muted-foreground">
+            Mostrando <span className="font-semibold text-foreground">{filteredOrders.length}</span> de {orders.length} pedidos
           </p>
         </div>
 
@@ -457,23 +441,25 @@ export default function OrdersPage() {
         {loading ? (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {[...Array(6)].map((_, i) => (
-              <Card key={i} className="animate-pulse border-0 shadow-sm">
+              <Card key={i} className="animate-pulse">
                 <CardContent className="p-6">
                   <div className="space-y-3">
-                    <div className="h-4 w-3/4 rounded bg-slate-200 dark:bg-slate-800" />
-                    <div className="h-4 w-1/2 rounded bg-slate-200 dark:bg-slate-800" />
-                    <div className="h-20 rounded bg-slate-200 dark:bg-slate-800" />
+                    <div className="h-4 w-3/4 rounded bg-muted" />
+                    <div className="h-4 w-1/2 rounded bg-muted" />
+                    <div className="h-20 rounded bg-muted" />
                   </div>
                 </CardContent>
               </Card>
             ))}
           </div>
         ) : filteredOrders.length === 0 ? (
-          <Card className="border-0 shadow-sm">
+          <Card>
             <CardContent className="py-12 text-center">
-              <Package className="mx-auto h-12 w-12 text-slate-400" />
-              <h3 className="mt-2 text-sm font-medium text-slate-900 dark:text-white">No hay pedidos</h3>
-              <p className="mt-1 text-sm text-slate-500">No se encontraron pedidos con los filtros actuales</p>
+              <Package className="mx-auto h-12 w-12 text-muted-foreground" />
+              <h3 className="mt-2 text-sm font-medium">No hay pedidos</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                No se encontraron pedidos con los filtros actuales
+              </p>
             </CardContent>
           </Card>
         ) : (
@@ -485,77 +471,74 @@ export default function OrdersPage() {
               const phoneNumber = order.phone || order.from_number;
 
               return (
-                <Card key={order.id} className="group border-0 bg-white shadow-sm transition-all hover:shadow-md dark:bg-slate-900">
-                  {/* Status Bar */}
-                  <div 
-                    className="h-1 rounded-t-lg" 
-                    style={{ backgroundColor: config.color }}
-                  />
+                <Card key={order.id} className="group overflow-hidden">
+                  <div className={`h-1 w-full ${config.color.split(' ')[0]}`} />
                   
                   <CardContent className="p-5">
                     {/* Header */}
                     <div className="mb-4 flex items-start justify-between">
-                      <div className="flex items-center gap-2">
-                        <div 
-                          className="rounded-lg p-2"
-                          style={{ backgroundColor: config.bgColor }}
-                        >
-                          <Icon className="h-4 w-4" style={{ color: config.color }} />
-                        </div>
-                        <div>
-                          <p className="text-xs text-slate-500">Pedido</p>
-                          <p className="text-sm font-mono font-medium text-slate-900 dark:text-white">
-                            #{phoneNumber?.slice(-6) || "N/A"}
-                          </p>
-                        </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">Desde</p>
+                        <p className="font-mono text-sm font-semibold">
+                          {phoneNumber || "—"}
+                        </p>
                       </div>
-                      <Badge style={{ backgroundColor: config.bgColor, color: config.color, border: "none" }}>
+                      <Badge className={config.color}>
+                        <Icon className="mr-1 h-3 w-3" />
                         {config.label}
                       </Badge>
                     </div>
 
                     {/* Product */}
                     <div className="mb-3">
-                      <h3 className="font-semibold text-slate-900 dark:text-white line-clamp-2">
+                      <h3 className="font-semibold line-clamp-2">
                         {order.product || "Producto sin especificar"}
                       </h3>
-                      <p className="mt-1 text-xs text-slate-500">
+                      <p className="mt-1 text-xs text-muted-foreground">
                         Cantidad: {order.quantity || 1} unidades
                       </p>
                     </div>
 
                     {/* Customer Info */}
                     <div className="mb-3 space-y-2 text-sm">
-                      <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
+                      <div className="flex items-center gap-2 text-muted-foreground">
                         <User className="h-3.5 w-3.5" />
                         <span>{order.customer_name || "Sin nombre"}</span>
                       </div>
                       {order.city && (
-                        <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
+                        <div className="flex items-center gap-2 text-muted-foreground">
                           <MapPin className="h-3.5 w-3.5" />
                           <span>{order.city}</span>
                         </div>
                       )}
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
-                          <DollarSign className="h-3.5 w-3.5" />
-                          <span className="font-semibold text-emerald-600 dark:text-emerald-500">
+                        <div className="flex items-center gap-2">
+                          <DollarSign className="h-3.5 w-3.5 text-emerald-500" />
+                          <span className="font-semibold text-emerald-500">
                             {formatCurrency(order.total_amount)} Gs
                           </span>
                         </div>
-                        <div className="flex items-center gap-1 text-xs text-slate-500">
+                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
                           <Calendar className="h-3 w-3" />
                           <span>{formatDate(order.created_at)}</span>
                         </div>
                       </div>
                     </div>
 
+                    {/* Address */}
+                    {order.address && (
+                      <div className="mb-3 rounded-lg bg-muted/50 p-2">
+                        <p className="text-xs text-muted-foreground">Dirección</p>
+                        <p className="text-sm">{order.address}</p>
+                      </div>
+                    )}
+
                     {/* Actions */}
                     <div className="mt-4 flex gap-2">
                       <Button
                         size="sm"
                         variant="outline"
-                        className="flex-1 border-slate-200 dark:border-slate-800"
+                        className="flex-1"
                         onClick={() => openEcommerce(order)}
                       >
                         <ShoppingCart className="mr-2 h-3.5 w-3.5" />
@@ -564,7 +547,7 @@ export default function OrdersPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="flex-1 border-slate-200 dark:border-slate-800"
+                        className="flex-1"
                         onClick={() => openChat(phoneNumber)}
                       >
                         <MessageSquare className="mr-2 h-3.5 w-3.5" />
@@ -573,7 +556,7 @@ export default function OrdersPage() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        className="px-3 text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+                        className="px-3 text-red-500 hover:text-red-600"
                         onClick={() => deleteOrder(order.id)}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -586,7 +569,7 @@ export default function OrdersPage() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="h-7 px-2 text-xs text-amber-600"
+                          className="h-7 px-2 text-xs text-amber-500"
                           onClick={() => updateStatus(order, "pendiente")}
                         >
                           <Clock className="mr-1 h-3 w-3" />
@@ -597,7 +580,7 @@ export default function OrdersPage() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="h-7 px-2 text-xs text-emerald-600"
+                          className="h-7 px-2 text-xs text-emerald-500"
                           onClick={() => updateStatus(order, "cargado")}
                         >
                           <Package className="mr-1 h-3 w-3" />
@@ -608,7 +591,7 @@ export default function OrdersPage() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="h-7 px-2 text-xs text-blue-600"
+                          className="h-7 px-2 text-xs text-blue-500"
                           onClick={() => updateStatus(order, "droppx")}
                         >
                           <Truck className="mr-1 h-3 w-3" />
@@ -619,7 +602,7 @@ export default function OrdersPage() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="h-7 px-2 text-xs text-red-600"
+                          className="h-7 px-2 text-xs text-red-500"
                           onClick={() => updateStatus(order, "cancelado")}
                         >
                           <XCircle className="mr-1 h-3 w-3" />
@@ -634,7 +617,7 @@ export default function OrdersPage() {
                         href={order.comprobante_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="mt-3 inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                        className="mt-3 inline-flex items-center gap-1 text-xs text-primary hover:underline"
                       >
                         <ReceiptText className="h-3 w-3" />
                         Ver comprobante
