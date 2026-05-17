@@ -300,6 +300,131 @@ function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = f
   };
 }
 
+function formatGs(amount: any): string {
+  const n = Number(amount || 0);
+  if (!n) return "0";
+  return n.toLocaleString("de-DE");
+}
+
+function parseGsAmount(text: string): number {
+  const match = clean(text).match(/(\d{1,3}(?:\.\d{3})+|\d{4,})/);
+  if (!match) return 0;
+  return Number(match[1].replace(/\./g, ""));
+}
+
+function calculateTotal(product: string, quantity: number, training: string): number | null {
+  if (!product || !quantity || quantity < 1) return null;
+
+  const p = normalize(product);
+
+  // Catálogo protegido: evita que Gemini use promos de otro producto.
+  // Agregá acá cualquier producto con precio/promo especial cuando sea necesario.
+  const protectedCatalog = [
+    {
+      keys: ["veneno de abeja"],
+      unit: 145000,
+      promos: { 2: 249900 } as Record<number, number>,
+    },
+    {
+      keys: ["peladora automatica", "pelador automatico", "peladora"],
+      unit: 189900,
+      promos: {} as Record<number, number>,
+    },
+    {
+      keys: ["afilador de cuchillos", "afilador", "cuchillos"],
+      unit: 99000,
+      promos: { 2: 129900 } as Record<number, number>,
+    },
+    {
+      keys: ["vital honey vip", "vital honey"],
+      unit: 169900,
+      promos: { 2: 289900 } as Record<number, number>,
+    },
+    {
+      keys: ["perfume asad", "asad"],
+      unit: 169900,
+      promos: {} as Record<number, number>,
+    },
+    {
+      keys: ["plantillas ortopiex", "ortopiex"],
+      unit: 159000,
+      promos: {} as Record<number, number>,
+    },
+    {
+      keys: ["almohadillas antivibracion", "soporte para lavarropas", "lavarropas"],
+      unit: 98000,
+      promos: {} as Record<number, number>,
+    },
+  ];
+
+  for (const item of protectedCatalog) {
+    if (item.keys.some((k) => p.includes(normalize(k)) || normalize(k).includes(p))) {
+      if (item.promos[quantity]) return item.promos[quantity];
+      return item.unit * quantity;
+    }
+  }
+
+  // Fallback dinámico: busca el producto y un precio cercano en el entrenamiento.
+  const lines = training.split("\n").map((l) => clean(l)).filter(Boolean);
+  let unitPrice = 0;
+  let promoPrice = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const current = normalize(lines[i]);
+    if (!current.includes(p) && !p.includes(current)) continue;
+
+    const window = lines.slice(i, i + 6);
+
+    for (const line of window) {
+      const nLine = normalize(line);
+      const amount = parseGsAmount(line);
+      if (!amount) continue;
+
+      if (quantity === 2 && /(2x|2\s*unidades|promo\s*2|2\s*cajas)/i.test(nLine)) {
+        promoPrice = amount;
+        break;
+      }
+
+      if (!unitPrice && /(1\s*unidad|1\s*caja|precio|gs|g\.)/i.test(nLine)) {
+        unitPrice = amount;
+      }
+    }
+
+    if (promoPrice) return promoPrice;
+    if (unitPrice) return unitPrice * quantity;
+  }
+
+  return null;
+}
+
+function buildOrderSummaryResponse(order: any, tipoCobertura: string) {
+  const total = Number(order?.total_amount || 0);
+  const tipoEnvio =
+    tipoCobertura === "sin_cobertura"
+      ? "Envío por transportadora / encomienda"
+      : "Envío GRATIS contra-entrega";
+
+  return `🔥 Perfecto 😊
+
+Tu pedido queda así:
+
+📦 ${order.product}
+🔢 Cantidad: ${order.quantity}
+💰 Total: ${formatGs(total)} Gs
+
+🚚 ${tipoEnvio}
+
+📎 Pasame TODO JUNTO en un solo mensaje:
+
+✅ nombre y apellido
+✅ dirección exacta o ubicación por Google Maps
+✅ número de celular
+
+📲 Si no enviás número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
+
+y agendamos tu entrega ✨`;
+}
+
 function nextStep(o: any, tipoCobertura?: string) {
   if (!o.product) return "selling";
   if (!o.city) return "collecting_city";
@@ -925,6 +1050,16 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       isPureQuantityReply
     );
 
+    const calculatedTotal = calculateTotal(
+      orderData.product,
+      orderData.quantity,
+      fullTraining
+    );
+
+    if (calculatedTotal) {
+      orderData.total_amount = calculatedTotal;
+    }
+
     const finalTipoCobertura =
       getTipoCobertura(orderData.city) || previousTipoCobertura || "";
 
@@ -955,6 +1090,35 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
     }
 
+    const justAnsweredQuantity =
+      !!orderData.product &&
+      !!orderData.city &&
+      !!orderData.quantity &&
+      !!orderData.total_amount &&
+      (isPureQuantityReply || previousStep === "collecting_quantity" || previousStep === "esperando_cantidad") &&
+      step !== "confirm_order" &&
+      finalTipoCobertura !== "sin_cobertura";
+
+    if (justAnsweredQuantity) {
+      const deterministicResponse = buildOrderSummaryResponse(orderData, finalTipoCobertura);
+
+      const deterministicContext = {
+        ...(context || {}),
+        current_product: orderData.product || context?.current_product || null,
+        step,
+        tipo_cobertura: finalTipoCobertura || null,
+        order_data: orderData,
+        last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
+        updated_at: new Date().toISOString(),
+      };
+
+      return res.json({
+        response: deterministicResponse,
+        context: deterministicContext,
+        is_payment_proof: false,
+      });
+    }
+
     let cleanHistory = Array.isArray(history) ? history : [];
     if (isPureQuantityReply) cleanHistory = [];
 
@@ -972,6 +1136,7 @@ ${fullTraining}
 ESTADO ACTUAL DEL CLIENTE:
 - Producto: ${orderData.product || "ninguno"}
 - Cantidad: ${orderData.quantity || "pendiente"}
+- Total calculado: ${orderData.total_amount ? formatGs(orderData.total_amount) + " Gs" : "pendiente"}
 - Ciudad: ${orderData.city || "pendiente"}
 - Tipo de cobertura: ${finalTipoCobertura || "pendiente"}
 - Nombre: ${orderData.customer_name || "pendiente"}
@@ -1006,6 +1171,10 @@ REGLAS TÉCNICAS:
 20. Español paraguayo natural, con emojis.
 21. Pedro Juan Caballero / PJC es SIN COBERTURA.
 22. Si el paso anterior es payment_verified, NO vuelvas a validar comprobante.
+23. Si Total calculado no está pendiente, usá EXACTAMENTE ese total.
+24. Nunca recalcules precios manualmente.
+25. Nunca reutilices promociones de otros productos.
+26. Para Peladora Automática: 1 unidad = 189.900 Gs y 2 unidades = 379.800 Gs, salvo que exista una promo explícita de Peladora.
 `.trim();
 
     const contents = cleanHistory
