@@ -19,6 +19,39 @@ const normalize = (t: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
+
+function isPackReferenceText(text: string): boolean {
+  const n = normalize(text);
+  return /\b(kit\s*x\s*4|kit\s+por\s+4|pack\s*x\s*4|pack\s+por\s+4|x\s*4|4\s*unidades\s*(incluidas|incluido)?|las\s*4\s*unidades)\b/.test(n);
+}
+
+function isInvalidProductCandidate(name: string): boolean {
+  const n = normalize(name);
+  if (!n) return true;
+
+  // Nunca aceptar cantidades, ejemplos o líneas de variantes como producto.
+  const invalidExact = [
+    "1 unidad",
+    "2 unidades",
+    "3 unidades",
+    "4 unidades",
+    "unidad",
+    "unidades",
+    "cantidad",
+    "precio",
+    "total",
+    "envio gratis",
+    "pago al recibir",
+  ];
+
+  if (invalidExact.includes(n)) return true;
+  if (/^\d+\s*(unidad|unidades|u|kit|kits)$/.test(n)) return true;
+  if (/^\d+\s*(unidad|unidades).*[\",].*\d+\s*(unidad|unidades)/.test(n)) return true;
+  if (/^(si|sí|ok|dale|listo|quiero|confirmo|gracias)$/.test(n)) return true;
+
+  return false;
+}
+
 const ZONAS_COBERTURA = [
   "Altos", "Areguá", "Asunción", "Atyrá", "Benjamín Aceval", "Caacupé",
   "Capiatá", "Ciudad del Este", "Colonia Yguazú", "Emboscada", "Eusebio Ayala",
@@ -80,6 +113,7 @@ function detectProduct(
 
   for (const line of lines) {
     const name = extractProductNameFromLine(line);
+    if (isInvalidProductCandidate(name)) continue;
     const n = normalize(name);
     if (!n || n.length < 3) continue;
 
@@ -128,6 +162,7 @@ function detectProduct(
 
     for (const line of lines) {
       const name = extractProductNameFromLine(line);
+      if (isInvalidProductCandidate(name)) continue;
       const n = normalize(name);
       if (!n || n.length < 3) continue;
 
@@ -208,8 +243,15 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   const norm = normalize(text);
 
   const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
+  const isPackReference = isPackReferenceText(text);
 
   let quantity = 0;
+
+  // "Kit x 4 unidades" describe el contenido del kit, NO significa cantidad 4.
+  // En Paraguay estos kits se venden como 1 kit completo.
+  if (isPackReference) {
+    quantity = 1;
+  }
 
   if (
     forceQuantityMode ||
@@ -442,7 +484,17 @@ function calculateTotal(product: string, quantity: number, training: string): nu
       promos: {} as Record<number, number>,
     },
     {
-      keys: ["almohadillas antivibracion", "soporte para lavarropas", "lavarropas"],
+      keys: [
+        "almohadillas antivibracion",
+        "almohadillas antivibración",
+        "soportes antivibracion",
+        "soportes antivibración",
+        "patitas antideslizantes",
+        "kit x4 patitas antideslizantes",
+        "kit x 4 patitas antideslizantes",
+        "soporte para lavarropas",
+        "lavarropas"
+      ],
       unit: 98000,
       promos: {} as Record<number, number>,
     },
@@ -1119,6 +1171,13 @@ export default async function handler(req: any, res: any) {
 
     let extracted = extractData(texto, previousStep, isPureQuantityReply);
 
+    if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
+      extracted.quantity = safeQuantity(oldOrder?.quantity) || 1;
+      extracted.name = "";
+      extracted.address = "";
+      product = oldOrder?.product || context?.current_product || product;
+    }
+
     // FORZAR cantidad exacta si es respuesta pura
     if (isPureQuantityReply) {
       const exactQuantity = Number(texto.trim());
@@ -1306,6 +1365,13 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     extracted = extractData(texto, previousStep, isPureQuantityReply);
 
+    if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
+      extracted.quantity = safeQuantity(oldOrder?.quantity) || 1;
+      extracted.name = "";
+      extracted.address = "";
+      product = oldOrder?.product || context?.current_product || product;
+    }
+
     if (isPureQuantityReply) {
       const exactQuantity = Number(String(message).trim());
       extracted.quantity = exactQuantity;
@@ -1318,6 +1384,10 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       product || context?.current_product || oldOrder?.product,
       lastAssistantMessage
     );
+
+    if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
+      product = oldOrder?.product || context?.current_product || product;
+    }
 
     const productChanged =
       !!product &&
@@ -1344,6 +1414,10 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     }
 
     orderData.quantity = safeQuantity(orderData.quantity);
+
+    if (isInvalidProductCandidate(orderData.product) && (oldOrder?.product || context?.current_product)) {
+      orderData.product = oldOrder?.product || context?.current_product;
+    }
 
     const calculatedTotal = calculateTotal(
       orderData.product,
