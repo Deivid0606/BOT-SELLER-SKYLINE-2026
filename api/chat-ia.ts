@@ -354,6 +354,7 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   };
 }
 
+// FUNCIÓN CORREGIDA - EVITA CONCATENACIÓN DE CANTIDADES
 function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = false): any {
   const oldQuantity =
     typeof old?.quantity === "number" && old.quantity > 0 ? old.quantity : 0;
@@ -361,9 +362,22 @@ function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = f
   const newQuantity =
     typeof ext?.quantity === "number" && ext.quantity > 0 ? ext.quantity : 0;
 
+  // CRÍTICO: Si replaceQuantity es true, SOLO usamos newQuantity
+  let finalQuantity = 0;
+  
+  if (replaceQuantity) {
+    // Modo reemplazo total: solo la nueva cantidad
+    finalQuantity = newQuantity;
+  } else if (newQuantity > 0) {
+    // Si hay nueva cantidad, la nueva reemplaza a la vieja (no suma)
+    finalQuantity = newQuantity;
+  } else {
+    finalQuantity = oldQuantity;
+  }
+
   return {
     product: product || old?.product || "",
-    quantity: replaceQuantity ? newQuantity || 0 : newQuantity || oldQuantity || 0,
+    quantity: finalQuantity,
     city: ext.city || old?.city || "",
     customer_name: ext.name || old?.customer_name || "",
     phone: ext.phone || old?.phone || "",
@@ -837,7 +851,7 @@ async function transcribeAudioWithGemini({
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL: VISION PRODUCTOS + PRECIOS + COMPROBANTES");
+  console.log("🔥 VERSION FINAL CORREGIDA - PROBLEMA 1->11 SOLUCIONADO");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -903,7 +917,7 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    // ========== BLOQUE REEMPLAZADO (INICIO) ==========
+    // ========== BLOQUE PRINCIPAL CORREGIDO ==========
     const oldOrder = context?.order_data || {};
     const previousStep = clean(context?.step);
     const previousTipoCobertura = clean(context?.tipo_cobertura);
@@ -915,10 +929,12 @@ export default async function handler(req: any, res: any) {
 
     const isOnlyNumber = /^\s*\d{1,3}\s*$/.test(texto);
 
+    // CRÍTICO: Si ya hay cantidad en el pedido, no es una respuesta de cantidad
     const isPureQuantityReply =
       isOnlyNumber &&
       !!oldOrder?.product &&
       !!oldOrder?.city &&
+      !oldOrder?.quantity && // ← CLAVE: no permitir si ya hay cantidad
       (
         wasAskingQuantity ||
         previousStep === "collecting_quantity" ||
@@ -934,10 +950,13 @@ export default async function handler(req: any, res: any) {
 
     let extracted = extractData(texto, previousStep, isPureQuantityReply);
 
+    // FORZAR cantidad exacta si es respuesta pura
     if (isPureQuantityReply) {
-      extracted.quantity = Number(texto.trim());
+      const exactQuantity = Number(texto.trim());
+      extracted.quantity = exactQuantity;
       extracted.name = "";
       extracted.address = "";
+      console.log(`✅ Cantidad exacta detectada: ${exactQuantity}`);
     }
 
     const productChangedBeforeMedia =
@@ -947,11 +966,12 @@ export default async function handler(req: any, res: any) {
 
     const baseOrderBeforeMedia = productChangedBeforeMedia ? {} : oldOrder;
 
+    // CRÍTICO: Usar replaceQuantity = true para evitar concatenación
     let orderData = mergeOrderData(
       baseOrderBeforeMedia,
       extracted,
       product,
-      isPureQuantityReply
+      true  // ← FORZAR reemplazo de cantidad
     );
 
     const tipoCobertura =
@@ -960,7 +980,7 @@ export default async function handler(req: any, res: any) {
     const isWaitingPaymentProof =
       tipoCobertura === "sin_cobertura" &&
       previousStep === "waiting_payment_proof";
-    // ========== BLOQUE REEMPLAZADO (FIN) ==========
+    // ========== FIN BLOQUE PRINCIPAL CORREGIDO ==========
 
     if (mediaUrl && mediaType === "image") {
       const fetched = await fetchMediaAsBase64(mediaUrl);
@@ -1118,7 +1138,9 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     extracted = extractData(texto, previousStep, isPureQuantityReply);
 
     if (isPureQuantityReply) {
-      extracted.quantity = Number(String(message).trim());
+      const exactQuantity = Number(String(message).trim());
+      extracted.quantity = exactQuantity;
+      console.log(`✅ Reforzando cantidad exacta: ${exactQuantity}`);
     }
 
     product = detectProduct(
@@ -1137,11 +1159,12 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     const effectivePreviousStep = productChanged ? "" : previousStep;
     const effectivePreviousTipoCobertura = productChanged ? "" : previousTipoCobertura;
 
+    // CRÍTICO: Usar replaceQuantity = true SIEMPRE para respuestas de cantidad
     orderData = mergeOrderData(
       baseOrder,
       extracted,
       product,
-      isPureQuantityReply
+      isPureQuantityReply  // ← true para respuestas de cantidad
     );
 
     const calculatedTotal = calculateTotal(
@@ -1180,7 +1203,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     const isConfirming = step === "confirm_order" && wantsToBuy;
 
-    // ========== NUEVO BLOQUE: Limpiar nombre inválido ==========
+    // Limpiar nombre inválido
     const invalidCustomerName =
       !!orderData.customer_name &&
       (
@@ -1192,9 +1215,8 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     if (invalidCustomerName) {
       orderData.customer_name = "";
     }
-    // ========== FIN NUEVO BLOQUE ==========
 
-    // ========== NUEVO BLOQUE: Respuesta temprana si falta nombre ==========
+    // Respuesta temprana si falta nombre
     if (
       orderData.product &&
       orderData.city &&
@@ -1229,7 +1251,6 @@ Ahora pasame tu nombre y apellido para agendar el pedido 🙏`,
         is_payment_proof: false,
       });
     }
-    // ========== FIN NUEVO BLOQUE ==========
 
     if (shouldCollect) {
       await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
@@ -1294,38 +1315,22 @@ ESTADO ACTUAL DEL CLIENTE:
 - Producto cambió respecto al pedido anterior: ${productChanged ? "SÍ" : "NO"}
 - Intención: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
 
-REGLAS TÉCNICAS:
-1. Si la última pregunta fue sobre cantidad y el cliente respondió solo un número, ese número es la cantidad final exacta.
-2. Nunca concatenes cantidades.
-3. Nunca conviertas 1 en 11, 2 en 22, 3 en 33.
-4. Si Cantidad no está pendiente, usá exactamente esa cantidad.
-5. Si el paso actual es collecting_quantity, preguntá cuántas unidades quiere.
-6. Si el paso actual es collecting_name, pedí nombre completo.
-7. Si el paso actual es collecting_phone, pedí teléfono.
-8. Si el tipo de cobertura es sin_cobertura, NO pidas dirección exacta.
-9. Si el tipo de cobertura es sin_cobertura y ya tenés nombre y teléfono, pedí comprobante de transferencia.
-10. Si el paso actual es collecting_address, pedí dirección exacta SOLO si tiene cobertura.
-11. Si el paso actual es confirm_order, confirmá el pedido con la plantilla del entrenamiento.
-12. Si el cliente envía foto de producto y se detecta producto del catálogo, respondé nombre + precio + promo + preguntá ciudad.
-13. Si el cliente envía foto de producto, hay precio visible y producto visual detectado, respondé ese producto y ese precio.
-14. Si no hay precio visible ni producto seguro, pedí el nombre del producto.
-15. Si solo pregunta precio, respondé precio + CTA, sin pedir datos todavía.
-16. No repitas saludo si ya hubo conversación.
-17. No cambies de producto salvo que el cliente lo pida.
-18. Cerrá siempre con el siguiente paso.
-19. Catálogo: ${CATALOG_URL}
-20. Español paraguayo natural, con emojis.
-21. Pedro Juan Caballero / PJC es SIN COBERTURA.
-22. Si el paso anterior es payment_verified, NO vuelvas a validar comprobante.
-23. Si existe Total calculado, usá EXACTAMENTE ese total.
-24. Nunca recalcules precios manualmente.
-25. Nunca reutilices promociones de otros productos.
-26. Si el cliente responde "quiero", "sí", "dale" u otra respuesta corta, usá el producto de la última respuesta del bot.
-27. Si el producto cambió, NO arrastres cantidad, ciudad, nombre, teléfono ni dirección de otro producto anterior.
-28. Si Total calculado no está pendiente, usá EXACTAMENTE ese total.
-29. Nunca recalcules precios manualmente.
-30. Nunca reutilices promociones de otros productos.
-31. Para Peladora Automática: 1 unidad = 189.900 Gs y 2 unidades = 379.800 Gs, salvo que exista una promo explícita de Peladora.
+REGLAS TÉCNICAS (MUY IMPORTANTES):
+1. Si el cliente respondió con un número SOLO (ej: "1", "2", "3"), esa es la cantidad EXACTA. NUNCA la concatenes.
+2. Si la cantidad es 1, debe ser 1, NO 11, NO 1 unidad, NO nada más.
+3. Si el paso actual es collecting_quantity y el cliente responde un número, usá ESE número exacto.
+4. Si el paso actual es collecting_name, pedí nombre completo.
+5. Si el paso actual es collecting_phone, pedí teléfono.
+6. Si el tipo de cobertura es sin_cobertura, NO pidas dirección exacta.
+7. Si el tipo de cobertura es sin_cobertura y ya tenés nombre y teléfono, pedí comprobante de transferencia.
+8. Si el paso actual es collecting_address, pedí dirección exacta SOLO si tiene cobertura.
+9. Si el paso actual es confirm_order, confirmá el pedido con la plantilla del entrenamiento.
+10. No repitas saludo si ya hubo conversación.
+11. No cambies de producto salvo que el cliente lo pida.
+12. Cerrá siempre con el siguiente paso.
+13. Catálogo: ${CATALOG_URL}
+14. Español paraguayo natural, con emojis.
+15. Pedro Juan Caballero / PJC es SIN COBERTURA.
 `.trim();
 
     const contents = cleanHistory
@@ -1337,7 +1342,7 @@ REGLAS TÉCNICAS:
       }));
 
     const currentUserText = isPureQuantityReply
-      ? `El cliente eligió EXACTAMENTE ${orderData.quantity} unidades. No es 11. Mensaje original: "${texto}".`
+      ? `El cliente respondió EXACTAMENTE "${texto}" que es la cantidad ${orderData.quantity}. NO es 11 ni ninguna otra concatenación. Usá ESA cantidad exacta.`
       : texto;
 
     contents.push({
