@@ -187,14 +187,40 @@ function detectProduct(
   const msg = normalize(text);
   const lines = getPriceLines(training);
 
-  // 🔥 CORREGIDO: Detección prioritaria de Veneno de Abeja
+  // 🔥 DETECCIÓN PRIORITARIA DE PRODUCTOS
   if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja") || msg.includes("creama")) {
     return "Veneno de Abeja";
   }
 
-  // 🔥 CORREGIDO: Detección prioritaria de Plantillas
   if (msg.includes("plantilla") || msg.includes("ortopiex") || msg.includes("ortoflex") || msg.includes("5d")) {
     return getDefaultShoeProductName();
+  }
+
+  // 🔥 CORREGIDO: Detección de Pelador/Peladora - múltiples variantes
+  if (msg.includes("pelador") || 
+      msg.includes("peladora") || 
+      msg.includes("pelar papas") || 
+      msg.includes("pelador de papas") ||
+      msg.includes("peladora de papas") ||
+      msg.includes("pelador automatico") ||
+      msg.includes("peladora automatica")) {
+    return "Peladora Automática";
+  }
+
+  if (msg.includes("afilador") || msg.includes("cuchillo") || msg.includes("sharpener")) {
+    return "Afilador de Cuchillos";
+  }
+
+  if (msg.includes("vital honey") || msg.includes("vital honey vip")) {
+    return "Vital Honey VIP";
+  }
+
+  if (msg.includes("perfume asad") || msg.includes("asad")) {
+    return "Perfume Asad";
+  }
+
+  if (msg.includes("soporte lavarropas") || msg.includes("lavarropas") || msg.includes("almohadillas antivibracion")) {
+    return "Almohadillas Antivibración y soporte para lavarropas";
   }
 
   let best = "";
@@ -268,6 +294,10 @@ function canonicalProductFromText(text: string): string {
     return "Veneno de Abeja";
   }
 
+  if (/\b(pelador|peladora|pelar\s+papas|pelador\s+de\s+papas|peladora\s+automatica)\b/.test(n)) {
+    return "Peladora Automática";
+  }
+
   if (/\b(soporte\s+para\s+lavarropas|lavarropas|almohadillas\s+antivibracion|almohadillas\s+antivibración|patitas\s+antideslizantes)\b/.test(n)) {
     return "Almohadillas Antivibración y soporte para lavarropas";
   }
@@ -282,10 +312,6 @@ function canonicalProductFromText(text: string): string {
 
   if (/\b(vital\s+honey|vital\s+honey\s+vip)\b/.test(n)) {
     return "Vital Honey VIP";
-  }
-
-  if (/\b(peladora|peladora\s+automatica|pelador\s+automatico)\b/.test(n)) {
-    return "Peladora Automática";
   }
 
   if (/\b(perfume\s+asad|asad)\b/.test(n)) {
@@ -672,12 +698,12 @@ function calculateTotal(product: string, quantity: number, training: string): nu
       promos: { 2: 249900 } as Record<number, number>,
     },
     {
-      keys: ["peladora automatica", "pelador automatico", "peladora"],
+      keys: ["peladora automatica", "pelador automatico", "peladora", "pelador"],
       unit: 189900,
       promos: {} as Record<number, number>,
     },
     {
-      keys: ["afilador de cuchillos", "afilador", "cuchillos"],
+      keys: ["afilador de cuchillos", "afilador", "cuchillos", "sharpener"],
       unit: 99000,
       promos: { 2: 129900 } as Record<number, number>,
     },
@@ -1177,6 +1203,7 @@ REGLAS IMPORTANTES:
 - Si es producto, NUNCA lo clasifiques como comprobante aunque tenga precio, números o texto de promo.
 - Si ves un afilador de cuchillos, sharpener, herramienta negra/roja con ranuras para cuchillos → productName = "Afilador de Cuchillos".
 - Si ves una imagen con texto "PROMO 2 UNIDADES 129.900Gs" y un producto físico → kind = "product", productPrice = "129.900", promoText = "PROMO 2 UNIDADES".
+- Si ves un pelador de papas, pelador automático, peladora de verduras → productName = "Peladora Automática".
 - Si el producto no está en catálogo, igual identificá el productName genérico visual.
 - matchedProduct solo va si encontrás coincidencia clara con el catálogo.
 - Si no estás seguro, usá kind = "other".
@@ -1291,7 +1318,7 @@ async function transcribeAudioWithGemini({
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL - CARRITO MULTIPLE CON AGREGADO DE PRODUCTOS");
+  console.log("🔥 VERSION FINAL - PELADOR DE PAPAS DETECTADO CORRECTAMENTE");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1397,13 +1424,11 @@ export default async function handler(req: any, res: any) {
         previousStep === "esperando_cantidad"
       );
 
-    // 🔥 DETECCIÓN DE INTENCIÓN DE AGREGAR PRODUCTO
     const wantsAddMore = isAddMoreIntent(texto);
     console.log(`🔥 wantsAddMore: ${wantsAddMore}, texto: ${texto}`);
 
     let product;
     
-    // 🔥 Si quiere agregar más productos, detectar el producto adicional
     if (wantsAddMore) {
       product = detectProduct(
         texto,
@@ -1413,17 +1438,14 @@ export default async function handler(req: any, res: any) {
       );
       console.log(`🔥 Producto adicional detectado: ${product}`);
     } 
-    // Si es respuesta de cantidad, preservar producto del contexto
     else if (isPureQuantityReply && (context?.current_product || oldOrder?.product)) {
       product = context?.current_product || oldOrder?.product;
       console.log(`🔥 Cantidad reply - Producto forzado: ${product}`);
     } 
-    // Si es respuesta de calce, preservar producto del contexto
     else if (isPureShoeSizeReply && (context?.current_product || oldOrder?.product)) {
       product = context?.current_product || oldOrder?.product;
       console.log(`🔥 Calce reply - Producto forzado: ${product}`);
     } 
-    // Detección normal de producto
     else {
       product = detectProduct(
         texto,
@@ -1482,7 +1504,7 @@ export default async function handler(req: any, res: any) {
 
         if (analysis.kind === "payment_proof") {
           isPaymentProof = true;
-          const isWaitingPaymentProof = tipoCobertura === "sin_cobertura" && previousStep === "waiting_payment_proof";
+          const isWaitingPaymentProof = getTipoCobertura(orderData?.city) === "sin_cobertura" && previousStep === "waiting_payment_proof";
 
           await safeUpsertOrder(
             user_id,
@@ -1506,7 +1528,7 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
               ...(context || {}),
               current_product: orderData?.product || context?.current_product || null,
               step: isWaitingPaymentProof ? "payment_verified" : previousStep || "selling",
-              tipo_cobertura: tipoCobertura || previousTipoCobertura || null,
+              tipo_cobertura: getTipoCobertura(orderData?.city) || previousTipoCobertura || null,
               order_data: orderData,
               last_topic: "payment_verified",
               payment_amount: analysis.amount || null,
@@ -1585,7 +1607,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     if (!texto) texto = "(mensaje sin texto)";
 
-    // Re-ejecutar extracción después de posible procesamiento de media
     extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
 
     if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
@@ -1610,7 +1631,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       console.log(`✅ Reforzando calce exacto: ${exactShoeSize} para producto: ${product}`);
     }
 
-    // Solo volver a detectar si NO es quantity reply, shoe size reply, NI add more intent
     if (!isPureQuantityReply && !isPureShoeSizeReply && !wantsAddMore) {
       product = detectProduct(
         texto,
@@ -1643,7 +1663,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     orderData.quantity = safeQuantity(orderData.quantity);
 
-    // BLOQUEO PARA PLANTILLAS / CALCE
     if (orderData.shoe_size) {
       const preservedShoeProduct = isShoeProductText(oldOrder?.product || "")
         ? oldOrder.product
@@ -1698,11 +1717,10 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       orderData.total_amount = 0;
     }
 
-    // 🔥 CORREGIDO: Manejo de "agregar producto" - modo ADD, no REPLACE
+    // 🔥 MANEJO DE AGREGADO DE PRODUCTOS
     if (wantsAddMore && (product || hasProductsToAdd)) {
       console.log(`🔥 Procesando agregado de producto: product=${product}, hasProductsToAdd=${hasProductsToAdd}, productsToAdd=${JSON.stringify(productsToAdd)}`);
       
-      // Si hay productos específicos detectados
       if (hasProductsToAdd) {
         for (const pToAdd of productsToAdd) {
           if (!pToAdd || isInvalidCartProduct(pToAdd)) continue;
@@ -1719,13 +1737,12 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
               pToAdd,
               itemQty,
               itemTotal,
-              "add",  // 🔥 MODO ADD - suma al carrito existente
+              "add",
               ""
             );
           }
         }
       } 
-      // Si hay un solo producto detectado
       else if (product && !isInvalidCartProduct(product)) {
         const itemQty = extracted.quantity > 0 ? extracted.quantity : 1;
         const itemTotal = calculateTotal(product, itemQty, fullTraining);
@@ -1738,7 +1755,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
             product,
             itemQty,
             itemTotal,
-            "add",  // 🔥 MODO ADD - suma al carrito existente
+            "add",
             ""
           );
         }
@@ -1798,7 +1815,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     const finalTipoCobertura = getTipoCobertura(orderData.city) || effectivePreviousTipoCobertura || "";
     const step = nextStep(orderData, finalTipoCobertura);
 
-    // Respuesta determinística para plantillas con calce
     if (orderData.shoe_size && orderData.product && orderData.quantity === 1 && !orderData.city) {
       const totalForShoe = calculateTotal(orderData.product, 1, fullTraining);
       if (totalForShoe) orderData.total_amount = totalForShoe;
@@ -1836,7 +1852,6 @@ Tu pedido queda así:
     const shouldCollect = !!orderData.product && (wantsToBuy || hasOrderData || effectivePreviousStep.startsWith("collecting") || effectivePreviousStep === "esperando_cantidad" || effectivePreviousStep === "waiting_payment_proof" || isPureQuantityReply);
     const isConfirming = step === "confirm_order" && wantsToBuy && !wantsAddMore;
 
-    // 🔥 Respuesta para agregado de producto - mostrar resumen actualizado
     if (wantsAddMore && (product || hasProductsToAdd) && orderData.items?.length) {
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
@@ -2008,7 +2023,8 @@ REGLAS TÉCNICAS (MUY IMPORTANTES):
 21. Si preguntaste "qué calce" o "qué talle" y el cliente responde solo "35", "36", "37", etc., eso es CALCE/TALLE, NO cantidad. Cantidad = 1.
 22. Si el cliente dice "QUIERO CALCE 37", "talle 42" o "número 39", ese número es CALCE/TALLE, no cantidad. La cantidad debe ser 1.
 23. Para "Veneno de Abeja" o "Crema de Abeja", la PROMO 2 unidades cuesta 249.900 Gs (NO 290.000 Gs).
-24. Cuando el cliente dice "ESE TAMBIEN AGREGAME 1" o "MAS EL VENENO DE ABEJA", debe AGREGAR ese producto al carrito existente, NO reemplazar.
+24. Cuando el cliente dice "TAMBIEN QUIERO UN PELADOR DE PAPAS" o "MAS EL VENENO DE ABEJA", debe AGREGAR ese producto al carrito existente, NO reemplazar.
+25. "Pelador de papas", "peladora de papas", "pelador automático" = "Peladora Automática" con precio 189.900 Gs.
 `.trim();
 
     const contents = cleanHistory.slice(-8).filter((h: any) => clean(h?.content)).map((h: any) => ({
