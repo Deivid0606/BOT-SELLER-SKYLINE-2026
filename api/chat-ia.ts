@@ -28,6 +28,22 @@ function productRequiresSize(product: string): boolean {
   return isShoeProductText(product);
 }
 
+function getDefaultShoeProductName(): string {
+  return "PLANTILLAS ORTOPIEX 5D®";
+}
+
+function isOnlyShoeVariantText(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+  if (isShoeProductText(n)) return false;
+
+  // Bloquea basura como: "calce", "calce 37", "→ calce = 37", "quiero calce 37".
+  return (
+    /\b(calce|talle|numero|nro|num|medida)\b/.test(n) ||
+    /^\d{2}$/.test(n)
+  );
+}
+
 function extractShoeSizeFromText(text: string): number {
   const n = normalize(text);
 
@@ -50,6 +66,7 @@ function isPackReferenceText(text: string): boolean {
 function isInvalidProductCandidate(name: string): boolean {
   const n = normalize(name);
   if (!n) return true;
+  if (isOnlyShoeVariantText(name)) return true;
   if (/^(calce|talle|numero|nro|num|número|medida)$/.test(n)) return true;
 
   // Nunca aceptar cantidades, ejemplos o líneas de variantes como producto.
@@ -98,6 +115,7 @@ function isInvalidCartProduct(name: string): boolean {
   const n = normalize(raw);
 
   if (!n) return true;
+  if (isOnlyShoeVariantText(name)) return true;
   if (/^(calce|talle|numero|nro|num|número|medida)$/.test(n)) return true;
   if (n.length < 4) return true;
 
@@ -1346,7 +1364,7 @@ export default async function handler(req: any, res: any) {
     );
 
     if (isPureShoeSizeReply) {
-      const preservedShoeProduct = oldOrder?.product || context?.current_product || "PLANTILLAS ORTOPIEX 5D®";
+      const preservedShoeProduct = oldOrder?.product || context?.current_product || getDefaultShoeProductName();
       if (!product || isInvalidProductCandidate(product) || normalize(product) === "calce" || normalize(product) === "talle") {
         product = preservedShoeProduct;
       }
@@ -1558,7 +1576,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     if (!texto) texto = "(mensaje sin texto)";
 
     if (isPureShoeSizeReply) {
-      const preservedShoeProduct = oldOrder?.product || context?.current_product || "PLANTILLAS ORTOPIEX 5D®";
+      const preservedShoeProduct = oldOrder?.product || context?.current_product || getDefaultShoeProductName();
       if (!product || isInvalidProductCandidate(product) || normalize(product) === "calce" || normalize(product) === "talle") {
         product = preservedShoeProduct;
       }
@@ -1595,7 +1613,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     );
 
     if (isPureShoeSizeReply) {
-      const preservedShoeProduct = oldOrder?.product || context?.current_product || "PLANTILLAS ORTOPIEX 5D®";
+      const preservedShoeProduct = oldOrder?.product || context?.current_product || getDefaultShoeProductName();
       if (!product || isInvalidProductCandidate(product) || normalize(product) === "calce" || normalize(product) === "talle") {
         product = preservedShoeProduct;
       }
@@ -1630,6 +1648,31 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     }
 
     orderData.quantity = safeQuantity(orderData.quantity);
+
+    // =====================================================
+    // BLOQUEO FINAL PARA PLANTILLAS / CALCE
+    // Si existe calce, el producto NO puede ser "calce" ni una promo de otro producto.
+    // Se fuerza Plantillas + cantidad 1 + precio 159.000 Gs.
+    // =====================================================
+    if (orderData.shoe_size) {
+      const preservedShoeProduct = isShoeProductText(oldOrder?.product || "")
+        ? oldOrder.product
+        : isShoeProductText(context?.current_product || "")
+        ? context.current_product
+        : getDefaultShoeProductName();
+
+      orderData.product = preservedShoeProduct;
+      product = preservedShoeProduct;
+      orderData.quantity = 1;
+      orderData.total_amount = 159000;
+      orderData.items = [
+        {
+          product: preservedShoeProduct,
+          quantity: 1,
+          total: 159000,
+        },
+      ];
+    }
 
     if (isInvalidProductCandidate(orderData.product) && (oldOrder?.product || context?.current_product)) {
       orderData.product = oldOrder?.product || context?.current_product;
@@ -1710,6 +1753,18 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     orderData.items = cartItems;
     if (cartItems.length) {
       orderData.total_amount = cartGrandTotal(cartItems);
+    }
+
+    // Reforzar nuevamente antes de responder/guardar: Plantillas con calce siempre vale 159.000.
+    if (orderData.shoe_size) {
+      const preservedShoeProduct = isShoeProductText(orderData.product || "")
+        ? orderData.product
+        : getDefaultShoeProductName();
+      orderData.product = preservedShoeProduct;
+      product = preservedShoeProduct;
+      orderData.quantity = 1;
+      orderData.total_amount = 159000;
+      orderData.items = [{ product: preservedShoeProduct, quantity: 1, total: 159000 }];
     }
 
     const finalTipoCobertura =
