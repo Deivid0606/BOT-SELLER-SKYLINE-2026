@@ -279,6 +279,78 @@ function detectProduct(
   return clean(prev || "");
 }
 
+function canonicalProductFromText(text: string): string {
+  const n = normalize(text);
+
+  if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja)\b/.test(n)) {
+    return "Veneno de Abeja";
+  }
+
+  if (/\b(soporte\s+para\s+lavarropas|lavarropas|almohadillas\s+antivibracion|almohadillas\s+antivibración|patitas\s+antideslizantes)\b/.test(n)) {
+    return "Almohadillas Antivibración y soporte para lavarropas";
+  }
+
+  if (/\b(plantilla|plantillas|ortopiex|ortoflex)\b/.test(n)) {
+    return getDefaultShoeProductName();
+  }
+
+  if (/\b(afilador|afilador\s+de\s+cuchillos|cuchillos)\b/.test(n)) {
+    return "Afilador de Cuchillos";
+  }
+
+  if (/\b(vital\s+honey|vital\s+honey\s+vip)\b/.test(n)) {
+    return "Vital Honey VIP";
+  }
+
+  if (/\b(peladora|peladora\s+automatica|pelador\s+automatico)\b/.test(n)) {
+    return "Peladora Automática";
+  }
+
+  if (/\b(perfume\s+asad|asad)\b/.test(n)) {
+    return "Perfume Asad";
+  }
+
+  return "";
+}
+
+function uniqueProducts(products: string[]): string[] {
+  const out: string[] = [];
+
+  for (const p of products.map(clean).filter(Boolean)) {
+    if (isInvalidCartProduct(p)) continue;
+    if (!out.some((x) => sameProduct(x, p))) out.push(p);
+  }
+
+  return out;
+}
+
+function detectMultipleProducts(text: string, training: string): string[] {
+  const raw = clean(text);
+  const n = normalize(raw);
+  const found: string[] = [];
+
+  // Detectores protegidos. Son más confiables que Gemini/entrenamiento para carrito múltiple.
+  const fullMatch = canonicalProductFromText(raw);
+  if (fullMatch) found.push(fullMatch);
+
+  const segments = n
+    .split(/\b(?:y|tambien|también|ademas|además|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí|mas|más)\b/g)
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+  for (const segment of segments) {
+    const protectedProduct = canonicalProductFromText(segment);
+    if (protectedProduct) found.push(protectedProduct);
+
+    const catalogProduct = detectProduct(segment, training, "");
+    if (catalogProduct && !isInvalidProductCandidate(catalogProduct)) {
+      found.push(catalogProduct);
+    }
+  }
+
+  return uniqueProducts(found);
+}
+
 function sameProduct(a: string, b: string): boolean {
   const na = normalize(a);
   const nb = normalize(b);
@@ -628,7 +700,7 @@ function calculateTotal(product: string, quantity: number, training: string): nu
 
   const protectedCatalog = [
     {
-      keys: ["veneno de abeja"],
+      keys: ["veneno de abeja", "crema de abeja", "creama de abeja", "abeja"],
       unit: 145000,
       promos: { 2: 249900 } as Record<number, number>,
     },
@@ -718,6 +790,7 @@ type CartItem = {
   product: string;
   quantity: number;
   total: number;
+  shoe_size?: any;
 };
 
 function isAddMoreIntent(text: string): boolean {
@@ -737,6 +810,7 @@ function getCartItems(order: any): CartItem[] {
         product: clean(i?.product),
         quantity,
         total: Number.isFinite(total) ? total : 0,
+        shoe_size: i?.shoe_size || i?.shoeSize || "",
       };
     })
     .filter((i: CartItem) => i.product && i.quantity > 0 && !isInvalidCartProduct(i.product));
@@ -746,6 +820,7 @@ function getCartItems(order: any): CartItem[] {
       product: clean(order.product),
       quantity: safeQuantity(order.quantity),
       total: Number(order.total_amount || 0),
+      shoe_size: order?.shoe_size || "",
     });
   }
 
@@ -765,7 +840,8 @@ function addOrReplaceCartItem(
   product: string,
   quantity: number,
   total: number,
-  mode: "add" | "replace" = "replace"
+  mode: "add" | "replace" = "replace",
+  shoeSize: any = ""
 ): CartItem[] {
   const cleanProduct = clean(product);
   const q = safeQuantity(quantity);
@@ -783,18 +859,20 @@ function addOrReplaceCartItem(
         product: next[idx].product,
         quantity: newQty,
         total: Number(next[idx].total || 0) + t,
+        shoe_size: shoeSize || next[idx].shoe_size || "",
       };
     } else {
       next[idx] = {
         product: cleanProduct,
         quantity: q,
         total: t,
+        shoe_size: shoeSize || next[idx].shoe_size || "",
       };
     }
     return next;
   }
 
-  next.push({ product: cleanProduct, quantity: q, total: t });
+  next.push({ product: cleanProduct, quantity: q, total: t, shoe_size: shoeSize || "" });
   return next;
 }
 
@@ -808,6 +886,7 @@ function normalizeOrderWithItems(order: any, training: string): any {
       product: i.product,
       quantity: qty,
       total: recalculated || Number(i.total || 0),
+      shoe_size: i.shoe_size || "",
     };
   });
 
@@ -827,7 +906,7 @@ function normalizeOrderWithItems(order: any, training: string): any {
 
 function buildItemsLines(items: CartItem[]): string {
   return items
-    .map((i) => `📦 ${i.product} x${i.quantity} → ${formatGs(i.total)} Gs`)
+    .map((i) => `📦 ${formatProductWithShoeSize(i.product, i.shoe_size)} x${i.quantity} → ${formatGs(i.total)} Gs`)
     .join("\n");
 }
 
@@ -1661,15 +1740,19 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
         ? context.current_product
         : getDefaultShoeProductName();
 
+      const shoeQty = safeQuantity(orderData.quantity) || safeQuantity(oldOrder?.quantity) || 1;
+      const shoeTotal = calculateTotal(preservedShoeProduct, shoeQty, fullTraining) || 159000 * shoeQty;
+
       orderData.product = preservedShoeProduct;
       product = preservedShoeProduct;
-      orderData.quantity = 1;
-      orderData.total_amount = 159000;
+      orderData.quantity = shoeQty;
+      orderData.total_amount = shoeTotal;
       orderData.items = [
         {
           product: preservedShoeProduct,
-          quantity: 1,
-          total: 159000,
+          quantity: shoeQty,
+          total: shoeTotal,
+          shoe_size: orderData.shoe_size,
         },
       ];
     }
@@ -1690,6 +1773,8 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     const wantsAddMore = isAddMoreIntent(texto);
     const asksPriceNow = isPriceIntent(texto);
+    const productsToAdd = wantsAddMore ? detectMultipleProducts(texto, fullTraining) : [];
+    const hasProductsToAdd = productsToAdd.length > 0;
 
     // Si el cliente inicia una consulta/pedido de producto nuevo, NO arrastramos carrito viejo.
     // Esto evita casos como: soporte para lavarropas → aparece tabla/veneno/cliente viejo.
@@ -1722,8 +1807,34 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       orderData.total_amount = 0;
     }
 
+    // Carrito múltiple: si el cliente dice "también X y Y", agregamos TODOS los productos detectados.
+    // No reemplaza Plantillas ni productos anteriores. Cada producto nuevo entra con cantidad 1.
+    if (wantsAddMore && hasProductsToAdd) {
+      for (const pToAdd of productsToAdd) {
+        if (!pToAdd || isInvalidCartProduct(pToAdd)) continue;
+        if (isShoeProductText(pToAdd) && orderData.shoe_size) continue;
+
+        const itemQty = 1;
+        const itemTotal = calculateTotal(pToAdd, itemQty, fullTraining) || 0;
+
+        cartItems = addOrReplaceCartItem(
+          cartItems,
+          pToAdd,
+          itemQty,
+          itemTotal,
+          "replace"
+        );
+      }
+
+      orderData.items = cartItems;
+      orderData.total_amount = cartGrandTotal(cartItems);
+      orderData.quantity = cartTotalQuantity(cartItems);
+      orderData.product = cartItems.map((i) => `${formatProductWithShoeSize(i.product, i.shoe_size)} x${i.quantity}`).join(" + ");
+      product = cartItems[cartItems.length - 1]?.product || product;
+    }
+
     // Si el cliente dice "también la tabla" y no especifica cantidad, asumimos 1 unidad.
-    if (wantsAddMore && product && !orderData.quantity) {
+    if (!hasProductsToAdd && wantsAddMore && product && !orderData.quantity) {
       orderData.quantity = 1;
       const totalForOne = calculateTotal(product, 1, fullTraining);
       if (totalForOne) orderData.total_amount = totalForOne;
@@ -1732,6 +1843,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     // Actualizamos el carrito solo cuando hay compra/cantidad/agregado, no cuando solo pregunta precio.
     const shouldTouchCart =
       !!product &&
+      !hasProductsToAdd &&
       safeQuantity(orderData.quantity) > 0 &&
       !asksPriceNow &&
       (isBuyIntent(texto) || wantsAddMore || isPureQuantityReply || isPureShoeSizeReply || safeQuantity(extracted.quantity) > 0);
@@ -1746,7 +1858,8 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
         product,
         safeQuantity(orderData.quantity),
         itemTotal,
-        "replace"
+        "replace",
+        orderData.shoe_size || ""
       );
     }
 
@@ -1760,11 +1873,13 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       const preservedShoeProduct = isShoeProductText(orderData.product || "")
         ? orderData.product
         : getDefaultShoeProductName();
+      const shoeQty = safeQuantity(orderData.quantity) || safeQuantity(oldOrder?.quantity) || 1;
+      const shoeTotal = calculateTotal(preservedShoeProduct, shoeQty, fullTraining) || 159000 * shoeQty;
       orderData.product = preservedShoeProduct;
       product = preservedShoeProduct;
-      orderData.quantity = 1;
-      orderData.total_amount = 159000;
-      orderData.items = [{ product: preservedShoeProduct, quantity: 1, total: 159000 }];
+      orderData.quantity = shoeQty;
+      orderData.total_amount = shoeTotal;
+      orderData.items = [{ product: preservedShoeProduct, quantity: shoeQty, total: shoeTotal, shoe_size: orderData.shoe_size }];
     }
 
     const finalTipoCobertura =
@@ -1827,7 +1942,7 @@ Tu pedido queda así:
     const isConfirming = step === "confirm_order" && wantsToBuy && !wantsAddMore;
 
     // Respuesta determinística para agregar otro producto al carrito.
-    if (wantsAddMore && product && orderData.items?.length) {
+    if (wantsAddMore && (product || hasProductsToAdd) && orderData.items?.length) {
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
       return res.json({
