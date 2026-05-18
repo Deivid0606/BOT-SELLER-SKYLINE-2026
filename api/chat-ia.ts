@@ -260,7 +260,30 @@ function botWasAskingQuantity(history: any[]) {
   );
 }
 
-function extractData(msg: string, currentStep?: string, forceQuantityMode = false) {
+function botWasAskingShoeSize(history: any[]) {
+  const lastAssistantMessage = normalize(getLastAssistantMessage(history));
+  return (
+    lastAssistantMessage.includes("que calce") ||
+    lastAssistantMessage.includes("qué calce") ||
+    lastAssistantMessage.includes("calce te gustaria") ||
+    lastAssistantMessage.includes("calce te gustaría") ||
+    lastAssistantMessage.includes("que talle") ||
+    lastAssistantMessage.includes("qué talle") ||
+    lastAssistantMessage.includes("talle te gustaria") ||
+    lastAssistantMessage.includes("talle te gustaría") ||
+    lastAssistantMessage.includes("numero te gustaria") ||
+    lastAssistantMessage.includes("nro te gustaria") ||
+    lastAssistantMessage.includes("disponible del 35") ||
+    lastAssistantMessage.includes("disponibles del 35")
+  );
+}
+
+function extractData(
+  msg: string,
+  currentStep?: string,
+  forceQuantityMode = false,
+  forceShoeSizeMode = false
+) {
   const text = clean(msg);
   const norm = normalize(text);
 
@@ -277,12 +300,32 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     /\b(?:calce|talle|numero|nro|num)\s*(\d{2})\b/
   );
 
-  const shoe_size = shoeSizeMatch ? Number(shoeSizeMatch[1]) : 0;
+  const explicitShoeSize = shoeSizeMatch ? Number(shoeSizeMatch[1]) : 0;
+
+  const waitingForShoeSize =
+    forceShoeSizeMode ||
+    currentStep === "collecting_shoe_size" ||
+    currentStep === "esperando_calce" ||
+    currentStep === "collecting_calce";
+
+  const onlyShoeSizeMatch = waitingForShoeSize
+    ? norm.match(/^\s*(\d{2})\s*$/)
+    : null;
+
+  const implicitShoeSize = onlyShoeSizeMatch ? Number(onlyShoeSizeMatch[1]) : 0;
+
+  const shoe_size =
+    explicitShoeSize >= 20 && explicitShoeSize <= 50
+      ? explicitShoeSize
+      : implicitShoeSize >= 20 && implicitShoeSize <= 50
+      ? implicitShoeSize
+      : 0;
+
   const isShoeSizeMessage = shoe_size >= 20 && shoe_size <= 50;
 
   let quantity = 0;
 
-  // Si el cliente pide un calce/talle, la cantidad correcta es 1.
+  // Si el cliente pide o responde un calce/talle, la cantidad correcta es 1.
   if (isShoeSizeMessage) {
     quantity = 1;
   }
@@ -295,6 +338,7 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
 
   if (
     !isShoeSizeMessage &&
+    !waitingForShoeSize &&
     (
       forceQuantityMode ||
       currentStep === "collecting_quantity" ||
@@ -1212,13 +1256,27 @@ export default async function handler(req: any, res: any) {
 
     const lastAssistantMessage = getLastAssistantMessage(history || []);
     const wasAskingQuantity = botWasAskingQuantity(history || []);
+    const wasAskingShoeSize = botWasAskingShoeSize(history || []);
 
     const isOnlyNumber = /^\s*\d{1,3}\s*$/.test(texto);
 
     // CRÍTICO: Si el bot preguntó cantidad y el cliente responde solo un número,
     // ese número reemplaza cualquier cantidad previa. Nunca se concatena.
+    const isPureShoeSizeReply =
+      /^\s*\d{2}\s*$/.test(texto) &&
+      Number(texto.trim()) >= 20 &&
+      Number(texto.trim()) <= 50 &&
+      !!(oldOrder?.product || context?.current_product) &&
+      (
+        wasAskingShoeSize ||
+        previousStep === "collecting_shoe_size" ||
+        previousStep === "esperando_calce" ||
+        previousStep === "collecting_calce"
+      );
+
     const isPureQuantityReply =
       isOnlyNumber &&
+      !isPureShoeSizeReply &&
       !!oldOrder?.product &&
       !!oldOrder?.city &&
       (
@@ -1234,7 +1292,7 @@ export default async function handler(req: any, res: any) {
       lastAssistantMessage
     );
 
-    let extracted = extractData(texto, previousStep, isPureQuantityReply);
+    let extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
 
     if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
       extracted.quantity = safeQuantity(oldOrder?.quantity) || 1;
@@ -1250,6 +1308,17 @@ export default async function handler(req: any, res: any) {
       extracted.name = "";
       extracted.address = "";
       console.log(`✅ Cantidad exacta detectada: ${exactQuantity}`);
+    }
+
+    // FORZAR calce exacto si el bot preguntó calce y el cliente respondió solo un número.
+    if (isPureShoeSizeReply) {
+      const exactShoeSize = Number(texto.trim());
+      extracted.quantity = 1;
+      extracted.shoe_size = exactShoeSize;
+      extracted.name = "";
+      extracted.address = "";
+      product = oldOrder?.product || context?.current_product || product;
+      console.log(`✅ Calce exacto detectado: ${exactShoeSize}`);
     }
 
     const productChangedBeforeMedia =
@@ -1428,7 +1497,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     if (!texto) texto = "(mensaje sin texto)";
 
-    extracted = extractData(texto, previousStep, isPureQuantityReply);
+    extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
 
     if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
       extracted.quantity = safeQuantity(oldOrder?.quantity) || 1;
@@ -1441,6 +1510,14 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       const exactQuantity = Number(String(message).trim());
       extracted.quantity = exactQuantity;
       console.log(`✅ Reforzando cantidad exacta: ${exactQuantity}`);
+    }
+
+    if (isPureShoeSizeReply) {
+      const exactShoeSize = Number(String(message).trim());
+      extracted.quantity = 1;
+      extracted.shoe_size = exactShoeSize;
+      product = oldOrder?.product || context?.current_product || product;
+      console.log(`✅ Reforzando calce exacto: ${exactShoeSize}`);
     }
 
     product = detectProduct(
@@ -1540,7 +1617,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       !!product &&
       safeQuantity(orderData.quantity) > 0 &&
       !asksPriceNow &&
-      (isBuyIntent(texto) || wantsAddMore || isPureQuantityReply || safeQuantity(extracted.quantity) > 0);
+      (isBuyIntent(texto) || wantsAddMore || isPureQuantityReply || isPureShoeSizeReply || safeQuantity(extracted.quantity) > 0);
 
     if (shouldTouchCart) {
       const itemTotal =
@@ -1775,7 +1852,7 @@ Ahora pasame tu nombre y apellido para agendar el pedido 🙏`,
     }
 
     let cleanHistory = Array.isArray(history) ? history : [];
-    if (isPureQuantityReply) cleanHistory = [];
+    if (isPureQuantityReply || isPureShoeSizeReply) cleanHistory = [];
 
     const system = `
 Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento oficial del usuario.
@@ -1827,6 +1904,7 @@ REGLAS TÉCNICAS (MUY IMPORTANTES):
 18. Nunca borres items anteriores salvo que el cliente pida cancelar o cambiar.
 19. Si el cliente inicia con otro producto nuevo y NO dice también/agrega/sumá, empezá pedido nuevo y no arrastres carrito viejo.
 20. Si el cliente responde "Kit x 4 unidades", "x4" o "las 4 unidades", significa 1 kit, no 4 kits.
+21. Si preguntaste "qué calce" o "qué talle" y el cliente responde solo "35", "36", "37", etc., eso es CALCE/TALLE, NO cantidad. Cantidad = 1.
 21. Si el cliente dice "QUIERO CALCE 37", "talle 42" o "número 39", ese número es CALCE/TALLE, no cantidad. La cantidad debe ser 1.
 `.trim();
 
@@ -1838,7 +1916,9 @@ REGLAS TÉCNICAS (MUY IMPORTANTES):
         parts: [{ text: clean(h.content) }],
       }));
 
-    const currentUserText = isPureQuantityReply
+    const currentUserText = isPureShoeSizeReply
+      ? `El cliente respondió EXACTAMENTE "${texto}" que es el CALCE/TALLE ${orderData.shoe_size}. NO es cantidad. La cantidad debe ser 1 par.`
+      : isPureQuantityReply
       ? `El cliente respondió EXACTAMENTE "${texto}" que es la cantidad ${orderData.quantity}. NO es 11 ni ninguna otra concatenación. Usá ESA cantidad exacta.`
       : texto;
 
