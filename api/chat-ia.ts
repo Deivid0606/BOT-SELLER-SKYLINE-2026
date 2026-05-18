@@ -187,6 +187,16 @@ function detectProduct(
   const msg = normalize(text);
   const lines = getPriceLines(training);
 
+  // 🔥 CORREGIDO: Detección prioritaria de Veneno de Abeja
+  if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja") || msg.includes("creama")) {
+    return "Veneno de Abeja";
+  }
+
+  // 🔥 CORREGIDO: Detección prioritaria de Plantillas
+  if (msg.includes("plantilla") || msg.includes("ortopiex") || msg.includes("ortoflex") || msg.includes("5d")) {
+    return getDefaultShoeProductName();
+  }
+
   let best = "";
   let bestScore = 0;
 
@@ -210,20 +220,6 @@ function detectProduct(
 
     for (const mw of msgWords) {
       if (n.includes(mw)) score += 8;
-    }
-
-    if (
-      msg.includes("afilador") &&
-      (n.includes("afilador") || n.includes("cuchillo") || n.includes("cuchillos"))
-    ) {
-      score += 40;
-    }
-
-    if (
-      msg.includes("sharpener") &&
-      (n.includes("afilador") || n.includes("cuchillo") || n.includes("cuchillos"))
-    ) {
-      score += 35;
     }
 
     if (score > bestScore) {
@@ -252,11 +248,6 @@ function detectProduct(
       for (const w of words) {
         if (assistantNorm.includes(w)) score += 10;
       }
-
-      if (assistantNorm.includes("peladora") && n.includes("peladora")) score += 60;
-      if (assistantNorm.includes("veneno") && n.includes("veneno")) score += 60;
-      if (assistantNorm.includes("afilador") && n.includes("afilador")) score += 60;
-      if (assistantNorm.includes("vital honey") && n.includes("vital honey")) score += 60;
 
       if (score > assistantScore) {
         assistantScore = score;
@@ -701,7 +692,7 @@ function calculateTotal(product: string, quantity: number, training: string): nu
       promos: {} as Record<number, number>,
     },
     {
-      keys: ["plantillas ortopiex", "ortopiex"],
+      keys: ["plantillas ortopiex", "ortopiex", "plantillas"],
       unit: 159000,
       promos: {} as Record<number, number>,
     },
@@ -770,7 +761,7 @@ type CartItem = {
 
 function isAddMoreIntent(text: string): boolean {
   const m = normalize(text);
-  return /\b(tambien|también|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí)\b/.test(m) ||
+  return /\b(tambien|también|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí|mas|más)\b/.test(m) ||
     /\by\s+(la|el|los|las)\b/.test(m);
 }
 
@@ -1300,7 +1291,7 @@ async function transcribeAudioWithGemini({
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION CORREGIDA - PRODUCTO FIJO EN RESPUESTA DE CANTIDAD");
+  console.log("🔥 VERSION FINAL - CARRITO MULTIPLE CON AGREGADO DE PRODUCTOS");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1406,18 +1397,34 @@ export default async function handler(req: any, res: any) {
         previousStep === "esperando_cantidad"
       );
 
-    // 🔥 CORREGIDO: Si es respuesta de cantidad, PRESERVAR el producto del contexto
-    // No permitir que detectProduct() lo cambie por error a otro producto (ej: plantillas)
+    // 🔥 DETECCIÓN DE INTENCIÓN DE AGREGAR PRODUCTO
+    const wantsAddMore = isAddMoreIntent(texto);
+    console.log(`🔥 wantsAddMore: ${wantsAddMore}, texto: ${texto}`);
+
     let product;
-    if (isPureQuantityReply && (context?.current_product || oldOrder?.product)) {
-      // Forzar producto anterior cuando el cliente solo responde un número (cantidad)
+    
+    // 🔥 Si quiere agregar más productos, detectar el producto adicional
+    if (wantsAddMore) {
+      product = detectProduct(
+        texto,
+        fullTraining,
+        null,
+        lastAssistantMessage
+      );
+      console.log(`🔥 Producto adicional detectado: ${product}`);
+    } 
+    // Si es respuesta de cantidad, preservar producto del contexto
+    else if (isPureQuantityReply && (context?.current_product || oldOrder?.product)) {
       product = context?.current_product || oldOrder?.product;
       console.log(`🔥 Cantidad reply - Producto forzado: ${product}`);
-    } else if (isPureShoeSizeReply && (context?.current_product || oldOrder?.product)) {
-      // Forzar producto anterior cuando el cliente responde calce
+    } 
+    // Si es respuesta de calce, preservar producto del contexto
+    else if (isPureShoeSizeReply && (context?.current_product || oldOrder?.product)) {
       product = context?.current_product || oldOrder?.product;
       console.log(`🔥 Calce reply - Producto forzado: ${product}`);
-    } else {
+    } 
+    // Detección normal de producto
+    else {
       product = detectProduct(
         texto,
         fullTraining,
@@ -1435,49 +1442,24 @@ export default async function handler(req: any, res: any) {
       product = oldOrder?.product || context?.current_product || product;
     }
 
-    // FORZAR cantidad exacta si es respuesta pura
     if (isPureQuantityReply) {
       const exactQuantity = Number(texto.trim());
       extracted.quantity = exactQuantity;
       extracted.name = "";
       extracted.address = "";
-      // 🔥 CORREGIDO: Mantener producto forzado
       product = context?.current_product || oldOrder?.product || product;
       console.log(`✅ Cantidad exacta detectada: ${exactQuantity} para producto: ${product}`);
     }
 
-    // FORZAR calce exacto si el bot preguntó calce y el cliente respondió solo un número.
     if (isPureShoeSizeReply) {
       const exactShoeSize = shoeSizeFromText;
       extracted.quantity = 1;
       extracted.shoe_size = exactShoeSize;
       extracted.name = "";
       extracted.address = "";
-      // 🔥 CORREGIDO: Mantener producto forzado
       product = context?.current_product || oldOrder?.product || product;
       console.log(`✅ Calce exacto detectado: ${exactShoeSize} para producto: ${product}`);
     }
-
-    const productChangedBeforeMedia =
-      !!product &&
-      !!oldOrder?.product &&
-      !sameProduct(product, oldOrder.product);
-
-    const baseOrderBeforeMedia = oldOrder;
-
-    let orderData = mergeOrderData(
-      baseOrderBeforeMedia,
-      extracted,
-      product,
-      isPureQuantityReply
-    );
-
-    const tipoCobertura =
-      getTipoCobertura(orderData.city) || previousTipoCobertura || "";
-
-    const isWaitingPaymentProof =
-      tipoCobertura === "sin_cobertura" &&
-      previousStep === "waiting_payment_proof";
 
     // ========== PROCESAMIENTO DE MEDIA (IMAGEN/AUDIO) ==========
     if (mediaUrl && mediaType === "image") {
@@ -1500,6 +1482,7 @@ export default async function handler(req: any, res: any) {
 
         if (analysis.kind === "payment_proof") {
           isPaymentProof = true;
+          const isWaitingPaymentProof = tipoCobertura === "sin_cobertura" && previousStep === "waiting_payment_proof";
 
           await safeUpsertOrder(
             user_id,
@@ -1509,14 +1492,8 @@ export default async function handler(req: any, res: any) {
             isWaitingPaymentProof ? "payment_verified" : undefined
           );
 
-          const amountText = analysis.amount
-            ? ` por Gs. ${analysis.amount}`
-            : "";
-
-          const receiver =
-            analysis.receiverName ||
-            expectedReceiverName ||
-            "nuestro titular";
+          const amountText = analysis.amount ? ` por Gs. ${analysis.amount}` : "";
+          const receiver = analysis.receiverName || expectedReceiverName || "nuestro titular";
 
           return res.json({
             response: `¡Perfecto! 🙏 Recibimos tu comprobante${amountText} a nombre de ${receiver}.
@@ -1527,7 +1504,7 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
             is_payment_proof: true,
             context: {
               ...(context || {}),
-              current_product: orderData.product || context?.current_product || null,
+              current_product: orderData?.product || context?.current_product || null,
               step: isWaitingPaymentProof ? "payment_verified" : previousStep || "selling",
               tipo_cobertura: tipoCobertura || previousTipoCobertura || null,
               order_data: orderData,
@@ -1545,26 +1522,15 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
             analysis.productName,
             analysis.transcript,
             analysis.promoText,
-          ]
-            .filter(Boolean)
-            .join(" ");
+          ].filter(Boolean).join(" ");
 
           const catalogProduct = detectProduct(productSignal, fullTraining, "");
-
-          const visualProduct =
-            catalogProduct ||
-            analysis.matchedProduct ||
-            analysis.productName ||
-            "";
-
+          const visualProduct = catalogProduct || analysis.matchedProduct || analysis.productName || "";
           product = visualProduct || product;
-
           const hasVisiblePrice = !!analysis.productPrice;
 
           if (!catalogProduct && visualProduct && hasVisiblePrice) {
-            const promoLine = analysis.promoText
-              ? `🔥 ${analysis.promoText} → ${analysis.productPrice} Gs`
-              : `💰 Precio: ${analysis.productPrice} Gs`;
+            const promoLine = analysis.promoText ? `🔥 ${analysis.promoText} → ${analysis.productPrice} Gs` : `💰 Precio: ${analysis.productPrice} Gs`;
 
             return res.json({
               response: `Sí 😊 es ${visualProduct}.
@@ -1577,10 +1543,7 @@ ${promoLine}
                 current_product: visualProduct,
                 step: "collecting_city",
                 tipo_cobertura: previousTipoCobertura || null,
-                order_data: {
-                  ...(orderData || {}),
-                  product: visualProduct,
-                },
+                order_data: { ...(orderData || {}), product: visualProduct },
                 last_topic: visualProduct,
                 updated_at: new Date().toISOString(),
               },
@@ -1601,11 +1564,7 @@ Si no hay producto del catálogo pero hay producto visual y precio visible, resp
 Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 `.trim();
         } else {
-          texto =
-            texto ||
-            `El cliente envió una imagen. Descripción: ${
-              analysis.transcript || "imagen no identificada"
-            }. Si no corresponde a producto ni comprobante, pedí más detalle.`;
+          texto = texto || `El cliente envió una imagen. Descripción: ${analysis.transcript || "imagen no identificada"}. Si no corresponde a producto ni comprobante, pedí más detalle.`;
         }
       } else {
         texto = texto || "Te mandé una imagen pero no pudiste descargarla.";
@@ -1617,14 +1576,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
       if (fetched) {
         const mime = mimeHint || fetched.mime || "audio/ogg";
-
-        const transcript = await transcribeAudioWithGemini({
-          apiKey,
-          model,
-          audioBase64: fetched.data,
-          mime,
-        });
-
+        const transcript = await transcribeAudioWithGemini({ apiKey, model, audioBase64: fetched.data, mime });
         texto = transcript || texto || "Te mandé un audio.";
       } else {
         texto = texto || "Te mandé un audio pero no pudiste descargarlo.";
@@ -1646,7 +1598,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     if (isPureQuantityReply) {
       const exactQuantity = Number(String(message).trim());
       extracted.quantity = exactQuantity;
-      // 🔥 CORREGIDO: Reforzar producto forzado
       product = context?.current_product || oldOrder?.product || product;
       console.log(`✅ Reforzando cantidad exacta: ${exactQuantity} para producto: ${product}`);
     }
@@ -1655,13 +1606,12 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       const exactShoeSize = shoeSizeFromText;
       extracted.quantity = 1;
       extracted.shoe_size = exactShoeSize;
-      // 🔥 CORREGIDO: Reforzar producto forzado
       product = context?.current_product || oldOrder?.product || product;
       console.log(`✅ Reforzando calce exacto: ${exactShoeSize} para producto: ${product}`);
     }
 
-    // Solo volver a detectar si NO es quantity reply ni shoe size reply
-    if (!isPureQuantityReply && !isPureShoeSizeReply) {
+    // Solo volver a detectar si NO es quantity reply, shoe size reply, NI add more intent
+    if (!isPureQuantityReply && !isPureShoeSizeReply && !wantsAddMore) {
       product = detectProduct(
         texto,
         fullTraining,
@@ -1674,16 +1624,12 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       product = oldOrder?.product || context?.current_product || product;
     }
 
-    const productChanged =
-      !!product &&
-      !!oldOrder?.product &&
-      !sameProduct(product, oldOrder.product);
-
+    const productChanged = !!product && !!oldOrder?.product && !sameProduct(product, oldOrder.product);
     const baseOrder = oldOrder;
     const effectivePreviousStep = previousStep;
     const effectivePreviousTipoCobertura = previousTipoCobertura;
 
-    orderData = mergeOrderData(
+    let orderData = mergeOrderData(
       baseOrder,
       extracted,
       product,
@@ -1712,31 +1658,18 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       product = preservedShoeProduct;
       orderData.quantity = shoeQty;
       orderData.total_amount = shoeTotal;
-      orderData.items = [
-        {
-          product: preservedShoeProduct,
-          quantity: shoeQty,
-          total: shoeTotal,
-          shoe_size: orderData.shoe_size,
-        },
-      ];
+      orderData.items = [{ product: preservedShoeProduct, quantity: shoeQty, total: shoeTotal, shoe_size: orderData.shoe_size }];
     }
 
     if (isInvalidProductCandidate(orderData.product) && (oldOrder?.product || context?.current_product)) {
       orderData.product = oldOrder?.product || context?.current_product;
     }
 
-    const calculatedTotal = calculateTotal(
-      orderData.product,
-      orderData.quantity,
-      fullTraining
-    );
-
+    const calculatedTotal = calculateTotal(orderData.product, orderData.quantity, fullTraining);
     if (calculatedTotal) {
       orderData.total_amount = calculatedTotal;
     }
 
-    const wantsAddMore = isAddMoreIntent(texto);
     const asksPriceNow = isPriceIntent(texto);
     const productsToAdd = wantsAddMore ? detectMultipleProducts(texto, fullTraining) : [];
     const hasProductsToAdd = productsToAdd.length > 0;
@@ -1752,10 +1685,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     let cartItems = isFreshProductSearch ? [] : getCartItems(oldOrder);
 
-    if (
-      product &&
-      (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")
-    ) {
+    if (product && (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")) {
       cartItems = cartItems.filter((i) => sameProduct(i.product, product));
     }
 
@@ -1768,21 +1698,50 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       orderData.total_amount = 0;
     }
 
-    if (wantsAddMore && hasProductsToAdd) {
-      for (const pToAdd of productsToAdd) {
-        if (!pToAdd || isInvalidCartProduct(pToAdd)) continue;
-        if (isShoeProductText(pToAdd) && orderData.shoe_size) continue;
+    // 🔥 CORREGIDO: Manejo de "agregar producto" - modo ADD, no REPLACE
+    if (wantsAddMore && (product || hasProductsToAdd)) {
+      console.log(`🔥 Procesando agregado de producto: product=${product}, hasProductsToAdd=${hasProductsToAdd}, productsToAdd=${JSON.stringify(productsToAdd)}`);
+      
+      // Si hay productos específicos detectados
+      if (hasProductsToAdd) {
+        for (const pToAdd of productsToAdd) {
+          if (!pToAdd || isInvalidCartProduct(pToAdd)) continue;
+          if (isShoeProductText(pToAdd) && orderData.shoe_size) continue;
 
-        const itemQty = 1;
-        const itemTotal = calculateTotal(pToAdd, itemQty, fullTraining) || 0;
-
-        cartItems = addOrReplaceCartItem(
-          cartItems,
-          pToAdd,
-          itemQty,
-          itemTotal,
-          "replace"
-        );
+          const itemQty = extracted.quantity > 0 ? extracted.quantity : 1;
+          const itemTotal = calculateTotal(pToAdd, itemQty, fullTraining);
+          
+          console.log(`🔥 Agregando producto: ${pToAdd}, cantidad: ${itemQty}, total: ${itemTotal}`);
+          
+          if (itemTotal) {
+            cartItems = addOrReplaceCartItem(
+              cartItems,
+              pToAdd,
+              itemQty,
+              itemTotal,
+              "add",  // 🔥 MODO ADD - suma al carrito existente
+              ""
+            );
+          }
+        }
+      } 
+      // Si hay un solo producto detectado
+      else if (product && !isInvalidCartProduct(product)) {
+        const itemQty = extracted.quantity > 0 ? extracted.quantity : 1;
+        const itemTotal = calculateTotal(product, itemQty, fullTraining);
+        
+        console.log(`🔥 Agregando producto único: ${product}, cantidad: ${itemQty}, total: ${itemTotal}`);
+        
+        if (itemTotal) {
+          cartItems = addOrReplaceCartItem(
+            cartItems,
+            product,
+            itemQty,
+            itemTotal,
+            "add",  // 🔥 MODO ADD - suma al carrito existente
+            ""
+          );
+        }
       }
 
       orderData.items = cartItems;
@@ -1790,6 +1749,8 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       orderData.quantity = cartTotalQuantity(cartItems);
       orderData.product = cartItems.map((i) => `${formatProductWithShoeSize(i.product, i.shoe_size)} x${i.quantity}`).join(" + ");
       product = cartItems[cartItems.length - 1]?.product || product;
+      
+      console.log(`🔥 Carrito después de agregar: ${JSON.stringify(cartItems)}`);
     }
 
     if (!hasProductsToAdd && wantsAddMore && product && !orderData.quantity) {
@@ -1805,10 +1766,8 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       !asksPriceNow &&
       (isBuyIntent(texto) || wantsAddMore || isPureQuantityReply || isPureShoeSizeReply || safeQuantity(extracted.quantity) > 0);
 
-    if (shouldTouchCart) {
-      const itemTotal =
-        calculateTotal(product, safeQuantity(orderData.quantity), fullTraining) ||
-        Number(orderData.total_amount || 0);
+    if (shouldTouchCart && !wantsAddMore) {
+      const itemTotal = calculateTotal(product, safeQuantity(orderData.quantity), fullTraining) || Number(orderData.total_amount || 0);
 
       cartItems = addOrReplaceCartItem(
         cartItems,
@@ -1826,9 +1785,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     }
 
     if (orderData.shoe_size) {
-      const preservedShoeProduct = isShoeProductText(orderData.product || "")
-        ? orderData.product
-        : getDefaultShoeProductName();
+      const preservedShoeProduct = isShoeProductText(orderData.product || "") ? orderData.product : getDefaultShoeProductName();
       const shoeQty = safeQuantity(orderData.quantity) || safeQuantity(oldOrder?.quantity) || 1;
       const shoeTotal = calculateTotal(preservedShoeProduct, shoeQty, fullTraining) || 159000 * shoeQty;
       orderData.product = preservedShoeProduct;
@@ -1838,9 +1795,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       orderData.items = [{ product: preservedShoeProduct, quantity: shoeQty, total: shoeTotal, shoe_size: orderData.shoe_size }];
     }
 
-    const finalTipoCobertura =
-      getTipoCobertura(orderData.city) || effectivePreviousTipoCobertura || "";
-
+    const finalTipoCobertura = getTipoCobertura(orderData.city) || effectivePreviousTipoCobertura || "";
     const step = nextStep(orderData, finalTipoCobertura);
 
     // Respuesta determinística para plantillas con calce
@@ -1877,25 +1832,11 @@ Tu pedido queda así:
 
     const wantsToBuy = isBuyIntent(texto);
     const asksPrice = isPriceIntent(texto);
-
-    const hasOrderData =
-      !!extracted.quantity ||
-      !!extracted.city ||
-      !!extracted.name ||
-      !!extracted.phone ||
-      !!extracted.address;
-
-    const shouldCollect =
-      !!orderData.product &&
-      (wantsToBuy ||
-        hasOrderData ||
-        effectivePreviousStep.startsWith("collecting") ||
-        effectivePreviousStep === "esperando_cantidad" ||
-        effectivePreviousStep === "waiting_payment_proof" ||
-        isPureQuantityReply);
-
+    const hasOrderData = !!extracted.quantity || !!extracted.city || !!extracted.name || !!extracted.phone || !!extracted.address;
+    const shouldCollect = !!orderData.product && (wantsToBuy || hasOrderData || effectivePreviousStep.startsWith("collecting") || effectivePreviousStep === "esperando_cantidad" || effectivePreviousStep === "waiting_payment_proof" || isPureQuantityReply);
     const isConfirming = step === "confirm_order" && wantsToBuy && !wantsAddMore;
 
+    // 🔥 Respuesta para agregado de producto - mostrar resumen actualizado
     if (wantsAddMore && (product || hasProductsToAdd) && orderData.items?.length) {
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
@@ -1914,12 +1855,7 @@ Tu pedido queda así:
       });
     }
 
-    if (
-      isPackReferenceText(texto) &&
-      orderData.quantity > 0 &&
-      orderData.product &&
-      (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")
-    ) {
+    if (isPackReferenceText(texto) && orderData.quantity > 0 && orderData.product && (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")) {
       const exactTotal = calculateTotal(orderData.product, 1, fullTraining);
       orderData.quantity = 1;
       if (exactTotal) orderData.total_amount = exactTotal;
@@ -1942,7 +1878,6 @@ Tu pedido queda así:
       });
     }
 
-    // 🔥 CORREGIDO: Respuesta determinística para cantidad pura con precio PROMO
     if (isPureQuantityReply && orderData.quantity > 0 && orderData.product && orderData.city) {
       const exactTotal = calculateTotal(orderData.product, orderData.quantity, fullTraining);
       if (exactTotal) orderData.total_amount = exactTotal;
@@ -1964,26 +1899,10 @@ Tu pedido queda así:
       });
     }
 
-    const invalidCustomerName =
-      !!orderData.customer_name &&
-      (
-        /\d/.test(orderData.customer_name) ||
-        normalize(orderData.customer_name).includes("unidad") ||
-        normalize(orderData.customer_name).includes("unidades")
-      );
+    const invalidCustomerName = !!orderData.customer_name && (/\d/.test(orderData.customer_name) || normalize(orderData.customer_name).includes("unidad") || normalize(orderData.customer_name).includes("unidades"));
+    if (invalidCustomerName) orderData.customer_name = "";
 
-    if (invalidCustomerName) {
-      orderData.customer_name = "";
-    }
-
-    if (
-      orderData.product &&
-      orderData.city &&
-      orderData.quantity &&
-      orderData.total_amount &&
-      !orderData.customer_name &&
-      step === "collecting_name"
-    ) {
+    if (orderData.product && orderData.city && orderData.quantity && orderData.total_amount && !orderData.customer_name && step === "collecting_name") {
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
       return res.json({
@@ -2000,10 +1919,7 @@ Ahora pasame tu nombre y apellido para agendar el pedido 🙏`,
           current_product: orderData.product || context?.current_product || null,
           step: "collecting_name",
           tipo_cobertura: finalTipoCobertura || null,
-          order_data: {
-            ...orderData,
-            customer_name: "",
-          },
+          order_data: { ...orderData, customer_name: "" },
           last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
           updated_at: new Date().toISOString(),
         },
@@ -2015,18 +1931,10 @@ Ahora pasame tu nombre y apellido para agendar el pedido 🙏`,
       await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
     }
 
-    const justAnsweredQuantity =
-      !!orderData.product &&
-      !!orderData.city &&
-      !!orderData.quantity &&
-      !!orderData.total_amount &&
-      (isPureQuantityReply || effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad") &&
-      step !== "confirm_order" &&
-      finalTipoCobertura !== "sin_cobertura";
+    const justAnsweredQuantity = !!orderData.product && !!orderData.city && !!orderData.quantity && !!orderData.total_amount && (isPureQuantityReply || effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad") && step !== "confirm_order" && finalTipoCobertura !== "sin_cobertura";
 
     if (justAnsweredQuantity) {
       const deterministicResponse = buildOrderSummaryResponse(orderData, finalTipoCobertura);
-
       const deterministicContext = {
         ...(context || {}),
         current_product: orderData.product || context?.current_product || null,
@@ -2092,7 +2000,7 @@ REGLAS TÉCNICAS (MUY IMPORTANTES):
 13. Catálogo: ${CATALOG_URL}
 14. Español paraguayo natural, con emojis.
 15. Pedro Juan Caballero / PJC es SIN COBERTURA.
-16. Si el cliente dice "también", "tambien", "agrega", "sumá", "y la", "y el", NO confirmes todavía: agregá el producto al carrito y mostrá el resumen completo.
+16. Si el cliente dice "también", "tambien", "agrega", "sumá", "y la", "y el", "mas", "más", NO confirmes todavía: agregá el producto al carrito y mostrá el resumen completo.
 17. Si hay varios productos, mostrá todos los items con subtotales y el total general.
 18. Nunca borres items anteriores salvo que el cliente pida cancelar o cambiar.
 19. Si el cliente inicia con otro producto nuevo y NO dice también/agrega/sumá, empezá pedido nuevo y no arrastres carrito viejo.
@@ -2100,20 +2008,20 @@ REGLAS TÉCNICAS (MUY IMPORTANTES):
 21. Si preguntaste "qué calce" o "qué talle" y el cliente responde solo "35", "36", "37", etc., eso es CALCE/TALLE, NO cantidad. Cantidad = 1.
 22. Si el cliente dice "QUIERO CALCE 37", "talle 42" o "número 39", ese número es CALCE/TALLE, no cantidad. La cantidad debe ser 1.
 23. Para "Veneno de Abeja" o "Crema de Abeja", la PROMO 2 unidades cuesta 249.900 Gs (NO 290.000 Gs).
+24. Cuando el cliente dice "ESE TAMBIEN AGREGAME 1" o "MAS EL VENENO DE ABEJA", debe AGREGAR ese producto al carrito existente, NO reemplazar.
 `.trim();
 
-    const contents = cleanHistory
-      .slice(-8)
-      .filter((h: any) => clean(h?.content))
-      .map((h: any) => ({
-        role: h.role === "assistant" ? "model" : "user",
-        parts: [{ text: clean(h.content) }],
-      }));
+    const contents = cleanHistory.slice(-8).filter((h: any) => clean(h?.content)).map((h: any) => ({
+      role: h.role === "assistant" ? "model" : "user",
+      parts: [{ text: clean(h.content) }],
+    }));
 
     const currentUserText = isPureShoeSizeReply
       ? `El cliente respondió EXACTAMENTE "${texto}" que es el CALCE/TALLE ${orderData.shoe_size}. NO es cantidad. La cantidad debe ser 1 par.`
       : isPureQuantityReply
       ? `El cliente respondió EXACTAMENTE "${texto}" que es la cantidad ${orderData.quantity}. NO es 11 ni ninguna otra concatenación. Usá ESA cantidad exacta.`
+      : wantsAddMore
+      ? `El cliente quiere AGREGAR más productos al carrito. Texto: "${texto}". Detecta el producto adicional y responde mostrando el resumen actualizado del carrito.`
       : texto;
 
     contents.push({
@@ -2144,34 +2052,20 @@ REGLAS TÉCNICAS (MUY IMPORTANTES):
     const newContext = {
       ...(context || {}),
       current_product: orderData.product || context?.current_product || null,
-      step:
-        shouldCollect
-          ? step
-          : effectivePreviousStep === "payment_verified"
-          ? "payment_verified"
-          : "selling",
+      step: shouldCollect ? step : effectivePreviousStep === "payment_verified" ? "payment_verified" : "selling",
       tipo_cobertura: finalTipoCobertura || null,
       order_data: orderData,
-      last_topic:
-        effectivePreviousStep === "payment_verified"
-          ? "payment_verified"
-          : step === "waiting_payment_proof"
-          ? "comprobante"
-          : orderData.product || context?.last_topic || "ENTRENAMIENTO",
+      last_topic: effectivePreviousStep === "payment_verified" ? "payment_verified" : step === "waiting_payment_proof" ? "comprobante" : orderData.product || context?.last_topic || "ENTRENAMIENTO",
       updated_at: new Date().toISOString(),
     };
 
     return res.json({
-      response:
-        response || `📋 Te invito a revisar nuestro catálogo:\n${CATALOG_URL}`,
+      response: response || `📋 Te invito a revisar nuestro catálogo:\n${CATALOG_URL}`,
       context: newContext,
       is_payment_proof: isPaymentProof,
     });
   } catch (error: any) {
     console.error("❌ chat-ia:", error);
-
-    return res.status(500).json({
-      error: error.message || "Error interno",
-    });
+    return res.status(500).json({ error: error.message || "Error interno" });
   }
 }
