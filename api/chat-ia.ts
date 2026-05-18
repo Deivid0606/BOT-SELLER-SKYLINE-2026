@@ -37,7 +37,6 @@ function isOnlyShoeVariantText(text: string): boolean {
   if (!n) return false;
   if (isShoeProductText(n)) return false;
 
-  // Bloquea basura como: "calce", "calce 37", "→ calce = 37", "quiero calce 37".
   return (
     /\b(calce|talle|numero|nro|num|medida)\b/.test(n) ||
     /^\d{2}$/.test(n)
@@ -57,7 +56,6 @@ function extractShoeSizeFromText(text: string): number {
   return value >= 20 && value <= 50 ? value : 0;
 }
 
-
 function isPackReferenceText(text: string): boolean {
   const n = normalize(text);
   return /\b(kit\s*x\s*4|kit\s+por\s+4|pack\s*x\s*4|pack\s+por\s+4|x\s*4|4\s*unidades\s*(incluidas|incluido)?|las\s*4\s*unidades)\b/.test(n);
@@ -69,7 +67,6 @@ function isInvalidProductCandidate(name: string): boolean {
   if (isOnlyShoeVariantText(name)) return true;
   if (/^(calce|talle|numero|nro|num|número|medida)$/.test(n)) return true;
 
-  // Nunca aceptar cantidades, ejemplos o líneas de variantes como producto.
   const invalidExact = [
     "1 unidad",
     "2 unidades",
@@ -96,8 +93,6 @@ function isInvalidProductCandidate(name: string): boolean {
   if (/^\d+\s*(unidad|unidades).*[\",].*\d+\s*(unidad|unidades)/.test(n)) return true;
   if (/^(si|sí|ok|dale|listo|quiero|confirmo|gracias)$/.test(n)) return true;
 
-  // Nunca aceptar ejemplos del entrenamiento como producto:
-  // “1 quiero”, “2 quiero”, “3 quiero”, “quiero calce”, etc.
   if (/^\d+\s*quiero$/.test(n)) return true;
   if (/^quiero\s*\d+$/.test(n)) return true;
   if (/\b\d+\s*quiero\b/.test(n)) return true;
@@ -109,7 +104,6 @@ function isInvalidProductCandidate(name: string): boolean {
   return false;
 }
 
-
 function isInvalidCartProduct(name: string): boolean {
   const raw = clean(name);
   const n = normalize(raw);
@@ -119,7 +113,6 @@ function isInvalidCartProduct(name: string): boolean {
   if (/^(calce|talle|numero|nro|num|número|medida)$/.test(n)) return true;
   if (n.length < 4) return true;
 
-  // Basura común que Gemini o el historial pueden convertir accidentalmente en producto.
   if (/^(cliente|nombre|contacto|telefono|teléfono|ubicacion|ubicación|direccion|dirección)\b/i.test(raw)) return true;
   if (/\b(quiero|cantidad|total|precio|delivery|envio|envío|pago al recibir|contra entrega)\b/.test(n)) return true;
   if (/^x\d+$/.test(n)) return true;
@@ -127,10 +120,8 @@ function isInvalidCartProduct(name: string): boolean {
   if (/^kit\s*x\s*4\s*unidades$/.test(n)) return true;
   if (/^pack\s*x\s*4\s*unidades$/.test(n)) return true;
 
-  // Ejemplos tipo “1 unidad”, “2 unidades”, “3 unidades” nunca son productos.
   if (/\d+\s*(unidad|unidades).*(\d+\s*(unidad|unidades))/.test(n)) return true;
 
-  // Nunca aceptar intenciones de compra como producto.
   if (/^\d+\s*quiero$/.test(n)) return true;
   if (/^quiero\s*\d+$/.test(n)) return true;
   if (/\b\d+\s*quiero\b/.test(n)) return true;
@@ -329,7 +320,6 @@ function detectMultipleProducts(text: string, training: string): string[] {
   const n = normalize(raw);
   const found: string[] = [];
 
-  // Detectores protegidos. Son más confiables que Gemini/entrenamiento para carrito múltiple.
   const fullMatch = canonicalProductFromText(raw);
   if (fullMatch) found.push(fullMatch);
 
@@ -428,12 +418,6 @@ function extractData(
   const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
   const isPackReference = isPackReferenceText(text);
 
-  // =====================================================
-  // CALCE / TALLE / NÚMERO DE ZAPATO
-  // =====================================================
-  // Ejemplos válidos:
-  // "QUIERO CALCE 37", "talle 42", "número 39", "nro 40".
-  // IMPORTANTE: esto NO es cantidad. Para plantillas se toma como 1 par.
   const shoeSizeMatch = norm.match(
     /\b(?:calce|talle|numero|nro|num|uso|calzo|soy|en|del|de|para)\s*(\d{2})\b/
   );
@@ -463,13 +447,10 @@ function extractData(
 
   let quantity = 0;
 
-  // Si el cliente pide o responde un calce/talle, la cantidad correcta es 1.
   if (isShoeSizeMessage) {
     quantity = 1;
   }
 
-  // "Kit x 4 unidades" describe el contenido del kit, NO significa cantidad 4.
-  // En Paraguay estos kits se venden como 1 kit completo.
   if (isPackReference) {
     quantity = 1;
   }
@@ -640,15 +621,10 @@ function safeQuantity(value: any): number {
   return n;
 }
 
-// FUNCIÓN CORREGIDA - EVITA CONCATENACIÓN DE CANTIDADES
 function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = false): any {
   const oldQuantity = safeQuantity(old?.quantity);
   const newQuantity = safeQuantity(ext?.quantity);
 
-  // CRÍTICO:
-  // - Nunca sumamos ni concatenamos cantidades.
-  // - Si viene una cantidad nueva válida, reemplaza a la anterior.
-  // - Si replaceQuantity está activo pero no vino cantidad nueva, conservamos la anterior.
   const finalQuantity =
     newQuantity > 0
       ? newQuantity
@@ -784,7 +760,6 @@ function calculateTotal(product: string, quantity: number, training: string): nu
 
   return null;
 }
-
 
 type CartItem = {
   product: string;
@@ -982,7 +957,6 @@ function nextStep(o: any, tipoCobertura?: string) {
   const items = getCartItems(o);
   if (!o.product && !items.length) return "selling";
   if (!o.city) return "collecting_city";
-  // Si hay un producto activo nuevo, su cantidad debe pedirse aunque ya existan otros items en carrito.
   if (o.product && !safeQuantity(o.quantity)) return "collecting_quantity";
   if (!safeQuantity(o.quantity) && !items.length) return "collecting_quantity";
 
@@ -1326,7 +1300,7 @@ async function transcribeAudioWithGemini({
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL CARRITO MULTIPLE + CANTIDAD 1 SOLUCIONADO");
+  console.log("🔥 VERSION CORREGIDA - PRODUCTO FIJO EN RESPUESTA DE CANTIDAD");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1392,7 +1366,6 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    // ========== BLOQUE PRINCIPAL CORREGIDO ==========
     const oldOrder = normalizeOrderWithItems(context?.order_data || {}, fullTraining);
     const previousStep = clean(context?.step);
     const previousTipoCobertura = clean(context?.tipo_cobertura);
@@ -1405,8 +1378,6 @@ export default async function handler(req: any, res: any) {
 
     const isOnlyNumber = /^\s*\d{1,3}\s*$/.test(texto);
 
-    // CRÍTICO: Si el bot preguntó cantidad y el cliente responde solo un número,
-    // ese número reemplaza cualquier cantidad previa. Nunca se concatena.
     const shoeSizeFromText = extractShoeSizeFromText(texto);
     const shoeProductContext = isShoeProductText(
       [oldOrder?.product, context?.current_product, context?.last_topic, lastAssistantMessage].filter(Boolean).join(" ")
@@ -1435,18 +1406,24 @@ export default async function handler(req: any, res: any) {
         previousStep === "esperando_cantidad"
       );
 
-    let product = detectProduct(
-      texto,
-      fullTraining,
-      context?.current_product || oldOrder?.product,
-      lastAssistantMessage
-    );
-
-    if (isPureShoeSizeReply) {
-      const preservedShoeProduct = oldOrder?.product || context?.current_product || getDefaultShoeProductName();
-      if (!product || isInvalidProductCandidate(product) || normalize(product) === "calce" || normalize(product) === "talle") {
-        product = preservedShoeProduct;
-      }
+    // 🔥 CORREGIDO: Si es respuesta de cantidad, PRESERVAR el producto del contexto
+    // No permitir que detectProduct() lo cambie por error a otro producto (ej: plantillas)
+    let product;
+    if (isPureQuantityReply && (context?.current_product || oldOrder?.product)) {
+      // Forzar producto anterior cuando el cliente solo responde un número (cantidad)
+      product = context?.current_product || oldOrder?.product;
+      console.log(`🔥 Cantidad reply - Producto forzado: ${product}`);
+    } else if (isPureShoeSizeReply && (context?.current_product || oldOrder?.product)) {
+      // Forzar producto anterior cuando el cliente responde calce
+      product = context?.current_product || oldOrder?.product;
+      console.log(`🔥 Calce reply - Producto forzado: ${product}`);
+    } else {
+      product = detectProduct(
+        texto,
+        fullTraining,
+        context?.current_product || oldOrder?.product,
+        lastAssistantMessage
+      );
     }
 
     let extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
@@ -1464,7 +1441,9 @@ export default async function handler(req: any, res: any) {
       extracted.quantity = exactQuantity;
       extracted.name = "";
       extracted.address = "";
-      console.log(`✅ Cantidad exacta detectada: ${exactQuantity}`);
+      // 🔥 CORREGIDO: Mantener producto forzado
+      product = context?.current_product || oldOrder?.product || product;
+      console.log(`✅ Cantidad exacta detectada: ${exactQuantity} para producto: ${product}`);
     }
 
     // FORZAR calce exacto si el bot preguntó calce y el cliente respondió solo un número.
@@ -1474,8 +1453,9 @@ export default async function handler(req: any, res: any) {
       extracted.shoe_size = exactShoeSize;
       extracted.name = "";
       extracted.address = "";
-      product = oldOrder?.product || context?.current_product || product;
-      console.log(`✅ Calce exacto detectado: ${exactShoeSize}`);
+      // 🔥 CORREGIDO: Mantener producto forzado
+      product = context?.current_product || oldOrder?.product || product;
+      console.log(`✅ Calce exacto detectado: ${exactShoeSize} para producto: ${product}`);
     }
 
     const productChangedBeforeMedia =
@@ -1483,7 +1463,6 @@ export default async function handler(req: any, res: any) {
       !!oldOrder?.product &&
       !sameProduct(product, oldOrder.product);
 
-    // No vaciamos el pedido si cambia el producto: preservamos items[] para carrito múltiple.
     const baseOrderBeforeMedia = oldOrder;
 
     let orderData = mergeOrderData(
@@ -1499,8 +1478,8 @@ export default async function handler(req: any, res: any) {
     const isWaitingPaymentProof =
       tipoCobertura === "sin_cobertura" &&
       previousStep === "waiting_payment_proof";
-    // ========== FIN BLOQUE PRINCIPAL CORREGIDO ==========
 
+    // ========== PROCESAMIENTO DE MEDIA (IMAGEN/AUDIO) ==========
     if (mediaUrl && mediaType === "image") {
       const fetched = await fetchMediaAsBase64(mediaUrl);
 
@@ -1654,13 +1633,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     if (!texto) texto = "(mensaje sin texto)";
 
-    if (isPureShoeSizeReply) {
-      const preservedShoeProduct = oldOrder?.product || context?.current_product || getDefaultShoeProductName();
-      if (!product || isInvalidProductCandidate(product) || normalize(product) === "calce" || normalize(product) === "talle") {
-        product = preservedShoeProduct;
-      }
-    }
-
+    // Re-ejecutar extracción después de posible procesamiento de media
     extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
 
     if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
@@ -1673,29 +1646,28 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     if (isPureQuantityReply) {
       const exactQuantity = Number(String(message).trim());
       extracted.quantity = exactQuantity;
-      console.log(`✅ Reforzando cantidad exacta: ${exactQuantity}`);
+      // 🔥 CORREGIDO: Reforzar producto forzado
+      product = context?.current_product || oldOrder?.product || product;
+      console.log(`✅ Reforzando cantidad exacta: ${exactQuantity} para producto: ${product}`);
     }
 
     if (isPureShoeSizeReply) {
       const exactShoeSize = shoeSizeFromText;
       extracted.quantity = 1;
       extracted.shoe_size = exactShoeSize;
-      product = oldOrder?.product || context?.current_product || product;
-      console.log(`✅ Reforzando calce exacto: ${exactShoeSize}`);
+      // 🔥 CORREGIDO: Reforzar producto forzado
+      product = context?.current_product || oldOrder?.product || product;
+      console.log(`✅ Reforzando calce exacto: ${exactShoeSize} para producto: ${product}`);
     }
 
-    product = detectProduct(
-      texto,
-      fullTraining,
-      product || context?.current_product || oldOrder?.product,
-      lastAssistantMessage
-    );
-
-    if (isPureShoeSizeReply) {
-      const preservedShoeProduct = oldOrder?.product || context?.current_product || getDefaultShoeProductName();
-      if (!product || isInvalidProductCandidate(product) || normalize(product) === "calce" || normalize(product) === "talle") {
-        product = preservedShoeProduct;
-      }
+    // Solo volver a detectar si NO es quantity reply ni shoe size reply
+    if (!isPureQuantityReply && !isPureShoeSizeReply) {
+      product = detectProduct(
+        texto,
+        fullTraining,
+        product || context?.current_product || oldOrder?.product,
+        lastAssistantMessage
+      );
     }
 
     if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
@@ -1707,7 +1679,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       !!oldOrder?.product &&
       !sameProduct(product, oldOrder.product);
 
-    // No vaciamos el pedido si cambia el producto: preservamos items[] para carrito múltiple.
     const baseOrder = oldOrder;
     const effectivePreviousStep = previousStep;
     const effectivePreviousTipoCobertura = previousTipoCobertura;
@@ -1719,8 +1690,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       isPureQuantityReply || safeQuantity(extracted.quantity) > 0
     );
 
-    // Si el cliente cambió a otro producto pero todavía no dijo cantidad,
-    // NO heredamos la cantidad del producto anterior.
     if (productChanged && !safeQuantity(extracted.quantity)) {
       orderData.quantity = 0;
       orderData.total_amount = 0;
@@ -1728,11 +1697,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     orderData.quantity = safeQuantity(orderData.quantity);
 
-    // =====================================================
-    // BLOQUEO FINAL PARA PLANTILLAS / CALCE
-    // Si existe calce, el producto NO puede ser "calce" ni una promo de otro producto.
-    // Se fuerza Plantillas + cantidad 1 + precio 159.000 Gs.
-    // =====================================================
+    // BLOQUEO PARA PLANTILLAS / CALCE
     if (orderData.shoe_size) {
       const preservedShoeProduct = isShoeProductText(oldOrder?.product || "")
         ? oldOrder.product
@@ -1776,8 +1741,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     const productsToAdd = wantsAddMore ? detectMultipleProducts(texto, fullTraining) : [];
     const hasProductsToAdd = productsToAdd.length > 0;
 
-    // Si el cliente inicia una consulta/pedido de producto nuevo, NO arrastramos carrito viejo.
-    // Esto evita casos como: soporte para lavarropas → aparece tabla/veneno/cliente viejo.
     const isFreshProductSearch =
       !!product &&
       !wantsAddMore &&
@@ -1789,8 +1752,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     let cartItems = isFreshProductSearch ? [] : getCartItems(oldOrder);
 
-    // Si estamos esperando cantidad de un producto activo, mantenemos solo ese producto.
-    // Esto limpia carritos contaminados que ya venían del contexto anterior.
     if (
       product &&
       (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")
@@ -1807,8 +1768,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       orderData.total_amount = 0;
     }
 
-    // Carrito múltiple: si el cliente dice "también X y Y", agregamos TODOS los productos detectados.
-    // No reemplaza Plantillas ni productos anteriores. Cada producto nuevo entra con cantidad 1.
     if (wantsAddMore && hasProductsToAdd) {
       for (const pToAdd of productsToAdd) {
         if (!pToAdd || isInvalidCartProduct(pToAdd)) continue;
@@ -1833,14 +1792,12 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       product = cartItems[cartItems.length - 1]?.product || product;
     }
 
-    // Si el cliente dice "también la tabla" y no especifica cantidad, asumimos 1 unidad.
     if (!hasProductsToAdd && wantsAddMore && product && !orderData.quantity) {
       orderData.quantity = 1;
       const totalForOne = calculateTotal(product, 1, fullTraining);
       if (totalForOne) orderData.total_amount = totalForOne;
     }
 
-    // Actualizamos el carrito solo cuando hay compra/cantidad/agregado, no cuando solo pregunta precio.
     const shouldTouchCart =
       !!product &&
       !hasProductsToAdd &&
@@ -1868,7 +1825,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       orderData.total_amount = cartGrandTotal(cartItems);
     }
 
-    // Reforzar nuevamente antes de responder/guardar: Plantillas con calce siempre vale 159.000.
     if (orderData.shoe_size) {
       const preservedShoeProduct = isShoeProductText(orderData.product || "")
         ? orderData.product
@@ -1887,8 +1843,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     const step = nextStep(orderData, finalTipoCobertura);
 
-    // Respuesta determinística para plantillas cuando el cliente dice: "QUIERO CALCE 37".
-    // Evita que Gemini interprete 37 como cantidad.
+    // Respuesta determinística para plantillas con calce
     if (orderData.shoe_size && orderData.product && orderData.quantity === 1 && !orderData.city) {
       const totalForShoe = calculateTotal(orderData.product, 1, fullTraining);
       if (totalForShoe) orderData.total_amount = totalForShoe;
@@ -1941,7 +1896,6 @@ Tu pedido queda así:
 
     const isConfirming = step === "confirm_order" && wantsToBuy && !wantsAddMore;
 
-    // Respuesta determinística para agregar otro producto al carrito.
     if (wantsAddMore && (product || hasProductsToAdd) && orderData.items?.length) {
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
@@ -1960,8 +1914,6 @@ Tu pedido queda así:
       });
     }
 
-    // Respuesta determinística para productos que ya vienen como KIT/PACK x4.
-    // "Kit x 4 unidades" significa 1 kit, no 4 kits.
     if (
       isPackReferenceText(texto) &&
       orderData.quantity > 0 &&
@@ -1990,8 +1942,7 @@ Tu pedido queda así:
       });
     }
 
-    // Seguridad extra: si justo respondió cantidad, nunca dejamos que Gemini arme la cantidad.
-    // Devolvemos una respuesta determinística con la cantidad exacta.
+    // 🔥 CORREGIDO: Respuesta determinística para cantidad pura con precio PROMO
     if (isPureQuantityReply && orderData.quantity > 0 && orderData.product && orderData.city) {
       const exactTotal = calculateTotal(orderData.product, orderData.quantity, fullTraining);
       if (exactTotal) orderData.total_amount = exactTotal;
@@ -2013,7 +1964,6 @@ Tu pedido queda así:
       });
     }
 
-    // Limpiar nombre inválido
     const invalidCustomerName =
       !!orderData.customer_name &&
       (
@@ -2026,7 +1976,6 @@ Tu pedido queda así:
       orderData.customer_name = "";
     }
 
-    // Respuesta temprana si falta nombre
     if (
       orderData.product &&
       orderData.city &&
@@ -2149,7 +2098,8 @@ REGLAS TÉCNICAS (MUY IMPORTANTES):
 19. Si el cliente inicia con otro producto nuevo y NO dice también/agrega/sumá, empezá pedido nuevo y no arrastres carrito viejo.
 20. Si el cliente responde "Kit x 4 unidades", "x4" o "las 4 unidades", significa 1 kit, no 4 kits.
 21. Si preguntaste "qué calce" o "qué talle" y el cliente responde solo "35", "36", "37", etc., eso es CALCE/TALLE, NO cantidad. Cantidad = 1.
-21. Si el cliente dice "QUIERO CALCE 37", "talle 42" o "número 39", ese número es CALCE/TALLE, no cantidad. La cantidad debe ser 1.
+22. Si el cliente dice "QUIERO CALCE 37", "talle 42" o "número 39", ese número es CALCE/TALLE, no cantidad. La cantidad debe ser 1.
+23. Para "Veneno de Abeja" o "Crema de Abeja", la PROMO 2 unidades cuesta 249.900 Gs (NO 290.000 Gs).
 `.trim();
 
     const contents = cleanHistory
