@@ -19,6 +19,28 @@ const normalize = (t: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
+function isShoeProductText(text: string): boolean {
+  const n = normalize(text);
+  return /\b(plantilla|plantillas|ortopiex|ortoflex|5d)\b/.test(n);
+}
+
+function productRequiresSize(product: string): boolean {
+  return isShoeProductText(product);
+}
+
+function extractShoeSizeFromText(text: string): number {
+  const n = normalize(text);
+
+  const explicit = n.match(
+    /\b(?:calce|talle|numero|nro|num|uso|calzo|soy|en|del|de|para)\s*(\d{2})\b/
+  );
+
+  const plain = n.match(/^\s*(\d{2})\s*$/);
+  const value = explicit ? Number(explicit[1]) : plain ? Number(plain[1]) : 0;
+
+  return value >= 20 && value <= 50 ? value : 0;
+}
+
 
 function isPackReferenceText(text: string): boolean {
   const n = normalize(text);
@@ -49,6 +71,16 @@ function isInvalidProductCandidate(name: string): boolean {
   if (/^\d+\s*(unidad|unidades).*[\",].*\d+\s*(unidad|unidades)/.test(n)) return true;
   if (/^(si|sí|ok|dale|listo|quiero|confirmo|gracias)$/.test(n)) return true;
 
+  // Nunca aceptar ejemplos del entrenamiento como producto:
+  // “1 quiero”, “2 quiero”, “3 quiero”, “quiero calce”, etc.
+  if (/^\d+\s*quiero$/.test(n)) return true;
+  if (/^quiero\s*\d+$/.test(n)) return true;
+  if (/\b\d+\s*quiero\b/.test(n)) return true;
+  if (/\bquiero\s*\d+\b/.test(n)) return true;
+  if (/\bquiero\s*(calce|talle|numero|nro|num)\b/.test(n)) return true;
+  if (/^\d+\s*(quiero|llevo|dame|mandame)/.test(n)) return true;
+  if ((n.match(/\bquiero\b/g) || []).length >= 2) return true;
+
   return false;
 }
 
@@ -70,6 +102,13 @@ function isInvalidCartProduct(name: string): boolean {
 
   // Ejemplos tipo “1 unidad”, “2 unidades”, “3 unidades” nunca son productos.
   if (/\d+\s*(unidad|unidades).*(\d+\s*(unidad|unidades))/.test(n)) return true;
+
+  // Nunca aceptar intenciones de compra como producto.
+  if (/^\d+\s*quiero$/.test(n)) return true;
+  if (/^quiero\s*\d+$/.test(n)) return true;
+  if (/\b\d+\s*quiero\b/.test(n)) return true;
+  if (/\bquiero\s*\d+\b/.test(n)) return true;
+  if (/^\d+\s*(quiero|llevo|dame|mandame)/.test(n)) return true;
 
   return false;
 }
@@ -297,7 +336,7 @@ function extractData(
   // "QUIERO CALCE 37", "talle 42", "número 39", "nro 40".
   // IMPORTANTE: esto NO es cantidad. Para plantillas se toma como 1 par.
   const shoeSizeMatch = norm.match(
-    /\b(?:calce|talle|numero|nro|num)\s*(\d{2})\b/
+    /\b(?:calce|talle|numero|nro|num|uso|calzo|soy|en|del|de|para)\s*(\d{2})\b/
   );
 
   const explicitShoeSize = shoeSizeMatch ? Number(shoeSizeMatch[1]) : 0;
@@ -1262,16 +1301,21 @@ export default async function handler(req: any, res: any) {
 
     // CRÍTICO: Si el bot preguntó cantidad y el cliente responde solo un número,
     // ese número reemplaza cualquier cantidad previa. Nunca se concatena.
+    const shoeSizeFromText = extractShoeSizeFromText(texto);
+    const shoeProductContext = isShoeProductText(
+      [oldOrder?.product, context?.current_product, context?.last_topic, lastAssistantMessage].filter(Boolean).join(" ")
+    );
+
     const isPureShoeSizeReply =
-      /^\s*\d{2}\s*$/.test(texto) &&
-      Number(texto.trim()) >= 20 &&
-      Number(texto.trim()) <= 50 &&
-      !!(oldOrder?.product || context?.current_product) &&
+      shoeSizeFromText > 0 &&
+      !!(oldOrder?.product || context?.current_product || shoeProductContext) &&
       (
         wasAskingShoeSize ||
         previousStep === "collecting_shoe_size" ||
         previousStep === "esperando_calce" ||
-        previousStep === "collecting_calce"
+        previousStep === "collecting_calce" ||
+        shoeProductContext ||
+        productRequiresSize(String(oldOrder?.product || context?.current_product || ""))
       );
 
     const isPureQuantityReply =
@@ -1291,6 +1335,10 @@ export default async function handler(req: any, res: any) {
       context?.current_product || oldOrder?.product,
       lastAssistantMessage
     );
+
+    if (isPureShoeSizeReply && (!product || isInvalidProductCandidate(product))) {
+      product = oldOrder?.product || context?.current_product || "PLANTILLAS ORTOPIEX 5D®";
+    }
 
     let extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
 
@@ -1312,7 +1360,7 @@ export default async function handler(req: any, res: any) {
 
     // FORZAR calce exacto si el bot preguntó calce y el cliente respondió solo un número.
     if (isPureShoeSizeReply) {
-      const exactShoeSize = Number(texto.trim());
+      const exactShoeSize = shoeSizeFromText;
       extracted.quantity = 1;
       extracted.shoe_size = exactShoeSize;
       extracted.name = "";
@@ -1497,6 +1545,10 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     if (!texto) texto = "(mensaje sin texto)";
 
+    if (isPureShoeSizeReply && (!product || isInvalidProductCandidate(product))) {
+      product = oldOrder?.product || context?.current_product || "PLANTILLAS ORTOPIEX 5D®";
+    }
+
     extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
 
     if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
@@ -1513,7 +1565,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     }
 
     if (isPureShoeSizeReply) {
-      const exactShoeSize = Number(String(message).trim());
+      const exactShoeSize = shoeSizeFromText;
       extracted.quantity = 1;
       extracted.shoe_size = exactShoeSize;
       product = oldOrder?.product || context?.current_product || product;
@@ -1526,6 +1578,10 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       product || context?.current_product || oldOrder?.product,
       lastAssistantMessage
     );
+
+    if (isPureShoeSizeReply && (!product || isInvalidProductCandidate(product))) {
+      product = oldOrder?.product || context?.current_product || "PLANTILLAS ORTOPIEX 5D®";
+    }
 
     if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
       product = oldOrder?.product || context?.current_product || product;
