@@ -50,6 +50,7 @@ function isPackReferenceText(text: string): boolean {
 function isInvalidProductCandidate(name: string): boolean {
   const n = normalize(name);
   if (!n) return true;
+  if (/^(calce|talle|numero|nro|num|número|medida)$/.test(n)) return true;
 
   // Nunca aceptar cantidades, ejemplos o líneas de variantes como producto.
   const invalidExact = [
@@ -64,6 +65,13 @@ function isInvalidProductCandidate(name: string): boolean {
     "total",
     "envio gratis",
     "pago al recibir",
+    "calce",
+    "talle",
+    "numero",
+    "nro",
+    "num",
+    "número",
+    "medida",
   ];
 
   if (invalidExact.includes(n)) return true;
@@ -90,6 +98,7 @@ function isInvalidCartProduct(name: string): boolean {
   const n = normalize(raw);
 
   if (!n) return true;
+  if (/^(calce|talle|numero|nro|num|número|medida)$/.test(n)) return true;
   if (n.length < 4) return true;
 
   // Basura común que Gemini o el historial pueden convertir accidentalmente en producto.
@@ -814,7 +823,7 @@ function buildCartSummaryResponse(order: any, tipoCobertura: string) {
 
   const lines = items.length
     ? buildItemsLines(items)
-    : `📦 ${order.product}\n🔢 Cantidad: ${order.quantity}`;
+    : `📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}\n🔢 Cantidad: ${order.quantity}`;
 
   return `🔥 Perfecto 😊
 
@@ -1336,8 +1345,11 @@ export default async function handler(req: any, res: any) {
       lastAssistantMessage
     );
 
-    if (isPureShoeSizeReply && (!product || isInvalidProductCandidate(product))) {
-      product = oldOrder?.product || context?.current_product || "PLANTILLAS ORTOPIEX 5D®";
+    if (isPureShoeSizeReply) {
+      const preservedShoeProduct = oldOrder?.product || context?.current_product || "PLANTILLAS ORTOPIEX 5D®";
+      if (!product || isInvalidProductCandidate(product) || normalize(product) === "calce" || normalize(product) === "talle") {
+        product = preservedShoeProduct;
+      }
     }
 
     let extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
@@ -1545,8 +1557,11 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     if (!texto) texto = "(mensaje sin texto)";
 
-    if (isPureShoeSizeReply && (!product || isInvalidProductCandidate(product))) {
-      product = oldOrder?.product || context?.current_product || "PLANTILLAS ORTOPIEX 5D®";
+    if (isPureShoeSizeReply) {
+      const preservedShoeProduct = oldOrder?.product || context?.current_product || "PLANTILLAS ORTOPIEX 5D®";
+      if (!product || isInvalidProductCandidate(product) || normalize(product) === "calce" || normalize(product) === "talle") {
+        product = preservedShoeProduct;
+      }
     }
 
     extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
@@ -1579,8 +1594,11 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       lastAssistantMessage
     );
 
-    if (isPureShoeSizeReply && (!product || isInvalidProductCandidate(product))) {
-      product = oldOrder?.product || context?.current_product || "PLANTILLAS ORTOPIEX 5D®";
+    if (isPureShoeSizeReply) {
+      const preservedShoeProduct = oldOrder?.product || context?.current_product || "PLANTILLAS ORTOPIEX 5D®";
+      if (!product || isInvalidProductCandidate(product) || normalize(product) === "calce" || normalize(product) === "talle") {
+        product = preservedShoeProduct;
+      }
     }
 
     if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
