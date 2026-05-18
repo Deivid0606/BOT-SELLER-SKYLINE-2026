@@ -267,7 +267,25 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
   const isPackReference = isPackReferenceText(text);
 
+  // =====================================================
+  // CALCE / TALLE / NÚMERO DE ZAPATO
+  // =====================================================
+  // Ejemplos válidos:
+  // "QUIERO CALCE 37", "talle 42", "número 39", "nro 40".
+  // IMPORTANTE: esto NO es cantidad. Para plantillas se toma como 1 par.
+  const shoeSizeMatch = norm.match(
+    /\b(?:calce|talle|numero|nro|num)\s*(\d{2})\b/
+  );
+
+  const shoe_size = shoeSizeMatch ? Number(shoeSizeMatch[1]) : 0;
+  const isShoeSizeMessage = shoe_size >= 20 && shoe_size <= 50;
+
   let quantity = 0;
+
+  // Si el cliente pide un calce/talle, la cantidad correcta es 1.
+  if (isShoeSizeMessage) {
+    quantity = 1;
+  }
 
   // "Kit x 4 unidades" describe el contenido del kit, NO significa cantidad 4.
   // En Paraguay estos kits se venden como 1 kit completo.
@@ -276,9 +294,12 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   }
 
   if (
-    forceQuantityMode ||
-    currentStep === "collecting_quantity" ||
-    currentStep === "esperando_cantidad"
+    !isShoeSizeMessage &&
+    (
+      forceQuantityMode ||
+      currentStep === "collecting_quantity" ||
+      currentStep === "esperando_cantidad"
+    )
   ) {
     const onlyNumber = norm.match(/^\s*(\d{1,3})\s*$/);
     if (onlyNumber) {
@@ -287,13 +308,14 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     }
   }
 
-  if (!quantity) {
+  if (!quantity && !isShoeSizeMessage) {
     const q1 = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
     if (q1) quantity = Number(q1[1]);
   }
 
   if (
     !quantity &&
+    !isShoeSizeMessage &&
     /\b(uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/.test(norm)
   ) {
     const words: Record<string, number> = {
@@ -318,7 +340,7 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     }
   }
 
-  if (!quantity) {
+  if (!quantity && !isShoeSizeMessage) {
     const looksLikeQuantity =
       /\b(quiero|llevo|mandame|dame|solo|solamente|nomas|nomás|unidad|unidades|u)\b/.test(norm);
 
@@ -389,7 +411,11 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     norm.includes("ubicacion") ||
     norm.includes("ubicación") ||
     norm.includes("direccion") ||
-    norm.includes("dirección");
+    norm.includes("dirección") ||
+    norm.includes("calce") ||
+    norm.includes("talle") ||
+    norm.includes("numero") ||
+    norm.includes("nro");
 
   const nameMatch = text.match(
     /(?:soy|me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i
@@ -411,6 +437,7 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
 
   return {
     quantity,
+    shoe_size: isShoeSizeMessage ? shoe_size : "",
     city,
     name,
     phone,
@@ -450,6 +477,7 @@ function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = f
   return {
     product: product || old?.product || "",
     quantity: finalQuantity,
+    shoe_size: ext.shoe_size || old?.shoe_size || "",
     city: ext.city || old?.city || "",
     customer_name: ext.name || old?.customer_name || "",
     phone: ext.phone || old?.phone || "",
@@ -461,6 +489,20 @@ function formatGs(amount: any): string {
   const n = Number(amount || 0);
   if (!n) return "0";
   return n.toLocaleString("de-DE");
+}
+
+function formatProductWithShoeSize(product: string, shoeSize?: any): string {
+  const size = String(shoeSize || "").trim();
+  if (!size) return clean(product);
+
+  const p = clean(product);
+  const n = normalize(p);
+
+  if (n.includes("plantilla") || n.includes("ortopiex") || n.includes("ortoflex")) {
+    return `${p} - Calce ${size}`;
+  }
+
+  return p;
 }
 
 function parseGsAmount(text: string): number {
@@ -667,6 +709,7 @@ function normalizeOrderWithItems(order: any, training: string): any {
     ...(order || {}),
     items,
     product: order?.product || items[items.length - 1]?.product || summaryProduct || "",
+    shoe_size: order?.shoe_size || "",
     quantity: order?.quantity ? safeQuantity(order.quantity) : qty,
     total_amount: total || Number(order?.total_amount || 0),
   };
@@ -729,7 +772,7 @@ function buildOrderSummaryResponse(order: any, tipoCobertura: string) {
 
 Tu pedido queda así:
 
-📦 ${order.product}
+📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}
 🔢 Cantidad: ${order.quantity}
 💰 Total: ${formatGs(total)} Gs
 
@@ -819,8 +862,8 @@ async function safeUpsertOrder(
       user_id: userId,
       from_number: from,
       phone: order.phone || from,
-      product: orderItems.length > 1 ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ") : order.product || orderItems[0]?.product || null,
-      producto: orderItems.length > 1 ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ") : order.product || orderItems[0]?.product || null,
+      product: orderItems.length > 1 ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ") : formatProductWithShoeSize(order.product || orderItems[0]?.product || "", order.shoe_size) || null,
+      producto: orderItems.length > 1 ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ") : formatProductWithShoeSize(order.product || orderItems[0]?.product || "", order.shoe_size) || null,
       customer_name: order.customer_name || null,
       city: order.city || null,
       ciudad: order.city || null,
@@ -1523,6 +1566,39 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
 
     const step = nextStep(orderData, finalTipoCobertura);
 
+    // Respuesta determinística para plantillas cuando el cliente dice: "QUIERO CALCE 37".
+    // Evita que Gemini interprete 37 como cantidad.
+    if (orderData.shoe_size && orderData.product && orderData.quantity === 1 && !orderData.city) {
+      const totalForShoe = calculateTotal(orderData.product, 1, fullTraining);
+      if (totalForShoe) orderData.total_amount = totalForShoe;
+
+      await safeUpsertOrder(user_id, fromNumber, orderData, false);
+
+      return res.json({
+        response: `🔥 Perfecto 😊
+
+Tu pedido queda así:
+
+📦 ${formatProductWithShoeSize(orderData.product, orderData.shoe_size)}
+🔢 Cantidad: 1
+💰 Total: ${formatGs(orderData.total_amount)} Gs
+
+🚚 Envío GRATIS
+
+¿Para qué ciudad sería el envío?`,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || context?.current_product || null,
+          step: "collecting_city",
+          tipo_cobertura: finalTipoCobertura || null,
+          order_data: orderData,
+          last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
     const wantsToBuy = isBuyIntent(texto);
     const asksPrice = isPriceIntent(texto);
 
@@ -1643,7 +1719,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       return res.json({
         response: `Perfecto 😊 ya tengo:
 
-📦 ${orderData.product}
+📦 ${formatProductWithShoeSize(orderData.product, orderData.shoe_size)}
 🔢 Cantidad: ${orderData.quantity}
 📍 Ciudad: ${orderData.city}
 💰 Total: ${formatGs(orderData.total_amount)} Gs
@@ -1715,6 +1791,7 @@ ${fullTraining}
 ESTADO ACTUAL DEL CLIENTE:
 - Producto activo: ${orderData.product || "ninguno"}
 - Cantidad producto activo: ${orderData.quantity || "pendiente"}
+- Calce/talle: ${orderData.shoe_size || "pendiente"}
 - Carrito: ${getCartItems(orderData).length ? buildItemsLines(getCartItems(orderData)) : "vacío"}
 - Total calculado: ${orderData.total_amount ? formatGs(orderData.total_amount) + " Gs" : "pendiente"}
 - Ciudad: ${orderData.city || "pendiente"}
@@ -1750,6 +1827,7 @@ REGLAS TÉCNICAS (MUY IMPORTANTES):
 18. Nunca borres items anteriores salvo que el cliente pida cancelar o cambiar.
 19. Si el cliente inicia con otro producto nuevo y NO dice también/agrega/sumá, empezá pedido nuevo y no arrastres carrito viejo.
 20. Si el cliente responde "Kit x 4 unidades", "x4" o "las 4 unidades", significa 1 kit, no 4 kits.
+21. Si el cliente dice "QUIERO CALCE 37", "talle 42" o "número 39", ese número es CALCE/TALLE, no cantidad. La cantidad debe ser 1.
 `.trim();
 
     const contents = cleanHistory
