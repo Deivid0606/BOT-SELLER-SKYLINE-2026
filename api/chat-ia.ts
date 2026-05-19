@@ -376,13 +376,94 @@ function isPriceIntent(text: string) {
   );
 }
 
-function isBuyIntent(text: string) {
-  const m = normalize(text);
-  return (
-    /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo|mandame|dame)\b/.test(m) ||
-    /\b\d+\s*(unidad|unidades|u)\b/.test(m) ||
-    /^\d+$/.test(m)
+function isCasualReply(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  const casualExact = [
+    "gracias",
+    "muchas gracias",
+    "ok gracias",
+    "bueno gracias",
+    "muy lindo",
+    "lindo",
+    "hermoso",
+    "hermosa",
+    "que lindo",
+    "que hermoso",
+    "esta lindo",
+    "esta muy lindo",
+    "me gusta",
+    "genial",
+    "excelente",
+    "buenisimo",
+    "buenísimo",
+    "perfecto gracias",
+    "dale gracias",
+  ];
+
+  if (casualExact.includes(n)) return true;
+
+  const onlyThanksOrCompliment =
+    /^(gracias|muchas gracias|muy lindo|lindo|hermoso|hermosa|genial|excelente|buenisimo|buenísimo)(\s+[a-záéíóúñ]+){0,2}$/.test(n);
+
+  return onlyThanksOrCompliment &&
+    !/\b(quiero|llevo|compro|comprar|agendar|reservar|mandame|dame|unidad|unidades|direccion|dirección|ubicacion|ubicación|telefono|teléfono|celular|calle|casa|barrio)\b/.test(n);
+}
+
+function hasFullCustomerName(name: any): boolean {
+  const raw = clean(name);
+  const n = normalize(raw);
+  if (!raw || isCasualReply(raw)) return false;
+  if (/\d/.test(raw)) return false;
+  if (/\b(gracias|lindo|hermoso|ok|dale|listo|si|sí|quiero|precio|delivery|envio|envío|direccion|dirección|ubicacion|ubicación|telefono|teléfono|celular)\b/.test(n)) return false;
+
+  const words = raw
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => /^[a-zA-ZÁÉÍÓÚáéíóúÑñ]{2,}$/.test(w));
+
+  return words.length >= 2;
+}
+
+function hasMinimumOrderDataToPersist(order: any): boolean {
+  const items = getCartItems(order);
+  return !!(
+    (order?.product || items.length) &&
+    (safeQuantity(order?.quantity) > 0 || items.length) &&
+    Number(order?.total_amount || cartGrandTotal(items) || 0) > 0
   );
+}
+
+function hasRealCustomerData(order: any, tipoCobertura?: string): boolean {
+  if (!hasMinimumOrderDataToPersist(order)) return false;
+  if (!order?.city) return false;
+  if (!hasFullCustomerName(order?.customer_name)) return false;
+  if (!order?.phone) return false;
+
+  if (tipoCobertura === "sin_cobertura") return true;
+
+  return !!clean(order?.address);
+}
+
+function isBuyIntent(text: string) {
+  if (isCasualReply(text)) return false;
+
+  const m = normalize(text);
+
+  // Palabras suaves como "ok", "dale" o "listo" solo cuentan como compra
+  // si vienen con una señal real de pedido. Así evitamos ventas falsas.
+  const strongBuyIntent =
+    /\b(quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|mandame|dame)\b/.test(m);
+
+  const quantityIntent =
+    /\b\d+\s*(unidad|unidades|u)\b/.test(m) ||
+    /\b(una|uno|dos|tres|cuatro|cinco)\s*(unidad|unidades)?\b/.test(m);
+
+  const shortConfirmation =
+    /^(si|sí|ok|dale|listo)$/.test(m);
+
+  return strongBuyIntent || quantityIntent || shortConfirmation || /^\d+$/.test(m);
 }
 
 function getLastAssistantMessage(history: any[]) {
@@ -581,6 +662,7 @@ function extractData(
   let name = "";
 
   const invalidName =
+    isCasualReply(text) ||
     /\d/.test(text) ||
     norm.includes("unidad") ||
     norm.includes("unidades") ||
@@ -606,6 +688,7 @@ function extractData(
   } else if (
     !invalidName &&
     /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,60}$/.test(text) &&
+    hasFullCustomerName(text) &&
     !city &&
     !phone &&
     !quantity &&
@@ -638,25 +721,39 @@ function safeQuantity(value: any): number {
   return n;
 }
 
+const MAX_DIRECT_ORDER_QUANTITY = 20;
+
+function safeDirectOrderQuantity(value: any): number {
+  const q = safeQuantity(value);
+  if (!q) return 0;
+
+  // Protección anti contexto corrupto: evita que "1" termine como "11", "111", etc.
+  // Si querés permitir mayoristas, subí este límite.
+  if (q > MAX_DIRECT_ORDER_QUANTITY) return 0;
+
+  return q;
+}
+
 function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = false): any {
   const oldQuantity = safeQuantity(old?.quantity);
   const newQuantity = safeQuantity(ext?.quantity);
 
+  // 🔥 IMPORTANTE:
+  // Si el cliente responde una cantidad nueva, REEMPLAZA la anterior.
+  // Nunca sumamos ni concatenamos cantidades del contexto.
   const finalQuantity =
-    newQuantity > 0
+    replaceQuantity && newQuantity > 0
       ? newQuantity
-      : replaceQuantity
-      ? oldQuantity
       : oldQuantity;
 
   return {
     product: product || old?.product || "",
     quantity: finalQuantity,
-    shoe_size: ext.shoe_size || old?.shoe_size || "",
-    city: ext.city || old?.city || "",
-    customer_name: ext.name || old?.customer_name || "",
-    phone: ext.phone || old?.phone || "",
-    address: ext.address || old?.address || "",
+    shoe_size: ext?.shoe_size || old?.shoe_size || "",
+    city: ext?.city || old?.city || "",
+    customer_name: ext?.name || old?.customer_name || "",
+    phone: ext?.phone || old?.phone || "",
+    address: ext?.address || old?.address || "",
   };
 }
 
@@ -1030,12 +1127,16 @@ async function safeUpsertOrder(
     const tipoCobertura = getTipoCobertura(order.city);
     const step = nextStep(order, tipoCobertura);
 
+    const canConfirmOrder = hasRealCustomerData(order, tipoCobertura);
+
     const finalStatus =
       forcedStatus ||
-      (confirm && step === "confirm_order"
+      (confirm && step === "confirm_order" && canConfirmOrder
         ? "confirmed"
-        : step === "confirm_order"
+        : step === "confirm_order" && canConfirmOrder
         ? "confirm_pending"
+        : step === "confirm_order"
+        ? "collecting_address"
         : step);
 
     const payload: any = {
@@ -1465,7 +1566,7 @@ export default async function handler(req: any, res: any) {
     }
 
     if (isPureQuantityReply) {
-      const exactQuantity = Number(texto.trim());
+      const exactQuantity = safeDirectOrderQuantity(texto);
       extracted.quantity = exactQuantity;
       extracted.name = "";
       extracted.address = "";
@@ -1617,7 +1718,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
     }
 
     if (isPureQuantityReply) {
-      const exactQuantity = Number(String(message).trim());
+      const exactQuantity = safeDirectOrderQuantity(message);
       extracted.quantity = exactQuantity;
       product = context?.current_product || oldOrder?.product || product;
       console.log(`✅ Reforzando cantidad exacta: ${exactQuantity} para producto: ${product}`);
@@ -1661,7 +1762,20 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       orderData.total_amount = 0;
     }
 
-    orderData.quantity = safeQuantity(orderData.quantity);
+    orderData.quantity = isPureQuantityReply
+      ? safeDirectOrderQuantity(extracted.quantity)
+      : safeQuantity(orderData.quantity);
+
+    if (!orderData.quantity && isPureQuantityReply) {
+      orderData.quantity = 1;
+      extracted.quantity = 1;
+    }
+
+    // 🔥 protección final anti cantidades absurdas por contexto/historial
+    if (orderData.quantity > MAX_DIRECT_ORDER_QUANTITY) {
+      orderData.quantity = 1;
+      extracted.quantity = 1;
+    }
 
     if (orderData.shoe_size) {
       const preservedShoeProduct = isShoeProductText(oldOrder?.product || "")
@@ -1702,7 +1816,9 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.
       effectivePreviousStep !== "esperando_cantidad" &&
       effectivePreviousStep !== "waiting_payment_proof";
 
-    let cartItems = isFreshProductSearch ? [] : getCartItems(oldOrder);
+    // Si el cliente acaba de responder solo la cantidad (ej: "1"), empezamos limpio
+    // para no arrastrar cantidades viejas del carrito/contexto.
+    let cartItems = isFreshProductSearch || isPureQuantityReply ? [] : getCartItems(oldOrder);
 
     if (product && (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")) {
       cartItems = cartItems.filter((i) => sameProduct(i.product, product));
@@ -1846,11 +1962,47 @@ Tu pedido queda así:
       });
     }
 
-    const wantsToBuy = isBuyIntent(texto);
+    const casualReply = isCasualReply(texto);
+    const wantsToBuy = !casualReply && isBuyIntent(texto);
     const asksPrice = isPriceIntent(texto);
     const hasOrderData = !!extracted.quantity || !!extracted.city || !!extracted.name || !!extracted.phone || !!extracted.address;
-    const shouldCollect = !!orderData.product && (wantsToBuy || hasOrderData || effectivePreviousStep.startsWith("collecting") || effectivePreviousStep === "esperando_cantidad" || effectivePreviousStep === "waiting_payment_proof" || isPureQuantityReply);
-    const isConfirming = step === "confirm_order" && wantsToBuy && !wantsAddMore;
+    const canPersistDraft = hasMinimumOrderDataToPersist(orderData) && !casualReply;
+    const canConfirmOrder = hasRealCustomerData(orderData, finalTipoCobertura);
+    const shouldCollect =
+      canPersistDraft &&
+      (wantsToBuy ||
+        hasOrderData ||
+        effectivePreviousStep.startsWith("collecting") ||
+        effectivePreviousStep === "esperando_cantidad" ||
+        effectivePreviousStep === "waiting_payment_proof" ||
+        isPureQuantityReply ||
+        isPureShoeSizeReply);
+    const isConfirming = canConfirmOrder && step === "confirm_order" && wantsToBuy && !wantsAddMore;
+
+    if (casualReply) {
+      return res.json({
+        response: `😊 Gracias. Para agendar tu pedido, pasame TODO JUNTO en un solo mensaje:
+
+✅ nombre y apellido
+✅ dirección exacta o ubicación por Google Maps
+✅ número de celular
+
+Así lo dejamos listo para envío 🚚✨`,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || context?.current_product || null,
+          step: effectivePreviousStep || step || "selling",
+          tipo_cobertura: finalTipoCobertura || previousTipoCobertura || null,
+          order_data: {
+            ...orderData,
+            customer_name: hasFullCustomerName(orderData.customer_name) ? orderData.customer_name : "",
+          },
+          last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
 
     if (wantsAddMore && (product || hasProductsToAdd) && orderData.items?.length) {
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
@@ -1894,8 +2046,10 @@ Tu pedido queda así:
     }
 
     if (isPureQuantityReply && orderData.quantity > 0 && orderData.product && orderData.city) {
+      orderData.quantity = safeDirectOrderQuantity(orderData.quantity) || 1;
       const exactTotal = calculateTotal(orderData.product, orderData.quantity, fullTraining);
       if (exactTotal) orderData.total_amount = exactTotal;
+      orderData.items = addOrReplaceCartItem([], orderData.product, orderData.quantity, orderData.total_amount, "replace", orderData.shoe_size || "");
 
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
@@ -1914,7 +2068,7 @@ Tu pedido queda así:
       });
     }
 
-    const invalidCustomerName = !!orderData.customer_name && (/\d/.test(orderData.customer_name) || normalize(orderData.customer_name).includes("unidad") || normalize(orderData.customer_name).includes("unidades"));
+    const invalidCustomerName = !!orderData.customer_name && !hasFullCustomerName(orderData.customer_name);
     if (invalidCustomerName) orderData.customer_name = "";
 
     if (orderData.product && orderData.city && orderData.quantity && orderData.total_amount && !orderData.customer_name && step === "collecting_name") {
@@ -2025,6 +2179,8 @@ REGLAS TÉCNICAS (MUY IMPORTANTES):
 23. Para "Veneno de Abeja" o "Crema de Abeja", la PROMO 2 unidades cuesta 249.900 Gs (NO 290.000 Gs).
 24. Cuando el cliente dice "TAMBIEN QUIERO UN PELADOR DE PAPAS" o "MAS EL VENENO DE ABEJA", debe AGREGAR ese producto al carrito existente, NO reemplazar.
 25. "Pelador de papas", "peladora de papas", "pelador automático" = "Peladora Automática" con precio 189.900 Gs.
+26. Si el cliente dice solo "gracias", "muy lindo", "hermoso", "genial" o un cumplido, NO confirmes venta, NO lo uses como nombre y pedí los datos completos.
+27. Solo se puede confirmar/agendar pedido cuando haya nombre y apellido reales, teléfono y dirección/ubicación si tiene cobertura.
 `.trim();
 
     const contents = cleanHistory.slice(-8).filter((h: any) => clean(h?.content)).map((h: any) => ({
