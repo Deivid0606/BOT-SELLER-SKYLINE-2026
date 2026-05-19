@@ -1584,6 +1584,13 @@ export default async function handler(req: any, res: any) {
       console.log(`✅ Calce exacto detectado: ${exactShoeSize} para producto: ${product}`);
     }
 
+    const mediaOrder = mergeOrderData(
+      oldOrder,
+      extracted,
+      product,
+      isPureQuantityReply || safeQuantity(extracted.quantity) > 0
+    );
+
     // ========== PROCESAMIENTO DE MEDIA (IMAGEN/AUDIO) ==========
     if (mediaUrl && mediaType === "image") {
       const fetched = await fetchMediaAsBase64(mediaUrl);
@@ -1605,12 +1612,12 @@ export default async function handler(req: any, res: any) {
 
         if (analysis.kind === "payment_proof") {
           isPaymentProof = true;
-          const isWaitingPaymentProof = getTipoCobertura(orderData?.city) === "sin_cobertura" && previousStep === "waiting_payment_proof";
+          const isWaitingPaymentProof = getTipoCobertura(mediaOrder?.city) === "sin_cobertura" && previousStep === "waiting_payment_proof";
 
           await safeUpsertOrder(
             user_id,
             fromNumber,
-            orderData,
+            mediaOrder,
             false,
             isWaitingPaymentProof ? "payment_verified" : undefined
           );
@@ -1627,10 +1634,10 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
             is_payment_proof: true,
             context: {
               ...(context || {}),
-              current_product: orderData?.product || context?.current_product || null,
+              current_product: mediaOrder?.product || context?.current_product || null,
               step: isWaitingPaymentProof ? "payment_verified" : previousStep || "selling",
-              tipo_cobertura: getTipoCobertura(orderData?.city) || previousTipoCobertura || null,
-              order_data: orderData,
+              tipo_cobertura: getTipoCobertura(mediaOrder?.city) || previousTipoCobertura || null,
+              order_data: mediaOrder,
               last_topic: "payment_verified",
               payment_amount: analysis.amount || null,
               payment_receiver: receiver,
@@ -1666,7 +1673,7 @@ ${promoLine}
                 current_product: visualProduct,
                 step: "collecting_city",
                 tipo_cobertura: previousTipoCobertura || null,
-                order_data: { ...(orderData || {}), product: visualProduct },
+                order_data: { ...(mediaOrder || {}), product: visualProduct },
                 last_topic: visualProduct,
                 updated_at: new Date().toISOString(),
               },
