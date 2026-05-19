@@ -34,7 +34,7 @@ function isCatalogQuery(text: string): boolean {
 function isNewConversation(text: string, history: any[]): boolean {
   const n = normalize(text);
   
-  const newConversationMarkers = /\b(creo que guardo|mensaje antiguo|chat viejo|conversación anterior|pedido anterior|viejo mensaje|lo tengo guardado|tengo un mensaje|mensaje guardado|chat pasado)\b/i;
+  const newConversationMarkers = /\b(creo que guardo|mensaje antiguo|chat viejo|conversación anterior|pedido anterior|viejo mensaje|lo tengo guardado|tengo un mensaje|mensaje guardado|chat pasado|nuevo pedido|empezar de nuevo|borrar pedido|reiniciar)\b/i;
   
   const noHistory = !history || history.length === 0;
   const mentionsOldMessage = newConversationMarkers.test(n);
@@ -190,11 +190,32 @@ function extractProductNameFromLine(line: string): string {
   return clean(parts[0] || c);
 }
 
-// 🔥 FUNCIÓN CORREGIDA: Detecta producto SOLO si realmente lo pide
-function detectProduct(text: string, training: string, prev?: string, lastAssistantMessage?: string) {
+// 🔥 FUNCIÓN CORREGIDA: Detecta producto con memoria del último producto del usuario
+function detectProduct(text: string, training: string, prev?: string, lastAssistantMessage?: string, lastUserProduct?: string) {
   const msg = normalize(text);
   
-  // 🔥 NUEVO: Si solo pide información general, NO detectar producto
+  // 🔥 NUEVO: Si el cliente dice "quiero X" sin especificar producto, usar el último producto que mencionó
+  const justWantsWithNumber = /^(quiero|llevo|compro|reservo|dame|mandame)\s+(\d+)$/i.test(msg);
+  if (justWantsWithNumber && lastUserProduct && !isInvalidProductCandidate(lastUserProduct)) {
+    console.log(`🔄 Cliente quiere "${lastUserProduct}" (usando producto anterior de memoria)`);
+    return lastUserProduct;
+  }
+  
+  // 🔥 NUEVO: Si solo dice "quiero" o "si" o "ok" sin producto, usar el último producto
+  const justWantsWithoutProduct = /^(quiero|si|sí|ok|dale|listo|confirmo)$/i.test(msg);
+  if (justWantsWithoutProduct && lastUserProduct && !isInvalidProductCandidate(lastUserProduct)) {
+    console.log(`🔄 Cliente confirmó "${lastUserProduct}" (usando producto anterior de memoria)`);
+    return lastUserProduct;
+  }
+  
+  // 🔥 NUEVO: Si solo dice un número (cantidad) sin producto, usar el último producto
+  const justNumber = /^\d+$/.test(msg);
+  if (justNumber && lastUserProduct && !isInvalidProductCandidate(lastUserProduct)) {
+    console.log(`🔄 Cliente quiere ${msg} unidades de "${lastUserProduct}" (usando producto anterior de memoria)`);
+    return lastUserProduct;
+  }
+  
+  // Si solo pide información general, NO detectar producto
   if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
     console.log("ℹ️ El cliente solo pide información general, no se detecta producto");
     return "";
@@ -202,6 +223,7 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
   
   const lines = getPriceLines(training);
 
+  // Detección explícita por palabras clave
   if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja") || msg.includes("creama")) {
     return "Veneno de Abeja";
   }
@@ -378,7 +400,7 @@ function isPriceIntent(text: string) {
 function isBuyIntent(text: string) {
   const m = normalize(text);
   
-  // 🔥 NUEVO: Si pide información, NO es intención de compra
+  // Si pide información, NO es intención de compra
   if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
     return false;
   }
@@ -427,12 +449,11 @@ function botWasAskingShoeSize(history: any[]) {
     lastAssistantMessage.includes("disponibles del 35"));
 }
 
-// 🔥 FUNCIÓN CORREGIDA: Limpia extracciones falsas en consultas de info y evita nombres de productos
 function extractData(msg: string, currentStep?: string, forceQuantityMode = false, forceShoeSizeMode = false) {
   const text = clean(msg);
   const norm = normalize(text);
   
-  // 🔥 NUEVO: Si es solo consulta de info, limpiar extracciones falsas
+  // Si es solo consulta de info, limpiar extracciones falsas
   if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
     return {
       quantity: 0,
@@ -513,7 +534,6 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
 
   let name = "";
 
-  // 🔥 CORREGIDO: Incluir nombres de productos en invalidName
   const invalidName = /\d/.test(text) ||
     norm.includes("unidad") || norm.includes("unidades") ||
     norm.includes("precio") || norm.includes("delivery") || norm.includes("envio") || norm.includes("envío") ||
@@ -530,7 +550,7 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     name = clean(nameMatch).replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "").trim();
   } else if (!invalidName && /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,60}$/.test(text) &&
              !city && !phone && !quantity && !norm.includes("hola") && !norm.includes("si") &&
-             !isProductName(text)) {  // 🔥 NUEVO: No permitir nombres de productos
+             !isProductName(text)) {
     name = text;
   }
 
@@ -825,14 +845,29 @@ y agendamos tu entrega ✨`;
 function buildQuantityQuestionResponse(product: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
   
+  // Determinar el precio según el producto
+  let precioMsg = "";
+  if (normalize(product).includes("veneno") || normalize(product).includes("abeja")) {
+    precioMsg = "💰 Precio unitario: 145.000 Gs\n🔥 Promo 2 unidades: 249.900 Gs";
+  } else if (normalize(product).includes("pelador")) {
+    precioMsg = "💰 Precio unitario: 189.900 Gs";
+  } else if (normalize(product).includes("afilador")) {
+    precioMsg = "💰 Precio unitario: 99.000 Gs\n🔥 Promo 2 unidades: 129.900 Gs";
+  } else if (normalize(product).includes("vital")) {
+    precioMsg = "💰 Precio unitario: 169.900 Gs\n🔥 Promo 2 unidades: 289.900 Gs";
+  } else if (normalize(product).includes("plantilla") || normalize(product).includes("ortopiex")) {
+    precioMsg = "💰 Precio unitario: 159.000 Gs";
+  } else {
+    precioMsg = "💰 Precio unitario: 145.000 Gs";
+  }
+  
   return `🔥 Perfecto 😊
 
 Me confirmaste que querés ${productName}.
 
 📌 ¿Cuántas unidades querés?
 
-💰 Precio unitario: 159.000 Gs
-🔥 Promo 2 unidades: 318.000 Gs
+${precioMsg}
 
 Respondé con el número (ej: 1, 2, 3...)`;
 }
@@ -1123,7 +1158,7 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION CORREGIDA - NO ARRASTRA CONVERSACIONES VIEJAS");
+  console.log("🔥 VERSION CORREGIDA - CON MEMORIA DE PRODUCTO");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1180,12 +1215,43 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    // 🔥 NUEVO: Detectar si es conversación nueva para NO arrastrar datos viejos
+    // 🔥 NUEVO: Obtener el último producto que mencionó el usuario del contexto
+    let lastUserProduct = context?.last_user_product || "";
+    
+    // 🔥 NUEVO: Buscar en el historial el último producto mencionado por el usuario
+    if (!lastUserProduct && Array.isArray(history)) {
+      for (let i = history.length - 1; i >= 0; i--) {
+        const msg = history[i];
+        if (msg?.role === "user") {
+          const userText = clean(msg.content);
+          const detected = canonicalProductFromText(userText);
+          if (detected && !isInvalidProductCandidate(detected)) {
+            lastUserProduct = detected;
+            break;
+          }
+          // También buscar palabras clave
+          const norm = normalize(userText);
+          if (norm.includes("veneno") || norm.includes("abeja")) {
+            lastUserProduct = "Veneno de Abeja";
+            break;
+          }
+          if (norm.includes("plantilla") || norm.includes("ortopiex")) {
+            lastUserProduct = getDefaultShoeProductName();
+            break;
+          }
+          if (norm.includes("pelador")) {
+            lastUserProduct = "Peladora Automática";
+            break;
+          }
+        }
+      }
+    }
+
+    // Detectar si es conversación nueva
     const isNewChat = isNewConversation(texto, history || []);
     
     let oldOrder;
     if (isNewChat) {
-      // 🔥 Reiniciar pedido - NO arrastrar datos de conversaciones anteriores
       oldOrder = {
         product: "",
         quantity: 0,
@@ -1228,11 +1294,12 @@ export default async function handler(req: any, res: any) {
 
     const wantsAddMore = isAddMoreIntent(texto);
     console.log(`🔥 wantsAddMore: ${wantsAddMore}, texto: ${texto}`);
+    console.log(`🔥 lastUserProduct (memoria): ${lastUserProduct}`);
 
     let product;
 
     if (wantsAddMore) {
-      product = detectProduct(texto, fullTraining, null, lastAssistantMessage);
+      product = detectProduct(texto, fullTraining, null, lastAssistantMessage, lastUserProduct);
       console.log(`🔥 Producto adicional detectado: ${product}`);
     } else if (isPureQuantityReply && (context?.current_product || oldOrder?.product)) {
       product = context?.current_product || oldOrder?.product;
@@ -1241,7 +1308,17 @@ export default async function handler(req: any, res: any) {
       product = context?.current_product || oldOrder?.product;
       console.log(`🔥 Calce reply - Producto forzado: ${product}`);
     } else {
-      product = detectProduct(texto, fullTraining, context?.current_product || oldOrder?.product, lastAssistantMessage);
+      product = detectProduct(texto, fullTraining, context?.current_product || oldOrder?.product, lastAssistantMessage, lastUserProduct);
+    }
+
+    // 🔥 NUEVO: Si no se detectó producto pero hay memoria de producto y es una respuesta de confirmación, usar memoria
+    if ((!product || isInvalidProductCandidate(product)) && lastUserProduct && !isInvalidProductCandidate(lastUserProduct)) {
+      const normText = normalize(texto);
+      const isConfirmReply = /^(quiero|si|sí|ok|dale|listo|confirmo|\d+)$/i.test(normText);
+      if (isConfirmReply) {
+        product = lastUserProduct;
+        console.log(`🔥 Usando memoria de producto: ${product} (respuesta de confirmación)`);
+      }
     }
 
     let extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
@@ -1310,6 +1387,7 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
             context: {
               ...(context || {}),
               current_product: oldOrder?.product || context?.current_product || null,
+              last_user_product: lastUserProduct || oldOrder?.product || null,
               step: isWaitingPaymentProof ? "payment_verified" : previousStep || "selling",
               tipo_cobertura: getTipoCobertura(oldOrder?.city) || previousTipoCobertura || null,
               order_data: oldOrder,
@@ -1323,7 +1401,7 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
 
         if (analysis.kind === "product") {
           const productSignal = [analysis.matchedProduct, analysis.productName, analysis.transcript, analysis.promoText].filter(Boolean).join(" ");
-          const catalogProduct = detectProduct(productSignal, fullTraining, "");
+          const catalogProduct = detectProduct(productSignal, fullTraining, "", "", lastUserProduct);
           const visualProduct = catalogProduct || analysis.matchedProduct || analysis.productName || "";
           product = visualProduct || product;
           const hasVisiblePrice = !!analysis.productPrice;
@@ -1340,6 +1418,7 @@ ${promoLine}
               context: {
                 ...(context || {}),
                 current_product: visualProduct,
+                last_user_product: visualProduct,
                 step: "collecting_city",
                 tipo_cobertura: previousTipoCobertura || null,
                 order_data: { ...(oldOrder || {}), product: visualProduct },
@@ -1407,7 +1486,13 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     }
 
     if (!isPureQuantityReply && !isPureShoeSizeReply && !wantsAddMore) {
-      product = detectProduct(texto, fullTraining, product || context?.current_product || oldOrder?.product, lastAssistantMessage);
+      product = detectProduct(texto, fullTraining, product || context?.current_product || oldOrder?.product, lastAssistantMessage, lastUserProduct);
+    }
+
+    // 🔥 NUEVO: Actualizar memoria del último producto si se detectó uno válido
+    if (product && !isInvalidProductCandidate(product)) {
+      lastUserProduct = product;
+      console.log(`💾 Memoria actualizada: último producto = ${lastUserProduct}`);
     }
 
     if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
@@ -1570,6 +1655,7 @@ Tu pedido queda así:
         context: {
           ...(context || {}),
           current_product: orderData.product || context?.current_product || null,
+          last_user_product: lastUserProduct || orderData.product || null,
           step: "collecting_city",
           tipo_cobertura: finalTipoCobertura || null,
           order_data: orderData,
@@ -1596,6 +1682,7 @@ Tu pedido queda así:
         context: {
           ...(context || {}),
           current_product: product,
+          last_user_product: product,
           step: "collecting_quantity",
           tipo_cobertura: finalTipoCobertura || null,
           order_data: { ...orderData, product: product, quantity: 0 },
@@ -1616,6 +1703,7 @@ Tu pedido queda así:
         context: {
           ...(context || {}),
           current_product: orderData.product || product || context?.current_product || null,
+          last_user_product: lastUserProduct || orderData.product || product || null,
           step: nextStep(orderData, finalTipoCobertura),
           tipo_cobertura: finalTipoCobertura || null,
           order_data: orderData,
@@ -1639,6 +1727,7 @@ Tu pedido queda así:
         context: {
           ...(context || {}),
           current_product: orderData.product || context?.current_product || null,
+          last_user_product: lastUserProduct || orderData.product || null,
           step: nextStep(orderData, finalTipoCobertura),
           tipo_cobertura: finalTipoCobertura || null,
           order_data: orderData,
@@ -1660,6 +1749,7 @@ Tu pedido queda así:
         context: {
           ...(context || {}),
           current_product: orderData.product || context?.current_product || null,
+          last_user_product: lastUserProduct || orderData.product || null,
           step: nextStep(orderData, finalTipoCobertura),
           tipo_cobertura: finalTipoCobertura || null,
           order_data: orderData,
@@ -1688,6 +1778,7 @@ Ahora pasame tu nombre y apellido para agendar el pedido 🙏`,
         context: {
           ...(context || {}),
           current_product: orderData.product || context?.current_product || null,
+          last_user_product: lastUserProduct || orderData.product || null,
           step: "collecting_name",
           tipo_cobertura: finalTipoCobertura || null,
           order_data: { ...orderData, customer_name: "" },
@@ -1711,6 +1802,7 @@ Ahora pasame tu nombre y apellido para agendar el pedido 🙏`,
       const deterministicContext = {
         ...(context || {}),
         current_product: orderData.product || context?.current_product || null,
+        last_user_product: lastUserProduct || orderData.product || null,
         step,
         tipo_cobertura: finalTipoCobertura || null,
         order_data: orderData,
@@ -1755,6 +1847,7 @@ Titular esperado para transferencia: ${expectedReceiverName || "pendiente"}
 Paso anterior: ${effectivePreviousStep || "ninguno"}
 Paso actual: ${step}
 Última pregunta del bot: ${lastAssistantMessage || "ninguna"}
+Último producto mencionado por el cliente: ${lastUserProduct || "ninguno"}
 Producto cambió respecto al pedido anterior: ${productChanged ? "SÍ" : "NO"}
 Intención: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
 
@@ -1808,7 +1901,7 @@ Para "Veneno de Abeja" o "Crema de Abeja", la PROMO 2 unidades cuesta 249.900 Gs
 
 Cuando el cliente dice "TAMBIEN QUIERO UN PELADOR DE PAPAS" o "MAS EL VENENO DE ABEJA", debe AGREGAR ese producto al carrito existente, NO reemplazar.
 
-"Pelador de papas", "peladora de papas", "pelador automático" = "Peladora Automática" con precio 189.900 Gs.`.trim();
+"Pelador de papas", "peladora de papas", "pelador automático" = "Peladora Automática" con precio 189.900 Gs.`;
 
     const contents = cleanHistory.slice(-8).filter((h: any) => clean(h?.content)).map((h: any) => ({
       role: h.role === "assistant" ? "model" : "user",
@@ -1848,6 +1941,7 @@ Cuando el cliente dice "TAMBIEN QUIERO UN PELADOR DE PAPAS" o "MAS EL VENENO DE 
     const newContext = {
       ...(context || {}),
       current_product: orderData.product || context?.current_product || null,
+      last_user_product: lastUserProduct || orderData.product || null,
       step: shouldCollect ? step : effectivePreviousStep === "payment_verified" ? "payment_verified" : "selling",
       tipo_cobertura: finalTipoCobertura || null,
       order_data: orderData,
