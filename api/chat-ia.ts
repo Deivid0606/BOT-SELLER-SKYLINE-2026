@@ -30,6 +30,45 @@ function isCatalogQuery(text: string): boolean {
   return (catalogWords.test(n) || greetingWords.test(n)) && !productWords.test(n);
 }
 
+// 🔥 NUEVA FUNCIÓN: Detecta si es una conversación nueva (no arrastrar datos viejos)
+function isNewConversation(text: string, history: any[]): boolean {
+  const n = normalize(text);
+  
+  const newConversationMarkers = /\b(creo que guardo|mensaje antiguo|chat viejo|conversación anterior|pedido anterior|viejo mensaje|lo tengo guardado|tengo un mensaje|mensaje guardado|chat pasado)\b/i;
+  
+  const noHistory = !history || history.length === 0;
+  const mentionsOldMessage = newConversationMarkers.test(n);
+  
+  return noHistory || mentionsOldMessage;
+}
+
+// 🔥 NUEVA FUNCIÓN: Detecta si el cliente solo pregunta por un producto (sin intención de compra)
+function isProductInquiry(text: string): boolean {
+  const n = normalize(text);
+  const inquiryWords = /\b(qu[eé] es|cómo funciona|para qu[eé] sirve|características|beneficios|tiene|informaci[oó]n|info|cu[aá]nto cuesta|precio|valor|costo|dime|contame|explicame)\b/i;
+  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo)\b/i;
+  const buyWords = /\b(quiero|comprar|llevo|dame|mandame|agregame|reservar|apartar)\b/i;
+  
+  return inquiryWords.test(n) && productWords.test(n) && !buyWords.test(n);
+}
+
+// 🔥 NUEVA FUNCIÓN: Detecta si un texto es nombre de producto (para no usarlo como nombre de cliente)
+function isProductName(text: string): boolean {
+  const n = normalize(text);
+  const productNames = [
+    "veneno de abeja", "crema de abeja", "abeja",
+    "plantillas ortopiex", "ortopiex", "plantillas", "ortoflex", "5d",
+    "peladora automatica", "pelador automatico", "pelador", "peladora",
+    "afilador de cuchillos", "afilador", "cuchillos", "sharpener",
+    "vital honey vip", "vital honey",
+    "perfume asad", "asad",
+    "almohadillas antivibracion", "soporte para lavarropas", "lavarropas"
+  ];
+  
+  const normalizedText = n;
+  return productNames.some(p => normalizedText.includes(p) || p.includes(normalizedText));
+}
+
 function isShoeProductText(text: string): boolean {
   const n = normalize(text);
   return /\b(plantilla|plantillas|ortopiex|ortoflex|5d)\b/.test(n);
@@ -156,7 +195,7 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
   const msg = normalize(text);
   
   // 🔥 NUEVO: Si solo pide información general, NO detectar producto
-  if (isInformationRequest(text) || isCatalogQuery(text)) {
+  if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
     console.log("ℹ️ El cliente solo pide información general, no se detecta producto");
     return "";
   }
@@ -340,7 +379,7 @@ function isBuyIntent(text: string) {
   const m = normalize(text);
   
   // 🔥 NUEVO: Si pide información, NO es intención de compra
-  if (isInformationRequest(text) || isCatalogQuery(text)) {
+  if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
     return false;
   }
   
@@ -388,13 +427,13 @@ function botWasAskingShoeSize(history: any[]) {
     lastAssistantMessage.includes("disponibles del 35"));
 }
 
-// 🔥 FUNCIÓN CORREGIDA: Limpia extracciones falsas en consultas de info
+// 🔥 FUNCIÓN CORREGIDA: Limpia extracciones falsas en consultas de info y evita nombres de productos
 function extractData(msg: string, currentStep?: string, forceQuantityMode = false, forceShoeSizeMode = false) {
   const text = clean(msg);
   const norm = normalize(text);
   
   // 🔥 NUEVO: Si es solo consulta de info, limpiar extracciones falsas
-  if (isInformationRequest(text) || isCatalogQuery(text)) {
+  if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
     return {
       quantity: 0,
       shoe_size: "",
@@ -474,18 +513,24 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
 
   let name = "";
 
+  // 🔥 CORREGIDO: Incluir nombres de productos en invalidName
   const invalidName = /\d/.test(text) ||
     norm.includes("unidad") || norm.includes("unidades") ||
     norm.includes("precio") || norm.includes("delivery") || norm.includes("envio") || norm.includes("envío") ||
     norm.includes("ubicacion") || norm.includes("ubicación") || norm.includes("direccion") || norm.includes("dirección") ||
-    norm.includes("calce") || norm.includes("talle") || norm.includes("numero") || norm.includes("nro");
+    norm.includes("calce") || norm.includes("talle") || norm.includes("numero") || norm.includes("nro") ||
+    norm.includes("veneno") || norm.includes("abeja") || norm.includes("plantilla") || norm.includes("crema") ||
+    norm.includes("ortopiex") || norm.includes("pelador") || norm.includes("afilador") ||
+    norm.includes("vital") || norm.includes("perfume") || norm.includes("soporte") || norm.includes("lavarropas") ||
+    norm.includes("cuchillo") || norm.includes("5d") || norm.includes("ortoflex");
 
   const nameMatch = text.match(/(?:me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i)?.[1];
 
-  if (nameMatch && !invalidName) {
+  if (nameMatch && !invalidName && !isProductName(nameMatch)) {
     name = clean(nameMatch).replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "").trim();
   } else if (!invalidName && /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,60}$/.test(text) &&
-             !city && !phone && !quantity && !norm.includes("hola") && !norm.includes("si")) {
+             !city && !phone && !quantity && !norm.includes("hola") && !norm.includes("si") &&
+             !isProductName(text)) {  // 🔥 NUEVO: No permitir nombres de productos
     name = text;
   }
 
@@ -1078,7 +1123,7 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION CORREGIDA - SIEMPRE CONSULTA LA CANTIDAD");
+  console.log("🔥 VERSION CORREGIDA - NO ARRASTRA CONVERSACIONES VIEJAS");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1135,7 +1180,28 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    const oldOrder = normalizeOrderWithItems(context?.order_data || {}, fullTraining);
+    // 🔥 NUEVO: Detectar si es conversación nueva para NO arrastrar datos viejos
+    const isNewChat = isNewConversation(texto, history || []);
+    
+    let oldOrder;
+    if (isNewChat) {
+      // 🔥 Reiniciar pedido - NO arrastrar datos de conversaciones anteriores
+      oldOrder = {
+        product: "",
+        quantity: 0,
+        shoe_size: "",
+        city: "",
+        customer_name: "",
+        phone: "",
+        address: "",
+        items: [],
+        total_amount: 0,
+      };
+      console.log("🔄 Conversación nueva detectada - Pedido reiniciado");
+    } else {
+      oldOrder = normalizeOrderWithItems(context?.order_data || {}, fullTraining);
+    }
+    
     const previousStep = clean(context?.step);
     const previousTipoCobertura = clean(context?.tipo_cobertura);
 
@@ -1520,7 +1586,6 @@ Tu pedido queda así:
     const shouldCollect = !!orderData.product && (wantsToBuy || hasOrderData || effectivePreviousStep.startsWith("collecting") ||
       effectivePreviousStep === "esperando_cantidad" || effectivePreviousStep === "waiting_payment_proof" || isPureQuantityReply);
     
-    // 🔥 NUEVA LÓGICA: Si quiere comprar pero no especificó cantidad
     const wantsToBuyButNoQuantity = wantsToBuy && product && safeQuantity(orderData.quantity) === 0 && !isPureQuantityReply && !wantsAddMore;
     
     if (wantsToBuyButNoQuantity) {
@@ -1605,7 +1670,7 @@ Tu pedido queda así:
       });
     }
 
-    const invalidCustomerName = !!orderData.customer_name && (/\d/.test(orderData.customer_name) || normalize(orderData.customer_name).includes("unidad") || normalize(orderData.customer_name).includes("unidades"));
+    const invalidCustomerName = !!orderData.customer_name && (/\d/.test(orderData.customer_name) || normalize(orderData.customer_name).includes("unidad") || normalize(orderData.customer_name).includes("unidades") || isProductName(orderData.customer_name));
     if (invalidCustomerName) orderData.customer_name = "";
 
     if (orderData.product && orderData.city && orderData.quantity && orderData.total_amount && !orderData.customer_name && step === "collecting_name") {
