@@ -71,9 +71,7 @@ async function metaSendMedia(config, to, mediaUrl, type = 'image', caption = '')
     messaging_product: 'whatsapp',
     to,
     type: t,
-    [t]: caption
-      ? { link: mediaUrl, caption }
-      : { link: mediaUrl },
+    [t]: caption ? { link: mediaUrl, caption } : { link: mediaUrl },
   };
 
   const r = await fetch(
@@ -125,21 +123,42 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
 
-    const to = body.to || body.To || body.number || body.phone;
-    const userId = body.userId || body.userid || body.user_id;
-    const message = body.message || body.text || '';
+    const to =
+      body.to ||
+      body.To ||
+      body.number ||
+      body.phone ||
+      body.from_number ||
+      body.fromNumber ||
+      body.sender_id ||
+      body.senderId;
+
+    const userId =
+      body.userId ||
+      body.userid ||
+      body.user_id;
+
+    const message =
+      body.message ||
+      body.text ||
+      body.response ||
+      body.reply ||
+      body.answer ||
+      '';
 
     const imageUrls = Array.isArray(body.imageUrls)
       ? body.imageUrls
       : Array.isArray(body.images)
         ? body.images
-        : [];
+        : Array.isArray(body.media_urls)
+          ? body.media_urls
+          : [];
 
-    const videoUrl = body.videoUrl || null;
-    const gifUrl = body.gifUrl || null;
+    const videoUrl = body.videoUrl || body.video_url || null;
+    const gifUrl = body.gifUrl || body.gif_url || null;
 
     if (!to || !userId) {
-      console.error('❌ Payload inválido:', JSON.stringify(body).slice(0, 500));
+      console.error('❌ Payload inválido:', JSON.stringify(body).slice(0, 800));
 
       return res.status(400).json({
         ok: false,
@@ -154,10 +173,13 @@ export default async function handler(req, res) {
       return res.status(400).json({
         ok: false,
         error: 'Invalid phone number',
+        receivedTo: to,
       });
     }
 
     if (!message && imageUrls.length === 0 && !videoUrl && !gifUrl) {
+      console.error('❌ Sin mensaje ni media:', JSON.stringify(body).slice(0, 800));
+
       return res.status(400).json({
         ok: false,
         error: 'No message or media to send',
