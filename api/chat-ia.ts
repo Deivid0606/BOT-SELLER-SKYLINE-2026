@@ -29,7 +29,6 @@ function isOnlyShoeVariantText(text: string): boolean {
   return (/\b(calce|talle|numero|nro|num|medida)\b/.test(n) || /^\d{2}$/.test(n));
 }
 
-// 🔥 BUG 1 CORREGIDO: Reemplazado (?| por (:
 function extractShoeSizeFromText(text: string): number {
   const n = normalize(text);
   const explicit = n.match(/\b(?:talle|numero|nro|num|uso|calzo|soy|en|del|de|para)\s*(\d{2})\b/);
@@ -135,7 +134,6 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
   const msg = normalize(text);
   const lines = getPriceLines(training);
 
-  // 🔥 DETECCIÓN PRIORITARIA DE PRODUCTOS
   if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja") || msg.includes("creama")) {
     return "Veneno de Abeja";
   }
@@ -273,7 +271,6 @@ function uniqueProducts(products: string[]): string[] {
   return out;
 }
 
-// 🔥 BUG 1 CORREGIDO: Reemplazado (?| por (:
 function detectMultipleProducts(text: string, training: string): string[] {
   const raw = clean(text);
   const n = normalize(raw);
@@ -309,15 +306,20 @@ function isPriceIntent(text: string) {
   return (m.includes("precio") || m.includes("cuanto") || m.includes("cuesta") || m.includes("valor") || m.includes("costo"));
 }
 
-// 🔥 BUG 2 CORREGIDO: isBuyIntent ahora excluye frases de cortesía
+// 🔥 CORREGIDA: No confunde "QUIERO" con confirmación de compra sin cantidad
 function isBuyIntent(text: string) {
   const m = normalize(text);
   
-  // EXCLUIR frases de cortesía que NO son intención de compra
   const graciasPattern = /\b(gracias|very nice|muy lindo|excelente|bien|okey|oka|perfecto|hermoso|genial|buenisimo)\b/i;
   if (graciasPattern.test(m)) return false;
   
-  return (/\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo|mandame|dame)\b/.test(m) ||
+  // "QUIERO" solo es intención, el bot debe preguntar cantidad
+  const soloQuieroPattern = /^\s*(quiero|si|sí|dale|ok|listo|confirmo|compro|reservo)\s*$/i;
+  if (soloQuieroPattern.test(m)) {
+    return true;
+  }
+  
+  return (/\b(quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmar|mandame|dame)\s+\d+\b/.test(m) ||
     /\b\d+\s*(unidad|unidades|u)\b/.test(m) ||
     /^\d+$/.test(m));
 }
@@ -353,7 +355,7 @@ function botWasAskingShoeSize(history: any[]) {
     lastAssistantMessage.includes("disponibles del 35"));
 }
 
-// 🔥 BUG 1 CORREGIDO: Reemplazado (?| por (:
+// 🔥 CORREGIDA: NUNCA asume cantidad automáticamente
 function extractData(msg: string, currentStep?: string, forceQuantityMode = false, forceShoeSizeMode = false) {
   const text = clean(msg);
   const norm = normalize(text);
@@ -379,14 +381,6 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
 
   let quantity = 0;
 
-  if (isShoeSizeMessage) {
-    quantity = 1;
-  }
-
-  if (isPackReference) {
-    quantity = 1;
-  }
-
   if (!isShoeSizeMessage && !waitingForShoeSize &&
       (forceQuantityMode || currentStep === "collecting_quantity" || currentStep === "esperando_cantidad")) {
     const onlyNumber = norm.match(/^\s*(\d{1,3})\s*$/);
@@ -396,34 +390,17 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     }
   }
 
-  if (!quantity && !isShoeSizeMessage) {
+  if (!forceQuantityMode && currentStep !== "collecting_quantity" && currentStep !== "esperando_cantidad") {
+    quantity = 0;
+  }
+
+  if (!quantity && !isShoeSizeMessage && !waitingForShoeSize) {
     const q1 = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
     if (q1) quantity = Number(q1[1]);
   }
 
-  if (!quantity && !isShoeSizeMessage && /\b(uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b/.test(norm)) {
-    const words: Record<string, number> = {
-      uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4,
-      cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10,
-    };
-
-    for (const [word, num] of Object.entries(words)) {
-      if (new RegExp(`\\b${word}\\b`).test(norm)) {
-        quantity = num;
-        break;
-      }
-    }
-  }
-
-  if (!quantity && !isShoeSizeMessage) {
-    const looksLikeQuantity = /\b(quiero|llevo|mandame|dame|solo|solamente|nomas|nomás|unidad|unidades|u)\b/.test(norm);
-    if (looksLikeQuantity) {
-      const q2 = norm.match(/\b(\d{1,3})\b/);
-      if (q2) {
-        const num = Number(q2[1]);
-        if (num >= 1 && num <= 999) quantity = num;
-      }
-    }
+  if (isPackReference && (currentStep === "collecting_quantity" || currentStep === "esperando_cantidad")) {
+    quantity = 1;
   }
 
   const cityAliases: Record<string, string> = {
@@ -448,7 +425,6 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     }
   }
 
-  // 🔥 BUG 1 CORREGIDO: Reemplazado (?| por (:
   const address = text.match(/(?:dirección|dir|ubicacion|ubicación)\s*[:-]?\s*(.+)/i)?.[1] || "";
 
   let name = "";
@@ -459,7 +435,6 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     norm.includes("ubicacion") || norm.includes("ubicación") || norm.includes("direccion") || norm.includes("dirección") ||
     norm.includes("calce") || norm.includes("talle") || norm.includes("numero") || norm.includes("nro");
 
-  // 🔥 BUG 1 CORREGIDO: Reemplazado (?| por (:
   const nameMatch = text.match(/(?:me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i)?.[1];
 
   if (nameMatch && !invalidName) {
@@ -492,12 +467,10 @@ function safeQuantity(value: any): number {
   return n;
 }
 
-// 🔥 BUG 1 CORREGIDO: mergeOrderData ahora REEMPLAZA cantidades cuando es quantity reply
 function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = false): any {
   const oldQuantity = safeQuantity(old?.quantity);
   const newQuantity = safeQuantity(ext?.quantity);
 
-  // 🔥 CRÍTICO: Si replaceQuantity es true (para respuestas de cantidad), REEMPLAZAMOS completamente
   const finalQuantity = newQuantity > 0 ? newQuantity : (replaceQuantity ? oldQuantity : oldQuantity);
 
   return {
@@ -759,13 +732,37 @@ Tu pedido queda así:
 y agendamos tu entrega ✨`;
 }
 
-// 🔥 BUG 2 CORREGIDO: nextStep ahora NO confirma automáticamente por frases de cortesía
+function buildQuantityQuestionResponse(product: string, shoeSize?: any): string {
+  const productName = formatProductWithShoeSize(product, shoeSize);
+  
+  return `🔥 Perfecto 😊
+
+Me confirmaste que querés ${productName}.
+
+📌 ¿Cuántas unidades querés?
+
+💰 Precio unitario: 159.000 Gs
+🔥 Promo 2 unidades: 318.000 Gs
+
+Respondé con el número (ej: 1, 2, 3...)`;
+}
+
+// 🔥 CORREGIDA: SIEMPRE pregunta cantidad después del producto
 function nextStep(o: any, tipoCobertura?: string) {
   const items = getCartItems(o);
+  
   if (!o.product && !items.length) return "selling";
   if (!o.city) return "collecting_city";
-  if (o.product && !safeQuantity(o.quantity)) return "collecting_quantity";
-  if (!safeQuantity(o.quantity) && !items.length) return "collecting_quantity";
+  
+  const hasValidQuantity = safeQuantity(o.quantity) > 0;
+  
+  if (o.product && !hasValidQuantity) {
+    return "collecting_quantity";
+  }
+  
+  if (!hasValidQuantity && !items.length) {
+    return "collecting_quantity";
+  }
 
   if (tipoCobertura === "sin_cobertura") {
     if (!o.customer_name) return "collecting_name";
@@ -1037,7 +1034,7 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION CORREGIDA - BUGS DE CANTIDAD Y CONFIRMACIONES FALSAS RESUELTOS");
+  console.log("🔥 VERSION CORREGIDA - SIEMPRE CONSULTA LA CANTIDAD");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1146,10 +1143,9 @@ export default async function handler(req: any, res: any) {
       product = oldOrder?.product || context?.current_product || product;
     }
 
-    // 🔥 BUG 1 CORREGIDO: Manejo correcto de cantidad exacta sin concatenación
     if (isPureQuantityReply) {
       const exactQuantity = Number(texto.trim());
-      extracted.quantity = exactQuantity; // ✅ SOBRESCRIBE, no suma
+      extracted.quantity = exactQuantity;
       extracted.name = "";
       extracted.address = "";
       product = context?.current_product || oldOrder?.product || product;
@@ -1166,7 +1162,7 @@ export default async function handler(req: any, res: any) {
       console.log(`✅ Calce exacto detectado: ${exactShoeSize} para producto: ${product}`);
     }
 
-    // ========== PROCESAMIENTO DE MEDIA (IMAGEN/AUDIO) ==========
+    // ========== PROCESAMIENTO DE MEDIA ==========
     if (mediaUrl && mediaType === "image") {
       const fetched = await fetchMediaAsBase64(mediaUrl);
 
@@ -1187,7 +1183,6 @@ export default async function handler(req: any, res: any) {
 
         if (analysis.kind === "payment_proof") {
           isPaymentProof = true;
-          // 🔥 BUG 2 CORREGIDO: Reemplazado orderData por oldOrder
           const isWaitingPaymentProof = getTipoCobertura(oldOrder?.city) === "sin_cobertura" && previousStep === "waiting_payment_proof";
 
           await safeUpsertOrder(user_id, fromNumber, oldOrder, false, isWaitingPaymentProof ? "payment_verified" : undefined);
@@ -1286,10 +1281,9 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
       product = oldOrder?.product || context?.current_product || product;
     }
 
-    // 🔥 BUG 1 CORREGIDO: Reforzamos la sobrescritura de cantidad
     if (isPureQuantityReply) {
       const exactQuantity = Number(String(message).trim());
-      extracted.quantity = exactQuantity; // ✅ SOBRESCRIBE
+      extracted.quantity = exactQuantity;
       product = context?.current_product || oldOrder?.product || product;
       console.log(`✅ Reforzando cantidad exacta SOBRESCRITA: ${exactQuantity} para producto: ${product}`);
     }
@@ -1315,7 +1309,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     const effectivePreviousStep = previousStep;
     const effectivePreviousTipoCobertura = previousTipoCobertura;
 
-    // 🔥 BUG 1 CORREGIDO: Pasamos replaceQuantity=true para respuestas de cantidad
     let orderData = mergeOrderData(
       baseOrder,
       extracted,
@@ -1375,7 +1368,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
       orderData.total_amount = 0;
     }
 
-    // MANEJO DE AGREGADO DE PRODUCTOS
     if (wantsAddMore && (product || hasProductsToAdd)) {
       console.log(`🔥 Procesando agregado de producto: product=${product}, hasProductsToAdd=${hasProductsToAdd}, productsToAdd=${JSON.stringify(productsToAdd)}`);
       
@@ -1484,8 +1476,28 @@ Tu pedido queda así:
     const shouldCollect = !!orderData.product && (wantsToBuy || hasOrderData || effectivePreviousStep.startsWith("collecting") ||
       effectivePreviousStep === "esperando_cantidad" || effectivePreviousStep === "waiting_payment_proof" || isPureQuantityReply);
     
-    // 🔥 BUG 2 CORREGIDO: No confirmar automáticamente si es frase de cortesía
-    const isConfirming = step === "confirm_order" && wantsToBuy && !wantsAddMore;
+    // 🔥 NUEVA LÓGICA: Si quiere comprar pero no especificó cantidad
+    const wantsToBuyButNoQuantity = wantsToBuy && product && safeQuantity(orderData.quantity) === 0 && !isPureQuantityReply && !wantsAddMore;
+    
+    if (wantsToBuyButNoQuantity) {
+      await safeUpsertOrder(user_id, fromNumber, { ...orderData, product: product, quantity: 0 }, false);
+      
+      return res.json({
+        response: buildQuantityQuestionResponse(product, extracted.shoe_size),
+        context: {
+          ...(context || {}),
+          current_product: product,
+          step: "collecting_quantity",
+          tipo_cobertura: finalTipoCobertura || null,
+          order_data: { ...orderData, product: product, quantity: 0 },
+          last_topic: product,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    const isConfirming = step === "confirm_order" && wantsToBuy && !wantsAddMore && safeQuantity(orderData.quantity) > 0;
 
     if (wantsAddMore && (product || hasProductsToAdd) && orderData.items?.length) {
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
@@ -1528,7 +1540,6 @@ Tu pedido queda así:
       });
     }
 
-    // 🔥 BUG 1 CORREGIDO: Manejo de respuesta de cantidad exacta
     if (isPureQuantityReply && orderData.quantity > 0 && orderData.product && orderData.city) {
       const exactTotal = calculateTotal(orderData.product, orderData.quantity, fullTraining);
       if (exactTotal) orderData.total_amount = exactTotal;
