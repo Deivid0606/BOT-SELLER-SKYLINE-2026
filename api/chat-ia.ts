@@ -116,6 +116,8 @@ function isInvalidProductCandidate(name: string): boolean {
   ];
 
   if (invalidExact.includes(n)) return true;
+  // Evita que instrucciones del entrenamiento entren como nombre de producto
+  if (n.includes("cliente envia nueva informacion") || n.includes("cuando el cliente") || n.includes("nueva informacion")) return true;
   if (/^\d+\s*(unidad|unidades|u|kit|kits)$/.test(n)) return true;
   if (/^\d+\s*(unidad|unidades).[",].\d+\s*(unidad|unidades)/.test(n)) return true;
   if (/^(si|sí|ok|dale|listo|quiero|confirmo|gracias)$/.test(n)) return true;
@@ -140,6 +142,8 @@ function isInvalidCartProduct(name: string): boolean {
   if (n.length < 4) return true;
 
   if (/^(cliente|nombre|contacto|telefono|teléfono|ubicacion|ubicación|direccion|dirección)\b/i.test(raw)) return true;
+  // Evita que instrucciones del entrenamiento entren al carrito
+  if (n.includes("cliente envia nueva informacion") || n.includes("cuando el cliente") || n.includes("nueva informacion")) return true;
   if (/\b(quiero|cantidad|total|precio|delivery|envio|envío|pago al recibir|contra entrega)\b/.test(n)) return true;
   if (/^x\d+$/.test(n)) return true;
   if (/^\d+\s*(unidad|unidades|u|kit|kits)$/.test(n)) return true;
@@ -194,25 +198,28 @@ function extractProductNameFromLine(line: string): string {
 function detectProduct(text: string, training: string, prev?: string, lastAssistantMessage?: string, lastUserProduct?: string) {
   const msg = normalize(text);
   
-  // 🔥 NUEVO: Si el cliente dice "quiero X" sin especificar producto, usar el último producto que mencionó
+  // 🔥 NUEVO: Si el cliente responde "quiero 1" después de una promo, priorizar el producto del último mensaje del bot
+  const assistantProduct = canonicalProductFromText(lastAssistantMessage || "");
+  const preferredMemoryProduct = assistantProduct || lastUserProduct || prev || "";
+
   const justWantsWithNumber = /^(quiero|llevo|compro|reservo|dame|mandame)\s+(\d+)$/i.test(msg);
-  if (justWantsWithNumber && lastUserProduct && !isInvalidProductCandidate(lastUserProduct)) {
-    console.log(`🔄 Cliente quiere "${lastUserProduct}" (usando producto anterior de memoria)`);
-    return lastUserProduct;
+  if (justWantsWithNumber && preferredMemoryProduct && !isInvalidProductCandidate(preferredMemoryProduct)) {
+    console.log(`🔄 Cliente quiere "${preferredMemoryProduct}" (producto activo por memoria/promo)`);
+    return preferredMemoryProduct;
   }
   
-  // 🔥 NUEVO: Si solo dice "quiero" o "si" o "ok" sin producto, usar el último producto
+  // 🔥 NUEVO: Si solo dice "quiero" o "si" o "ok" sin producto, usar producto activo
   const justWantsWithoutProduct = /^(quiero|si|sí|ok|dale|listo|confirmo)$/i.test(msg);
-  if (justWantsWithoutProduct && lastUserProduct && !isInvalidProductCandidate(lastUserProduct)) {
-    console.log(`🔄 Cliente confirmó "${lastUserProduct}" (usando producto anterior de memoria)`);
-    return lastUserProduct;
+  if (justWantsWithoutProduct && preferredMemoryProduct && !isInvalidProductCandidate(preferredMemoryProduct)) {
+    console.log(`🔄 Cliente confirmó "${preferredMemoryProduct}" (producto activo por memoria/promo)`);
+    return preferredMemoryProduct;
   }
   
-  // 🔥 NUEVO: Si solo dice un número (cantidad) sin producto, usar el último producto
+  // 🔥 NUEVO: Si solo dice un número, usar producto activo
   const justNumber = /^\d+$/.test(msg);
-  if (justNumber && lastUserProduct && !isInvalidProductCandidate(lastUserProduct)) {
-    console.log(`🔄 Cliente quiere ${msg} unidades de "${lastUserProduct}" (usando producto anterior de memoria)`);
-    return lastUserProduct;
+  if (justNumber && preferredMemoryProduct && !isInvalidProductCandidate(preferredMemoryProduct)) {
+    console.log(`🔄 Cliente quiere ${msg} unidades de "${preferredMemoryProduct}" (producto activo por memoria/promo)`);
+    return preferredMemoryProduct;
   }
   
   // Si solo pide información general, NO detectar producto
@@ -502,6 +509,10 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   if (!quantity && !isShoeSizeMessage && !waitingForShoeSize) {
     const q1 = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
     if (q1) quantity = Number(q1[1]);
+
+    // 🔥 Corrige "QUIERO 1", "llevo 2", "dame 3" como cantidad real
+    const q2 = norm.match(/^(quiero|llevo|compro|reservo|dame|mandame)\s+(\d{1,3})$/i);
+    if (!quantity && q2) quantity = Number(q2[2]);
   }
 
   if (isPackReference && (currentStep === "collecting_quantity" || currentStep === "esperando_cantidad")) {
@@ -1511,9 +1522,24 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
       isPureQuantityReply || safeQuantity(extracted.quantity) > 0
     );
 
-    if (productChanged && !safeQuantity(extracted.quantity)) {
+    // 🔥 CLAVE: Si el cliente inició otro producto nuevo y NO dijo "también/agregá/sumá",
+    // se empieza un pedido limpio. No arrastrar ciudad, calce, nombre ni carrito viejo.
+    if (productChanged && !wantsAddMore) {
+      orderData = {
+        product,
+        quantity: safeQuantity(extracted.quantity),
+        shoe_size: extracted.shoe_size || "",
+        city: extracted.city || "",
+        customer_name: extracted.name || "",
+        phone: extracted.phone || "",
+        address: extracted.address || "",
+        items: [],
+        total_amount: 0,
+      };
+    } else if (productChanged && !safeQuantity(extracted.quantity)) {
       orderData.quantity = 0;
       orderData.total_amount = 0;
+      orderData.items = [];
     }
 
     orderData.quantity = safeQuantity(orderData.quantity);
@@ -1546,9 +1572,11 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     const hasProductsToAdd = productsToAdd.length > 0;
 
     const isFreshProductSearch = !!product && !wantsAddMore && !isPureQuantityReply && !isPackReferenceText(texto) &&
-      !effectivePreviousStep.startsWith("collecting") && effectivePreviousStep !== "esperando_cantidad" && effectivePreviousStep !== "waiting_payment_proof";
+      (!effectivePreviousStep.startsWith("collecting") || productChanged) &&
+      effectivePreviousStep !== "esperando_cantidad" && effectivePreviousStep !== "waiting_payment_proof";
 
-    let cartItems = isFreshProductSearch ? [] : getCartItems(oldOrder);
+    const mustStartNewCart = !!product && !wantsAddMore && productChanged;
+    let cartItems = (isFreshProductSearch || mustStartNewCart) ? [] : getCartItems(oldOrder);
 
     if (product && (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")) {
       cartItems = cartItems.filter((i) => sameProduct(i.product, product));
@@ -1556,6 +1584,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
 
     if (isFreshProductSearch) {
       orderData.items = [];
+      orderData.city = extracted.city || "";
       orderData.customer_name = "";
       orderData.phone = "";
       orderData.address = "";
