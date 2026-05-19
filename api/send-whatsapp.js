@@ -7,284 +7,109 @@ const supabase = createClient(
 );
 
 async function getConfig(userId) {
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from('whatsapp_config')
     .select('phone_number_id, permanent_token')
     .eq('user_id', userId)
     .maybeSingle();
-
-  if (error) {
-    console.error('❌ Error getConfig:', error);
-    return null;
-  }
-
   return data;
 }
 
 async function metaSendText(config, to, text) {
-  const payload = {
-    messaging_product: 'whatsapp',
-    to,
-    type: 'text',
-    text: {
-      body: text,
-      preview_url: false,
-    },
-  };
-
   const r = await fetch(
     `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
     {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${String(config.permanent_token).trim()}`,
+        Authorization: `Bearer ${config.permanent_token.trim()}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to,
+        type: 'text',
+        text: { body: text, preview_url: false },
+      }),
     }
   );
-
-  const responseText = await r.text();
-
-  if (!r.ok) {
-    console.error('❌ Meta text error:', responseText);
-    return {
-      ok: false,
-      status: r.status,
-      error: responseText,
-    };
-  }
-
-  console.log('✅ Meta text enviado:', responseText);
-
-  return {
-    ok: true,
-    status: r.status,
-    data: responseText,
-  };
+  if (!r.ok) console.log('📤 Meta text error:', await r.text());
+  return r.ok;
 }
 
 async function metaSendMedia(config, to, mediaUrl, type = 'image', caption = '') {
   const t = type === 'video' ? 'video' : 'image';
-
   const payload = {
     messaging_product: 'whatsapp',
     to,
     type: t,
     [t]: caption ? { link: mediaUrl, caption } : { link: mediaUrl },
   };
-
   const r = await fetch(
     `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
     {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${String(config.permanent_token).trim()}`,
+        Authorization: `Bearer ${config.permanent_token.trim()}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
     }
   );
-
-  const responseText = await r.text();
-
-  if (!r.ok) {
-    console.error(`❌ Meta ${t} error:`, responseText);
-    return {
-      ok: false,
-      status: r.status,
-      error: responseText,
-    };
-  }
-
-  console.log(`✅ Meta ${t} enviado:`, responseText);
-
-  return {
-    ok: true,
-    status: r.status,
-    data: responseText,
-  };
+  if (!r.ok) console.log(`📤 Meta ${t} error:`, await r.text());
+  return r.ok;
 }
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (req.method === 'OPTIONS') return res.status(200).end();
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({
-      ok: false,
-      error: 'Method not allowed',
-    });
-  }
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
     const body = req.body || {};
 
-    const to =
-      body.to ||
-      body.To ||
-      body.number ||
-      body.phone ||
-      body.from_number ||
-      body.fromNumber ||
-      body.sender_id ||
-      body.senderId;
-
-    const userId =
-      body.userId ||
-      body.userid ||
-      body.user_id;
-
-    const message =
-      body.message ||
-      body.text ||
-      body.response ||
-      body.reply ||
-      body.answer ||
-      '';
-
-    const imageUrls = Array.isArray(body.imageUrls)
-      ? body.imageUrls
-      : Array.isArray(body.images)
-        ? body.images
-        : Array.isArray(body.media_urls)
-          ? body.media_urls
-          : [];
-
-    const videoUrl = body.videoUrl || body.video_url || null;
-    const gifUrl = body.gifUrl || body.gif_url || null;
+    const to = body.to || body.To || body.number || body.phone;
+    const userId = body.userId || body.userid || body.user_id;
+    const message = body.message || body.text || '';
+    const imageUrls = Array.isArray(body.imageUrls) ? body.imageUrls
+                    : Array.isArray(body.images) ? body.images : [];
+    const videoUrl = body.videoUrl || null;
+    const gifUrl = body.gifUrl || null;
 
     if (!to || !userId) {
-      console.error('❌ Payload inválido:', JSON.stringify(body).slice(0, 800));
-
-      return res.status(400).json({
-        ok: false,
-        error: 'Missing to or userId',
-        received: { to, userId },
-      });
+      console.log('❌ payload inválido:', JSON.stringify(body).slice(0, 300));
+      return res.status(400).json({ error: 'Missing to or userId', received: { to, userId } });
     }
 
     const cleanTo = String(to).replace(/[^0-9]/g, '');
-
-    if (!cleanTo) {
-      return res.status(400).json({
-        ok: false,
-        error: 'Invalid phone number',
-        receivedTo: to,
-      });
-    }
-
-    if (!message && imageUrls.length === 0 && !videoUrl && !gifUrl) {
-      console.error('❌ Sin mensaje ni media:', JSON.stringify(body).slice(0, 800));
-
-      return res.status(400).json({
-        ok: false,
-        error: 'No message or media to send',
-      });
-    }
+    if (!cleanTo) return res.status(400).json({ error: 'Invalid phone number' });
 
     const config = await getConfig(userId);
-
     if (!config?.phone_number_id || !config?.permanent_token) {
-      return res.status(400).json({
-        ok: false,
-        error: 'WhatsApp no configurado para este usuario',
-      });
+      return res.status(400).json({ error: 'WhatsApp no configurado para este usuario' });
     }
 
-    console.log('📤 Enviando WhatsApp:', {
-      to: cleanTo,
-      userId,
-      hasMessage: Boolean(message),
-      images: imageUrls.length,
-      hasVideo: Boolean(videoUrl),
-      hasGif: Boolean(gifUrl),
-    });
-
-    const sendResults = [];
-
+    // 1) Imágenes (primera con caption si hay texto)
     for (let i = 0; i < imageUrls.length; i++) {
-      const caption = i === 0 && message ? message : '';
-      const result = await metaSendMedia(config, cleanTo, imageUrls[i], 'image', caption);
-
-      sendResults.push({
-        type: 'image',
-        url: imageUrls[i],
-        ...result,
-      });
-
-      if (!result.ok) {
-        return res.status(502).json({
-          ok: false,
-          error: 'Meta no envió la imagen',
-          details: result,
-        });
-      }
+      const cap = i === 0 && message ? message : '';
+      await metaSendMedia(config, cleanTo, imageUrls[i], 'image', cap);
     }
 
+    // 2) Texto solo si no hubo imágenes
     if (imageUrls.length === 0 && message) {
-      const result = await metaSendText(config, cleanTo, message);
-
-      sendResults.push({
-        type: 'text',
-        ...result,
-      });
-
-      if (!result.ok) {
-        return res.status(502).json({
-          ok: false,
-          error: 'Meta no envió el mensaje',
-          details: result,
-        });
-      }
+      await metaSendText(config, cleanTo, message);
     }
 
-    if (videoUrl) {
-      const result = await metaSendMedia(config, cleanTo, videoUrl, 'video', '');
+    // 3) Video
+    if (videoUrl) await metaSendMedia(config, cleanTo, videoUrl, 'video', '');
 
-      sendResults.push({
-        type: 'video',
-        url: videoUrl,
-        ...result,
-      });
+    // 4) Gif
+    if (gifUrl) await metaSendMedia(config, cleanTo, gifUrl, 'image', '');
 
-      if (!result.ok) {
-        return res.status(502).json({
-          ok: false,
-          error: 'Meta no envió el video',
-          details: result,
-        });
-      }
-    }
-
-    if (gifUrl) {
-      const result = await metaSendMedia(config, cleanTo, gifUrl, 'image', '');
-
-      sendResults.push({
-        type: 'gif',
-        url: gifUrl,
-        ...result,
-      });
-
-      if (!result.ok) {
-        return res.status(502).json({
-          ok: false,
-          error: 'Meta no envió el gif',
-          details: result,
-        });
-      }
-    }
-
-    const allMedia = [
-      ...imageUrls,
-      ...(videoUrl ? [videoUrl] : []),
-      ...(gifUrl ? [gifUrl] : []),
-    ];
-
-    const { error: insertError } = await supabase.from('inbox_messages').insert({
+    // Guardar saliente (media_url es ARRAY, media_url_text es TEXT)
+    const allMedia = [...imageUrls, ...(videoUrl ? [videoUrl] : []), ...(gifUrl ? [gifUrl] : [])];
+    await supabase.from('inbox_messages').insert({
       user_id: userId,
       source: 'whatsapp',
       platform: 'whatsapp',
@@ -294,39 +119,17 @@ export default async function handler(req, res) {
       message: message || '',
       media_url: allMedia.length > 0 ? allMedia : null,
       media_url_text: allMedia[0] || null,
-      message_type: imageUrls.length > 0
-        ? 'out_image'
-        : videoUrl
-          ? 'out_video'
-          : gifUrl
-            ? 'out_gif'
-            : 'out_text',
+      message_type: imageUrls.length > 0 ? 'out_image'
+                   : videoUrl ? 'out_video'
+                   : gifUrl ? 'out_gif'
+                   : 'out_text',
       is_read: true,
       is_processed: true,
     });
 
-    if (insertError) {
-      console.error('❌ Error guardando saliente:', insertError);
-
-      return res.status(500).json({
-        ok: false,
-        error: 'Mensaje enviado, pero no se pudo guardar en Supabase',
-        details: insertError.message,
-      });
-    }
-
-    return res.status(200).json({
-      ok: true,
-      sent: true,
-      to: cleanTo,
-      results: sendResults,
-    });
+    return res.status(200).json({ ok: true });
   } catch (err) {
-    console.error('❌ send-whatsapp error:', err);
-
-    return res.status(500).json({
-      ok: false,
-      error: err.message,
-    });
+    console.error('send-whatsapp error:', err);
+    return res.status(500).json({ error: err.message });
   }
 }
