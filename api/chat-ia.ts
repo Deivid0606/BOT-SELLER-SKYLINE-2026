@@ -9,6 +9,27 @@ const clean = (t: any): string => String(t || "").trim();
 
 const normalize = (t: string): string => clean(t).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
 
+// 🔥 NUEVA FUNCIÓN: Detecta si el cliente solo pide información general
+function isInformationRequest(text: string): boolean {
+  const n = normalize(text);
+  
+  const infoWords = /\b(informaci[oó]n|info|más info|mas info|quiero saber|consultar|dudas?|más datos|mas datos|detalles|más detalles|mas detalles|explicame|qué es|que es|cómo funciona|como funciona)\b/i;
+  const productWords = /\b(plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|veneno|abeja|crema|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo)\b/i;
+  
+  if (productWords.test(n)) return false;
+  return infoWords.test(n);
+}
+
+// 🔥 NUEVA FUNCIÓN: Detecta consulta de catálogo
+function isCatalogQuery(text: string): boolean {
+  const n = normalize(text);
+  const catalogWords = /\b(cat[aá]logo|productos|qu[eé] venden|tienen|stock|catálogo|precios|catalogo)\b/i;
+  const greetingWords = /\b(hola|buenas|buen día|saludos)\b/i;
+  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte)\b/i;
+  
+  return (catalogWords.test(n) || greetingWords.test(n)) && !productWords.test(n);
+}
+
 function isShoeProductText(text: string): boolean {
   const n = normalize(text);
   return /\b(plantilla|plantillas|ortopiex|ortoflex|5d)\b/.test(n);
@@ -130,8 +151,16 @@ function extractProductNameFromLine(line: string): string {
   return clean(parts[0] || c);
 }
 
+// 🔥 FUNCIÓN CORREGIDA: Detecta producto SOLO si realmente lo pide
 function detectProduct(text: string, training: string, prev?: string, lastAssistantMessage?: string) {
   const msg = normalize(text);
+  
+  // 🔥 NUEVO: Si solo pide información general, NO detectar producto
+  if (isInformationRequest(text) || isCatalogQuery(text)) {
+    console.log("ℹ️ El cliente solo pide información general, no se detecta producto");
+    return "";
+  }
+  
   const lines = getPriceLines(training);
 
   if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja") || msg.includes("creama")) {
@@ -306,14 +335,18 @@ function isPriceIntent(text: string) {
   return (m.includes("precio") || m.includes("cuanto") || m.includes("cuesta") || m.includes("valor") || m.includes("costo"));
 }
 
-// 🔥 CORREGIDA: No confunde "QUIERO" con confirmación de compra sin cantidad
+// 🔥 FUNCIÓN CORREGIDA: No confunde "quiero información" con compra
 function isBuyIntent(text: string) {
   const m = normalize(text);
+  
+  // 🔥 NUEVO: Si pide información, NO es intención de compra
+  if (isInformationRequest(text) || isCatalogQuery(text)) {
+    return false;
+  }
   
   const graciasPattern = /\b(gracias|very nice|muy lindo|excelente|bien|okey|oka|perfecto|hermoso|genial|buenisimo)\b/i;
   if (graciasPattern.test(m)) return false;
   
-  // "QUIERO" solo es intención, el bot debe preguntar cantidad
   const soloQuieroPattern = /^\s*(quiero|si|sí|dale|ok|listo|confirmo|compro|reservo)\s*$/i;
   if (soloQuieroPattern.test(m)) {
     return true;
@@ -355,10 +388,22 @@ function botWasAskingShoeSize(history: any[]) {
     lastAssistantMessage.includes("disponibles del 35"));
 }
 
-// 🔥 CORREGIDA: NUNCA asume cantidad automáticamente
+// 🔥 FUNCIÓN CORREGIDA: Limpia extracciones falsas en consultas de info
 function extractData(msg: string, currentStep?: string, forceQuantityMode = false, forceShoeSizeMode = false) {
   const text = clean(msg);
   const norm = normalize(text);
+  
+  // 🔥 NUEVO: Si es solo consulta de info, limpiar extracciones falsas
+  if (isInformationRequest(text) || isCatalogQuery(text)) {
+    return {
+      quantity: 0,
+      shoe_size: "",
+      city: "",
+      name: "",
+      phone: "",
+      address: "",
+    };
+  }
 
   const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
   const isPackReference = isPackReferenceText(text);
@@ -747,7 +792,6 @@ Me confirmaste que querés ${productName}.
 Respondé con el número (ej: 1, 2, 3...)`;
 }
 
-// 🔥 CORREGIDA: SIEMPRE pregunta cantidad después del producto
 function nextStep(o: any, tipoCobertura?: string) {
   const items = getCartItems(o);
   
