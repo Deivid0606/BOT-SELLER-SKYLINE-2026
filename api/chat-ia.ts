@@ -185,7 +185,6 @@ function isInvalidProductCandidate(name: string): boolean {
   ];
 
   if (invalidExact.includes(n)) return true;
-  // Evita que instrucciones del entrenamiento entren como nombre de producto
   if (n.includes("cliente envia nueva informacion") || n.includes("cuando el cliente") || n.includes("nueva informacion")) return true;
   if (/^\d+\s*(unidad|unidades|u|kit|kits)$/.test(n)) return true;
   if (/^\d+\s*(unidad|unidades).[",].\d+\s*(unidad|unidades)/.test(n)) return true;
@@ -211,7 +210,6 @@ function isInvalidCartProduct(name: string): boolean {
   if (n.length < 4) return true;
 
   if (/^(cliente|nombre|contacto|telefono|teléfono|ubicacion|ubicación|direccion|dirección)\b/i.test(raw)) return true;
-  // Evita que instrucciones del entrenamiento entren al carrito
   if (n.includes("cliente envia nueva informacion") || n.includes("cuando el cliente") || n.includes("nueva informacion")) return true;
   if (/\b(quiero|cantidad|total|precio|delivery|envio|envío|pago al recibir|contra entrega)\b/.test(n)) return true;
   if (/^x\d+$/.test(n)) return true;
@@ -244,7 +242,6 @@ const ZONAS_COBERTURA = [
 function getTipoCobertura(city: string): "con_cobertura" | "sin_cobertura" | "" {
   if (!city) return "";
   const c = normalize(city);
-  // Zonas que se manejan por encomienda / pago anticipado aunque aparezcan parecidas en cobertura.
   if (/\b(cruce\s+san\s+alberto|cruse\s+san\s+alberto|san\s+alberto|pedro\s+juan\s+caballero|pjc)\b/.test(c)) return "sin_cobertura";
   return ZONAS_COBERTURA.some((z) => normalize(z) === c) ? "con_cobertura" : "sin_cobertura";
 }
@@ -265,11 +262,9 @@ function extractProductNameFromLine(line: string): string {
   return clean(parts[0] || c);
 }
 
-// 🔥 FUNCIÓN CORREGIDA: Detecta producto con memoria del último producto del usuario
 function detectProduct(text: string, training: string, prev?: string, lastAssistantMessage?: string, lastUserProduct?: string) {
   const msg = normalize(text);
   
-  // 🔥 NUEVO: Si el cliente responde "quiero 1" después de una promo, priorizar el producto del último mensaje del bot
   const assistantProduct = canonicalProductFromText(lastAssistantMessage || "");
   const preferredMemoryProduct = assistantProduct || lastUserProduct || prev || "";
 
@@ -279,22 +274,18 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
     return preferredMemoryProduct;
   }
   
-  // 🔥 NUEVO: Si solo dice "quiero" o "si" o "ok" sin producto, usar producto activo
   const justWantsWithoutProduct = /^(quiero|si|sí|ok|dale|listo|confirmo)$/i.test(msg);
   if (justWantsWithoutProduct && preferredMemoryProduct && !isInvalidProductCandidate(preferredMemoryProduct)) {
     console.log(`🔄 Cliente confirmó "${preferredMemoryProduct}" (producto activo por memoria/promo)`);
     return preferredMemoryProduct;
   }
   
-  // 🔥 NUEVO: Si solo dice un número, usar producto activo
   const justNumber = /^\d+$/.test(msg);
   if (justNumber && preferredMemoryProduct && !isInvalidProductCandidate(preferredMemoryProduct)) {
     console.log(`🔄 Cliente quiere ${msg} unidades de "${preferredMemoryProduct}" (producto activo por memoria/promo)`);
     return preferredMemoryProduct;
   }
   
-  // Si solo pide información general, ubicación/origen o no menciona producto, NO detectar producto.
-  // Esto evita que "De Asunción" active Veneno solo porque el catálogo anterior lo contenía.
   if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text) || isOriginQuestion(text) || isOnlyLocationMessage(text)) {
     console.log("ℹ️ Consulta general/ubicación: no se detecta producto");
     return "";
@@ -306,7 +297,6 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
   
   const lines = getPriceLines(training);
 
-  // Detección explícita por palabras clave
   if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja") || msg.includes("creama")) {
     return "Veneno de Abeja";
   }
@@ -383,7 +373,6 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
   if (bestScore >= 5) return best;
 
   return "";
-
 }
 
 function canonicalProductFromText(text: string): string {
@@ -464,11 +453,9 @@ function isPriceIntent(text: string) {
   return (m.includes("precio") || m.includes("cuanto") || m.includes("cuesta") || m.includes("valor") || m.includes("costo"));
 }
 
-// 🔥 FUNCIÓN CORREGIDA: No confunde "quiero información" con compra
 function isBuyIntent(text: string) {
   const m = normalize(text);
   
-  // Si pide información, NO es intención de compra
   if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
     return false;
   }
@@ -521,7 +508,6 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   const text = clean(msg);
   const norm = normalize(text);
   
-  // Si es solo consulta de info, limpiar extracciones falsas
   if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
     return {
       quantity: 0,
@@ -571,7 +557,6 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     const q1 = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
     if (q1) quantity = Number(q1[1]);
 
-    // 🔥 Corrige "QUIERO 1", "llevo 2", "dame 3" como cantidad real
     const q2 = norm.match(/^(quiero|llevo|compro|reservo|dame|mandame)\s+(\d{1,3})$/i);
     if (!quantity && q2) quantity = Number(q2[2]);
   }
@@ -624,7 +609,6 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     name = clean(nameMatch).replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "").trim();
   }
 
-  // Captura nombre + teléfono aunque venga como "Fernando.Gimenez.Quintana.tef.0981775387".
   if (!name && phone) {
     const possibleName = normalize(text)
       .replace(normalize(phone), " ")
@@ -672,11 +656,24 @@ function safeQuantity(value: any): number {
   return n;
 }
 
+// ✅ FUNCIÓN CORREGIDA: mergeOrderData ahora reemplaza correctamente la cantidad cuando replaceQuantity es true
 function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = false): any {
   const oldQuantity = safeQuantity(old?.quantity);
   const newQuantity = safeQuantity(ext?.quantity);
 
-  const finalQuantity = newQuantity > 0 ? newQuantity : (replaceQuantity ? oldQuantity : oldQuantity);
+  // Lógica corregida:
+  // - Si replaceQuantity es true, usar newQuantity si existe, sino oldQuantity
+  // - Si replaceQuantity es false y hay newQuantity, sumar (para "también quiero")
+  // - Si no hay newQuantity, mantener oldQuantity
+  let finalQuantity = oldQuantity;
+  
+  if (newQuantity > 0) {
+    if (replaceQuantity) {
+      finalQuantity = newQuantity;  // ✅ Reemplazar (caso: respuesta "1" a "¿cuántas unidades?")
+    } else {
+      finalQuantity = oldQuantity + newQuantity;  // ✅ Sumar (caso: "también quiero X unidades")
+    }
+  }
 
   return {
     product: product || old?.product || "",
@@ -943,7 +940,6 @@ y agendamos tu entrega ✨`;
 function buildQuantityQuestionResponse(product: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
   
-  // Determinar el precio según el producto
   let precioMsg = "";
   if (normalize(product).includes("veneno") || normalize(product).includes("abeja")) {
     precioMsg = "💰 Precio unitario: 145.000 Gs\n🔥 Promo 2 unidades: 249.900 Gs";
@@ -1315,10 +1311,8 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    // 🔥 NUEVO: Obtener el último producto que mencionó el usuario del contexto
     let lastUserProduct = context?.last_user_product || "";
     
-    // 🔥 NUEVO: Buscar en el historial el último producto mencionado por el usuario
     if (!lastUserProduct && Array.isArray(history)) {
       for (let i = history.length - 1; i >= 0; i--) {
         const msg = history[i];
@@ -1329,7 +1323,6 @@ export default async function handler(req: any, res: any) {
             lastUserProduct = detected;
             break;
           }
-          // También buscar palabras clave
           const norm = normalize(userText);
           if (norm.includes("veneno") || norm.includes("abeja")) {
             lastUserProduct = "Veneno de Abeja";
@@ -1359,7 +1352,6 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // Detectar si es conversación nueva
     const isNewChat = isNewConversation(texto, history || []);
     
     let oldOrder;
@@ -1383,7 +1375,6 @@ export default async function handler(req: any, res: any) {
     const previousStep = clean(context?.step);
     const previousTipoCobertura = clean(context?.tipo_cobertura);
 
-    // ✅ Preguntas de origen/localidad NO deben activar productos del catálogo anterior.
     if (isOriginQuestion(texto)) {
       return res.json({
         response: `Somos de Asunción, Paraguay 😊
@@ -1476,7 +1467,6 @@ Hacemos envíos a todo el país 🚚
       product = detectProduct(texto, fullTraining, context?.current_product || oldOrder?.product, lastAssistantMessage, lastUserProduct);
     }
 
-    // 🔥 NUEVO: Si no se detectó producto pero hay memoria de producto y es una respuesta de confirmación, usar memoria
     if ((!product || isInvalidProductCandidate(product)) && lastUserProduct && !isInvalidProductCandidate(lastUserProduct)) {
       const normText = normalize(texto);
       const isConfirmReply = /^(quiero|si|sí|ok|dale|listo|confirmo|\d+)$/i.test(normText);
@@ -1674,7 +1664,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
       if (redetected) product = redetected;
     }
 
-    // 🔥 NUEVO: Actualizar memoria del último producto si se detectó uno válido
     if (product && !isInvalidProductCandidate(product)) {
       lastUserProduct = product;
       console.log(`💾 Memoria actualizada: último producto = ${lastUserProduct}`);
@@ -1689,15 +1678,17 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     const effectivePreviousStep = previousStep;
     const effectivePreviousTipoCobertura = previousTipoCobertura;
 
+    // ✅ Aquí se usa la función mergeOrderData corregida
+    // replaceQuantity = true cuando es respuesta de cantidad pura (isPureQuantityReply)
+    const replaceQuantityFlag = isPureQuantityReply || safeQuantity(extracted.quantity) > 0;
+    
     let orderData = mergeOrderData(
       baseOrder,
       extracted,
       product,
-      isPureQuantityReply || safeQuantity(extracted.quantity) > 0
+      replaceQuantityFlag
     );
 
-    // 🔥 CLAVE: Si el cliente inició otro producto nuevo y NO dijo "también/agregá/sumá",
-    // se empieza un pedido limpio. No arrastrar ciudad, calce, nombre ni carrito viejo.
     if (productChanged && !wantsAddMore) {
       orderData = {
         product,
