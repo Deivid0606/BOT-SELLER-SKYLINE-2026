@@ -9,6 +9,73 @@ const clean = (t: any): string => String(t || "").trim();
 
 const normalize = (t: string): string => clean(t).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
 
+
+// =======================================================
+// 🧠 GUARDRAILS DETERMINÍSTICOS
+// Estas funciones evitan que Gemini invente producto/ciudad/flujo.
+// =======================================================
+function hasExplicitProductMention(text: string): boolean {
+  const n = normalize(text);
+  return /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol)\b/.test(n);
+}
+
+function isOriginQuestion(text: string): boolean {
+  const n = normalize(text);
+  return /\b(de\s+donde\s+es|de\s+donde\s+son|donde\s+estan|donde\s+queda|son\s+de\s+donde|ubicacion\s+de\s+ustedes|ubicación\s+de\s+ustedes)\b/.test(n);
+}
+
+function isNeutralReply(text: string): boolean {
+  const n = normalize(text);
+  return /^(te\s+aviso|despues\s+veo|despues\s+te\s+aviso|voy\s+a\s+ver|voy\s+a\s+pensar|cualquier\s+cosa|gracias|ok|dale|esta\s+bien|está\s+bien)$/i.test(n);
+}
+
+function isOnlyLocationMessage(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+  if (hasExplicitProductMention(text)) return false;
+  if (isOriginQuestion(text)) return false;
+  const prefixClean = n.replace(/^(yo\s+estoy\s+en|estoy\s+en|soy\s+de|de|en|para|envio\s+a|envío\s+a)\s+/, "");
+  return !!extractCityFromText(prefixClean || n);
+}
+
+function extractCityFromText(text: string): string {
+  const norm = normalize(text);
+  const cityAliases: Record<string, string> = {
+    "cruce san alberto": "Cruce San Alberto",
+    "cruse san alberto": "Cruce San Alberto",
+    "san alberto": "San Alberto",
+    asuncion: "Asunción", capiata: "Capiatá", capilata: "Capiatá", kapiata: "Capiatá",
+    cde: "Ciudad del Este", "ciudad del este": "Ciudad del Este", luque: "Luque",
+    ita: "Itá", lambare: "Lambaré", "san lorenzo": "San Lorenzo", sanlo: "San Lorenzo",
+    "san lorenso": "San Lorenzo", fdm: "Fernando de la Mora", "fernando de la mora": "Fernando de la Mora",
+    nemby: "Ñemby", ñemby: "Ñemby", ypane: "Ypané", limpio: "Limpio",
+    "villa elisa": "Villa Elisa", hernandarias: "Hernandarias", "presidente franco": "Presidente Franco",
+    "pte franco": "Presidente Franco", aregua: "Areguá", areguá: "Areguá",
+    sanber: "San Bernardino", "san ber": "San Bernardino", "san bernardino": "San Bernardino",
+    pjc: "Pedro Juan Caballero", "pedro juan": "Pedro Juan Caballero", "pedro juan caballero": "Pedro Juan Caballero",
+  };
+
+  for (const [k, v] of Object.entries(cityAliases)) {
+    if (new RegExp(`\\b${k.replace(/\\s+/g, "\\\\s+")}\\b`, "i").test(norm)) return v;
+  }
+  return "";
+}
+
+function buildCoverageOnlyResponse(city: string): string {
+  const tipo = getTipoCobertura(city);
+  if (tipo === "con_cobertura") {
+    return `✅ Perfecto 😊 ${city} tiene ENVÍO GRATIS contra-entrega 🚚\n\n¿Cuál producto te interesa? ✨`;
+  }
+  if (tipo === "sin_cobertura") {
+    return `ℹ️ ${city} no entra dentro de nuestra zona de contra-entrega 😊\n\nPero sí hacemos envíos seguros por:\n🚚 TSI / NASA / Occidental / MG Express / Multienvíos\n\n¿Cuál producto te interesa? ✨`;
+  }
+  return `Perfecto 😊 ¿Cuál producto te interesa? ✨`;
+}
+
+function buildWaitingPaymentResponse(order: any): string {
+  return `✅ Perfecto ${order.customer_name ? order.customer_name.split(" ")[0] : ""} 😊\n\nYa registré:\n\n📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}\n📍 ${order.city}\n📞 ${order.phone}\n\n📲 Ahora solo falta que envíes el comprobante de transferencia y confirmamos tu envío 🚚✨`;
+}
+
 // 🔥 NUEVA FUNCIÓN: Detecta si el cliente solo pide información general
 function isInformationRequest(text: string): boolean {
   const n = normalize(text);
@@ -25,7 +92,7 @@ function isCatalogQuery(text: string): boolean {
   const n = normalize(text);
   const catalogWords = /\b(cat[aá]logo|productos|qu[eé] venden|tienen|stock|catálogo|precios|catalogo)\b/i;
   const greetingWords = /\b(hola|buenas|buen día|saludos)\b/i;
-  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte)\b/i;
+  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla)\b/i;
   
   return (catalogWords.test(n) || greetingWords.test(n)) && !productWords.test(n);
 }
@@ -46,7 +113,7 @@ function isNewConversation(text: string, history: any[]): boolean {
 function isProductInquiry(text: string): boolean {
   const n = normalize(text);
   const inquiryWords = /\b(qu[eé] es|cómo funciona|para qu[eé] sirve|características|beneficios|tiene|informaci[oó]n|info|cu[aá]nto cuesta|precio|valor|costo|dime|contame|explicame)\b/i;
-  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo)\b/i;
+  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla)\b/i;
   const buyWords = /\b(quiero|comprar|llevo|dame|mandame|agregame|reservar|apartar)\b/i;
   
   return inquiryWords.test(n) && productWords.test(n) && !buyWords.test(n);
@@ -59,6 +126,8 @@ function isProductName(text: string): boolean {
     "veneno de abeja", "crema de abeja", "abeja",
     "plantillas ortopiex", "ortopiex", "plantillas", "ortoflex", "5d",
     "peladora automatica", "pelador automatico", "pelador", "peladora",
+    "maquina para hacer pororo", "maquina pororo", "pororo", "popcorn", "pochoclo", "palomitas",
+    "nebulizador", "nebulizador portatil", "tabla de picar", "tabla de marmol",
     "afilador de cuchillos", "afilador", "cuchillos", "sharpener",
     "vital honey vip", "vital honey",
     "perfume asad", "asad",
@@ -175,6 +244,8 @@ const ZONAS_COBERTURA = [
 function getTipoCobertura(city: string): "con_cobertura" | "sin_cobertura" | "" {
   if (!city) return "";
   const c = normalize(city);
+  // Zonas que se manejan por encomienda / pago anticipado aunque aparezcan parecidas en cobertura.
+  if (/\b(cruce\s+san\s+alberto|cruse\s+san\s+alberto|san\s+alberto|pedro\s+juan\s+caballero|pjc)\b/.test(c)) return "sin_cobertura";
   return ZONAS_COBERTURA.some((z) => normalize(z) === c) ? "con_cobertura" : "sin_cobertura";
 }
 
@@ -222,9 +293,14 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
     return preferredMemoryProduct;
   }
   
-  // Si solo pide información general, NO detectar producto
-  if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
-    console.log("ℹ️ El cliente solo pide información general, no se detecta producto");
+  // Si solo pide información general, ubicación/origen o no menciona producto, NO detectar producto.
+  // Esto evita que "De Asunción" active Veneno solo porque el catálogo anterior lo contenía.
+  if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text) || isOriginQuestion(text) || isOnlyLocationMessage(text)) {
+    console.log("ℹ️ Consulta general/ubicación: no se detecta producto");
+    return "";
+  }
+
+  if (!hasExplicitProductMention(text)) {
     return "";
   }
   
@@ -243,6 +319,18 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
       msg.includes("pelador de papas") || msg.includes("peladora de papas") || msg.includes("pelador automatico") ||
       msg.includes("peladora automatica")) {
     return "Peladora Automática";
+  }
+
+  if (msg.includes("pororo") || msg.includes("popcorn") || msg.includes("pochoclo") || msg.includes("palomita") || msg.includes("palomitas")) {
+    return "Máquina para hacer Pororo";
+  }
+
+  if (msg.includes("nebulizador")) {
+    return "Nebulizador portátil";
+  }
+
+  if ((msg.includes("tabla") && msg.includes("picar")) || msg.includes("tabla de marmol") || msg.includes("tabla de mármol")) {
+    return "Tabla de Picar de Mármol";
   }
 
   if (msg.includes("afilador") || msg.includes("cuchillo") || msg.includes("sharpener")) {
@@ -294,35 +382,8 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
 
   if (bestScore >= 5) return best;
 
-  if (lastAssistantMessage) {
-    const assistantNorm = normalize(lastAssistantMessage);
-    let assistantBest = "";
-    let assistantScore = 0;
+  return "";
 
-    for (const line of lines) {
-      const name = extractProductNameFromLine(line);
-      if (isInvalidProductCandidate(name)) continue;
-      const n = normalize(name);
-      if (!n || n.length < 3) continue;
-
-      let score = 0;
-      if (assistantNorm.includes(n)) score += 50;
-
-      const words = n.split(" ").filter((w) => w.length >= 4);
-      for (const w of words) {
-        if (assistantNorm.includes(w)) score += 10;
-      }
-
-      if (score > assistantScore) {
-        assistantScore = score;
-        assistantBest = name;
-      }
-    }
-
-    if (assistantScore >= 10) return assistantBest;
-  }
-
-  return clean(prev || "");
 }
 
 function canonicalProductFromText(text: string): string {
@@ -520,6 +581,7 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   }
 
   const cityAliases: Record<string, string> = {
+    "cruce san alberto": "Cruce San Alberto", "cruse san alberto": "Cruce San Alberto", "san alberto": "San Alberto",
     asuncion: "Asunción", capiata: "Capiatá", capilata: "Capiatá", kapiata: "Capiatá",
     cde: "Ciudad del Este", "ciudad del este": "Ciudad del Este", luque: "Luque",
     ita: "Itá", lambare: "Lambaré", "san lorenzo": "San Lorenzo", sanlo: "San Lorenzo",
@@ -545,7 +607,7 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
 
   let name = "";
 
-  const invalidName = /\d/.test(text) ||
+  const invalidName =
     norm.includes("unidad") || norm.includes("unidades") ||
     norm.includes("precio") || norm.includes("delivery") || norm.includes("envio") || norm.includes("envío") ||
     norm.includes("ubicacion") || norm.includes("ubicación") || norm.includes("direccion") || norm.includes("dirección") ||
@@ -553,16 +615,38 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     norm.includes("veneno") || norm.includes("abeja") || norm.includes("plantilla") || norm.includes("crema") ||
     norm.includes("ortopiex") || norm.includes("pelador") || norm.includes("afilador") ||
     norm.includes("vital") || norm.includes("perfume") || norm.includes("soporte") || norm.includes("lavarropas") ||
-    norm.includes("cuchillo") || norm.includes("5d") || norm.includes("ortoflex");
+    norm.includes("cuchillo") || norm.includes("5d") || norm.includes("ortoflex") ||
+    norm.includes("pororo") || norm.includes("maquina") || norm.includes("nebulizador") || norm.includes("tabla");
 
-  const nameMatch = text.match(/(?:me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i)?.[1];
+  const nameMatch = text.match(/(?:me\s+llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,80})/i)?.[1];
 
   if (nameMatch && !invalidName && !isProductName(nameMatch)) {
     name = clean(nameMatch).replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "").trim();
-  } else if (!invalidName && /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,60}$/.test(text) &&
-             !city && !phone && !quantity && !norm.includes("hola") && !norm.includes("si") &&
-             !isProductName(text)) {
-    name = text;
+  }
+
+  // Captura nombre + teléfono aunque venga como "Fernando.Gimenez.Quintana.tef.0981775387".
+  if (!name && phone) {
+    const possibleName = normalize(text)
+      .replace(normalize(phone), " ")
+      .replace(/\b(tel|tef|telefono|teléfono|cel|celular|nro|numero|número|contacto)\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const titleName = possibleName
+      .split(" ")
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+
+    if (titleName.length >= 5 && /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(titleName) && !isProductName(titleName)) {
+      name = titleName;
+    }
+  }
+
+  if (!name && !invalidName && !/\d/.test(text) && /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s\.]{5,80}$/.test(text) &&
+      !city && !phone && !quantity && !norm.includes("hola") && !norm.includes("si") &&
+      !isProductName(text)) {
+    name = clean(text.replace(/[.]+/g, " ").replace(/\s+/g, " "));
   }
 
   return {
@@ -638,10 +722,13 @@ function calculateTotal(product: string, quantity: number, training: string): nu
 
   const protectedCatalog = [
     { keys: ["veneno de abeja", "crema de abeja", "creama de abeja", "abeja"], unit: 145000, promos: { 2: 249900 } as Record<number, number> },
-    { keys: ["peladora automatica", "pelador automatico", "peladora", "pelador"], unit: 189900, promos: {} as Record<number, number> },
+    { keys: ["peladora automatica", "pelador automatico", "peladora", "pelador"], unit: 169900, promos: {} as Record<number, number> },
     { keys: ["afilador de cuchillos", "afilador", "cuchillos", "sharpener"], unit: 99000, promos: { 2: 129900 } as Record<number, number> },
     { keys: ["vital honey vip", "vital honey"], unit: 169900, promos: { 2: 289900 } as Record<number, number> },
     { keys: ["perfume asad", "asad"], unit: 169900, promos: {} as Record<number, number> },
+    { keys: ["maquina para hacer pororo", "maquina pororo", "pororo", "popcorn", "pochoclo", "palomitas"], unit: 169900, promos: {} as Record<number, number> },
+    { keys: ["nebulizador portatil", "nebulizador portátil", "nebulizador"], unit: 169900, promos: {} as Record<number, number> },
+    { keys: ["tabla de picar de marmol", "tabla de picar de mármol", "tabla de picar", "tabla de marmol", "tabla de mármol"], unit: 169900, promos: {} as Record<number, number> },
     { keys: ["plantillas ortopiex", "ortopiex", "plantillas"], unit: 159000, promos: {} as Record<number, number> },
     { keys: ["almohadillas antivibracion", "almohadillas antivibración", "soportes antivibracion", "soportes antivibración", "patitas antideslizantes", "kit x4 patitas antideslizantes", "kit x 4 patitas antideslizantes", "soporte para lavarropas", "lavarropas"], unit: 98000, promos: {} as Record<number, number> },
   ];
@@ -861,15 +948,17 @@ function buildQuantityQuestionResponse(product: string, shoeSize?: any): string 
   if (normalize(product).includes("veneno") || normalize(product).includes("abeja")) {
     precioMsg = "💰 Precio unitario: 145.000 Gs\n🔥 Promo 2 unidades: 249.900 Gs";
   } else if (normalize(product).includes("pelador")) {
-    precioMsg = "💰 Precio unitario: 189.900 Gs";
+    precioMsg = "💰 Precio unitario: 169.900 Gs";
   } else if (normalize(product).includes("afilador")) {
     precioMsg = "💰 Precio unitario: 99.000 Gs\n🔥 Promo 2 unidades: 129.900 Gs";
   } else if (normalize(product).includes("vital")) {
     precioMsg = "💰 Precio unitario: 169.900 Gs\n🔥 Promo 2 unidades: 289.900 Gs";
   } else if (normalize(product).includes("plantilla") || normalize(product).includes("ortopiex")) {
     precioMsg = "💰 Precio unitario: 159.000 Gs";
+  } else if (normalize(product).includes("pororo") || normalize(product).includes("nebulizador") || normalize(product).includes("tabla")) {
+    precioMsg = "💰 Precio unitario: 169.900 Gs";
   } else {
-    precioMsg = "💰 Precio unitario: 145.000 Gs";
+    precioMsg = "💰 Precio unitario: 169.900 Gs";
   }
   
   return `🔥 Perfecto 😊
@@ -1254,6 +1343,18 @@ export default async function handler(req: any, res: any) {
             lastUserProduct = "Peladora Automática";
             break;
           }
+          if (norm.includes("pororo") || norm.includes("popcorn") || norm.includes("pochoclo")) {
+            lastUserProduct = "Máquina para hacer Pororo";
+            break;
+          }
+          if (norm.includes("nebulizador")) {
+            lastUserProduct = "Nebulizador portátil";
+            break;
+          }
+          if (norm.includes("tabla") && (norm.includes("picar") || norm.includes("marmol"))) {
+            lastUserProduct = "Tabla de Picar de Mármol";
+            break;
+          }
         }
       }
     }
@@ -1281,6 +1382,59 @@ export default async function handler(req: any, res: any) {
     
     const previousStep = clean(context?.step);
     const previousTipoCobertura = clean(context?.tipo_cobertura);
+
+    // ✅ Preguntas de origen/localidad NO deben activar productos del catálogo anterior.
+    if (isOriginQuestion(texto)) {
+      return res.json({
+        response: `Somos de Asunción, Paraguay 😊
+Hacemos envíos a todo el país 🚚
+
+¿Cuál producto te interesa? ✨`,
+        context: {
+          ...(context || {}),
+          step: previousStep || "selling",
+          order_data: oldOrder,
+          current_product: oldOrder?.product || context?.current_product || null,
+          last_user_product: lastUserProduct || null,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    const activeProductForLocation = oldOrder?.product || (String(previousStep || "").startsWith("collecting") ? context?.current_product : "");
+    const locationOnlyCity = isOnlyLocationMessage(texto) ? extractCityFromText(texto) : "";
+    if (locationOnlyCity && !activeProductForLocation) {
+      const coverageOrder = { ...(oldOrder || {}), city: locationOnlyCity };
+      return res.json({
+        response: buildCoverageOnlyResponse(locationOnlyCity),
+        context: {
+          ...(context || {}),
+          step: "selling",
+          tipo_cobertura: getTipoCobertura(locationOnlyCity) || null,
+          order_data: coverageOrder,
+          current_product: null,
+          last_user_product: null,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    if (isNeutralReply(texto)) {
+      return res.json({
+        response: "😊 Perfecto, cualquier duda escribime nomás. Estoy para ayudarte ✨",
+        context: {
+          ...(context || {}),
+          step: previousStep || "selling",
+          order_data: oldOrder,
+          current_product: oldOrder?.product || context?.current_product || null,
+          last_user_product: lastUserProduct || oldOrder?.product || null,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
 
     let isPaymentProof = false;
 
@@ -1465,6 +1619,25 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
         const mime = mimeHint || fetched.mime || "audio/ogg";
         const transcript = await transcribeAudioWithGemini({ apiKey, model, audioBase64: fetched.data, mime });
         texto = transcript || texto || "Te mandé un audio.";
+
+        const audioHasProduct = !!detectProduct(texto, fullTraining, "", "", lastUserProduct);
+        const audioExtracted = extractData(texto, previousStep, false, false);
+        const audioHasUsefulData = !!(audioExtracted.quantity || audioExtracted.city || audioExtracted.name || audioExtracted.phone || audioExtracted.address);
+
+        if (!isBuyIntent(texto) && !audioHasProduct && !audioHasUsefulData) {
+          return res.json({
+            response: "🎤 Escuché tu audio 😊 ¿Podrías decirme qué producto te interesa o qué necesitás exactamente?",
+            context: {
+              ...(context || {}),
+              step: previousStep || "selling",
+              order_data: oldOrder,
+              current_product: oldOrder?.product || context?.current_product || null,
+              last_user_product: lastUserProduct || oldOrder?.product || null,
+              updated_at: new Date().toISOString(),
+            },
+            is_payment_proof: false,
+          });
+        }
       } else {
         texto = texto || "Te mandé un audio pero no pudiste descargarlo.";
       }
@@ -1497,7 +1670,8 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     }
 
     if (!isPureQuantityReply && !isPureShoeSizeReply && !wantsAddMore) {
-      product = detectProduct(texto, fullTraining, product || context?.current_product || oldOrder?.product, lastAssistantMessage, lastUserProduct);
+      const redetected = detectProduct(texto, fullTraining, "", lastAssistantMessage, lastUserProduct);
+      if (redetected) product = redetected;
     }
 
     // 🔥 NUEVO: Actualizar memoria del último producto si se detectó uno válido
@@ -1818,6 +1992,24 @@ Ahora pasame tu nombre y apellido para agendar el pedido 🙏`,
       });
     }
 
+    if (finalTipoCobertura === "sin_cobertura" && orderData.product && orderData.city && orderData.customer_name && orderData.phone && step === "waiting_payment_proof") {
+      await safeUpsertOrder(user_id, fromNumber, orderData, false, "waiting_payment_proof");
+      return res.json({
+        response: buildWaitingPaymentResponse(orderData),
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || context?.current_product || null,
+          last_user_product: lastUserProduct || orderData.product || null,
+          step: "waiting_payment_proof",
+          tipo_cobertura: finalTipoCobertura || null,
+          order_data: orderData,
+          last_topic: "comprobante",
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
     if (shouldCollect) {
       await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
     }
@@ -1903,6 +2095,9 @@ Si el paso actual es confirm_order, confirmá el pedido con la plantilla del ent
 No repitas saludo si ya hubo conversación.
 
 No cambies de producto salvo que el cliente lo pida.
+Si el cliente pregunta "de dónde es", "de Asunción", "yo estoy en San Alberto" o solo menciona ciudad sin producto activo, NO vendas Veneno ni ningún producto: respondé solo cobertura/origen y preguntá qué producto le interesa.
+No inventes producto a partir del catálogo anterior.
+No inventes ciudad desde una dirección. La ciudad guardada en estado manda.
 
 Cerrá siempre con el siguiente paso.
 
