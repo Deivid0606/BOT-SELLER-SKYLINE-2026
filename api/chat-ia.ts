@@ -1826,7 +1826,25 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     }
 
     const finalTipoCobertura = getTipoCobertura(orderData.city) || effectivePreviousTipoCobertura || "";
-    const step = nextStep(orderData, finalTipoCobertura);
+    let step = nextStep(orderData, finalTipoCobertura);
+
+    // =======================================================
+    // 🔥 FIX: Si estamos esperando la dirección, tomar el texto del usuario como la dirección
+    // =======================================================
+    if (step === "collecting_address" && texto && !extracted.address) {
+      console.log(`📍 Dirección capturada automáticamente del mensaje: "${texto}"`);
+      extracted.address = texto;
+      // Re-aplicar el merge para actualizar orderData con la nueva dirección
+      orderData = mergeOrderData(
+        orderData,
+        extracted,
+        orderData.product,
+        false // No reemplazar cantidad
+      );
+      // Recalcular el step después de actualizar la dirección
+      step = nextStep(orderData, finalTipoCobertura);
+    }
+    // =======================================================
 
     if (orderData.shoe_size && orderData.product && orderData.quantity === 1 && !orderData.city) {
       const totalForShoe = calculateTotal(orderData.product, 1, fullTraining);
