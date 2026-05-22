@@ -9,14 +9,12 @@ const clean = (t: any): string => String(t || "").trim();
 
 const normalize = (t: string): string => clean(t).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
 
-
 // =======================================================
 // 🧠 GUARDRAILS DETERMINÍSTICOS
-// Estas funciones evitan que Gemini invente producto/ciudad/flujo.
 // =======================================================
 function hasExplicitProductMention(text: string): boolean {
   const n = normalize(text);
-  return /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol)\b/.test(n);
+  return /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol)\b/.test(n);
 }
 
 function isOriginQuestion(text: string): boolean {
@@ -76,50 +74,38 @@ function buildWaitingPaymentResponse(order: any): string {
   return `✅ Perfecto ${order.customer_name ? order.customer_name.split(" ")[0] : ""} 😊\n\nYa registré:\n\n📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}\n📍 ${order.city}\n📞 ${order.phone}\n\n📲 Ahora solo falta que envíes el comprobante de transferencia y confirmamos tu envío 🚚✨`;
 }
 
-// 🔥 NUEVA FUNCIÓN: Detecta si el cliente solo pide información general
 function isInformationRequest(text: string): boolean {
   const n = normalize(text);
-  
   const infoWords = /\b(informaci[oó]n|info|más info|mas info|quiero saber|consultar|dudas?|más datos|mas datos|detalles|más detalles|mas detalles|explicame|qué es|que es|cómo funciona|como funciona)\b/i;
   const productWords = /\b(plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|veneno|abeja|crema|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo)\b/i;
-  
   if (productWords.test(n)) return false;
   return infoWords.test(n);
 }
 
-// 🔥 NUEVA FUNCIÓN: Detecta consulta de catálogo
 function isCatalogQuery(text: string): boolean {
   const n = normalize(text);
   const catalogWords = /\b(cat[aá]logo|productos|qu[eé] venden|tienen|stock|catálogo|precios|catalogo)\b/i;
   const greetingWords = /\b(hola|buenas|buen día|saludos)\b/i;
   const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla)\b/i;
-  
   return (catalogWords.test(n) || greetingWords.test(n)) && !productWords.test(n);
 }
 
-// 🔥 NUEVA FUNCIÓN: Detecta si es una conversación nueva (no arrastrar datos viejos)
 function isNewConversation(text: string, history: any[]): boolean {
   const n = normalize(text);
-  
   const newConversationMarkers = /\b(creo que guardo|mensaje antiguo|chat viejo|conversación anterior|pedido anterior|viejo mensaje|lo tengo guardado|tengo un mensaje|mensaje guardado|chat pasado|nuevo pedido|empezar de nuevo|borrar pedido|reiniciar)\b/i;
-  
   const noHistory = !history || history.length === 0;
   const mentionsOldMessage = newConversationMarkers.test(n);
-  
   return noHistory || mentionsOldMessage;
 }
 
-// 🔥 NUEVA FUNCIÓN: Detecta si el cliente solo pregunta por un producto (sin intención de compra)
 function isProductInquiry(text: string): boolean {
   const n = normalize(text);
   const inquiryWords = /\b(qu[eé] es|cómo funciona|para qu[eé] sirve|características|beneficios|tiene|informaci[oó]n|info|cu[aá]nto cuesta|precio|valor|costo|dime|contame|explicame)\b/i;
   const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla)\b/i;
   const buyWords = /\b(quiero|comprar|llevo|dame|mandame|agregame|reservar|apartar)\b/i;
-  
   return inquiryWords.test(n) && productWords.test(n) && !buyWords.test(n);
 }
 
-// 🔥 NUEVA FUNCIÓN: Detecta si un texto es nombre de producto (para no usarlo como nombre de cliente)
 function isProductName(text: string): boolean {
   const n = normalize(text);
   const productNames = [
@@ -131,9 +117,8 @@ function isProductName(text: string): boolean {
     "afilador de cuchillos", "afilador", "cuchillos", "sharpener",
     "vital honey vip", "vital honey",
     "perfume asad", "asad",
-    "almohadillas antivibracion", "soporte para lavarropas", "lavarropas"
+    "almohadillas antivibracion", "soporte para lavarropas", "lavarropas", "kit x4 patitas", "patitas antideslizantes"
   ];
-  
   const normalizedText = n;
   return productNames.some(p => normalizedText.includes(p) || p.includes(normalizedText));
 }
@@ -168,7 +153,13 @@ function extractShoeSizeFromText(text: string): number {
 
 function isPackReferenceText(text: string): boolean {
   const n = normalize(text);
-  return /\b(kit\sx\s4|kit\s+por\s+4|pack\sx\s4|pack\s+por\s+4|x\s4|4\sunidades\s*(incluidas|incluido)?|las\s4\sunidades)\b/.test(n);
+  return /\b(kit\sx\s4|kit\s+por\s+4|pack\sx\s4|pack\s+por\s+4|x\s4|4\sunidades\s*(incluidas|incluido)?|las\s4\sunidades|kit\sx4|patitas\s+antideslizantes|kit\s+antivibracion)\b/.test(n);
+}
+
+// ✅ NUEVA FUNCIÓN: Detecta si es el producto antivibración (kit de 4)
+function isAntiVibrationKit(text: string): boolean {
+  const n = normalize(text);
+  return /\b(almohadillas?\s+antivibracion|almohadillas?\s+antivibraci[oó]n|soporte\s+para\s+lavarropas|soporte\s+antivibracion|patitas?\s+antideslizantes|kit\s+x4\s+patitas|kit\s+antivibracion|lavarropas\s+camina|heladera\s+vibra)\b/.test(n);
 }
 
 function isInvalidProductCandidate(name: string): boolean {
@@ -262,8 +253,21 @@ function extractProductNameFromLine(line: string): string {
   return clean(parts[0] || c);
 }
 
+// ✅ FUNCIÓN CORREGIDA: detecta el producto antivibración con el nombre correcto
+function getAntiVibrationProductName(): string {
+  return "Kit Antivibración x4 Patitas Antideslizantes";
+}
+
 function detectProduct(text: string, training: string, prev?: string, lastAssistantMessage?: string, lastUserProduct?: string) {
   const msg = normalize(text);
+  
+  // ✅ NUEVO: Detección prioritaria del producto antivibración
+  if (isAntiVibrationKit(text) || isPackReferenceText(text) || 
+      msg.includes("soporte lavarropas") || msg.includes("almohadillas antivibracion") ||
+      msg.includes("patitas antideslizantes") || msg.includes("kit x4")) {
+    console.log("🔄 Detectado: Producto Antivibración Kit x4");
+    return getAntiVibrationProductName();
+  }
   
   const assistantProduct = canonicalProductFromText(lastAssistantMessage || "");
   const preferredMemoryProduct = assistantProduct || lastUserProduct || prev || "";
@@ -335,10 +339,6 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
     return "Perfume Asad";
   }
 
-  if (msg.includes("soporte lavarropas") || msg.includes("lavarropas") || msg.includes("almohadillas antivibracion")) {
-    return "Almohadillas Antivibración y soporte para lavarropas";
-  }
-
   let best = "";
   let bestScore = 0;
 
@@ -386,8 +386,8 @@ function canonicalProductFromText(text: string): string {
     return "Peladora Automática";
   }
 
-  if (/\b(soporte\s+para\s+lavarropas|lavarropas|almohadillas\s+antivibracion|almohadillas\s+antivibración|patitas\s+antideslizantes)\b/.test(n)) {
-    return "Almohadillas Antivibración y soporte para lavarropas";
+  if (/\b(soporte\s+para\s+lavarropas|lavarropas|almohadillas\s+antivibracion|almohadillas\s+antivibraci[oó]n|patitas\s+antideslizantes|kit\s+x4\s+patitas|kit\s+antivibracion)\b/.test(n)) {
+    return getAntiVibrationProductName();
   }
 
   if (/\b(plantilla|plantillas|ortopiex|ortoflex)\b/.test(n)) {
@@ -601,7 +601,8 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     norm.includes("ortopiex") || norm.includes("pelador") || norm.includes("afilador") ||
     norm.includes("vital") || norm.includes("perfume") || norm.includes("soporte") || norm.includes("lavarropas") ||
     norm.includes("cuchillo") || norm.includes("5d") || norm.includes("ortoflex") ||
-    norm.includes("pororo") || norm.includes("maquina") || norm.includes("nebulizador") || norm.includes("tabla");
+    norm.includes("pororo") || norm.includes("maquina") || norm.includes("nebulizador") || norm.includes("tabla") ||
+    norm.includes("patitas") || norm.includes("antideslizantes") || norm.includes("kit");
 
   const nameMatch = text.match(/(?:me\s+llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,80})/i)?.[1];
 
@@ -656,22 +657,17 @@ function safeQuantity(value: any): number {
   return n;
 }
 
-// ✅ FUNCIÓN CORREGIDA: mergeOrderData ahora reemplaza correctamente la cantidad cuando replaceQuantity es true
 function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = false): any {
   const oldQuantity = safeQuantity(old?.quantity);
   const newQuantity = safeQuantity(ext?.quantity);
 
-  // Lógica corregida:
-  // - Si replaceQuantity es true, usar newQuantity si existe, sino oldQuantity
-  // - Si replaceQuantity es false y hay newQuantity, sumar (para "también quiero")
-  // - Si no hay newQuantity, mantener oldQuantity
   let finalQuantity = oldQuantity;
   
   if (newQuantity > 0) {
     if (replaceQuantity) {
-      finalQuantity = newQuantity;  // ✅ Reemplazar (caso: respuesta "1" a "¿cuántas unidades?")
+      finalQuantity = newQuantity;
     } else {
-      finalQuantity = oldQuantity + newQuantity;  // ✅ Sumar (caso: "también quiero X unidades")
+      finalQuantity = oldQuantity + newQuantity;
     }
   }
 
@@ -712,11 +708,13 @@ function parseGsAmount(text: string): number {
   return Number(match[1].replace(/\./g, ""));
 }
 
+// ✅ FUNCIÓN CORREGIDA: Precio correcto para el Kit Antivibración (98.000 Gs)
 function calculateTotal(product: string, quantity: number, training: string): number | null {
   if (!product || !quantity || quantity < 1) return null;
 
   const p = normalize(product);
 
+  // ✅ CATÁLOGO PROTEGIDO CON PRECIOS CORRECTOS
   const protectedCatalog = [
     { keys: ["veneno de abeja", "crema de abeja", "creama de abeja", "abeja"], unit: 145000, promos: { 2: 249900 } as Record<number, number> },
     { keys: ["peladora automatica", "pelador automatico", "peladora", "pelador"], unit: 169900, promos: {} as Record<number, number> },
@@ -727,7 +725,8 @@ function calculateTotal(product: string, quantity: number, training: string): nu
     { keys: ["nebulizador portatil", "nebulizador portátil", "nebulizador"], unit: 169900, promos: {} as Record<number, number> },
     { keys: ["tabla de picar de marmol", "tabla de picar de mármol", "tabla de picar", "tabla de marmol", "tabla de mármol"], unit: 169900, promos: {} as Record<number, number> },
     { keys: ["plantillas ortopiex", "ortopiex", "plantillas"], unit: 159000, promos: {} as Record<number, number> },
-    { keys: ["almohadillas antivibracion", "almohadillas antivibración", "soportes antivibracion", "soportes antivibración", "patitas antideslizantes", "kit x4 patitas antideslizantes", "kit x 4 patitas antideslizantes", "soporte para lavarropas", "lavarropas"], unit: 98000, promos: {} as Record<number, number> },
+    // ✅ CORREGIDO: Precio correcto del Kit Antivibración = 98.000 Gs (NO 169.900)
+    { keys: ["kit antivibracion x4 patitas antideslizantes", "almohadillas antivibracion", "almohadillas antivibración", "soportes antivibracion", "soportes antivibración", "patitas antideslizantes", "kit x4 patitas antideslizantes", "kit x 4 patitas antideslizantes", "soporte para lavarropas", "lavarropas"], unit: 98000, promos: {} as Record<number, number> },
   ];
 
   for (const item of protectedCatalog) {
@@ -940,6 +939,18 @@ y agendamos tu entrega ✨`;
 function buildQuantityQuestionResponse(product: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
   
+  // ✅ NUEVO: Mensaje especial para el Kit Antivibración (no preguntar cantidad, ya es kit de 4)
+  if (normalize(product).includes("kit antivibracion") || normalize(product).includes("patitas antideslizantes")) {
+    return `🔥 Perfecto 😊
+
+Me confirmaste que querés ${productName} por solo 98.000 Gs (las 4 unidades).
+
+✅ Incluye 4 patitas antideslizantes
+✅ Envío GRATIS contra-entrega
+
+📍 ¿Para qué ciudad sería el envío?`;
+  }
+  
   let precioMsg = "";
   if (normalize(product).includes("veneno") || normalize(product).includes("abeja")) {
     precioMsg = "💰 Precio unitario: 145.000 Gs\n🔥 Promo 2 unidades: 249.900 Gs";
@@ -954,7 +965,7 @@ function buildQuantityQuestionResponse(product: string, shoeSize?: any): string 
   } else if (normalize(product).includes("pororo") || normalize(product).includes("nebulizador") || normalize(product).includes("tabla")) {
     precioMsg = "💰 Precio unitario: 169.900 Gs";
   } else {
-    precioMsg = "💰 Precio unitario: 169.900 Gs";
+    precioMsg = "💰 Precio: 169.900 Gs";
   }
   
   return `🔥 Perfecto 😊
@@ -1254,7 +1265,7 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION CORREGIDA - CON MEMORIA DE PRODUCTO");
+  console.log("🔥 VERSION CORREGIDA - CON MEMORIA DE PRODUCTO Y PRECIO ANTIVIBRACION CORREGIDO");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1346,6 +1357,11 @@ export default async function handler(req: any, res: any) {
           }
           if (norm.includes("tabla") && (norm.includes("picar") || norm.includes("marmol"))) {
             lastUserProduct = "Tabla de Picar de Mármol";
+            break;
+          }
+          // ✅ NUEVO: Detectar producto antivibración en historial
+          if (isAntiVibrationKit(userText)) {
+            lastUserProduct = getAntiVibrationProductName();
             break;
           }
         }
@@ -1678,8 +1694,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     const effectivePreviousStep = previousStep;
     const effectivePreviousTipoCobertura = previousTipoCobertura;
 
-    // ✅ Aquí se usa la función mergeOrderData corregida
-    // replaceQuantity = true cuando es respuesta de cantidad pura (isPureQuantityReply)
     const replaceQuantityFlag = isPureQuantityReply || safeQuantity(extracted.quantity) > 0;
     
     let orderData = mergeOrderData(
@@ -1828,23 +1842,18 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     const finalTipoCobertura = getTipoCobertura(orderData.city) || effectivePreviousTipoCobertura || "";
     let step = nextStep(orderData, finalTipoCobertura);
 
-    // =======================================================
-    // 🔥 FIX: Si estamos esperando la dirección, tomar el texto del usuario como la dirección
-    // =======================================================
+    // Capturar dirección automáticamente
     if (step === "collecting_address" && texto && !extracted.address) {
       console.log(`📍 Dirección capturada automáticamente del mensaje: "${texto}"`);
       extracted.address = texto;
-      // Re-aplicar el merge para actualizar orderData con la nueva dirección
       orderData = mergeOrderData(
         orderData,
         extracted,
         orderData.product,
-        false // No reemplazar cantidad
+        false
       );
-      // Recalcular el step después de actualizar la dirección
       step = nextStep(orderData, finalTipoCobertura);
     }
-    // =======================================================
 
     if (orderData.shoe_size && orderData.product && orderData.quantity === 1 && !orderData.city) {
       const totalForShoe = calculateTotal(orderData.product, 1, fullTraining);
@@ -2104,17 +2113,10 @@ Si el paso actual es confirm_order, confirmá el pedido con la plantilla del ent
 No repitas saludo si ya hubo conversación.
 
 No cambies de producto salvo que el cliente lo pida.
-Si el cliente pregunta "de dónde es", "de Asunción", "yo estoy en San Alberto" o solo menciona ciudad sin producto activo, NO vendas Veneno ni ningún producto: respondé solo cobertura/origen y preguntá qué producto le interesa.
-No inventes producto a partir del catálogo anterior.
-No inventes ciudad desde una dirección. La ciudad guardada en estado manda.
 
-Cerrá siempre con el siguiente paso.
+El precio del KIT ANTIVIBRACIÓN (patitas antideslizantes x4) es 98.000 Gs, NO 169.900 Gs.
 
-Catálogo: ${CATALOG_URL}
-
-Español paraguayo natural, con emojis.
-
-Pedro Juan Caballero / PJC es SIN COBERTURA.
+Cuando el cliente mencione "soporte antivibración", "patitas antideslizantes", "kit x4", "almohadillas antivibración", respondé con el producto correcto y su precio de 98.000 Gs.
 
 Si el cliente dice "también", "tambien", "agrega", "sumá", "y la", "y el", "mas", "más", NO confirmes todavía: agregá el producto al carrito y mostrá el resumen completo.
 
@@ -2124,17 +2126,15 @@ Nunca borres items anteriores salvo que el cliente pida cancelar o cambiar.
 
 Si el cliente inicia con otro producto nuevo y NO dice también/agrega/sumá, empezá pedido nuevo y no arrastres carrito viejo.
 
-Si el cliente responde "Kit x 4 unidades", "x4" o "las 4 unidades", significa 1 kit, no 4 kits.
-
 Si preguntaste "qué calce" o "qué talle" y el cliente responde solo "35", "36", "37", etc., eso es CALCE/TALLE, NO cantidad. Cantidad = 1.
-
-Si el cliente dice "QUIERO CALCE 37", "talle 42" o "número 39", ese número es CALCE/TALLE, no cantidad. La cantidad debe ser 1.
 
 Para "Veneno de Abeja" o "Crema de Abeja", la PROMO 2 unidades cuesta 249.900 Gs (NO 290.000 Gs).
 
-Cuando el cliente dice "TAMBIEN QUIERO UN PELADOR DE PAPAS" o "MAS EL VENENO DE ABEJA", debe AGREGAR ese producto al carrito existente, NO reemplazar.
+Cerrá siempre con el siguiente paso.
 
-"Pelador de papas", "peladora de papas", "pelador automático" = "Peladora Automática" con precio 189.900 Gs.`;
+Catálogo: ${CATALOG_URL}
+
+Español paraguayo natural, con emojis.`;
 
     const contents = cleanHistory.slice(-8).filter((h: any) => clean(h?.content)).map((h: any) => ({
       role: h.role === "assistant" ? "model" : "user",
