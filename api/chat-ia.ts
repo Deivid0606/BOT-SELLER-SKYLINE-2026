@@ -21,7 +21,19 @@ const normalize = (t: string): string =>
 // =======================================================
 function hasExplicitProductMention(text: string): boolean {
   const n = normalize(text);
-  return /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol)\b/.test(n);
+  const buyIndicators = /\b(quiero|comprar|llevo|dame|mandame|reservar|apartar|la\s+raqueta|el\s+veneno|las\s+plantillas|la\s+peladora|el\s+afilador|el\s+kit|la\s+máquina|el\s+nebulizador|la\s+tabla)\b/i;
+  const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas)\b/.test(n);
+  return buyIndicators.test(n) || productNames;
+}
+
+function isLocationOnlyMessage(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+  if (hasExplicitProductMention(text)) return false;
+  const cityMatch = extractCityFromText(n);
+  if (!cityMatch) return false;
+  const noProductWords = !/\b(quiero|comprar|raqueta|veneno|plantilla|pelador|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas)\b/i.test(n);
+  return noProductWords;
 }
 
 function isOriginQuestion(text: string): boolean {
@@ -32,15 +44,6 @@ function isOriginQuestion(text: string): boolean {
 function isNeutralReply(text: string): boolean {
   const n = normalize(text);
   return /^(te\s+aviso|despues\s+veo|despues\s+te\s+aviso|voy\s+a\s+ver|voy\s+a\s+pensar|cualquier\s+cosa|gracias|ok|dale|esta\s+bien|está\s+bien)$/i.test(n);
-}
-
-function isOnlyLocationMessage(text: string): boolean {
-  const n = normalize(text);
-  if (!n) return false;
-  if (hasExplicitProductMention(text)) return false;
-  if (isOriginQuestion(text)) return false;
-  const prefixClean = n.replace(/^(yo\s+estoy\s+en|estoy\s+en|soy\s+de|de|en|para|envio\s+a|envío\s+a)\s+/, "");
-  return !!extractCityFromText(prefixClean || n);
 }
 
 function extractCityFromText(text: string): string {
@@ -84,7 +87,7 @@ function buildWaitingPaymentResponse(order: any): string {
 function isInformationRequest(text: string): boolean {
   const n = normalize(text);
   const infoWords = /\b(informaci[oó]n|info|más info|mas info|quiero saber|consultar|dudas?|más datos|mas datos|detalles|más detalles|mas detalles|explicame|qué es|que es|cómo funciona|como funciona)\b/i;
-  const productWords = /\b(plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|veneno|abeja|crema|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo)\b/i;
+  const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes)\b/i;
   if (productWords.test(n)) return false;
   return infoWords.test(n);
 }
@@ -93,7 +96,7 @@ function isCatalogQuery(text: string): boolean {
   const n = normalize(text);
   const catalogWords = /\b(cat[aá]logo|productos|qu[eé] venden|tienen|stock|catálogo|precios|catalogo)\b/i;
   const greetingWords = /\b(hola|buenas|buen día|saludos)\b/i;
-  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla)\b/i;
+  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla|raqueta)\b/i;
   return (catalogWords.test(n) || greetingWords.test(n)) && !productWords.test(n);
 }
 
@@ -108,7 +111,7 @@ function isNewConversation(text: string, history: any[]): boolean {
 function isProductInquiry(text: string): boolean {
   const n = normalize(text);
   const inquiryWords = /\b(qu[eé] es|cómo funciona|para qu[eé] sirve|características|beneficios|tiene|informaci[oó]n|info|cu[aá]nto cuesta|precio|valor|costo|dime|contame|explicame)\b/i;
-  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla)\b/i;
+  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla|raqueta)\b/i;
   const buyWords = /\b(quiero|comprar|llevo|dame|mandame|agregame|reservar|apartar)\b/i;
   return inquiryWords.test(n) && productWords.test(n) && !buyWords.test(n);
 }
@@ -124,7 +127,8 @@ function isProductName(text: string): boolean {
     "afilador de cuchillos", "afilador", "cuchillos", "sharpener",
     "vital honey vip", "vital honey",
     "perfume asad", "asad",
-    "almohadillas antivibracion", "soporte para lavarropas", "lavarropas", "kit x4 patitas", "patitas antideslizantes"
+    "almohadillas antivibracion", "soporte para lavarropas", "lavarropas", "kit x4 patitas", "patitas antideslizantes",
+    "raqueta electrica", "raqueta para insectos", "flayes pro", "raqueta flayes"
   ];
   const normalizedText = n;
   return productNames.some(p => normalizedText.includes(p) || p.includes(normalizedText));
@@ -265,7 +269,103 @@ function getAntiVibrationProductName(): string {
   return "Kit Antivibración x4 Patitas Antideslizantes";
 }
 
-function detectProduct(
+// =======================================================
+// 🆕 FUNCIONES PARA EL NUEVO FLUJO: CIUDAD → CANTIDAD
+// =======================================================
+
+function buildCityQuestionResponse(product: string, shoeSize?: any): string {
+  const productName = formatProductWithShoeSize(product, shoeSize);
+  
+  return `🔥 Perfecto 😊
+
+Me confirmaste que querés ${productName}.
+
+📍 ¿Para qué CIUDAD querés el envío?
+
+(Ejemplo: Asunción, Capiatá, Luque, San Lorenzo, Fernando de la Mora...)`;
+}
+
+function buildQuantityAfterCityResponse(product: string, city: string, shoeSize?: any): string {
+  const productName = formatProductWithShoeSize(product, shoeSize);
+  
+  if (
+    normalize(product).includes("kit antivibracion") ||
+    normalize(product).includes("patitas antideslizantes")
+  ) {
+    return `✅ Perfecto, enviamos a ${city} 😊
+
+📦 ${productName}
+
+¿Cuántos KITS querés? (Cada kit incluye 4 patitas)
+
+Ejemplos:
+• 1 kit
+• 2 kits
+• 3 kits
+
+Respondé con el número (1, 2, 3...)`;
+  }
+  
+  return `✅ Perfecto, enviamos a ${city} 😊
+
+📦 ${productName}
+
+¿Cuántas UNIDADES querés?
+
+Ejemplos:
+• 1 unidad
+• 2 unidades (consultar si hay promo)
+• 3 unidades
+
+Respondé con el número (1, 2, 3...)`;
+}
+
+// =======================================================
+// 🎯 DETECCIÓN DE PRODUCTO RESPETANDO ACTIVO
+// =======================================================
+
+function detectProductRespectingActive(
+  text: string,
+  training: string,
+  activeProduct: string | null,
+  lastAssistantMessage?: string,
+  lastUserProduct?: string
+): string {
+  const msg = normalize(text);
+  
+  if (isPriceIntent(text) || isProductInquiry(text)) {
+    console.log(`ℹ️ Consulta de precio/info - manteniendo producto activo: ${activeProduct}`);
+    return activeProduct || "";
+  }
+  
+  const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas)\b/i.test(msg);
+  
+  const isOnlyLocation = isLocationOnlyMessage(text);
+  const isOnlyQuantity = /^\s*\d{1,3}\s*$/.test(text) && !isOnlyShoeVariantText(text);
+  
+  if (activeProduct && !explicitNewProductRequest) {
+    console.log(`🔄 Manteniendo producto activo: "${activeProduct}" (cliente no pidió cambio explícito)`);
+    return activeProduct;
+  }
+  
+  if (explicitNewProductRequest) {
+    console.log(`🔄 Cliente pidió EXPLÍCITAMENTE otro producto. Detectando...`);
+    const newProduct = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
+    if (newProduct && !isInvalidProductCandidate(newProduct)) {
+      console.log(`✅ Nuevo producto detectado: "${newProduct}"`);
+      return newProduct;
+    }
+  }
+  
+  const detected = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
+  if (detected && !isInvalidProductCandidate(detected)) {
+    return detected;
+  }
+  
+  return activeProduct || "";
+}
+
+function detectProductRaw(
   text: string,
   training: string,
   prev?: string,
@@ -274,55 +374,18 @@ function detectProduct(
 ) {
   const msg = normalize(text);
 
-  if (
-    isAntiVibrationKit(text) ||
-    isPackReferenceText(text) ||
-    msg.includes("soporte lavarropas") ||
-    msg.includes("almohadillas antivibracion") ||
-    msg.includes("patitas antideslizantes") ||
-    msg.includes("kit x4")
-  ) {
-    console.log("🔄 Detectado: Producto Antivibración Kit x4");
+  if (isAntiVibrationKit(text) || isPackReferenceText(text) ||
+      msg.includes("soporte lavarropas") || msg.includes("almohadillas antivibracion") ||
+      msg.includes("patitas antideslizantes") || msg.includes("kit x4")) {
     return getAntiVibrationProductName();
   }
 
-  const assistantProduct = canonicalProductFromText(lastAssistantMessage || "");
-  const preferredMemoryProduct = assistantProduct || lastUserProduct || prev || "";
-
-  const justWantsWithNumber = /^(quiero|llevo|compro|reservo|dame|mandame)\s+(\d+)$/i.test(msg);
-  if (justWantsWithNumber && preferredMemoryProduct && !isInvalidProductCandidate(preferredMemoryProduct)) {
-    console.log(`🔄 Cliente quiere "${preferredMemoryProduct}" (producto activo por memoria/promo)`);
-    return preferredMemoryProduct;
+  if (msg.includes("raqueta") || msg.includes("electrica") || msg.includes("flayes") ||
+      msg.includes("mosquitos") || msg.includes("moscas") || msg.includes("insectos")) {
+    return "Raqueta Eléctrica para Insectos";
   }
 
-  const justWantsWithoutProduct = /^(quiero|si|sí|ok|dale|listo|confirmo)$/i.test(msg);
-  if (justWantsWithoutProduct && preferredMemoryProduct && !isInvalidProductCandidate(preferredMemoryProduct)) {
-    console.log(`🔄 Cliente confirmó "${preferredMemoryProduct}" (producto activo por memoria/promo)`);
-    return preferredMemoryProduct;
-  }
-
-  const justNumber = /^\d+$/.test(msg);
-  if (justNumber && preferredMemoryProduct && !isInvalidProductCandidate(preferredMemoryProduct)) {
-    console.log(`🔄 Cliente quiere ${msg} unidades de "${preferredMemoryProduct}" (producto activo por memoria/promo)`);
-    return preferredMemoryProduct;
-  }
-
-  if (
-    isInformationRequest(text) ||
-    isCatalogQuery(text) ||
-    isProductInquiry(text) ||
-    isOriginQuestion(text) ||
-    isOnlyLocationMessage(text)
-  ) {
-    console.log("ℹ️ Consulta general/ubicación: no se detecta producto");
-    return "";
-  }
-
-  if (!hasExplicitProductMention(text)) {
-    return "";
-  }
-
-  if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja") || msg.includes("creama")) {
+  if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja")) {
     return "Veneno de Abeja";
   }
 
@@ -330,18 +393,11 @@ function detectProduct(
     return getDefaultShoeProductName();
   }
 
-  if (
-    msg.includes("pelador") || msg.includes("peladora") || msg.includes("pelar papas") ||
-    msg.includes("pelador de papas") || msg.includes("peladora de papas") ||
-    msg.includes("pelador automatico") || msg.includes("peladora automatica")
-  ) {
+  if (msg.includes("pelador") || msg.includes("peladora") || msg.includes("pelar papas")) {
     return "Peladora Automática";
   }
 
-  if (
-    msg.includes("pororo") || msg.includes("popcorn") ||
-    msg.includes("pochoclo") || msg.includes("palomita") || msg.includes("palomitas")
-  ) {
+  if (msg.includes("pororo") || msg.includes("popcorn") || msg.includes("pochoclo") || msg.includes("palomita")) {
     return "Máquina para hacer Pororo";
   }
 
@@ -349,7 +405,7 @@ function detectProduct(
     return "Nebulizador portátil";
   }
 
-  if ((msg.includes("tabla") && msg.includes("picar")) || msg.includes("tabla de marmol") || msg.includes("tabla de mármol")) {
+  if ((msg.includes("tabla") && msg.includes("picar")) || msg.includes("tabla de marmol")) {
     return "Tabla de Picar de Mármol";
   }
 
@@ -357,7 +413,7 @@ function detectProduct(
     return "Afilador de Cuchillos";
   }
 
-  if (msg.includes("vital honey") || msg.includes("vital honey vip")) {
+  if (msg.includes("vital honey")) {
     return "Vital Honey VIP";
   }
 
@@ -390,13 +446,13 @@ function detectProduct(
     }
   }
 
-  if (bestScore >= 5) return best;
-  return "";
+  return bestScore >= 5 ? best : "";
 }
 
 function canonicalProductFromText(text: string): string {
   const n = normalize(text);
 
+  if (/\b(raqueta|electrica|flayes|mosquitos|moscas|insectos)\b/.test(n)) return "Raqueta Eléctrica para Insectos";
   if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja)\b/.test(n)) return "Veneno de Abeja";
   if (/\b(pelador|peladora|pelar\s+papas|pelador\s+de\s+papas|peladora\s+automatica)\b/.test(n)) return "Peladora Automática";
   if (/\b(soporte\s+para\s+lavarropas|lavarropas|almohadillas\s+antivibracion|almohadillas\s+antivibraci[oó]n|patitas\s+antideslizantes|kit\s+x4\s+patitas|kit\s+antivibracion)\b/.test(n)) return getAntiVibrationProductName();
@@ -434,7 +490,7 @@ function detectMultipleProducts(text: string, training: string): string[] {
     const protectedProduct = canonicalProductFromText(segment);
     if (protectedProduct) found.push(protectedProduct);
 
-    const catalogProduct = detectProduct(segment, training, "");
+    const catalogProduct = detectProductRaw(segment, training, "");
     if (catalogProduct && !isInvalidProductCandidate(catalogProduct)) {
       found.push(catalogProduct);
     }
@@ -488,7 +544,19 @@ function botWasAskingQuantity(history: any[]) {
     lastAssistantMessage.includes("cuantos unidades") ||
     lastAssistantMessage.includes("cantidad") ||
     lastAssistantMessage.includes("cuantas queres") ||
-    lastAssistantMessage.includes("cuantas te gustaria")
+    lastAssistantMessage.includes("cuantas te gustaria") ||
+    lastAssistantMessage.includes("cuántas unidades") ||
+    lastAssistantMessage.includes("Respondé con el número")
+  );
+}
+
+function botWasAskingCity(history: any[]): boolean {
+  const lastAssistantMessage = normalize(getLastAssistantMessage(history));
+  return (
+    lastAssistantMessage.includes("qué ciudad") ||
+    lastAssistantMessage.includes("para qué ciudad") ||
+    lastAssistantMessage.includes("ciudad querés") ||
+    lastAssistantMessage.includes("ciudad para el envío")
   );
 }
 
@@ -618,7 +686,7 @@ function extractData(
     norm.includes("pororo") || norm.includes("maquina") ||
     norm.includes("nebulizador") || norm.includes("tabla") ||
     norm.includes("patitas") || norm.includes("antideslizantes") ||
-    norm.includes("kit");
+    norm.includes("kit") || norm.includes("raqueta");
 
   const nameMatch = text.match(/(?:me\s+llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,80})/i)?.[1];
 
@@ -674,13 +742,10 @@ function safeQuantity(value: any): number {
   return n;
 }
 
-// ✅ CORREGIDO: cantidad siempre REEMPLAZA, nunca acumula
 function mergeOrderData(old: any, ext: any, product: string): any {
   const newQuantity = safeQuantity(ext?.quantity);
   const oldQuantity = safeQuantity(old?.quantity);
 
-  // La cantidad nueva SIEMPRE reemplaza a la anterior si es válida.
-  // Nunca se suman cantidades del mismo producto.
   const finalQuantity = newQuantity > 0 ? newQuantity : oldQuantity;
 
   return {
@@ -720,15 +785,12 @@ function parseGsAmount(text: string): number {
   return Number(match[1].replace(/\./g, ""));
 }
 
-// ✅ REFACTORIZADO COMPLETO: Solo lee del entrenamiento, sin precios hardcodeados
 function calculateTotal(product: string, quantity: number, training: string): number | null {
   if (!product || !quantity || quantity < 1) return null;
 
   const p = normalize(product);
   const lines = training.split("\n").map((l) => clean(l)).filter(Boolean);
 
-  let unitPrice = 0;
-  let promoPrice = 0;
   let bestMatchScore = 0;
   let bestUnitPrice = 0;
   let bestPromoPrice = 0;
@@ -736,12 +798,10 @@ function calculateTotal(product: string, quantity: number, training: string): nu
   for (let i = 0; i < lines.length; i++) {
     const current = normalize(lines[i]);
 
-    // Evaluar qué tan bien matchea esta línea con el producto
     let matchScore = 0;
     if (current.includes(p)) matchScore += 10;
     else if (p.includes(current) && current.length >= 5) matchScore += 5;
     else {
-      // Match parcial por palabras
       const productWords = p.split(" ").filter((w) => w.length >= 4);
       for (const w of productWords) {
         if (current.includes(w)) matchScore += 2;
@@ -750,7 +810,6 @@ function calculateTotal(product: string, quantity: number, training: string): nu
 
     if (matchScore === 0) continue;
 
-    // Buscar precios en las líneas cercanas (ventana de 8 líneas)
     const window = lines.slice(i, i + 8);
     let foundUnit = 0;
     let foundPromo = 0;
@@ -760,7 +819,6 @@ function calculateTotal(product: string, quantity: number, training: string): nu
       const amount = parseGsAmount(line);
       if (!amount) continue;
 
-      // Detectar promo de 2 unidades
       if (
         quantity === 2 &&
         /(2x|2\s*unidades|promo\s*2|2\s*cajas|2\s*unidad)/i.test(nLine) &&
@@ -770,13 +828,11 @@ function calculateTotal(product: string, quantity: number, training: string): nu
         continue;
       }
 
-      // Primer precio encontrado = precio unitario
       if (!foundUnit) {
         foundUnit = amount;
       }
     }
 
-    // Quedarse con el mejor match
     if (matchScore > bestMatchScore) {
       bestMatchScore = matchScore;
       bestUnitPrice = foundUnit;
@@ -925,7 +981,12 @@ function buildCartSummaryResponse(order: any, tipoCobertura: string) {
     ? buildItemsLines(items)
     : `📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}\n🔢 Cantidad: ${order.quantity}`;
 
-  return `🔥 Perfecto 😊
+  let promoNote = "";
+  if (order.quantity === 2) {
+    promoNote = `\n\n🎯 ¡APROVECHA LA PROMO! 🎯`;
+  }
+
+  return `${promoNote}🔥 Perfecto 😊
 
 Tu pedido queda así:
 
@@ -960,7 +1021,12 @@ function buildOrderSummaryResponse(order: any, tipoCobertura: string) {
       ? "Envío por transportadora / encomienda"
       : "Envío GRATIS contra-entrega";
 
-  return `🔥 Perfecto 😊
+  let promoNote = "";
+  if (order.quantity === 2) {
+    promoNote = `🎯 ¡APROVECHA LA PROMO! 🎯\n\n`;
+  }
+
+  return `${promoNote}🔥 Perfecto 😊
 
 Tu pedido queda así:
 
@@ -976,61 +1042,60 @@ Tu pedido queda así:
 ✅ dirección exacta o ubicación por Google Maps
 ✅ número de celular
 
-📲 Si no enviás número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
+📲 Si no enviés número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
 
 y agendamos tu entrega ✨`;
 }
 
-// ✅ buildQuantityQuestionResponse: NO tiene precios hardcodeados
-// Los precios los leerá Gemini desde el entrenamiento
-function buildQuantityQuestionResponse(product: string, shoeSize?: any): string {
-  const productName = formatProductWithShoeSize(product, shoeSize);
-
-  // Para el Kit Antivibración: no preguntar cantidad, ya es un kit de 4 unidades
-  if (
-    normalize(product).includes("kit antivibracion") ||
-    normalize(product).includes("patitas antideslizantes")
-  ) {
-    return `🔥 Perfecto 😊
-
-¿Cuántos kits te gustaría llevar?
-
-(Cada kit incluye 4 patitas antideslizantes)
-
-Respondé con el número (ej: 1, 2, 3...)`;
-  }
-
-  return `🔥 Perfecto 😊
-
-Me confirmaste que querés ${productName}.
-
-📌 ¿Cuántas unidades querés?
-
-Respondé con el número (ej: 1, 2, 3...)`;
-}
-
-function nextStep(o: any, tipoCobertura?: string) {
-  const items = getCartItems(o);
-
-  if (!o.product && !items.length) return "selling";
-  if (!o.city) return "collecting_city";
-
-  const hasValidQuantity = safeQuantity(o.quantity) > 0;
-
-  if (o.product && !hasValidQuantity) return "collecting_quantity";
+// =======================================================
+// 🆕 NUEVO nextStep() - CIUDAD primero, luego CANTIDAD
+// =======================================================
+function nextStep(order: any, tipoCobertura?: string) {
+  const items = getCartItems(order);
+  
+  if (!order.product && !items.length) return "selling";
+  
+  // 🔥 CIUDAD es lo PRIMERO que preguntamos
+  if (!order.city) return "collecting_city";
+  
+  // Después de ciudad, preguntamos CANTIDAD
+  const hasValidQuantity = safeQuantity(order.quantity) > 0;
   if (!hasValidQuantity && !items.length) return "collecting_quantity";
-
+  
   if (tipoCobertura === "sin_cobertura") {
-    if (!o.customer_name) return "collecting_name";
-    if (!o.phone) return "collecting_phone";
+    if (!order.customer_name) return "collecting_name";
+    if (!order.phone) return "collecting_phone";
     return "waiting_payment_proof";
   }
-
-  if (!o.customer_name) return "collecting_name";
-  if (!o.phone) return "collecting_phone";
-  if (!o.address) return "collecting_address";
-
+  
+  if (!order.customer_name) return "collecting_name";
+  if (!order.phone) return "collecting_phone";
+  if (!order.address) return "collecting_address";
+  
   return "confirm_order";
+}
+
+// =======================================================
+// 🆕 HANDLE PRODUCT SELECTION - Reinicia pedido y pregunta CIUDAD
+// =======================================================
+function handleProductSelection(product: string, shoeSize?: any) {
+  const newOrder = {
+    product: product,
+    quantity: 0,
+    shoe_size: shoeSize || "",
+    city: "",
+    customer_name: "",
+    phone: "",
+    address: "",
+    items: [],
+    total_amount: 0,
+  };
+  
+  return {
+    response: buildCityQuestionResponse(product, shoeSize),
+    order: newOrder,
+    step: "collecting_city"
+  };
 }
 
 async function safeUpsertOrder(
@@ -1302,7 +1367,7 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION CORREGIDA - SIN PRECIOS HARDCODEADOS - CANTIDAD SIEMPRE REEMPLAZA");
+  console.log("🔥 VERSION FINAL - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1365,6 +1430,7 @@ export default async function handler(req: any, res: any) {
             break;
           }
           const norm = normalize(userText);
+          if (norm.includes("raqueta")) { lastUserProduct = "Raqueta Eléctrica para Insectos"; break; }
           if (norm.includes("veneno") || norm.includes("abeja")) { lastUserProduct = "Veneno de Abeja"; break; }
           if (norm.includes("plantilla") || norm.includes("ortopiex")) { lastUserProduct = getDefaultShoeProductName(); break; }
           if (norm.includes("pelador")) { lastUserProduct = "Peladora Automática"; break; }
@@ -1407,10 +1473,31 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const activeProductForLocation =
+    const currentActiveProduct = 
       oldOrder?.product ||
-      (String(previousStep || "").startsWith("collecting") ? context?.current_product : "");
-    const locationOnlyCity = isOnlyLocationMessage(texto) ? extractCityFromText(texto) : "";
+      context?.current_product ||
+      lastUserProduct ||
+      null;
+    
+    console.log(`🎯 Producto activo actual: "${currentActiveProduct}"`);
+    console.log(`📝 Mensaje del cliente: "${texto}"`);
+    
+    let product = detectProductRespectingActive(
+      texto,
+      fullTraining,
+      currentActiveProduct,
+      getLastAssistantMessage(history || []),
+      lastUserProduct
+    );
+    
+    console.log(`✅ Producto final detectado: "${product}"`);
+    
+    if (product && !isInvalidProductCandidate(product)) {
+      lastUserProduct = product;
+    }
+
+    const activeProductForLocation = product || currentActiveProduct;
+    const locationOnlyCity = isLocationOnlyMessage(texto) ? extractCityFromText(texto) : "";
 
     if (locationOnlyCity && !activeProductForLocation) {
       const coverageOrder = { ...(oldOrder || {}), city: locationOnlyCity };
@@ -1447,6 +1534,7 @@ export default async function handler(req: any, res: any) {
     let isPaymentProof = false;
 
     const lastAssistantMessage = getLastAssistantMessage(history || []);
+    const wasAskingCity = botWasAskingCity(history || []);
     const wasAskingQuantity = botWasAskingQuantity(history || []);
     const wasAskingShoeSize = botWasAskingShoeSize(history || []);
 
@@ -1454,97 +1542,134 @@ export default async function handler(req: any, res: any) {
 
     const shoeSizeFromText = extractShoeSizeFromText(texto);
     const shoeProductContext = isShoeProductText(
-      [oldOrder?.product, context?.current_product, context?.last_topic, lastAssistantMessage]
+      [oldOrder?.product, context?.current_product, context?.last_topic, lastAssistantMessage, product]
         .filter(Boolean)
         .join(" ")
     );
 
     const isPureShoeSizeReply =
       shoeSizeFromText > 0 &&
-      !!(oldOrder?.product || context?.current_product || shoeProductContext) &&
+      !!(oldOrder?.product || context?.current_product || shoeProductContext || product) &&
       (wasAskingShoeSize ||
         previousStep === "collecting_shoe_size" ||
         previousStep === "esperando_calce" ||
         previousStep === "collecting_calce" ||
         shoeProductContext ||
-        productRequiresSize(String(oldOrder?.product || context?.current_product || "")));
+        productRequiresSize(String(oldOrder?.product || context?.current_product || product || "")));
 
-    const isPureQuantityReply =
-      isOnlyNumber &&
-      !isPureShoeSizeReply &&
-      !!oldOrder?.product &&
-      !!oldOrder?.city &&
-      (wasAskingQuantity ||
-        previousStep === "collecting_quantity" ||
-        previousStep === "esperando_cantidad");
+    // Verificar si es respuesta de ciudad
+    const isCityReply = !product && !isOnlyNumber && extractCityFromText(texto) && 
+      (wasAskingCity || previousStep === "collecting_city");
+    
+    // Verificar si es respuesta de cantidad
+    const isQuantityReply = isOnlyNumber && !isPureShoeSizeReply && !isPriceIntent(texto) &&
+      (wasAskingQuantity || previousStep === "collecting_quantity");
 
     const wantsAddMore = isAddMoreIntent(texto);
-    console.log(`🔥 wantsAddMore: ${wantsAddMore}, texto: ${texto}`);
-    console.log(`🔥 lastUserProduct (memoria): ${lastUserProduct}`);
+    
+    let extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
-    let product: string;
-
-    if (wantsAddMore) {
-      product = detectProduct(texto, fullTraining, null, lastAssistantMessage, lastUserProduct);
-      console.log(`🔥 Producto adicional detectado: ${product}`);
-    } else if (isPureQuantityReply && (context?.current_product || oldOrder?.product)) {
-      product = context?.current_product || oldOrder?.product;
-      console.log(`🔥 Cantidad reply - Producto forzado: ${product}`);
-    } else if (isPureShoeSizeReply && (context?.current_product || oldOrder?.product)) {
-      product = context?.current_product || oldOrder?.product;
-      console.log(`🔥 Calce reply - Producto forzado: ${product}`);
-    } else {
-      product = detectProduct(
-        texto,
-        fullTraining,
-        context?.current_product || oldOrder?.product,
-        lastAssistantMessage,
-        lastUserProduct
-      );
-    }
-
-    if (
-      (!product || isInvalidProductCandidate(product)) &&
-      lastUserProduct &&
-      !isInvalidProductCandidate(lastUserProduct)
-    ) {
-      const normText = normalize(texto);
-      const isConfirmReply = /^(quiero|si|sí|ok|dale|listo|confirmo|\d+)$/i.test(normText);
-      if (isConfirmReply) {
-        product = lastUserProduct;
-        console.log(`🔥 Usando memoria de producto: ${product} (respuesta de confirmación)`);
+    // =======================================================
+    // 🆕 NUEVO PRODUCTO SELECCIONADO → PREGUNTAR CIUDAD
+    // =======================================================
+    if (product && !wantsAddMore && !isQuantityReply && !isPureShoeSizeReply && !isCityReply) {
+      const productChanged = !oldOrder?.product || !sameProduct(product, oldOrder.product);
+      
+      if (productChanged) {
+        const { response, order: newOrder, step: newStep } = handleProductSelection(product, extracted.shoe_size);
+        
+        await safeUpsertOrder(user_id, fromNumber, newOrder, false);
+        
+        return res.json({
+          response: response,
+          context: {
+            ...(context || {}),
+            current_product: product,
+            last_user_product: product,
+            step: newStep,
+            tipo_cobertura: null,
+            order_data: newOrder,
+            last_topic: product,
+            updated_at: new Date().toISOString(),
+          },
+          is_payment_proof: false,
+        });
       }
     }
 
-    let extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
-
-    if (
-      isPackReferenceText(texto) &&
-      (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")
-    ) {
-      extracted.quantity = safeQuantity(oldOrder?.quantity) || 1;
-      extracted.name = "";
-      extracted.address = "";
-      product = oldOrder?.product || context?.current_product || product;
+    // =======================================================
+    // 🆕 RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD (con ejemplos)
+    // =======================================================
+    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && product) {
+      const city = extracted.city || extractCityFromText(texto);
+      
+      if (city) {
+        let orderData = {
+          product: product,
+          quantity: 0,
+          shoe_size: extracted.shoe_size || "",
+          city: city,
+          customer_name: "",
+          phone: "",
+          address: "",
+          items: [],
+          total_amount: 0,
+        };
+        
+        await safeUpsertOrder(user_id, fromNumber, orderData, false);
+        
+        return res.json({
+          response: buildQuantityAfterCityResponse(product, city, extracted.shoe_size),
+          context: {
+            ...(context || {}),
+            current_product: product,
+            last_user_product: product,
+            step: "collecting_quantity",
+            tipo_cobertura: getTipoCobertura(city),
+            order_data: orderData,
+            last_topic: product,
+            updated_at: new Date().toISOString(),
+          },
+          is_payment_proof: false,
+        });
+      }
     }
 
-    if (isPureQuantityReply) {
-      const exactQuantity = Number(texto.trim());
-      extracted.quantity = exactQuantity;
-      extracted.name = "";
-      extracted.address = "";
-      product = context?.current_product || oldOrder?.product || product;
-      console.log(`✅ Cantidad exacta detectada: ${exactQuantity} para producto: ${product}`);
-    }
-
-    if (isPureShoeSizeReply) {
-      const exactShoeSize = shoeSizeFromText;
-      extracted.quantity = 1;
-      extracted.shoe_size = exactShoeSize;
-      extracted.name = "";
-      extracted.address = "";
-      product = context?.current_product || oldOrder?.product || product;
-      console.log(`✅ Calce exacto detectado: ${exactShoeSize} para producto: ${product}`);
+    // =======================================================
+    // 🆕 RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y CONFIRMAR
+    // =======================================================
+    if (isQuantityReply && product && extracted.quantity > 0) {
+      let orderData = {
+        product: product,
+        quantity: extracted.quantity,
+        shoe_size: extracted.shoe_size || "",
+        city: oldOrder?.city || context?.order_data?.city || "",
+        customer_name: "",
+        phone: "",
+        address: "",
+        items: [],
+        total_amount: 0,
+      };
+      
+      const total = calculateTotal(product, extracted.quantity, fullTraining);
+      if (total) orderData.total_amount = total;
+      
+      await safeUpsertOrder(user_id, fromNumber, orderData, false);
+      
+      return res.json({
+        response: buildOrderSummaryResponse(orderData, getTipoCobertura(orderData.city)),
+        context: {
+          ...(context || {}),
+          current_product: product,
+          last_user_product: product,
+          step: nextStep(orderData, getTipoCobertura(orderData.city)),
+          tipo_cobertura: getTipoCobertura(orderData.city),
+          order_data: orderData,
+          last_topic: product,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
     }
 
     // ========== PROCESAMIENTO DE MEDIA ==========
@@ -1611,7 +1736,7 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
             .filter(Boolean)
             .join(" ");
 
-          const catalogProduct = detectProduct(productSignal, fullTraining, "", "", lastUserProduct);
+          const catalogProduct = detectProductRaw(productSignal, fullTraining, "", lastUserProduct);
           const visualProduct = catalogProduct || analysis.matchedProduct || analysis.productName || "";
           product = visualProduct || product;
           const hasVisiblePrice = !!analysis.productPrice;
@@ -1671,7 +1796,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
         });
         texto = transcript || texto || "Te mandé un audio.";
 
-        const audioHasProduct = !!detectProduct(texto, fullTraining, "", "", lastUserProduct);
+        const audioHasProduct = !!detectProductRaw(texto, fullTraining, "", lastUserProduct);
         const audioExtracted = extractData(texto, previousStep, false, false);
         const audioHasUsefulData = !!(
           audioExtracted.quantity || audioExtracted.city ||
@@ -1700,497 +1825,65 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
 
     if (!texto) texto = "(mensaje sin texto)";
 
-    extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
+    extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
-    if (
-      isPackReferenceText(texto) &&
-      (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")
-    ) {
-      extracted.quantity = safeQuantity(oldOrder?.quantity) || 1;
-      extracted.name = "";
-      extracted.address = "";
-      product = oldOrder?.product || context?.current_product || product;
+    // Construir orderData final
+    let orderData = {
+      product: product || oldOrder?.product || "",
+      quantity: extracted.quantity || oldOrder?.quantity || 0,
+      shoe_size: extracted.shoe_size || oldOrder?.shoe_size || "",
+      city: extracted.city || oldOrder?.city || "",
+      customer_name: extracted.name || oldOrder?.customer_name || "",
+      phone: extracted.phone || oldOrder?.phone || "",
+      address: extracted.address || oldOrder?.address || "",
+      items: oldOrder?.items || [],
+      total_amount: oldOrder?.total_amount || 0,
+    };
+
+    // Calcular total si hay producto y cantidad
+    if (orderData.product && orderData.quantity > 0) {
+      const calculated = calculateTotal(orderData.product, orderData.quantity, fullTraining);
+      if (calculated) orderData.total_amount = calculated;
     }
 
-    if (isPureQuantityReply) {
-      const exactQuantity = Number(String(message).trim());
-      extracted.quantity = exactQuantity;
-      product = context?.current_product || oldOrder?.product || product;
-      console.log(`✅ Reforzando cantidad exacta: ${exactQuantity} para producto: ${product}`);
-    }
-
-    if (isPureShoeSizeReply) {
-      const exactShoeSize = shoeSizeFromText;
-      extracted.quantity = 1;
-      extracted.shoe_size = exactShoeSize;
-      product = context?.current_product || oldOrder?.product || product;
-      console.log(`✅ Reforzando calce exacto: ${exactShoeSize} para producto: ${product}`);
-    }
-
-    if (!isPureQuantityReply && !isPureShoeSizeReply && !wantsAddMore) {
-      const redetected = detectProduct(texto, fullTraining, "", lastAssistantMessage, lastUserProduct);
-      if (redetected) product = redetected;
-    }
-
-    if (product && !isInvalidProductCandidate(product)) {
-      lastUserProduct = product;
-      console.log(`💾 Memoria actualizada: último producto = ${lastUserProduct}`);
-    }
-
-    if (
-      isPackReferenceText(texto) &&
-      (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")
-    ) {
-      product = oldOrder?.product || context?.current_product || product;
-    }
-
-    const productChanged =
-      !!product && !!oldOrder?.product && !sameProduct(product, oldOrder.product);
-    const effectivePreviousStep = previousStep;
-    const effectivePreviousTipoCobertura = previousTipoCobertura;
-
-    // ✅ CORREGIDO: mergeOrderData ya no recibe replaceQuantity, siempre reemplaza
-    let orderData = mergeOrderData(oldOrder, extracted, product);
-
-    if (productChanged && !wantsAddMore) {
-      orderData = {
-        product,
-        quantity: safeQuantity(extracted.quantity),
-        shoe_size: extracted.shoe_size || "",
-        city: extracted.city || "",
-        customer_name: extracted.name || "",
-        phone: extracted.phone || "",
-        address: extracted.address || "",
-        items: [],
-        total_amount: 0,
-      };
-    } else if (productChanged && !safeQuantity(extracted.quantity)) {
-      orderData.quantity = 0;
-      orderData.total_amount = 0;
-      orderData.items = [];
-    }
-
-    orderData.quantity = safeQuantity(orderData.quantity);
-
-    if (orderData.shoe_size) {
-      const preservedShoeProduct =
-        isShoeProductText(oldOrder?.product || "")
-          ? oldOrder.product
-          : isShoeProductText(context?.current_product || "")
-          ? context.current_product
-          : getDefaultShoeProductName();
-
-      const shoeQty = safeQuantity(orderData.quantity) || safeQuantity(oldOrder?.quantity) || 1;
-      const shoeTotal =
-        calculateTotal(preservedShoeProduct, shoeQty, fullTraining) ||
-        parseGsAmount(fullTraining.split("\n").find((l) => normalize(l).includes("plantilla")) || "") * shoeQty ||
-        0;
-
-      orderData.product = preservedShoeProduct;
-      product = preservedShoeProduct;
-      orderData.quantity = shoeQty;
-      orderData.total_amount = shoeTotal;
-      orderData.items = [
-        { product: preservedShoeProduct, quantity: shoeQty, total: shoeTotal, shoe_size: orderData.shoe_size },
-      ];
-    }
-
-    if (isInvalidProductCandidate(orderData.product) && (oldOrder?.product || context?.current_product)) {
-      orderData.product = oldOrder?.product || context?.current_product;
-    }
-
-    const calculatedTotal = calculateTotal(orderData.product, orderData.quantity, fullTraining);
-    if (calculatedTotal) {
-      orderData.total_amount = calculatedTotal;
-    }
-
-    const asksPriceNow = isPriceIntent(texto);
-    const productsToAdd = wantsAddMore ? detectMultipleProducts(texto, fullTraining) : [];
-    const hasProductsToAdd = productsToAdd.length > 0;
-
-    const isFreshProductSearch =
-      !!product &&
-      !wantsAddMore &&
-      !isPureQuantityReply &&
-      !isPackReferenceText(texto) &&
-      (!effectivePreviousStep.startsWith("collecting") || productChanged) &&
-      effectivePreviousStep !== "esperando_cantidad" &&
-      effectivePreviousStep !== "waiting_payment_proof";
-
-    const mustStartNewCart = !!product && !wantsAddMore && productChanged;
-    let cartItems =
-      isFreshProductSearch || mustStartNewCart ? [] : getCartItems(oldOrder);
-
-    if (product && (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")) {
-      cartItems = cartItems.filter((i) => sameProduct(i.product, product));
-    }
-
-    if (isFreshProductSearch) {
-      orderData.items = [];
-      orderData.city = extracted.city || "";
-      orderData.customer_name = "";
-      orderData.phone = "";
-      orderData.address = "";
-      orderData.quantity = safeQuantity(extracted.quantity);
-      orderData.total_amount = 0;
-    }
-
-    if (wantsAddMore && (product || hasProductsToAdd)) {
-      console.log(
-        `🔥 Procesando agregado: product=${product}, hasProductsToAdd=${hasProductsToAdd}, productsToAdd=${JSON.stringify(productsToAdd)}`
-      );
-
-      if (hasProductsToAdd) {
-        for (const pToAdd of productsToAdd) {
-          if (!pToAdd || isInvalidCartProduct(pToAdd)) continue;
-          if (isShoeProductText(pToAdd) && orderData.shoe_size) continue;
-
-          const itemQty = extracted.quantity > 0 ? extracted.quantity : 1;
-          const itemTotal = calculateTotal(pToAdd, itemQty, fullTraining);
-          console.log(`🔥 Agregando: ${pToAdd}, cantidad: ${itemQty}, total: ${itemTotal}`);
-          if (itemTotal) {
-            cartItems = addOrReplaceCartItem(cartItems, pToAdd, itemQty, itemTotal, "add", "");
-          }
-        }
-      } else if (product && !isInvalidCartProduct(product)) {
-        const itemQty = extracted.quantity > 0 ? extracted.quantity : 1;
-        const itemTotal = calculateTotal(product, itemQty, fullTraining);
-        console.log(`🔥 Agregando único: ${product}, cantidad: ${itemQty}, total: ${itemTotal}`);
-        if (itemTotal) {
-          cartItems = addOrReplaceCartItem(cartItems, product, itemQty, itemTotal, "add", "");
-        }
-      }
-
-      orderData.items = cartItems;
-      orderData.total_amount = cartGrandTotal(cartItems);
-      orderData.quantity = cartTotalQuantity(cartItems);
-      orderData.product = cartItems
-        .map((i) => `${formatProductWithShoeSize(i.product, i.shoe_size)} x${i.quantity}`)
-        .join(" + ");
-      product = cartItems[cartItems.length - 1]?.product || product;
-      console.log(`🔥 Carrito actualizado: ${JSON.stringify(cartItems)}`);
-    }
-
-    if (!hasProductsToAdd && wantsAddMore && product && !orderData.quantity) {
-      orderData.quantity = 1;
-      const totalForOne = calculateTotal(product, 1, fullTraining);
-      if (totalForOne) orderData.total_amount = totalForOne;
-    }
-
-    const shouldTouchCart =
-      !!product &&
-      !hasProductsToAdd &&
-      safeQuantity(orderData.quantity) > 0 &&
-      !asksPriceNow &&
-      (isBuyIntent(texto) ||
-        wantsAddMore ||
-        isPureQuantityReply ||
-        isPureShoeSizeReply ||
-        safeQuantity(extracted.quantity) > 0);
-
-    if (shouldTouchCart && !wantsAddMore) {
-      const itemTotal =
-        calculateTotal(product, safeQuantity(orderData.quantity), fullTraining) ||
-        Number(orderData.total_amount || 0);
-
-      cartItems = addOrReplaceCartItem(
-        cartItems, product, safeQuantity(orderData.quantity),
-        itemTotal, "replace", orderData.shoe_size || ""
-      );
-    }
-
-    orderData.items = cartItems;
-    if (cartItems.length) {
-      orderData.total_amount = cartGrandTotal(cartItems);
-    }
-
-    if (orderData.shoe_size) {
-      const preservedShoeProduct = isShoeProductText(orderData.product || "")
-        ? orderData.product
-        : getDefaultShoeProductName();
-      const shoeQty = safeQuantity(orderData.quantity) || safeQuantity(oldOrder?.quantity) || 1;
-      const shoeTotal = calculateTotal(preservedShoeProduct, shoeQty, fullTraining) || 0;
-      orderData.product = preservedShoeProduct;
-      product = preservedShoeProduct;
-      orderData.quantity = shoeQty;
-      orderData.total_amount = shoeTotal;
-      orderData.items = [
-        { product: preservedShoeProduct, quantity: shoeQty, total: shoeTotal, shoe_size: orderData.shoe_size },
-      ];
-    }
-
-    const finalTipoCobertura =
-      getTipoCobertura(orderData.city) || effectivePreviousTipoCobertura || "";
+    const finalTipoCobertura = getTipoCobertura(orderData.city) || previousTipoCobertura || "";
     let step = nextStep(orderData, finalTipoCobertura);
 
-    // Capturar dirección automáticamente
-    if (step === "collecting_address" && texto && !extracted.address) {
-      console.log(`📍 Dirección capturada automáticamente: "${texto}"`);
-      extracted.address = texto;
-      orderData = mergeOrderData(orderData, extracted, orderData.product);
-      step = nextStep(orderData, finalTipoCobertura);
-    }
-
-    if (
-      orderData.shoe_size &&
-      orderData.product &&
-      orderData.quantity === 1 &&
-      !orderData.city
-    ) {
-      const totalForShoe = calculateTotal(orderData.product, 1, fullTraining);
-      if (totalForShoe) orderData.total_amount = totalForShoe;
-
-      await safeUpsertOrder(user_id, fromNumber, orderData, false);
-
-      return res.json({
-        response: `🔥 Perfecto 😊
-
-Tu pedido queda así:
-
-📦 ${formatProductWithShoeSize(orderData.product, orderData.shoe_size)}
-🔢 Cantidad: 1
-💰 Total: ${formatGs(orderData.total_amount)} Gs
-
-🚚 Envío GRATIS
-
-¿Para qué ciudad sería el envío?`,
-        context: {
-          ...(context || {}),
-          current_product: orderData.product || context?.current_product || null,
-          last_user_product: lastUserProduct || orderData.product || null,
-          step: "collecting_city",
-          tipo_cobertura: finalTipoCobertura || null,
-          order_data: orderData,
-          last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
-
-    const wantsToBuy = isBuyIntent(texto);
-    const asksPrice = isPriceIntent(texto);
-    const hasOrderData =
-      !!extracted.quantity || !!extracted.city ||
-      !!extracted.name || !!extracted.phone || !!extracted.address;
-
-    const shouldCollect =
-      !!orderData.product &&
-      (wantsToBuy ||
-        hasOrderData ||
-        effectivePreviousStep.startsWith("collecting") ||
-        effectivePreviousStep === "esperando_cantidad" ||
-        effectivePreviousStep === "waiting_payment_proof" ||
-        isPureQuantityReply);
-
-    const wantsToBuyButNoQuantity =
-      wantsToBuy &&
-      product &&
-      safeQuantity(orderData.quantity) === 0 &&
-      !isPureQuantityReply &&
-      !wantsAddMore;
-
-    if (wantsToBuyButNoQuantity) {
-      await safeUpsertOrder(
-        user_id, fromNumber,
-        { ...orderData, product: product, quantity: 0 },
-        false
-      );
-
-      return res.json({
-        response: buildQuantityQuestionResponse(product, extracted.shoe_size),
-        context: {
-          ...(context || {}),
-          current_product: product,
-          last_user_product: product,
-          step: "collecting_quantity",
-          tipo_cobertura: finalTipoCobertura || null,
-          order_data: { ...orderData, product: product, quantity: 0 },
-          last_topic: product,
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
-
-    const isConfirming =
-      step === "confirm_order" && wantsToBuy && !wantsAddMore && safeQuantity(orderData.quantity) > 0;
-
-    if (wantsAddMore && (product || hasProductsToAdd) && orderData.items?.length) {
-      await safeUpsertOrder(user_id, fromNumber, orderData, false);
-
-      return res.json({
-        response: buildAddedItemResponse(orderData, finalTipoCobertura),
-        context: {
-          ...(context || {}),
-          current_product: orderData.product || product || context?.current_product || null,
-          last_user_product: lastUserProduct || orderData.product || product || null,
-          step: nextStep(orderData, finalTipoCobertura),
-          tipo_cobertura: finalTipoCobertura || null,
-          order_data: orderData,
-          last_topic: orderData.product || product || context?.last_topic || "ENTRENAMIENTO",
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
-
-    if (
-      isPackReferenceText(texto) &&
-      orderData.quantity > 0 &&
-      orderData.product &&
-      (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")
-    ) {
-      const exactTotal = calculateTotal(orderData.product, 1, fullTraining);
-      orderData.quantity = 1;
-      if (exactTotal) orderData.total_amount = exactTotal;
-      orderData.items = addOrReplaceCartItem([], orderData.product, 1, orderData.total_amount, "replace");
-
-      await safeUpsertOrder(user_id, fromNumber, orderData, false);
-
+    // Si el cliente ya envió todos los datos, confirmar
+    if (step === "confirm_order") {
+      await safeUpsertOrder(user_id, fromNumber, orderData, true);
+      
       return res.json({
         response: buildOrderSummaryResponse(orderData, finalTipoCobertura),
         context: {
           ...(context || {}),
-          current_product: orderData.product || context?.current_product || null,
-          last_user_product: lastUserProduct || orderData.product || null,
-          step: nextStep(orderData, finalTipoCobertura),
-          tipo_cobertura: finalTipoCobertura || null,
+          current_product: orderData.product,
+          last_user_product: orderData.product,
+          step: "confirmed",
+          tipo_cobertura: finalTipoCobertura,
           order_data: orderData,
-          last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
+          last_topic: orderData.product,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
       });
     }
 
-    if (isPureQuantityReply && orderData.quantity > 0 && orderData.product && orderData.city) {
-      const exactTotal = calculateTotal(orderData.product, orderData.quantity, fullTraining);
-      if (exactTotal) orderData.total_amount = exactTotal;
-
-      await safeUpsertOrder(user_id, fromNumber, orderData, false);
-
-      return res.json({
-        response: buildOrderSummaryResponse(orderData, finalTipoCobertura),
-        context: {
-          ...(context || {}),
-          current_product: orderData.product || context?.current_product || null,
-          last_user_product: lastUserProduct || orderData.product || null,
-          step: nextStep(orderData, finalTipoCobertura),
-          tipo_cobertura: finalTipoCobertura || null,
-          order_data: orderData,
-          last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
-
-    const invalidCustomerName =
-      !!orderData.customer_name &&
-      (/\d/.test(orderData.customer_name) ||
-        normalize(orderData.customer_name).includes("unidad") ||
-        normalize(orderData.customer_name).includes("unidades") ||
-        isProductName(orderData.customer_name));
-
-    if (invalidCustomerName) orderData.customer_name = "";
-
-    if (
-      orderData.product &&
-      orderData.city &&
-      orderData.quantity &&
-      orderData.total_amount &&
-      !orderData.customer_name &&
-      step === "collecting_name"
-    ) {
-      await safeUpsertOrder(user_id, fromNumber, orderData, false);
-
-      return res.json({
-        response: `Perfecto 😊 ya tengo:
-
-📦 ${formatProductWithShoeSize(orderData.product, orderData.shoe_size)}
-🔢 Cantidad: ${orderData.quantity}
-📍 Ciudad: ${orderData.city}
-💰 Total: ${formatGs(orderData.total_amount)} Gs
-
-Ahora pasame tu nombre y apellido para agendar el pedido 🙏`,
-        context: {
-          ...(context || {}),
-          current_product: orderData.product || context?.current_product || null,
-          last_user_product: lastUserProduct || orderData.product || null,
-          step: "collecting_name",
-          tipo_cobertura: finalTipoCobertura || null,
-          order_data: { ...orderData, customer_name: "" },
-          last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
-
-    if (
-      finalTipoCobertura === "sin_cobertura" &&
-      orderData.product && orderData.city &&
-      orderData.customer_name && orderData.phone &&
-      step === "waiting_payment_proof"
-    ) {
-      await safeUpsertOrder(user_id, fromNumber, orderData, false, "waiting_payment_proof");
-      return res.json({
-        response: buildWaitingPaymentResponse(orderData),
-        context: {
-          ...(context || {}),
-          current_product: orderData.product || context?.current_product || null,
-          last_user_product: lastUserProduct || orderData.product || null,
-          step: "waiting_payment_proof",
-          tipo_cobertura: finalTipoCobertura || null,
-          order_data: orderData,
-          last_topic: "comprobante",
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
-
-    if (shouldCollect) {
-      await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
-    }
-
-    const justAnsweredQuantity =
-      !!orderData.product &&
-      !!orderData.city &&
-      !!orderData.quantity &&
-      !!orderData.total_amount &&
-      (isPureQuantityReply ||
-        effectivePreviousStep === "collecting_quantity" ||
-        effectivePreviousStep === "esperando_cantidad") &&
-      step !== "confirm_order" &&
-      finalTipoCobertura !== "sin_cobertura";
-
-    if (justAnsweredQuantity) {
-      return res.json({
-        response: buildOrderSummaryResponse(orderData, finalTipoCobertura),
-        context: {
-          ...(context || {}),
-          current_product: orderData.product || context?.current_product || null,
-          last_user_product: lastUserProduct || orderData.product || null,
-          step,
-          tipo_cobertura: finalTipoCobertura || null,
-          order_data: orderData,
-          last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
+    // Si estamos en medio del flujo, guardar y continuar con Gemini
+    await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
     let cleanHistory = Array.isArray(history) ? history : [];
-    if (isPureQuantityReply || isPureShoeSizeReply) cleanHistory = [];
+    if (isQuantityReply || isPureShoeSizeReply) cleanHistory = [];
 
     const system = `
 Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento oficial del usuario.
 
 REGLA FUNDAMENTAL: Los precios los sacás SIEMPRE del entrenamiento. NUNCA inventes ni asumas precios.
-Si no encontrás el precio en el entrenamiento, preguntá al cliente que aguarde un momento.
+
+FLUJO DE VENTAS (RESPETAR ESTRICTAMENTE):
+1. Cliente dice producto → preguntar CIUDAD (ej: "¿Para qué ciudad querés el envío?")
+2. Cliente responde ciudad → preguntar CANTIDAD con ejemplos (ej: "¿Cuántas unidades querés? Ej: 1 unidad, 2 unidades...")
+3. Cliente responde cantidad → mostrar resumen y pedir datos de envío
 
 ═══════════════════════════════════
 ENTRENAMIENTO OFICIAL DEL USUARIO:
@@ -2200,62 +1893,19 @@ ${fullTraining}
 
 ESTADO ACTUAL DEL CLIENTE:
 
-Producto activo: ${orderData.product || "ninguno"}
-Cantidad producto activo: ${orderData.quantity || "pendiente"}
-Calce/talle: ${orderData.shoe_size || "pendiente"}
-Carrito: ${getCartItems(orderData).length ? buildItemsLines(getCartItems(orderData)) : "vacío"}
-Total calculado: ${orderData.total_amount ? formatGs(orderData.total_amount) + " Gs" : "pendiente"}
+Producto: ${orderData.product || "ninguno"}
 Ciudad: ${orderData.city || "pendiente"}
-Tipo de cobertura: ${finalTipoCobertura || "pendiente"}
-Nombre: ${orderData.customer_name || "pendiente"}
-Teléfono: ${orderData.phone || "pendiente"}
-Dirección: ${orderData.address || "pendiente"}
-Titular esperado para transferencia: ${expectedReceiverName || "pendiente"}
-Paso anterior: ${effectivePreviousStep || "ninguno"}
+Cantidad: ${orderData.quantity || "pendiente"}
 Paso actual: ${step}
-Última pregunta del bot: ${lastAssistantMessage || "ninguna"}
-Último producto mencionado por el cliente: ${lastUserProduct || "ninguno"}
-Producto cambió respecto al pedido anterior: ${productChanged ? "SÍ" : "NO"}
-Intención: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
 
-REGLAS TÉCNICAS (MUY IMPORTANTES):
-
-Si el cliente respondió con un número SOLO (ej: "1", "2", "3"), esa es la cantidad EXACTA. NUNCA la concatenes con nada.
-
-Si la cantidad es 1, el total es 1 × precio unitario. Si es 2, es 2 × precio unitario (o promo si existe).
-
-Si el paso actual es collecting_quantity y el cliente responde un número, usá ESE número exacto.
-
-Si el paso actual es collecting_name, pedí nombre completo.
-
-Si el paso actual es collecting_phone, pedí teléfono.
-
-Si el tipo de cobertura es sin_cobertura, NO pidas dirección exacta.
-
-Si el tipo de cobertura es sin_cobertura y ya tenés nombre y teléfono, pedí comprobante de transferencia.
-
-Si el paso actual es collecting_address, pedí dirección exacta SOLO si tiene cobertura.
-
-Si el paso actual es confirm_order, confirmá el pedido con la plantilla del entrenamiento.
-
-No repitas saludo si ya hubo conversación.
-
-No cambies de producto salvo que el cliente lo pida.
-
-Si el cliente dice "también", "tambien", "agrega", "sumá", "y la", "y el", "mas", "más", NO confirmes todavía: agregá el producto al carrito y mostrá el resumen completo.
-
-Si hay varios productos, mostrá todos los items con subtotales y el total general.
-
-Nunca borres items anteriores salvo que el cliente pida cancelar o cambiar.
-
-Si el cliente inicia con otro producto nuevo y NO dice también/agrega/sumá, empezá pedido nuevo y no arrastres carrito viejo.
-
-Si preguntaste "qué calce" o "qué talle" y el cliente responde solo "35", "36", "37", etc., eso es CALCE/TALLE, NO cantidad. Cantidad = 1.
-
-Cerrá siempre con el siguiente paso.
+REGLAS:
+- Si paso es collecting_city → preguntar CIUDAD
+- Si paso es collecting_quantity → preguntar CANTIDAD con ejemplos
+- Si paso es collecting_name → pedir nombre
+- Si paso es collecting_phone → pedir teléfono
+- Si paso es collecting_address → pedir dirección
 
 Catálogo: ${CATALOG_URL}
-
 Español paraguayo natural, con emojis.`;
 
     const contents = cleanHistory
@@ -2266,15 +1916,7 @@ Español paraguayo natural, con emojis.`;
         parts: [{ text: clean(h.content) }],
       }));
 
-    const currentUserText = isPureShoeSizeReply
-      ? `El cliente respondió EXACTAMENTE "${texto}" que es el CALCE/TALLE ${orderData.shoe_size}. NO es cantidad. La cantidad debe ser 1 par.`
-      : isPureQuantityReply
-      ? `El cliente respondió EXACTAMENTE "${texto}" que es la cantidad ${orderData.quantity}. NO concatenes este número con nada. Usá ESA cantidad exacta.`
-      : wantsAddMore
-      ? `El cliente quiere AGREGAR más productos al carrito. Texto: "${texto}". Detecta el producto adicional y responde mostrando el resumen actualizado del carrito.`
-      : texto;
-
-    contents.push({ role: "user", parts: [{ text: currentUserText }] });
+    contents.push({ role: "user", parts: [{ text: texto }] });
 
     let response = await callGemini({
       apiKey,
@@ -2295,19 +1937,10 @@ Español paraguayo natural, con emojis.`;
       ...(context || {}),
       current_product: orderData.product || context?.current_product || null,
       last_user_product: lastUserProduct || orderData.product || null,
-      step: shouldCollect
-        ? step
-        : effectivePreviousStep === "payment_verified"
-        ? "payment_verified"
-        : "selling",
+      step: step,
       tipo_cobertura: finalTipoCobertura || null,
       order_data: orderData,
-      last_topic:
-        effectivePreviousStep === "payment_verified"
-          ? "payment_verified"
-          : step === "waiting_payment_proof"
-          ? "comprobante"
-          : orderData.product || context?.last_topic || "ENTRENAMIENTO",
+      last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
       updated_at: new Date().toISOString(),
     };
 
