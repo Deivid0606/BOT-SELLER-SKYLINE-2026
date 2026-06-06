@@ -7,7 +7,14 @@ const CATALOG_URL = "https://cat-logomegatodo-com.vercel.app/";
 
 const clean = (t: any): string => String(t || "").trim();
 
-const normalize = (t: string): string => clean(t).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\w\s]/g, " ").replace(/\s+/g, " ").trim();
+const normalize = (t: string): string =>
+  clean(t)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
 // =======================================================
 // 🧠 GUARDRAILS DETERMINÍSTICOS
@@ -54,7 +61,7 @@ function extractCityFromText(text: string): string {
   };
 
   for (const [k, v] of Object.entries(cityAliases)) {
-    if (new RegExp(`\\b${k.replace(/\\s+/g, "\\\\s+")}\\b`, "i").test(norm)) return v;
+    if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`, "i").test(norm)) return v;
   }
   return "";
 }
@@ -156,7 +163,6 @@ function isPackReferenceText(text: string): boolean {
   return /\b(kit\sx\s4|kit\s+por\s+4|pack\sx\s4|pack\s+por\s+4|x\s4|4\sunidades\s*(incluidas|incluido)?|las\s4\sunidades|kit\sx4|patitas\s+antideslizantes|kit\s+antivibracion)\b/.test(n);
 }
 
-// ✅ NUEVA FUNCIÓN: Detecta si es el producto antivibración (kit de 4)
 function isAntiVibrationKit(text: string): boolean {
   const n = normalize(text);
   return /\b(almohadillas?\s+antivibracion|almohadillas?\s+antivibraci[oó]n|soporte\s+para\s+lavarropas|soporte\s+antivibracion|patitas?\s+antideslizantes|kit\s+x4\s+patitas|kit\s+antivibracion|lavarropas\s+camina|heladera\s+vibra)\b/.test(n);
@@ -238,8 +244,10 @@ function getTipoCobertura(city: string): "con_cobertura" | "sin_cobertura" | "" 
 }
 
 function extractBankReceiverFromTraining(training: string): string {
-  const titular = training.match(/titular\s*[:-]\s*([^\n\r]+)/i)?.[1] ||
-                  training.match(/a nombre de\s*[:-]?\s*([^\n\r]+)/i)?.[1] || "";
+  const titular =
+    training.match(/titular\s*[:-]\s*([^\n\r]+)/i)?.[1] ||
+    training.match(/a nombre de\s*[:-]?\s*([^\n\r]+)/i)?.[1] ||
+    "";
   return clean(titular).replace(/[✅📲💳]/g, "").trim();
 }
 
@@ -253,22 +261,31 @@ function extractProductNameFromLine(line: string): string {
   return clean(parts[0] || c);
 }
 
-// ✅ FUNCIÓN CORREGIDA: detecta el producto antivibración con el nombre correcto
 function getAntiVibrationProductName(): string {
   return "Kit Antivibración x4 Patitas Antideslizantes";
 }
 
-function detectProduct(text: string, training: string, prev?: string, lastAssistantMessage?: string, lastUserProduct?: string) {
+function detectProduct(
+  text: string,
+  training: string,
+  prev?: string,
+  lastAssistantMessage?: string,
+  lastUserProduct?: string
+) {
   const msg = normalize(text);
-  
-  // ✅ NUEVO: Detección prioritaria del producto antivibración
-  if (isAntiVibrationKit(text) || isPackReferenceText(text) || 
-      msg.includes("soporte lavarropas") || msg.includes("almohadillas antivibracion") ||
-      msg.includes("patitas antideslizantes") || msg.includes("kit x4")) {
+
+  if (
+    isAntiVibrationKit(text) ||
+    isPackReferenceText(text) ||
+    msg.includes("soporte lavarropas") ||
+    msg.includes("almohadillas antivibracion") ||
+    msg.includes("patitas antideslizantes") ||
+    msg.includes("kit x4")
+  ) {
     console.log("🔄 Detectado: Producto Antivibración Kit x4");
     return getAntiVibrationProductName();
   }
-  
+
   const assistantProduct = canonicalProductFromText(lastAssistantMessage || "");
   const preferredMemoryProduct = assistantProduct || lastUserProduct || prev || "";
 
@@ -277,20 +294,26 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
     console.log(`🔄 Cliente quiere "${preferredMemoryProduct}" (producto activo por memoria/promo)`);
     return preferredMemoryProduct;
   }
-  
+
   const justWantsWithoutProduct = /^(quiero|si|sí|ok|dale|listo|confirmo)$/i.test(msg);
   if (justWantsWithoutProduct && preferredMemoryProduct && !isInvalidProductCandidate(preferredMemoryProduct)) {
     console.log(`🔄 Cliente confirmó "${preferredMemoryProduct}" (producto activo por memoria/promo)`);
     return preferredMemoryProduct;
   }
-  
+
   const justNumber = /^\d+$/.test(msg);
   if (justNumber && preferredMemoryProduct && !isInvalidProductCandidate(preferredMemoryProduct)) {
     console.log(`🔄 Cliente quiere ${msg} unidades de "${preferredMemoryProduct}" (producto activo por memoria/promo)`);
     return preferredMemoryProduct;
   }
-  
-  if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text) || isOriginQuestion(text) || isOnlyLocationMessage(text)) {
+
+  if (
+    isInformationRequest(text) ||
+    isCatalogQuery(text) ||
+    isProductInquiry(text) ||
+    isOriginQuestion(text) ||
+    isOnlyLocationMessage(text)
+  ) {
     console.log("ℹ️ Consulta general/ubicación: no se detecta producto");
     return "";
   }
@@ -298,8 +321,6 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
   if (!hasExplicitProductMention(text)) {
     return "";
   }
-  
-  const lines = getPriceLines(training);
 
   if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja") || msg.includes("creama")) {
     return "Veneno de Abeja";
@@ -309,13 +330,18 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
     return getDefaultShoeProductName();
   }
 
-  if (msg.includes("pelador") || msg.includes("peladora") || msg.includes("pelar papas") ||
-      msg.includes("pelador de papas") || msg.includes("peladora de papas") || msg.includes("pelador automatico") ||
-      msg.includes("peladora automatica")) {
+  if (
+    msg.includes("pelador") || msg.includes("peladora") || msg.includes("pelar papas") ||
+    msg.includes("pelador de papas") || msg.includes("peladora de papas") ||
+    msg.includes("pelador automatico") || msg.includes("peladora automatica")
+  ) {
     return "Peladora Automática";
   }
 
-  if (msg.includes("pororo") || msg.includes("popcorn") || msg.includes("pochoclo") || msg.includes("palomita") || msg.includes("palomitas")) {
+  if (
+    msg.includes("pororo") || msg.includes("popcorn") ||
+    msg.includes("pochoclo") || msg.includes("palomita") || msg.includes("palomitas")
+  ) {
     return "Máquina para hacer Pororo";
   }
 
@@ -339,6 +365,7 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
     return "Perfume Asad";
   }
 
+  const lines = getPriceLines(training);
   let best = "";
   let bestScore = 0;
 
@@ -352,17 +379,10 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
     const msgWords = msg.split(" ").filter((w) => w.length >= 4);
 
     let score = 0;
-
     if (msg.includes(n)) score += 50;
     if (n.includes(msg) && msg.length >= 4) score += 20;
-
-    for (const w of words) {
-      if (msg.includes(w)) score += 10;
-    }
-
-    for (const mw of msgWords) {
-      if (n.includes(mw)) score += 8;
-    }
+    for (const w of words) { if (msg.includes(w)) score += 10; }
+    for (const mw of msgWords) { if (n.includes(mw)) score += 8; }
 
     if (score > bestScore) {
       bestScore = score;
@@ -371,40 +391,19 @@ function detectProduct(text: string, training: string, prev?: string, lastAssist
   }
 
   if (bestScore >= 5) return best;
-
   return "";
 }
 
 function canonicalProductFromText(text: string): string {
   const n = normalize(text);
 
-  if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja)\b/.test(n)) {
-    return "Veneno de Abeja";
-  }
-
-  if (/\b(pelador|peladora|pelar\s+papas|pelador\s+de\s+papas|peladora\s+automatica)\b/.test(n)) {
-    return "Peladora Automática";
-  }
-
-  if (/\b(soporte\s+para\s+lavarropas|lavarropas|almohadillas\s+antivibracion|almohadillas\s+antivibraci[oó]n|patitas\s+antideslizantes|kit\s+x4\s+patitas|kit\s+antivibracion)\b/.test(n)) {
-    return getAntiVibrationProductName();
-  }
-
-  if (/\b(plantilla|plantillas|ortopiex|ortoflex)\b/.test(n)) {
-    return getDefaultShoeProductName();
-  }
-
-  if (/\b(afilador|afilador\s+de\s+cuchillos|cuchillos)\b/.test(n)) {
-    return "Afilador de Cuchillos";
-  }
-
-  if (/\b(vital\s+honey|vital\s+honey\s+vip)\b/.test(n)) {
-    return "Vital Honey VIP";
-  }
-
-  if (/\b(perfume\s+asad|asad)\b/.test(n)) {
-    return "Perfume Asad";
-  }
+  if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja)\b/.test(n)) return "Veneno de Abeja";
+  if (/\b(pelador|peladora|pelar\s+papas|pelador\s+de\s+papas|peladora\s+automatica)\b/.test(n)) return "Peladora Automática";
+  if (/\b(soporte\s+para\s+lavarropas|lavarropas|almohadillas\s+antivibracion|almohadillas\s+antivibraci[oó]n|patitas\s+antideslizantes|kit\s+x4\s+patitas|kit\s+antivibracion)\b/.test(n)) return getAntiVibrationProductName();
+  if (/\b(plantilla|plantillas|ortopiex|ortoflex)\b/.test(n)) return getDefaultShoeProductName();
+  if (/\b(afilador|afilador\s+de\s+cuchillos|cuchillos)\b/.test(n)) return "Afilador de Cuchillos";
+  if (/\b(vital\s+honey|vital\s+honey\s+vip)\b/.test(n)) return "Vital Honey VIP";
+  if (/\b(perfume\s+asad|asad)\b/.test(n)) return "Perfume Asad";
 
   return "";
 }
@@ -426,7 +425,10 @@ function detectMultipleProducts(text: string, training: string): string[] {
   const fullMatch = canonicalProductFromText(raw);
   if (fullMatch) found.push(fullMatch);
 
-  const segments = n.split(/\b(?:tambien|también|ademas|además|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí|mas|más)\b/g).map((x) => x.trim()).filter(Boolean);
+  const segments = n
+    .split(/\b(?:tambien|también|ademas|además|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí|mas|más)\b/g)
+    .map((x) => x.trim())
+    .filter(Boolean);
 
   for (const segment of segments) {
     const protectedProduct = canonicalProductFromText(segment);
@@ -450,47 +452,50 @@ function sameProduct(a: string, b: string): boolean {
 
 function isPriceIntent(text: string) {
   const m = normalize(text);
-  return (m.includes("precio") || m.includes("cuanto") || m.includes("cuesta") || m.includes("valor") || m.includes("costo"));
+  return m.includes("precio") || m.includes("cuanto") || m.includes("cuesta") || m.includes("valor") || m.includes("costo");
 }
 
 function isBuyIntent(text: string) {
   const m = normalize(text);
-  
-  if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
-    return false;
-  }
-  
+
+  if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) return false;
+
   const graciasPattern = /\b(gracias|very nice|muy lindo|excelente|bien|okey|oka|perfecto|hermoso|genial|buenisimo)\b/i;
   if (graciasPattern.test(m)) return false;
-  
+
   const soloQuieroPattern = /^\s*(quiero|si|sí|dale|ok|listo|confirmo|compro|reservo)\s*$/i;
-  if (soloQuieroPattern.test(m)) {
-    return true;
-  }
-  
-  return (/\b(quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmar|mandame|dame)\s+\d+\b/.test(m) ||
+  if (soloQuieroPattern.test(m)) return true;
+
+  return (
+    /\b(quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmar|mandame|dame)\s+\d+\b/.test(m) ||
     /\b\d+\s*(unidad|unidades|u)\b/.test(m) ||
-    /^\d+$/.test(m));
+    /^\d+$/.test(m)
+  );
 }
 
 function getLastAssistantMessage(history: any[]) {
   if (!Array.isArray(history)) return "";
-  const last = history.filter((h: any) => h?.role === "assistant" || h?.role === "model").slice(-1)[0];
+  const last = history
+    .filter((h: any) => h?.role === "assistant" || h?.role === "model")
+    .slice(-1)[0];
   return clean(last?.content);
 }
 
 function botWasAskingQuantity(history: any[]) {
   const lastAssistantMessage = normalize(getLastAssistantMessage(history));
-  return (lastAssistantMessage.includes("cuantas unidades") ||
+  return (
+    lastAssistantMessage.includes("cuantas unidades") ||
     lastAssistantMessage.includes("cuantos unidades") ||
     lastAssistantMessage.includes("cantidad") ||
     lastAssistantMessage.includes("cuantas queres") ||
-    lastAssistantMessage.includes("cuantas te gustaria"));
+    lastAssistantMessage.includes("cuantas te gustaria")
+  );
 }
 
 function botWasAskingShoeSize(history: any[]) {
   const lastAssistantMessage = normalize(getLastAssistantMessage(history));
-  return (lastAssistantMessage.includes("que calce") ||
+  return (
+    lastAssistantMessage.includes("que calce") ||
     lastAssistantMessage.includes("qué calce") ||
     lastAssistantMessage.includes("calce te gustaria") ||
     lastAssistantMessage.includes("calce te gustaría") ||
@@ -501,22 +506,21 @@ function botWasAskingShoeSize(history: any[]) {
     lastAssistantMessage.includes("numero te gustaria") ||
     lastAssistantMessage.includes("nro te gustaria") ||
     lastAssistantMessage.includes("disponible del 35") ||
-    lastAssistantMessage.includes("disponibles del 35"));
+    lastAssistantMessage.includes("disponibles del 35")
+  );
 }
 
-function extractData(msg: string, currentStep?: string, forceQuantityMode = false, forceShoeSizeMode = false) {
+function extractData(
+  msg: string,
+  currentStep?: string,
+  forceQuantityMode = false,
+  forceShoeSizeMode = false
+) {
   const text = clean(msg);
   const norm = normalize(text);
-  
+
   if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
-    return {
-      quantity: 0,
-      shoe_size: "",
-      city: "",
-      name: "",
-      phone: "",
-      address: "",
-    };
+    return { quantity: 0, shoe_size: "", city: "", name: "", phone: "", address: "" };
   }
 
   const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
@@ -525,7 +529,8 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   const shoeSizeMatch = norm.match(/\b(?:talle|numero|nro|num|uso|calzo|soy|en|del|de|para)\s*(\d{2})\b/);
   const explicitShoeSize = shoeSizeMatch ? Number(shoeSizeMatch[1]) : 0;
 
-  const waitingForShoeSize = forceShoeSizeMode ||
+  const waitingForShoeSize =
+    forceShoeSizeMode ||
     currentStep === "collecting_shoe_size" ||
     currentStep === "esperando_calce" ||
     currentStep === "collecting_calce";
@@ -533,15 +538,19 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   const onlyShoeSizeMatch = waitingForShoeSize ? norm.match(/^\s*(\d{2})\s*$/) : null;
   const implicitShoeSize = onlyShoeSizeMatch ? Number(onlyShoeSizeMatch[1]) : 0;
 
-  const shoe_size = (explicitShoeSize >= 20 && explicitShoeSize <= 50) ? explicitShoeSize :
-                    (implicitShoeSize >= 20 && implicitShoeSize <= 50) ? implicitShoeSize : 0;
+  const shoe_size =
+    explicitShoeSize >= 20 && explicitShoeSize <= 50 ? explicitShoeSize :
+    implicitShoeSize >= 20 && implicitShoeSize <= 50 ? implicitShoeSize : 0;
 
   const isShoeSizeMessage = shoe_size >= 20 && shoe_size <= 50;
 
   let quantity = 0;
 
-  if (!isShoeSizeMessage && !waitingForShoeSize &&
-      (forceQuantityMode || currentStep === "collecting_quantity" || currentStep === "esperando_cantidad")) {
+  if (
+    !isShoeSizeMessage &&
+    !waitingForShoeSize &&
+    (forceQuantityMode || currentStep === "collecting_quantity" || currentStep === "esperando_cantidad")
+  ) {
     const onlyNumber = norm.match(/^\s*(\d{1,3})\s*$/);
     if (onlyNumber) {
       const num = Number(onlyNumber[1]);
@@ -580,7 +589,6 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
   };
 
   let city = "";
-
   for (const [k, v] of Object.entries(cityAliases)) {
     if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`, "i").test(norm)) {
       city = v;
@@ -594,15 +602,23 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
 
   const invalidName =
     norm.includes("unidad") || norm.includes("unidades") ||
-    norm.includes("precio") || norm.includes("delivery") || norm.includes("envio") || norm.includes("envío") ||
-    norm.includes("ubicacion") || norm.includes("ubicación") || norm.includes("direccion") || norm.includes("dirección") ||
-    norm.includes("calce") || norm.includes("talle") || norm.includes("numero") || norm.includes("nro") ||
-    norm.includes("veneno") || norm.includes("abeja") || norm.includes("plantilla") || norm.includes("crema") ||
-    norm.includes("ortopiex") || norm.includes("pelador") || norm.includes("afilador") ||
-    norm.includes("vital") || norm.includes("perfume") || norm.includes("soporte") || norm.includes("lavarropas") ||
-    norm.includes("cuchillo") || norm.includes("5d") || norm.includes("ortoflex") ||
-    norm.includes("pororo") || norm.includes("maquina") || norm.includes("nebulizador") || norm.includes("tabla") ||
-    norm.includes("patitas") || norm.includes("antideslizantes") || norm.includes("kit");
+    norm.includes("precio") || norm.includes("delivery") ||
+    norm.includes("envio") || norm.includes("envío") ||
+    norm.includes("ubicacion") || norm.includes("ubicación") ||
+    norm.includes("direccion") || norm.includes("dirección") ||
+    norm.includes("calce") || norm.includes("talle") ||
+    norm.includes("numero") || norm.includes("nro") ||
+    norm.includes("veneno") || norm.includes("abeja") ||
+    norm.includes("plantilla") || norm.includes("crema") ||
+    norm.includes("ortopiex") || norm.includes("pelador") ||
+    norm.includes("afilador") || norm.includes("vital") ||
+    norm.includes("perfume") || norm.includes("soporte") ||
+    norm.includes("lavarropas") || norm.includes("cuchillo") ||
+    norm.includes("5d") || norm.includes("ortoflex") ||
+    norm.includes("pororo") || norm.includes("maquina") ||
+    norm.includes("nebulizador") || norm.includes("tabla") ||
+    norm.includes("patitas") || norm.includes("antideslizantes") ||
+    norm.includes("kit");
 
   const nameMatch = text.match(/(?:me\s+llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,80})/i)?.[1];
 
@@ -628,9 +644,13 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
     }
   }
 
-  if (!name && !invalidName && !/\d/.test(text) && /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s\.]{5,80}$/.test(text) &&
-      !city && !phone && !quantity && !norm.includes("hola") && !norm.includes("si") &&
-      !isProductName(text)) {
+  if (
+    !name && !invalidName && !/\d/.test(text) &&
+    /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s\.]{5,80}$/.test(text) &&
+    !city && !phone && !quantity &&
+    !norm.includes("hola") && !norm.includes("si") &&
+    !isProductName(text)
+  ) {
     name = clean(text.replace(/[.]+/g, " ").replace(/\s+/g, " "));
   }
 
@@ -647,29 +667,21 @@ function extractData(msg: string, currentStep?: string, forceQuantityMode = fals
 function safeQuantity(value: any): number {
   const raw = String(value ?? "").trim();
   if (!raw) return 0;
-
   const match = raw.match(/^\d{1,3}$/);
   if (!match) return 0;
-
   const n = Number(match[0]);
   if (!Number.isFinite(n) || n < 1 || n > 999) return 0;
-
   return n;
 }
 
-function mergeOrderData(old: any, ext: any, product: string, replaceQuantity = false): any {
-  const oldQuantity = safeQuantity(old?.quantity);
+// ✅ CORREGIDO: cantidad siempre REEMPLAZA, nunca acumula
+function mergeOrderData(old: any, ext: any, product: string): any {
   const newQuantity = safeQuantity(ext?.quantity);
+  const oldQuantity = safeQuantity(old?.quantity);
 
-  let finalQuantity = oldQuantity;
-  
-  if (newQuantity > 0) {
-    if (replaceQuantity) {
-      finalQuantity = newQuantity;
-    } else {
-      finalQuantity = oldQuantity + newQuantity;
-    }
-  }
+  // La cantidad nueva SIEMPRE reemplaza a la anterior si es válida.
+  // Nunca se suman cantidades del mismo producto.
+  const finalQuantity = newQuantity > 0 ? newQuantity : oldQuantity;
 
   return {
     product: product || old?.product || "",
@@ -708,62 +720,72 @@ function parseGsAmount(text: string): number {
   return Number(match[1].replace(/\./g, ""));
 }
 
-// ✅ FUNCIÓN CORREGIDA: Precio correcto para el Kit Antivibración (98.000 Gs)
+// ✅ REFACTORIZADO COMPLETO: Solo lee del entrenamiento, sin precios hardcodeados
 function calculateTotal(product: string, quantity: number, training: string): number | null {
   if (!product || !quantity || quantity < 1) return null;
 
   const p = normalize(product);
-
-  // ✅ CATÁLOGO PROTEGIDO CON PRECIOS CORRECTOS
-  const protectedCatalog = [
-    { keys: ["veneno de abeja", "crema de abeja", "creama de abeja", "abeja"], unit: 145000, promos: { 2: 249900 } as Record<number, number> },
-    { keys: ["peladora automatica", "pelador automatico", "peladora", "pelador"], unit: 169900, promos: {} as Record<number, number> },
-    { keys: ["afilador de cuchillos", "afilador", "cuchillos", "sharpener"], unit: 99000, promos: { 2: 129900 } as Record<number, number> },
-    { keys: ["vital honey vip", "vital honey"], unit: 169900, promos: { 2: 289900 } as Record<number, number> },
-    { keys: ["perfume asad", "asad"], unit: 169900, promos: {} as Record<number, number> },
-    { keys: ["maquina para hacer pororo", "maquina pororo", "pororo", "popcorn", "pochoclo", "palomitas"], unit: 169900, promos: {} as Record<number, number> },
-    { keys: ["nebulizador portatil", "nebulizador portátil", "nebulizador"], unit: 169900, promos: {} as Record<number, number> },
-    { keys: ["tabla de picar de marmol", "tabla de picar de mármol", "tabla de picar", "tabla de marmol", "tabla de mármol"], unit: 169900, promos: {} as Record<number, number> },
-    { keys: ["plantillas ortopiex", "ortopiex", "plantillas"], unit: 159000, promos: {} as Record<number, number> },
-    // ✅ CORREGIDO: Precio correcto del Kit Antivibración = 98.000 Gs (NO 169.900)
-    { keys: ["kit antivibracion x4 patitas antideslizantes", "almohadillas antivibracion", "almohadillas antivibración", "soportes antivibracion", "soportes antivibración", "patitas antideslizantes", "kit x4 patitas antideslizantes", "kit x 4 patitas antideslizantes", "soporte para lavarropas", "lavarropas"], unit: 98000, promos: {} as Record<number, number> },
-  ];
-
-  for (const item of protectedCatalog) {
-    if (item.keys.some((k) => p.includes(normalize(k)) || normalize(k).includes(p))) {
-      if (item.promos[quantity]) return item.promos[quantity];
-      return item.unit * quantity;
-    }
-  }
-
   const lines = training.split("\n").map((l) => clean(l)).filter(Boolean);
+
   let unitPrice = 0;
   let promoPrice = 0;
+  let bestMatchScore = 0;
+  let bestUnitPrice = 0;
+  let bestPromoPrice = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const current = normalize(lines[i]);
-    if (!current.includes(p) && !p.includes(current)) continue;
 
-    const window = lines.slice(i, i + 6);
+    // Evaluar qué tan bien matchea esta línea con el producto
+    let matchScore = 0;
+    if (current.includes(p)) matchScore += 10;
+    else if (p.includes(current) && current.length >= 5) matchScore += 5;
+    else {
+      // Match parcial por palabras
+      const productWords = p.split(" ").filter((w) => w.length >= 4);
+      for (const w of productWords) {
+        if (current.includes(w)) matchScore += 2;
+      }
+    }
+
+    if (matchScore === 0) continue;
+
+    // Buscar precios en las líneas cercanas (ventana de 8 líneas)
+    const window = lines.slice(i, i + 8);
+    let foundUnit = 0;
+    let foundPromo = 0;
 
     for (const line of window) {
       const nLine = normalize(line);
       const amount = parseGsAmount(line);
       if (!amount) continue;
 
-      if (quantity === 2 && /(2x|2\s*unidades|promo\s*2|2\s*cajas)/i.test(nLine)) {
-        promoPrice = amount;
-        break;
+      // Detectar promo de 2 unidades
+      if (
+        quantity === 2 &&
+        /(2x|2\s*unidades|promo\s*2|2\s*cajas|2\s*unidad)/i.test(nLine) &&
+        !foundPromo
+      ) {
+        foundPromo = amount;
+        continue;
       }
 
-      if (!unitPrice && /(1\s*unidad|1\s*caja|precio|gs|g\.)/i.test(nLine)) {
-        unitPrice = amount;
+      // Primer precio encontrado = precio unitario
+      if (!foundUnit) {
+        foundUnit = amount;
       }
     }
 
-    if (promoPrice) return promoPrice;
-    if (unitPrice) return unitPrice * quantity;
+    // Quedarse con el mejor match
+    if (matchScore > bestMatchScore) {
+      bestMatchScore = matchScore;
+      bestUnitPrice = foundUnit;
+      bestPromoPrice = foundPromo;
+    }
   }
+
+  if (bestPromoPrice && quantity === 2) return bestPromoPrice;
+  if (bestUnitPrice) return bestUnitPrice * quantity;
 
   return null;
 }
@@ -772,23 +794,29 @@ type CartItem = { product: string; quantity: number; total: number; shoe_size?: 
 
 function isAddMoreIntent(text: string): boolean {
   const m = normalize(text);
-  return /\b(tambien|también|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí|mas|más)\b/.test(m) ||
-         /\by\s+(la|el|los|las)\b/.test(m);
+  return (
+    /\b(tambien|también|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí|mas|más)\b/.test(m) ||
+    /\by\s+(la|el|los|las)\b/.test(m)
+  );
 }
 
 function getCartItems(order: any): CartItem[] {
   const rawItems = Array.isArray(order?.items) ? order.items : [];
 
-  const items: CartItem[] = rawItems.map((i: any) => {
-    const quantity = safeQuantity(i?.quantity);
-    const total = Number(i?.total || i?.total_amount || 0);
-    return {
-      product: clean(i?.product),
-      quantity,
-      total: Number.isFinite(total) ? total : 0,
-      shoe_size: i?.shoe_size || i?.shoeSize || "",
-    };
-  }).filter((i: CartItem) => i.product && i.quantity > 0 && !isInvalidCartProduct(i.product));
+  const items: CartItem[] = rawItems
+    .map((i: any) => {
+      const quantity = safeQuantity(i?.quantity);
+      const total = Number(i?.total || i?.total_amount || 0);
+      return {
+        product: clean(i?.product),
+        quantity,
+        total: Number.isFinite(total) ? total : 0,
+        shoe_size: i?.shoe_size || i?.shoeSize || "",
+      };
+    })
+    .filter(
+      (i: CartItem) => i.product && i.quantity > 0 && !isInvalidCartProduct(i.product)
+    );
 
   if (!items.length && order?.product && !isInvalidCartProduct(order.product) && safeQuantity(order?.quantity) > 0) {
     items.push({
@@ -810,7 +838,14 @@ function cartTotalQuantity(items: CartItem[]): number {
   return items.reduce((acc, i) => acc + safeQuantity(i.quantity), 0);
 }
 
-function addOrReplaceCartItem(items: CartItem[], product: string, quantity: number, total: number, mode: "add" | "replace" = "replace", shoeSize: any = ""): CartItem[] {
+function addOrReplaceCartItem(
+  items: CartItem[],
+  product: string,
+  quantity: number,
+  total: number,
+  mode: "add" | "replace" = "replace",
+  shoeSize: any = ""
+): CartItem[] {
   const cleanProduct = clean(product);
   const q = safeQuantity(quantity);
   const t = Number(total || 0);
@@ -873,15 +908,22 @@ function normalizeOrderWithItems(order: any, training: string): any {
 }
 
 function buildItemsLines(items: CartItem[]): string {
-  return items.map((i) => `📦 ${formatProductWithShoeSize(i.product, i.shoe_size)} x${i.quantity} → ${formatGs(i.total)} Gs`).join("\n");
+  return items
+    .map((i) => `📦 ${formatProductWithShoeSize(i.product, i.shoe_size)} x${i.quantity} → ${formatGs(i.total)} Gs`)
+    .join("\n");
 }
 
 function buildCartSummaryResponse(order: any, tipoCobertura: string) {
   const items = getCartItems(order);
   const total = cartGrandTotal(items) || Number(order?.total_amount || 0);
-  const tipoEnvio = tipoCobertura === "sin_cobertura" ? "Envío por transportadora / encomienda" : "Envío GRATIS contra-entrega";
+  const tipoEnvio =
+    tipoCobertura === "sin_cobertura"
+      ? "Envío por transportadora / encomienda"
+      : "Envío GRATIS contra-entrega";
 
-  const lines = items.length ? buildItemsLines(items) : `📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}\n🔢 Cantidad: ${order.quantity}`;
+  const lines = items.length
+    ? buildItemsLines(items)
+    : `📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}\n🔢 Cantidad: ${order.quantity}`;
 
   return `🔥 Perfecto 😊
 
@@ -913,7 +955,10 @@ function buildOrderSummaryResponse(order: any, tipoCobertura: string) {
   if (items.length > 1) return buildCartSummaryResponse(order, tipoCobertura);
 
   const total = Number(order?.total_amount || 0);
-  const tipoEnvio = tipoCobertura === "sin_cobertura" ? "Envío por transportadora / encomienda" : "Envío GRATIS contra-entrega";
+  const tipoEnvio =
+    tipoCobertura === "sin_cobertura"
+      ? "Envío por transportadora / encomienda"
+      : "Envío GRATIS contra-entrega";
 
   return `🔥 Perfecto 😊
 
@@ -936,64 +981,44 @@ Tu pedido queda así:
 y agendamos tu entrega ✨`;
 }
 
+// ✅ buildQuantityQuestionResponse: NO tiene precios hardcodeados
+// Los precios los leerá Gemini desde el entrenamiento
 function buildQuantityQuestionResponse(product: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
-  
-  // ✅ NUEVO: Mensaje especial para el Kit Antivibración (no preguntar cantidad, ya es kit de 4)
-  if (normalize(product).includes("kit antivibracion") || normalize(product).includes("patitas antideslizantes")) {
+
+  // Para el Kit Antivibración: no preguntar cantidad, ya es un kit de 4 unidades
+  if (
+    normalize(product).includes("kit antivibracion") ||
+    normalize(product).includes("patitas antideslizantes")
+  ) {
     return `🔥 Perfecto 😊
 
-Me confirmaste que querés ${productName} por solo 98.000 Gs (las 4 unidades).
+¿Cuántos kits te gustaría llevar?
 
-✅ Incluye 4 patitas antideslizantes
-✅ Envío GRATIS contra-entrega
+(Cada kit incluye 4 patitas antideslizantes)
 
-📍 ¿Para qué ciudad sería el envío?`;
+Respondé con el número (ej: 1, 2, 3...)`;
   }
-  
-  let precioMsg = "";
-  if (normalize(product).includes("veneno") || normalize(product).includes("abeja")) {
-    precioMsg = "💰 Precio unitario: 145.000 Gs\n🔥 Promo 2 unidades: 249.900 Gs";
-  } else if (normalize(product).includes("pelador")) {
-    precioMsg = "💰 Precio unitario: 169.900 Gs";
-  } else if (normalize(product).includes("afilador")) {
-    precioMsg = "💰 Precio unitario: 99.000 Gs\n🔥 Promo 2 unidades: 129.900 Gs";
-  } else if (normalize(product).includes("vital")) {
-    precioMsg = "💰 Precio unitario: 169.900 Gs\n🔥 Promo 2 unidades: 289.900 Gs";
-  } else if (normalize(product).includes("plantilla") || normalize(product).includes("ortopiex")) {
-    precioMsg = "💰 Precio unitario: 159.000 Gs";
-  } else if (normalize(product).includes("pororo") || normalize(product).includes("nebulizador") || normalize(product).includes("tabla")) {
-    precioMsg = "💰 Precio unitario: 169.900 Gs";
-  } else {
-    precioMsg = "💰 Precio: 169.900 Gs";
-  }
-  
+
   return `🔥 Perfecto 😊
 
 Me confirmaste que querés ${productName}.
 
 📌 ¿Cuántas unidades querés?
 
-${precioMsg}
-
 Respondé con el número (ej: 1, 2, 3...)`;
 }
 
 function nextStep(o: any, tipoCobertura?: string) {
   const items = getCartItems(o);
-  
+
   if (!o.product && !items.length) return "selling";
   if (!o.city) return "collecting_city";
-  
+
   const hasValidQuantity = safeQuantity(o.quantity) > 0;
-  
-  if (o.product && !hasValidQuantity) {
-    return "collecting_quantity";
-  }
-  
-  if (!hasValidQuantity && !items.length) {
-    return "collecting_quantity";
-  }
+
+  if (o.product && !hasValidQuantity) return "collecting_quantity";
+  if (!hasValidQuantity && !items.length) return "collecting_quantity";
 
   if (tipoCobertura === "sin_cobertura") {
     if (!o.customer_name) return "collecting_name";
@@ -1008,7 +1033,13 @@ function nextStep(o: any, tipoCobertura?: string) {
   return "confirm_order";
 }
 
-async function safeUpsertOrder(userId: string, from: string, order: any, confirm = false, forcedStatus?: string) {
+async function safeUpsertOrder(
+  userId: string,
+  from: string,
+  order: any,
+  confirm = false,
+  forcedStatus?: string
+) {
   try {
     const orderItems = getCartItems(order);
     if (!order?.product && !orderItems.length) return null;
@@ -1036,50 +1067,58 @@ async function safeUpsertOrder(userId: string, from: string, order: any, confirm
     const tipoCobertura = getTipoCobertura(order.city);
     const step = nextStep(order, tipoCobertura);
 
-    const finalStatus = forcedStatus ||
-      (confirm && step === "confirm_order" ? "confirmed" :
-       step === "confirm_order" ? "confirm_pending" : step);
+    const finalStatus =
+      forcedStatus ||
+      (confirm && step === "confirm_order"
+        ? "confirmed"
+        : step === "confirm_order"
+        ? "confirm_pending"
+        : step);
 
     const payload: any = {
       user_id: userId,
       from_number: from,
       phone: order.phone || from,
-      product: orderItems.length > 1 ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ") : formatProductWithShoeSize(order.product || orderItems[0]?.product || "", order.shoe_size) || null,
-      producto: orderItems.length > 1 ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ") : formatProductWithShoeSize(order.product || orderItems[0]?.product || "", order.shoe_size) || null,
+      product:
+        orderItems.length > 1
+          ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ")
+          : formatProductWithShoeSize(
+              order.product || orderItems[0]?.product || "",
+              order.shoe_size
+            ) || null,
+      producto:
+        orderItems.length > 1
+          ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ")
+          : formatProductWithShoeSize(
+              order.product || orderItems[0]?.product || "",
+              order.shoe_size
+            ) || null,
       customer_name: order.customer_name || null,
       city: order.city || null,
       ciudad: order.city || null,
       address: order.address || null,
       quantity: orderItems.length ? cartTotalQuantity(orderItems) : order.quantity || null,
-      total_amount: orderItems.length ? cartGrandTotal(orderItems) : order.total_amount || null,
+      total_amount: orderItems.length
+        ? cartGrandTotal(orderItems)
+        : order.total_amount || null,
       status: finalStatus,
       fecha: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
 
     if (existing?.id) {
-      const { error } = await supabase
-        .from("orders")
-        .update(payload)
-        .eq("id", existing.id);
-
+      const { error } = await supabase.from("orders").update(payload).eq("id", existing.id);
       if (error) console.error("❌ updateOrder:", error);
       return existing.id;
     }
 
-    const { data, error } = await supabase
-      .from("orders")
-      .insert(payload)
-      .select("id")
-      .single();
-
+    const { data, error } = await supabase.from("orders").insert(payload).select("id").single();
     if (error) {
       console.error("❌ insertOrder:", error);
       return null;
     }
 
     return data?.id || null;
-
   } catch (e) {
     console.error("❌ safeUpsertOrder:", e);
     return null;
@@ -1089,20 +1128,13 @@ async function safeUpsertOrder(userId: string, from: string, order: any, confirm
 async function fetchMediaAsBase64(url: string): Promise<{ data: string; mime: string } | null> {
   try {
     const r = await fetch(url);
-
     if (!r.ok) {
       console.error("❌ fetchMedia:", r.status, url.slice(0, 80));
       return null;
     }
-
     const mime = r.headers.get("content-type") || "application/octet-stream";
     const buf = Buffer.from(await r.arrayBuffer());
-
-    return {
-      data: buf.toString("base64"),
-      mime: mime.split(";")[0].trim(),
-    };
-
+    return { data: buf.toString("base64"), mime: mime.split(";")[0].trim() };
   } catch (e) {
     console.error("❌ fetchMediaAsBase64:", e);
     return null;
@@ -1125,11 +1157,14 @@ async function callGemini({ apiKey, model, system, contents, temperature, maxTok
     body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
   }
 
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }
+  );
 
   const data = await r.json();
 
@@ -1146,7 +1181,9 @@ async function callGemini({ apiKey, model, system, contents, temperature, maxTok
   return text;
 }
 
-async function analyzeImageWithGemini({ apiKey, model, imageBase64, mime, caption, productList, expectedReceiverName }: any): Promise<{
+async function analyzeImageWithGemini({
+  apiKey, model, imageBase64, mime, caption, productList, expectedReceiverName,
+}: any): Promise<{
   kind: "payment_proof" | "product" | "other";
   transcript: string;
   amount: string;
@@ -1203,13 +1240,15 @@ ${productList.slice(0, 5000)}
 
 NO devuelvas texto fuera del JSON.`.trim();
 
-  const contents = [{
-    role: "user",
-    parts: [
-      { inlineData: { mimeType: mime, data: imageBase64 } },
-      { text: caption ? `Caption: ${caption}` : "Analizá la imagen." },
-    ],
-  }];
+  const contents = [
+    {
+      role: "user",
+      parts: [
+        { inlineData: { mimeType: mime, data: imageBase64 } },
+        { text: caption ? `Caption: ${caption}` : "Analizá la imagen." },
+      ],
+    },
+  ];
 
   const raw = await callGemini({ apiKey, model, system, contents, temperature: 0.02, maxTokens: 900 });
 
@@ -1218,8 +1257,10 @@ NO devuelvas texto fuera del JSON.`.trim();
     if (!match) throw new Error("no json");
 
     const parsed = JSON.parse(match[0]);
-
-    const kind = parsed.kind === "payment_proof" || parsed.kind === "product" || parsed.kind === "other" ? parsed.kind : "other";
+    const kind =
+      parsed.kind === "payment_proof" || parsed.kind === "product" || parsed.kind === "other"
+        ? parsed.kind
+        : "other";
 
     return {
       kind,
@@ -1231,48 +1272,45 @@ NO devuelvas texto fuera del JSON.`.trim();
       productPrice: clean(parsed.productPrice),
       promoText: clean(parsed.promoText),
     };
-
   } catch {
     console.warn("⚠️ analyzeImage no parseó JSON:", raw.slice(0, 200));
-
     return {
       kind: "other",
       transcript: clean(raw).slice(0, 200),
-      amount: "",
-      receiverName: "",
-      matchedProduct: "",
-      productName: "",
-      productPrice: "",
-      promoText: "",
+      amount: "", receiverName: "", matchedProduct: "",
+      productName: "", productPrice: "", promoText: "",
     };
   }
 }
 
 async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: any): Promise<string> {
-  const system = "Transcribí el audio al español tal cual lo dijo el hablante. Devolvé SOLO la transcripción en texto plano.";
+  const system =
+    "Transcribí el audio al español tal cual lo dijo el hablante. Devolvé SOLO la transcripción en texto plano.";
 
-  const contents = [{
-    role: "user",
-    parts: [
-      { inlineData: { mimeType: mime, data: audioBase64 } },
-      { text: "Transcribí este audio." },
-    ],
-  }];
+  const contents = [
+    {
+      role: "user",
+      parts: [
+        { inlineData: { mimeType: mime, data: audioBase64 } },
+        { text: "Transcribí este audio." },
+      ],
+    },
+  ];
 
   const txt = await callGemini({ apiKey, model, system, contents, temperature: 0.1, maxTokens: 1024 });
-
   return clean(txt);
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION CORREGIDA - CON MEMORIA DE PRODUCTO Y PRECIO ANTIVIBRACION CORREGIDO");
+  console.log("🔥 VERSION CORREGIDA - SIN PRECIOS HARDCODEADOS - CANTIDAD SIEMPRE REEMPLAZA");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    const { user_id, message, from_number, context, history, media_url, media_type, mime_type } = req.body;
+    const { user_id, message, from_number, context, history, media_url, media_type, mime_type } =
+      req.body;
 
     let texto = clean(message);
     const fromNumber = clean(from_number);
@@ -1282,10 +1320,7 @@ export default async function handler(req: any, res: any) {
 
     if (!user_id) return res.status(400).json({ error: "Falta user_id" });
     if (!fromNumber) return res.status(400).json({ error: "Falta from_number" });
-
-    if (!texto && !mediaUrl) {
-      return res.status(400).json({ error: "Faltan message o media" });
-    }
+    if (!texto && !mediaUrl) return res.status(400).json({ error: "Faltan message o media" });
 
     const { data: iaConfig } = await supabase
       .from("chat_ia_gemini")
@@ -1295,9 +1330,7 @@ export default async function handler(req: any, res: any) {
       .maybeSingle();
 
     if (!iaConfig?.api_key) {
-      return res.json({
-        response: "⚠️ La IA no está configurada o desactivada.",
-      });
+      return res.json({ response: "⚠️ La IA no está configurada o desactivada." });
     }
 
     const { data: trainingRow } = await supabase
@@ -1312,18 +1345,15 @@ export default async function handler(req: any, res: any) {
     const fullTraining = clean(trainingRow?.response);
 
     if (!fullTraining) {
-      return res.json({
-        response: "⚠️ No encontré entrenamiento activo.",
-      });
+      return res.json({ response: "⚠️ No encontré entrenamiento activo." });
     }
 
     const expectedReceiverName = extractBankReceiverFromTraining(fullTraining);
-
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
     let lastUserProduct = context?.last_user_product || "";
-    
+
     if (!lastUserProduct && Array.isArray(history)) {
       for (let i = history.length - 1; i >= 0; i--) {
         const msg = history[i];
@@ -1335,68 +1365,36 @@ export default async function handler(req: any, res: any) {
             break;
           }
           const norm = normalize(userText);
-          if (norm.includes("veneno") || norm.includes("abeja")) {
-            lastUserProduct = "Veneno de Abeja";
-            break;
-          }
-          if (norm.includes("plantilla") || norm.includes("ortopiex")) {
-            lastUserProduct = getDefaultShoeProductName();
-            break;
-          }
-          if (norm.includes("pelador")) {
-            lastUserProduct = "Peladora Automática";
-            break;
-          }
-          if (norm.includes("pororo") || norm.includes("popcorn") || norm.includes("pochoclo")) {
-            lastUserProduct = "Máquina para hacer Pororo";
-            break;
-          }
-          if (norm.includes("nebulizador")) {
-            lastUserProduct = "Nebulizador portátil";
-            break;
-          }
-          if (norm.includes("tabla") && (norm.includes("picar") || norm.includes("marmol"))) {
-            lastUserProduct = "Tabla de Picar de Mármol";
-            break;
-          }
-          // ✅ NUEVO: Detectar producto antivibración en historial
-          if (isAntiVibrationKit(userText)) {
-            lastUserProduct = getAntiVibrationProductName();
-            break;
-          }
+          if (norm.includes("veneno") || norm.includes("abeja")) { lastUserProduct = "Veneno de Abeja"; break; }
+          if (norm.includes("plantilla") || norm.includes("ortopiex")) { lastUserProduct = getDefaultShoeProductName(); break; }
+          if (norm.includes("pelador")) { lastUserProduct = "Peladora Automática"; break; }
+          if (norm.includes("pororo") || norm.includes("popcorn") || norm.includes("pochoclo")) { lastUserProduct = "Máquina para hacer Pororo"; break; }
+          if (norm.includes("nebulizador")) { lastUserProduct = "Nebulizador portátil"; break; }
+          if (norm.includes("tabla") && (norm.includes("picar") || norm.includes("marmol"))) { lastUserProduct = "Tabla de Picar de Mármol"; break; }
+          if (isAntiVibrationKit(userText)) { lastUserProduct = getAntiVibrationProductName(); break; }
         }
       }
     }
 
     const isNewChat = isNewConversation(texto, history || []);
-    
+
     let oldOrder;
     if (isNewChat) {
       oldOrder = {
-        product: "",
-        quantity: 0,
-        shoe_size: "",
-        city: "",
-        customer_name: "",
-        phone: "",
-        address: "",
-        items: [],
-        total_amount: 0,
+        product: "", quantity: 0, shoe_size: "", city: "",
+        customer_name: "", phone: "", address: "", items: [], total_amount: 0,
       };
       console.log("🔄 Conversación nueva detectada - Pedido reiniciado");
     } else {
       oldOrder = normalizeOrderWithItems(context?.order_data || {}, fullTraining);
     }
-    
+
     const previousStep = clean(context?.step);
     const previousTipoCobertura = clean(context?.tipo_cobertura);
 
     if (isOriginQuestion(texto)) {
       return res.json({
-        response: `Somos de Asunción, Paraguay 😊
-Hacemos envíos a todo el país 🚚
-
-¿Cuál producto te interesa? ✨`,
+        response: `Somos de Asunción, Paraguay 😊\nHacemos envíos a todo el país 🚚\n\n¿Cuál producto te interesa? ✨`,
         context: {
           ...(context || {}),
           step: previousStep || "selling",
@@ -1409,8 +1407,11 @@ Hacemos envíos a todo el país 🚚
       });
     }
 
-    const activeProductForLocation = oldOrder?.product || (String(previousStep || "").startsWith("collecting") ? context?.current_product : "");
+    const activeProductForLocation =
+      oldOrder?.product ||
+      (String(previousStep || "").startsWith("collecting") ? context?.current_product : "");
     const locationOnlyCity = isOnlyLocationMessage(texto) ? extractCityFromText(texto) : "";
+
     if (locationOnlyCity && !activeProductForLocation) {
       const coverageOrder = { ...(oldOrder || {}), city: locationOnlyCity };
       return res.json({
@@ -1453,22 +1454,35 @@ Hacemos envíos a todo el país 🚚
 
     const shoeSizeFromText = extractShoeSizeFromText(texto);
     const shoeProductContext = isShoeProductText(
-      [oldOrder?.product, context?.current_product, context?.last_topic, lastAssistantMessage].filter(Boolean).join(" ")
+      [oldOrder?.product, context?.current_product, context?.last_topic, lastAssistantMessage]
+        .filter(Boolean)
+        .join(" ")
     );
 
-    const isPureShoeSizeReply = shoeSizeFromText > 0 &&
+    const isPureShoeSizeReply =
+      shoeSizeFromText > 0 &&
       !!(oldOrder?.product || context?.current_product || shoeProductContext) &&
-      (wasAskingShoeSize || previousStep === "collecting_shoe_size" || previousStep === "esperando_calce" ||
-       previousStep === "collecting_calce" || shoeProductContext || productRequiresSize(String(oldOrder?.product || context?.current_product || "")));
+      (wasAskingShoeSize ||
+        previousStep === "collecting_shoe_size" ||
+        previousStep === "esperando_calce" ||
+        previousStep === "collecting_calce" ||
+        shoeProductContext ||
+        productRequiresSize(String(oldOrder?.product || context?.current_product || "")));
 
-    const isPureQuantityReply = isOnlyNumber && !isPureShoeSizeReply && !!oldOrder?.product && !!oldOrder?.city &&
-      (wasAskingQuantity || previousStep === "collecting_quantity" || previousStep === "esperando_cantidad");
+    const isPureQuantityReply =
+      isOnlyNumber &&
+      !isPureShoeSizeReply &&
+      !!oldOrder?.product &&
+      !!oldOrder?.city &&
+      (wasAskingQuantity ||
+        previousStep === "collecting_quantity" ||
+        previousStep === "esperando_cantidad");
 
     const wantsAddMore = isAddMoreIntent(texto);
     console.log(`🔥 wantsAddMore: ${wantsAddMore}, texto: ${texto}`);
     console.log(`🔥 lastUserProduct (memoria): ${lastUserProduct}`);
 
-    let product;
+    let product: string;
 
     if (wantsAddMore) {
       product = detectProduct(texto, fullTraining, null, lastAssistantMessage, lastUserProduct);
@@ -1480,10 +1494,20 @@ Hacemos envíos a todo el país 🚚
       product = context?.current_product || oldOrder?.product;
       console.log(`🔥 Calce reply - Producto forzado: ${product}`);
     } else {
-      product = detectProduct(texto, fullTraining, context?.current_product || oldOrder?.product, lastAssistantMessage, lastUserProduct);
+      product = detectProduct(
+        texto,
+        fullTraining,
+        context?.current_product || oldOrder?.product,
+        lastAssistantMessage,
+        lastUserProduct
+      );
     }
 
-    if ((!product || isInvalidProductCandidate(product)) && lastUserProduct && !isInvalidProductCandidate(lastUserProduct)) {
+    if (
+      (!product || isInvalidProductCandidate(product)) &&
+      lastUserProduct &&
+      !isInvalidProductCandidate(lastUserProduct)
+    ) {
       const normText = normalize(texto);
       const isConfirmReply = /^(quiero|si|sí|ok|dale|listo|confirmo|\d+)$/i.test(normText);
       if (isConfirmReply) {
@@ -1494,7 +1518,10 @@ Hacemos envíos a todo el país 🚚
 
     let extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
 
-    if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
+    if (
+      isPackReferenceText(texto) &&
+      (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")
+    ) {
       extracted.quantity = safeQuantity(oldOrder?.quantity) || 1;
       extracted.name = "";
       extracted.address = "";
@@ -1507,7 +1534,7 @@ Hacemos envíos a todo el país 🚚
       extracted.name = "";
       extracted.address = "";
       product = context?.current_product || oldOrder?.product || product;
-      console.log(`✅ Cantidad exacta detectada y SOBRESCRITA: ${exactQuantity} para producto: ${product}`);
+      console.log(`✅ Cantidad exacta detectada: ${exactQuantity} para producto: ${product}`);
     }
 
     if (isPureShoeSizeReply) {
@@ -1528,8 +1555,7 @@ Hacemos envíos a todo el país 🚚
         const mime = mimeHint || fetched.mime || "image/jpeg";
 
         const analysis = await analyzeImageWithGemini({
-          apiKey,
-          model,
+          apiKey, model,
           imageBase64: fetched.data,
           mime,
           caption: texto,
@@ -1541,9 +1567,14 @@ Hacemos envíos a todo el país 🚚
 
         if (analysis.kind === "payment_proof") {
           isPaymentProof = true;
-          const isWaitingPaymentProof = getTipoCobertura(oldOrder?.city) === "sin_cobertura" && previousStep === "waiting_payment_proof";
+          const isWaitingPaymentProof =
+            getTipoCobertura(oldOrder?.city) === "sin_cobertura" &&
+            previousStep === "waiting_payment_proof";
 
-          await safeUpsertOrder(user_id, fromNumber, oldOrder, false, isWaitingPaymentProof ? "payment_verified" : undefined);
+          await safeUpsertOrder(
+            user_id, fromNumber, oldOrder, false,
+            isWaitingPaymentProof ? "payment_verified" : undefined
+          );
 
           const amountText = analysis.amount ? ` por Gs. ${analysis.amount}` : "";
           const receiver = analysis.receiverName || expectedReceiverName || "nuestro titular";
@@ -1571,14 +1602,24 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
         }
 
         if (analysis.kind === "product") {
-          const productSignal = [analysis.matchedProduct, analysis.productName, analysis.transcript, analysis.promoText].filter(Boolean).join(" ");
+          const productSignal = [
+            analysis.matchedProduct,
+            analysis.productName,
+            analysis.transcript,
+            analysis.promoText,
+          ]
+            .filter(Boolean)
+            .join(" ");
+
           const catalogProduct = detectProduct(productSignal, fullTraining, "", "", lastUserProduct);
           const visualProduct = catalogProduct || analysis.matchedProduct || analysis.productName || "";
           product = visualProduct || product;
           const hasVisiblePrice = !!analysis.productPrice;
 
           if (!catalogProduct && visualProduct && hasVisiblePrice) {
-            const promoLine = analysis.promoText ? `🔥 ${analysis.promoText} → ${analysis.productPrice} Gs` : `💰 Precio: ${analysis.productPrice} Gs`;
+            const promoLine = analysis.promoText
+              ? `🔥 ${analysis.promoText} → ${analysis.productPrice} Gs`
+              : `💰 Precio: ${analysis.productPrice} Gs`;
 
             return res.json({
               response: `Sí 😊 es ${visualProduct}.
@@ -1611,7 +1652,9 @@ Si hay producto del catálogo detectado, respondé con su nombre, precio exacto 
 Si no hay producto del catálogo pero hay producto visual y precio visible, respondé con ese producto y precio visible.
 Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
         } else {
-          texto = texto || `El cliente envió una imagen. Descripción: ${analysis.transcript || "imagen no identificada"}. Si no corresponde a producto ni comprobante, pedí más detalle.`;
+          texto =
+            texto ||
+            `El cliente envió una imagen. Descripción: ${analysis.transcript || "imagen no identificada"}. Si no corresponde a producto ni comprobante, pedí más detalle.`;
         }
       } else {
         texto = texto || "Te mandé una imagen pero no pudiste descargarla.";
@@ -1623,16 +1666,22 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
 
       if (fetched) {
         const mime = mimeHint || fetched.mime || "audio/ogg";
-        const transcript = await transcribeAudioWithGemini({ apiKey, model, audioBase64: fetched.data, mime });
+        const transcript = await transcribeAudioWithGemini({
+          apiKey, model, audioBase64: fetched.data, mime,
+        });
         texto = transcript || texto || "Te mandé un audio.";
 
         const audioHasProduct = !!detectProduct(texto, fullTraining, "", "", lastUserProduct);
         const audioExtracted = extractData(texto, previousStep, false, false);
-        const audioHasUsefulData = !!(audioExtracted.quantity || audioExtracted.city || audioExtracted.name || audioExtracted.phone || audioExtracted.address);
+        const audioHasUsefulData = !!(
+          audioExtracted.quantity || audioExtracted.city ||
+          audioExtracted.name || audioExtracted.phone || audioExtracted.address
+        );
 
         if (!isBuyIntent(texto) && !audioHasProduct && !audioHasUsefulData) {
           return res.json({
-            response: "🎤 Escuché tu audio 😊 ¿Podrías decirme qué producto te interesa o qué necesitás exactamente?",
+            response:
+              "🎤 Escuché tu audio 😊 ¿Podrías decirme qué producto te interesa o qué necesitás exactamente?",
             context: {
               ...(context || {}),
               step: previousStep || "selling",
@@ -1653,7 +1702,10 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
 
     extracted = extractData(texto, previousStep, isPureQuantityReply, isPureShoeSizeReply);
 
-    if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
+    if (
+      isPackReferenceText(texto) &&
+      (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")
+    ) {
       extracted.quantity = safeQuantity(oldOrder?.quantity) || 1;
       extracted.name = "";
       extracted.address = "";
@@ -1664,7 +1716,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
       const exactQuantity = Number(String(message).trim());
       extracted.quantity = exactQuantity;
       product = context?.current_product || oldOrder?.product || product;
-      console.log(`✅ Reforzando cantidad exacta SOBRESCRITA: ${exactQuantity} para producto: ${product}`);
+      console.log(`✅ Reforzando cantidad exacta: ${exactQuantity} para producto: ${product}`);
     }
 
     if (isPureShoeSizeReply) {
@@ -1685,23 +1737,20 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
       console.log(`💾 Memoria actualizada: último producto = ${lastUserProduct}`);
     }
 
-    if (isPackReferenceText(texto) && (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")) {
+    if (
+      isPackReferenceText(texto) &&
+      (previousStep === "collecting_quantity" || previousStep === "esperando_cantidad")
+    ) {
       product = oldOrder?.product || context?.current_product || product;
     }
 
-    const productChanged = !!product && !!oldOrder?.product && !sameProduct(product, oldOrder.product);
-    const baseOrder = oldOrder;
+    const productChanged =
+      !!product && !!oldOrder?.product && !sameProduct(product, oldOrder.product);
     const effectivePreviousStep = previousStep;
     const effectivePreviousTipoCobertura = previousTipoCobertura;
 
-    const replaceQuantityFlag = isPureQuantityReply || safeQuantity(extracted.quantity) > 0;
-    
-    let orderData = mergeOrderData(
-      baseOrder,
-      extracted,
-      product,
-      replaceQuantityFlag
-    );
+    // ✅ CORREGIDO: mergeOrderData ya no recibe replaceQuantity, siempre reemplaza
+    let orderData = mergeOrderData(oldOrder, extracted, product);
 
     if (productChanged && !wantsAddMore) {
       orderData = {
@@ -1724,17 +1773,26 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     orderData.quantity = safeQuantity(orderData.quantity);
 
     if (orderData.shoe_size) {
-      const preservedShoeProduct = isShoeProductText(oldOrder?.product || "") ? oldOrder.product :
-                                   isShoeProductText(context?.current_product || "") ? context.current_product : getDefaultShoeProductName();
+      const preservedShoeProduct =
+        isShoeProductText(oldOrder?.product || "")
+          ? oldOrder.product
+          : isShoeProductText(context?.current_product || "")
+          ? context.current_product
+          : getDefaultShoeProductName();
 
       const shoeQty = safeQuantity(orderData.quantity) || safeQuantity(oldOrder?.quantity) || 1;
-      const shoeTotal = calculateTotal(preservedShoeProduct, shoeQty, fullTraining) || 159000 * shoeQty;
+      const shoeTotal =
+        calculateTotal(preservedShoeProduct, shoeQty, fullTraining) ||
+        parseGsAmount(fullTraining.split("\n").find((l) => normalize(l).includes("plantilla")) || "") * shoeQty ||
+        0;
 
       orderData.product = preservedShoeProduct;
       product = preservedShoeProduct;
       orderData.quantity = shoeQty;
       orderData.total_amount = shoeTotal;
-      orderData.items = [{ product: preservedShoeProduct, quantity: shoeQty, total: shoeTotal, shoe_size: orderData.shoe_size }];
+      orderData.items = [
+        { product: preservedShoeProduct, quantity: shoeQty, total: shoeTotal, shoe_size: orderData.shoe_size },
+      ];
     }
 
     if (isInvalidProductCandidate(orderData.product) && (oldOrder?.product || context?.current_product)) {
@@ -1750,12 +1808,18 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     const productsToAdd = wantsAddMore ? detectMultipleProducts(texto, fullTraining) : [];
     const hasProductsToAdd = productsToAdd.length > 0;
 
-    const isFreshProductSearch = !!product && !wantsAddMore && !isPureQuantityReply && !isPackReferenceText(texto) &&
+    const isFreshProductSearch =
+      !!product &&
+      !wantsAddMore &&
+      !isPureQuantityReply &&
+      !isPackReferenceText(texto) &&
       (!effectivePreviousStep.startsWith("collecting") || productChanged) &&
-      effectivePreviousStep !== "esperando_cantidad" && effectivePreviousStep !== "waiting_payment_proof";
+      effectivePreviousStep !== "esperando_cantidad" &&
+      effectivePreviousStep !== "waiting_payment_proof";
 
     const mustStartNewCart = !!product && !wantsAddMore && productChanged;
-    let cartItems = (isFreshProductSearch || mustStartNewCart) ? [] : getCartItems(oldOrder);
+    let cartItems =
+      isFreshProductSearch || mustStartNewCart ? [] : getCartItems(oldOrder);
 
     if (product && (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")) {
       cartItems = cartItems.filter((i) => sameProduct(i.product, product));
@@ -1772,8 +1836,10 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     }
 
     if (wantsAddMore && (product || hasProductsToAdd)) {
-      console.log(`🔥 Procesando agregado de producto: product=${product}, hasProductsToAdd=${hasProductsToAdd}, productsToAdd=${JSON.stringify(productsToAdd)}`);
-      
+      console.log(
+        `🔥 Procesando agregado: product=${product}, hasProductsToAdd=${hasProductsToAdd}, productsToAdd=${JSON.stringify(productsToAdd)}`
+      );
+
       if (hasProductsToAdd) {
         for (const pToAdd of productsToAdd) {
           if (!pToAdd || isInvalidCartProduct(pToAdd)) continue;
@@ -1781,9 +1847,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
 
           const itemQty = extracted.quantity > 0 ? extracted.quantity : 1;
           const itemTotal = calculateTotal(pToAdd, itemQty, fullTraining);
-          
-          console.log(`🔥 Agregando producto: ${pToAdd}, cantidad: ${itemQty}, total: ${itemTotal}`);
-          
+          console.log(`🔥 Agregando: ${pToAdd}, cantidad: ${itemQty}, total: ${itemTotal}`);
           if (itemTotal) {
             cartItems = addOrReplaceCartItem(cartItems, pToAdd, itemQty, itemTotal, "add", "");
           }
@@ -1791,9 +1855,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
       } else if (product && !isInvalidCartProduct(product)) {
         const itemQty = extracted.quantity > 0 ? extracted.quantity : 1;
         const itemTotal = calculateTotal(product, itemQty, fullTraining);
-        
-        console.log(`🔥 Agregando producto único: ${product}, cantidad: ${itemQty}, total: ${itemTotal}`);
-        
+        console.log(`🔥 Agregando único: ${product}, cantidad: ${itemQty}, total: ${itemTotal}`);
         if (itemTotal) {
           cartItems = addOrReplaceCartItem(cartItems, product, itemQty, itemTotal, "add", "");
         }
@@ -1802,10 +1864,11 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
       orderData.items = cartItems;
       orderData.total_amount = cartGrandTotal(cartItems);
       orderData.quantity = cartTotalQuantity(cartItems);
-      orderData.product = cartItems.map((i) => `${formatProductWithShoeSize(i.product, i.shoe_size)} x${i.quantity}`).join(" + ");
+      orderData.product = cartItems
+        .map((i) => `${formatProductWithShoeSize(i.product, i.shoe_size)} x${i.quantity}`)
+        .join(" + ");
       product = cartItems[cartItems.length - 1]?.product || product;
-      
-      console.log(`🔥 Carrito después de agregar: ${JSON.stringify(cartItems)}`);
+      console.log(`🔥 Carrito actualizado: ${JSON.stringify(cartItems)}`);
     }
 
     if (!hasProductsToAdd && wantsAddMore && product && !orderData.quantity) {
@@ -1814,13 +1877,26 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
       if (totalForOne) orderData.total_amount = totalForOne;
     }
 
-    const shouldTouchCart = !!product && !hasProductsToAdd && safeQuantity(orderData.quantity) > 0 && !asksPriceNow &&
-      (isBuyIntent(texto) || wantsAddMore || isPureQuantityReply || isPureShoeSizeReply || safeQuantity(extracted.quantity) > 0);
+    const shouldTouchCart =
+      !!product &&
+      !hasProductsToAdd &&
+      safeQuantity(orderData.quantity) > 0 &&
+      !asksPriceNow &&
+      (isBuyIntent(texto) ||
+        wantsAddMore ||
+        isPureQuantityReply ||
+        isPureShoeSizeReply ||
+        safeQuantity(extracted.quantity) > 0);
 
     if (shouldTouchCart && !wantsAddMore) {
-      const itemTotal = calculateTotal(product, safeQuantity(orderData.quantity), fullTraining) || Number(orderData.total_amount || 0);
+      const itemTotal =
+        calculateTotal(product, safeQuantity(orderData.quantity), fullTraining) ||
+        Number(orderData.total_amount || 0);
 
-      cartItems = addOrReplaceCartItem(cartItems, product, safeQuantity(orderData.quantity), itemTotal, "replace", orderData.shoe_size || "");
+      cartItems = addOrReplaceCartItem(
+        cartItems, product, safeQuantity(orderData.quantity),
+        itemTotal, "replace", orderData.shoe_size || ""
+      );
     }
 
     orderData.items = cartItems;
@@ -1829,33 +1905,38 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     }
 
     if (orderData.shoe_size) {
-      const preservedShoeProduct = isShoeProductText(orderData.product || "") ? orderData.product : getDefaultShoeProductName();
+      const preservedShoeProduct = isShoeProductText(orderData.product || "")
+        ? orderData.product
+        : getDefaultShoeProductName();
       const shoeQty = safeQuantity(orderData.quantity) || safeQuantity(oldOrder?.quantity) || 1;
-      const shoeTotal = calculateTotal(preservedShoeProduct, shoeQty, fullTraining) || 159000 * shoeQty;
+      const shoeTotal = calculateTotal(preservedShoeProduct, shoeQty, fullTraining) || 0;
       orderData.product = preservedShoeProduct;
       product = preservedShoeProduct;
       orderData.quantity = shoeQty;
       orderData.total_amount = shoeTotal;
-      orderData.items = [{ product: preservedShoeProduct, quantity: shoeQty, total: shoeTotal, shoe_size: orderData.shoe_size }];
+      orderData.items = [
+        { product: preservedShoeProduct, quantity: shoeQty, total: shoeTotal, shoe_size: orderData.shoe_size },
+      ];
     }
 
-    const finalTipoCobertura = getTipoCobertura(orderData.city) || effectivePreviousTipoCobertura || "";
+    const finalTipoCobertura =
+      getTipoCobertura(orderData.city) || effectivePreviousTipoCobertura || "";
     let step = nextStep(orderData, finalTipoCobertura);
 
     // Capturar dirección automáticamente
     if (step === "collecting_address" && texto && !extracted.address) {
-      console.log(`📍 Dirección capturada automáticamente del mensaje: "${texto}"`);
+      console.log(`📍 Dirección capturada automáticamente: "${texto}"`);
       extracted.address = texto;
-      orderData = mergeOrderData(
-        orderData,
-        extracted,
-        orderData.product,
-        false
-      );
+      orderData = mergeOrderData(orderData, extracted, orderData.product);
       step = nextStep(orderData, finalTipoCobertura);
     }
 
-    if (orderData.shoe_size && orderData.product && orderData.quantity === 1 && !orderData.city) {
+    if (
+      orderData.shoe_size &&
+      orderData.product &&
+      orderData.quantity === 1 &&
+      !orderData.city
+    ) {
       const totalForShoe = calculateTotal(orderData.product, 1, fullTraining);
       if (totalForShoe) orderData.total_amount = totalForShoe;
 
@@ -1889,15 +1970,33 @@ Tu pedido queda así:
 
     const wantsToBuy = isBuyIntent(texto);
     const asksPrice = isPriceIntent(texto);
-    const hasOrderData = !!extracted.quantity || !!extracted.city || !!extracted.name || !!extracted.phone || !!extracted.address;
-    const shouldCollect = !!orderData.product && (wantsToBuy || hasOrderData || effectivePreviousStep.startsWith("collecting") ||
-      effectivePreviousStep === "esperando_cantidad" || effectivePreviousStep === "waiting_payment_proof" || isPureQuantityReply);
-    
-    const wantsToBuyButNoQuantity = wantsToBuy && product && safeQuantity(orderData.quantity) === 0 && !isPureQuantityReply && !wantsAddMore;
-    
+    const hasOrderData =
+      !!extracted.quantity || !!extracted.city ||
+      !!extracted.name || !!extracted.phone || !!extracted.address;
+
+    const shouldCollect =
+      !!orderData.product &&
+      (wantsToBuy ||
+        hasOrderData ||
+        effectivePreviousStep.startsWith("collecting") ||
+        effectivePreviousStep === "esperando_cantidad" ||
+        effectivePreviousStep === "waiting_payment_proof" ||
+        isPureQuantityReply);
+
+    const wantsToBuyButNoQuantity =
+      wantsToBuy &&
+      product &&
+      safeQuantity(orderData.quantity) === 0 &&
+      !isPureQuantityReply &&
+      !wantsAddMore;
+
     if (wantsToBuyButNoQuantity) {
-      await safeUpsertOrder(user_id, fromNumber, { ...orderData, product: product, quantity: 0 }, false);
-      
+      await safeUpsertOrder(
+        user_id, fromNumber,
+        { ...orderData, product: product, quantity: 0 },
+        false
+      );
+
       return res.json({
         response: buildQuantityQuestionResponse(product, extracted.shoe_size),
         context: {
@@ -1914,7 +2013,8 @@ Tu pedido queda así:
       });
     }
 
-    const isConfirming = step === "confirm_order" && wantsToBuy && !wantsAddMore && safeQuantity(orderData.quantity) > 0;
+    const isConfirming =
+      step === "confirm_order" && wantsToBuy && !wantsAddMore && safeQuantity(orderData.quantity) > 0;
 
     if (wantsAddMore && (product || hasProductsToAdd) && orderData.items?.length) {
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
@@ -1935,7 +2035,12 @@ Tu pedido queda así:
       });
     }
 
-    if (isPackReferenceText(texto) && orderData.quantity > 0 && orderData.product && (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")) {
+    if (
+      isPackReferenceText(texto) &&
+      orderData.quantity > 0 &&
+      orderData.product &&
+      (effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad")
+    ) {
       const exactTotal = calculateTotal(orderData.product, 1, fullTraining);
       orderData.quantity = 1;
       if (exactTotal) orderData.total_amount = exactTotal;
@@ -1981,10 +2086,23 @@ Tu pedido queda así:
       });
     }
 
-    const invalidCustomerName = !!orderData.customer_name && (/\d/.test(orderData.customer_name) || normalize(orderData.customer_name).includes("unidad") || normalize(orderData.customer_name).includes("unidades") || isProductName(orderData.customer_name));
+    const invalidCustomerName =
+      !!orderData.customer_name &&
+      (/\d/.test(orderData.customer_name) ||
+        normalize(orderData.customer_name).includes("unidad") ||
+        normalize(orderData.customer_name).includes("unidades") ||
+        isProductName(orderData.customer_name));
+
     if (invalidCustomerName) orderData.customer_name = "";
 
-    if (orderData.product && orderData.city && orderData.quantity && orderData.total_amount && !orderData.customer_name && step === "collecting_name") {
+    if (
+      orderData.product &&
+      orderData.city &&
+      orderData.quantity &&
+      orderData.total_amount &&
+      !orderData.customer_name &&
+      step === "collecting_name"
+    ) {
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
       return res.json({
@@ -2010,7 +2128,12 @@ Ahora pasame tu nombre y apellido para agendar el pedido 🙏`,
       });
     }
 
-    if (finalTipoCobertura === "sin_cobertura" && orderData.product && orderData.city && orderData.customer_name && orderData.phone && step === "waiting_payment_proof") {
+    if (
+      finalTipoCobertura === "sin_cobertura" &&
+      orderData.product && orderData.city &&
+      orderData.customer_name && orderData.phone &&
+      step === "waiting_payment_proof"
+    ) {
       await safeUpsertOrder(user_id, fromNumber, orderData, false, "waiting_payment_proof");
       return res.json({
         response: buildWaitingPaymentResponse(orderData),
@@ -2032,26 +2155,30 @@ Ahora pasame tu nombre y apellido para agendar el pedido 🙏`,
       await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
     }
 
-    const justAnsweredQuantity = !!orderData.product && !!orderData.city && !!orderData.quantity && !!orderData.total_amount &&
-      (isPureQuantityReply || effectivePreviousStep === "collecting_quantity" || effectivePreviousStep === "esperando_cantidad") &&
-      step !== "confirm_order" && finalTipoCobertura !== "sin_cobertura";
+    const justAnsweredQuantity =
+      !!orderData.product &&
+      !!orderData.city &&
+      !!orderData.quantity &&
+      !!orderData.total_amount &&
+      (isPureQuantityReply ||
+        effectivePreviousStep === "collecting_quantity" ||
+        effectivePreviousStep === "esperando_cantidad") &&
+      step !== "confirm_order" &&
+      finalTipoCobertura !== "sin_cobertura";
 
     if (justAnsweredQuantity) {
-      const deterministicResponse = buildOrderSummaryResponse(orderData, finalTipoCobertura);
-      const deterministicContext = {
-        ...(context || {}),
-        current_product: orderData.product || context?.current_product || null,
-        last_user_product: lastUserProduct || orderData.product || null,
-        step,
-        tipo_cobertura: finalTipoCobertura || null,
-        order_data: orderData,
-        last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
-        updated_at: new Date().toISOString(),
-      };
-
       return res.json({
-        response: deterministicResponse,
-        context: deterministicContext,
+        response: buildOrderSummaryResponse(orderData, finalTipoCobertura),
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || context?.current_product || null,
+          last_user_product: lastUserProduct || orderData.product || null,
+          step,
+          tipo_cobertura: finalTipoCobertura || null,
+          order_data: orderData,
+          last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
+          updated_at: new Date().toISOString(),
+        },
         is_payment_proof: false,
       });
     }
@@ -2061,8 +2188,9 @@ Ahora pasame tu nombre y apellido para agendar el pedido 🙏`,
 
     const system = `
 Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento oficial del usuario.
-NO inventes precios si no hay precio visible ni precio en entrenamiento.
-NO muestres variables internas.
+
+REGLA FUNDAMENTAL: Los precios los sacás SIEMPRE del entrenamiento. NUNCA inventes ni asumas precios.
+Si no encontrás el precio en el entrenamiento, preguntá al cliente que aguarde un momento.
 
 ═══════════════════════════════════
 ENTRENAMIENTO OFICIAL DEL USUARIO:
@@ -2092,9 +2220,9 @@ Intención: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "C
 
 REGLAS TÉCNICAS (MUY IMPORTANTES):
 
-Si el cliente respondió con un número SOLO (ej: "1", "2", "3"), esa es la cantidad EXACTA. NUNCA la concatenes.
+Si el cliente respondió con un número SOLO (ej: "1", "2", "3"), esa es la cantidad EXACTA. NUNCA la concatenes con nada.
 
-Si la cantidad es 1, debe ser 1, NO 11, NO 1 unidad, NO nada más.
+Si la cantidad es 1, el total es 1 × precio unitario. Si es 2, es 2 × precio unitario (o promo si existe).
 
 Si el paso actual es collecting_quantity y el cliente responde un número, usá ESE número exacto.
 
@@ -2114,10 +2242,6 @@ No repitas saludo si ya hubo conversación.
 
 No cambies de producto salvo que el cliente lo pida.
 
-El precio del KIT ANTIVIBRACIÓN (patitas antideslizantes x4) es 98.000 Gs, NO 169.900 Gs.
-
-Cuando el cliente mencione "soporte antivibración", "patitas antideslizantes", "kit x4", "almohadillas antivibración", respondé con el producto correcto y su precio de 98.000 Gs.
-
 Si el cliente dice "también", "tambien", "agrega", "sumá", "y la", "y el", "mas", "más", NO confirmes todavía: agregá el producto al carrito y mostrá el resumen completo.
 
 Si hay varios productos, mostrá todos los items con subtotales y el total general.
@@ -2128,26 +2252,27 @@ Si el cliente inicia con otro producto nuevo y NO dice también/agrega/sumá, em
 
 Si preguntaste "qué calce" o "qué talle" y el cliente responde solo "35", "36", "37", etc., eso es CALCE/TALLE, NO cantidad. Cantidad = 1.
 
-Para "Veneno de Abeja" o "Crema de Abeja", la PROMO 2 unidades cuesta 249.900 Gs (NO 290.000 Gs).
-
 Cerrá siempre con el siguiente paso.
 
 Catálogo: ${CATALOG_URL}
 
 Español paraguayo natural, con emojis.`;
 
-    const contents = cleanHistory.slice(-8).filter((h: any) => clean(h?.content)).map((h: any) => ({
-      role: h.role === "assistant" ? "model" : "user",
-      parts: [{ text: clean(h.content) }],
-    }));
+    const contents = cleanHistory
+      .slice(-8)
+      .filter((h: any) => clean(h?.content))
+      .map((h: any) => ({
+        role: h.role === "assistant" ? "model" : "user",
+        parts: [{ text: clean(h.content) }],
+      }));
 
-    const currentUserText = isPureShoeSizeReply ?
-      `El cliente respondió EXACTAMENTE "${texto}" que es el CALCE/TALLE ${orderData.shoe_size}. NO es cantidad. La cantidad debe ser 1 par.` :
-      isPureQuantityReply ?
-      `El cliente respondió EXACTAMENTE "${texto}" que es la cantidad ${orderData.quantity}. NO es 11 ni ninguna otra concatenación. Usá ESA cantidad exacta.` :
-      wantsAddMore ?
-      `El cliente quiere AGREGAR más productos al carrito. Texto: "${texto}". Detecta el producto adicional y responde mostrando el resumen actualizado del carrito.` :
-      texto;
+    const currentUserText = isPureShoeSizeReply
+      ? `El cliente respondió EXACTAMENTE "${texto}" que es el CALCE/TALLE ${orderData.shoe_size}. NO es cantidad. La cantidad debe ser 1 par.`
+      : isPureQuantityReply
+      ? `El cliente respondió EXACTAMENTE "${texto}" que es la cantidad ${orderData.quantity}. NO concatenes este número con nada. Usá ESA cantidad exacta.`
+      : wantsAddMore
+      ? `El cliente quiere AGREGAR más productos al carrito. Texto: "${texto}". Detecta el producto adicional y responde mostrando el resumen actualizado del carrito.`
+      : texto;
 
     contents.push({ role: "user", parts: [{ text: currentUserText }] });
 
@@ -2162,12 +2287,7 @@ Español paraguayo natural, con emojis.`;
 
     if (!response) {
       response = await callGemini({
-        apiKey,
-        model,
-        system,
-        contents,
-        temperature: 0.3,
-        maxTokens: 3072,
+        apiKey, model, system, contents, temperature: 0.3, maxTokens: 3072,
       });
     }
 
@@ -2175,10 +2295,19 @@ Español paraguayo natural, con emojis.`;
       ...(context || {}),
       current_product: orderData.product || context?.current_product || null,
       last_user_product: lastUserProduct || orderData.product || null,
-      step: shouldCollect ? step : effectivePreviousStep === "payment_verified" ? "payment_verified" : "selling",
+      step: shouldCollect
+        ? step
+        : effectivePreviousStep === "payment_verified"
+        ? "payment_verified"
+        : "selling",
       tipo_cobertura: finalTipoCobertura || null,
       order_data: orderData,
-      last_topic: effectivePreviousStep === "payment_verified" ? "payment_verified" : step === "waiting_payment_proof" ? "comprobante" : orderData.product || context?.last_topic || "ENTRENAMIENTO",
+      last_topic:
+        effectivePreviousStep === "payment_verified"
+          ? "payment_verified"
+          : step === "waiting_payment_proof"
+          ? "comprobante"
+          : orderData.product || context?.last_topic || "ENTRENAMIENTO",
       updated_at: new Date().toISOString(),
     };
 
