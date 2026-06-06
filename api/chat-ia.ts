@@ -227,6 +227,28 @@ function isInvalidCartProduct(name: string): boolean {
   return false;
 }
 
+// ✅ FIX: Validación de nombre de producto para evitar texto del asistente
+function isValidProductString(s: string | null | undefined): boolean {
+  if (!s) return false;
+  const trimmed = clean(s);
+  if (!trimmed) return false;
+  if (isInvalidProductCandidate(trimmed)) return false;
+  if (trimmed.includes("?")) return false;
+  if (trimmed.includes("¿")) return false;
+  const lower = trimmed.toLowerCase();
+  if (lower.includes("asistente")) return false;
+  if (lower.includes("cuántas") || lower.includes("cuantas")) return false;
+  if (lower.includes("cuántos") || lower.includes("cuantos")) return false;
+  if (lower.includes("unidades te") || lower.includes("unidad te")) return false;
+  if (lower.includes("gustaría") || lower.includes("gustaria")) return false;
+  if (lower.includes("para qué") || lower.includes("para que ciudad")) return false;
+  if (lower.includes("ciudad querés") || lower.includes("ciudad queres")) return false;
+  if (lower.includes("respondé con") || lower.includes("responde con")) return false;
+  if (lower.includes("ejemplo:") || lower.includes("ejemplos:")) return false;
+  if (trimmed.length > 100) return false;
+  return true;
+}
+
 const ZONAS_COBERTURA = [
   "Altos", "Areguá", "Asunción", "Atyrá", "Benjamín Aceval", "Caacupé",
   "Capiatá", "Ciudad del Este", "Colonia Yguazú", "Emboscada", "Eusebio Ayala",
@@ -546,7 +568,7 @@ function botWasAskingQuantity(history: any[]) {
     lastAssistantMessage.includes("cuantas queres") ||
     lastAssistantMessage.includes("cuantas te gustaria") ||
     lastAssistantMessage.includes("cuántas unidades") ||
-    lastAssistantMessage.includes("Respondé con el número")
+    lastAssistantMessage.includes("responde con el numero")
   );
 }
 
@@ -556,7 +578,10 @@ function botWasAskingCity(history: any[]): boolean {
     lastAssistantMessage.includes("qué ciudad") ||
     lastAssistantMessage.includes("para qué ciudad") ||
     lastAssistantMessage.includes("ciudad querés") ||
-    lastAssistantMessage.includes("ciudad para el envío")
+    lastAssistantMessage.includes("ciudad para el envío") ||
+    lastAssistantMessage.includes("para que ciudad") ||
+    lastAssistantMessage.includes("ciudad queres") ||
+    lastAssistantMessage.includes("ciudad queres el envio")
   );
 }
 
@@ -1042,7 +1067,7 @@ Tu pedido queda así:
 ✅ dirección exacta o ubicación por Google Maps
 ✅ número de celular
 
-📲 Si no enviés número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
+📲 Si no enviás número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
 
 y agendamos tu entrega ✨`;
 }
@@ -1098,6 +1123,14 @@ function handleProductSelection(product: string, shoeSize?: any) {
   };
 }
 
+// ✅ FIX: Validar nombre de producto antes de guardar en Supabase
+function safeProductName(name: string | null | undefined): string | null {
+  if (!name) return null;
+  const trimmed = clean(name);
+  if (!isValidProductString(trimmed)) return null;
+  return trimmed;
+}
+
 async function safeUpsertOrder(
   userId: string,
   from: string,
@@ -1140,24 +1173,23 @@ async function safeUpsertOrder(
         ? "confirm_pending"
         : step);
 
+    // ✅ FIX: Usar safeProductName para evitar guardar texto inválido
+    const rawProductName =
+      orderItems.length > 1
+        ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ")
+        : formatProductWithShoeSize(
+            order.product || orderItems[0]?.product || "",
+            order.shoe_size
+          ) || null;
+
+    const validatedProductName = safeProductName(rawProductName);
+
     const payload: any = {
       user_id: userId,
       from_number: from,
       phone: order.phone || from,
-      product:
-        orderItems.length > 1
-          ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ")
-          : formatProductWithShoeSize(
-              order.product || orderItems[0]?.product || "",
-              order.shoe_size
-            ) || null,
-      producto:
-        orderItems.length > 1
-          ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ")
-          : formatProductWithShoeSize(
-              order.product || orderItems[0]?.product || "",
-              order.shoe_size
-            ) || null,
+      product: validatedProductName,
+      producto: validatedProductName,
       customer_name: order.customer_name || null,
       city: order.city || null,
       ciudad: order.city || null,
@@ -1419,6 +1451,11 @@ export default async function handler(req: any, res: any) {
 
     let lastUserProduct = context?.last_user_product || "";
 
+    // ✅ FIX: Validar last_user_product del contexto antes de usarlo
+    if (!isValidProductString(lastUserProduct)) {
+      lastUserProduct = "";
+    }
+
     if (!lastUserProduct && Array.isArray(history)) {
       for (let i = history.length - 1; i >= 0; i--) {
         const msg = history[i];
@@ -1453,6 +1490,11 @@ export default async function handler(req: any, res: any) {
       console.log("🔄 Conversación nueva detectada - Pedido reiniciado");
     } else {
       oldOrder = normalizeOrderWithItems(context?.order_data || {}, fullTraining);
+      // ✅ FIX: Validar el producto del oldOrder para evitar texto corrupto
+      if (oldOrder?.product && !isValidProductString(oldOrder.product)) {
+        console.warn(`⚠️ Producto inválido en oldOrder: "${oldOrder.product}" — limpiando`);
+        oldOrder.product = "";
+      }
     }
 
     const previousStep = clean(context?.step);
@@ -1473,10 +1515,11 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const currentActiveProduct = 
-      oldOrder?.product ||
-      context?.current_product ||
-      lastUserProduct ||
+    // ✅ FIX: Validar currentActiveProduct con isValidProductString
+    const currentActiveProduct =
+      (isValidProductString(oldOrder?.product) ? oldOrder.product : null) ||
+      (isValidProductString(context?.current_product) ? context.current_product : null) ||
+      (isValidProductString(lastUserProduct) ? lastUserProduct : null) ||
       null;
     
     console.log(`🎯 Producto activo actual: "${currentActiveProduct}"`);
@@ -1492,7 +1535,7 @@ export default async function handler(req: any, res: any) {
     
     console.log(`✅ Producto final detectado: "${product}"`);
     
-    if (product && !isInvalidProductCandidate(product)) {
+    if (product && !isInvalidProductCandidate(product) && isValidProductString(product)) {
       lastUserProduct = product;
     }
 
@@ -1600,12 +1643,13 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 🆕 RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD (con ejemplos)
     // =======================================================
-    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && product) {
+    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && (product || currentActiveProduct)) {
+      const finalProduct = product || currentActiveProduct || "";
       const city = extracted.city || extractCityFromText(texto);
       
-      if (city) {
+      if (city && finalProduct) {
         let orderData = {
-          product: product,
+          product: finalProduct,
           quantity: 0,
           shoe_size: extracted.shoe_size || "",
           city: city,
@@ -1619,15 +1663,15 @@ export default async function handler(req: any, res: any) {
         await safeUpsertOrder(user_id, fromNumber, orderData, false);
         
         return res.json({
-          response: buildQuantityAfterCityResponse(product, city, extracted.shoe_size),
+          response: buildQuantityAfterCityResponse(finalProduct, city, extracted.shoe_size),
           context: {
             ...(context || {}),
-            current_product: product,
-            last_user_product: product,
+            current_product: finalProduct,
+            last_user_product: finalProduct,
             step: "collecting_quantity",
             tipo_cobertura: getTipoCobertura(city),
             order_data: orderData,
-            last_topic: product,
+            last_topic: finalProduct,
             updated_at: new Date().toISOString(),
           },
           is_payment_proof: false,
@@ -1638,9 +1682,10 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 🆕 RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y CONFIRMAR
     // =======================================================
-    if (isQuantityReply && product && extracted.quantity > 0) {
+    if (isQuantityReply && (product || currentActiveProduct) && extracted.quantity > 0) {
+      const finalProduct = product || currentActiveProduct || "";
       let orderData = {
-        product: product,
+        product: finalProduct,
         quantity: extracted.quantity,
         shoe_size: extracted.shoe_size || "",
         city: oldOrder?.city || context?.order_data?.city || "",
@@ -1651,7 +1696,7 @@ export default async function handler(req: any, res: any) {
         total_amount: 0,
       };
       
-      const total = calculateTotal(product, extracted.quantity, fullTraining);
+      const total = calculateTotal(finalProduct, extracted.quantity, fullTraining);
       if (total) orderData.total_amount = total;
       
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
@@ -1660,12 +1705,12 @@ export default async function handler(req: any, res: any) {
         response: buildOrderSummaryResponse(orderData, getTipoCobertura(orderData.city)),
         context: {
           ...(context || {}),
-          current_product: product,
-          last_user_product: product,
+          current_product: finalProduct,
+          last_user_product: finalProduct,
           step: nextStep(orderData, getTipoCobertura(orderData.city)),
           tipo_cobertura: getTipoCobertura(orderData.city),
           order_data: orderData,
-          last_topic: product,
+          last_topic: finalProduct,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
@@ -1828,8 +1873,10 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
     // Construir orderData final
+    const finalProduct = product || currentActiveProduct || oldOrder?.product || "";
+
     let orderData = {
-      product: product || oldOrder?.product || "",
+      product: finalProduct,
       quantity: extracted.quantity || oldOrder?.quantity || 0,
       shoe_size: extracted.shoe_size || oldOrder?.shoe_size || "",
       city: extracted.city || oldOrder?.city || "",
