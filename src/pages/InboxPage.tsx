@@ -267,7 +267,7 @@ export default function InboxPage() {
       .from("received_messages")
       .select("*")
       .eq("user_id", user.id)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: true });
 
     if (error) {
       console.error("Error cargando mensajes:", error);
@@ -276,13 +276,15 @@ export default function InboxPage() {
       return;
     }
 
-    const ordered = ((data || []) as DbMessage[]).sort((a, b) => {
-      const da = new Date(a.created_at || 0).getTime();
-      const db = new Date(b.created_at || 0).getTime();
-      return da - db;
-    });
+    console.log(`📦 Cargados ${data?.length || 0} mensajes desde Supabase`);
+    
+    if (data && data.length > 0) {
+      const firstDate = new Date(data[0].created_at);
+      const lastDate = new Date(data[data.length - 1].created_at);
+      console.log(`📅 Rango de fechas: ${firstDate.toDateString()} hasta ${lastDate.toDateString()}`);
+    }
 
-    setDbMessages(ordered);
+    setDbMessages((data || []) as DbMessage[]);
     setLoading(false);
   };
 
@@ -298,22 +300,23 @@ export default function InboxPage() {
     return () => { supabase.removeChannel(channel); };
   }, [user]);
 
-  // Debug: Mostrar estadísticas de fechas
+  // Debug: Mostrar fechas reales de los mensajes en la base de datos
   useEffect(() => {
     if (dbMessages.length > 0) {
+      console.log("=== VERIFICANDO FECHAS EN LA BASE DE DATOS ===");
       const fechasMap = new Map();
       dbMessages.forEach(msg => {
         if (msg.created_at) {
-          const fecha = format(new Date(msg.created_at), "yyyy-MM-dd");
-          fechasMap.set(fecha, (fechasMap.get(fecha) || 0) + 1);
+          const fecha = new Date(msg.created_at);
+          const fechaStr = fecha.toDateString();
+          fechasMap.set(fechaStr, (fechasMap.get(fechaStr) || 0) + 1);
         }
       });
-      const fechasOrdenadas = Array.from(fechasMap.entries()).sort();
-      console.log("📊 ESTADÍSTICAS DE FECHAS EN MENSAJES:");
-      fechasOrdenadas.forEach(([fecha, count]) => {
-        console.log(`   ${fecha}: ${count} mensajes`);
+      
+      console.log("Fechas encontradas en mensajes:");
+      fechasMap.forEach((count, key) => {
+        console.log(`  ${key} -> ${count} mensajes`);
       });
-      console.log("📱 Total de números únicos:", new Set(dbMessages.map(m => m.from_number)).size);
     }
   }, [dbMessages]);
 
@@ -351,39 +354,18 @@ export default function InboxPage() {
   const filteredChats = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     
-    console.log("🔍 Filtrando chats - Fecha seleccionada:", filterDate ? format(filterDate, "yyyy-MM-dd") : "ninguna");
-    console.log("📊 Total de chats a filtrar:", chats.length);
-    console.log("📊 Total de mensajes en DB:", dbMessages.length);
-    
-    // Función para verificar si un chat tiene mensajes en una fecha específica
-    const chatHasMessagesOnDate = (chatNumber: string, dateToCheck: Date) => {
-      if (!dateToCheck) return true;
+    // Función para verificar si un chat tiene mensajes en una fecha específica usando toDateString()
+    const chatHasMessagesOnDate = (chatNumber: string, selectedDate: Date) => {
+      if (!selectedDate) return true;
       
-      const targetDateStr = format(dateToCheck, "yyyy-MM-dd");
+      const selectedDateStr = selectedDate.toDateString();
       const chatMessages = dbMessages.filter(m => m.from_number === chatNumber);
       
-      // Mostrar primeras fechas para debug
-      if (chatMessages.length > 0) {
-        const fechasDelChat = chatMessages.map(m => 
-          m.created_at ? format(new Date(m.created_at), "yyyy-MM-dd") : null
-        ).filter(f => f);
-        const uniqueFechas = [...new Set(fechasDelChat)].sort();
-        if (uniqueFechas.length > 0) {
-          console.log(`📱 Chat ${chatNumber} - Fechas disponibles:`, uniqueFechas);
-        }
-      }
-      
-      const hasMatch = chatMessages.some(msg => {
+      return chatMessages.some(msg => {
         if (!msg.created_at) return false;
-        const msgDateStr = format(new Date(msg.created_at), "yyyy-MM-dd");
-        return msgDateStr === targetDateStr;
+        const msgDate = new Date(msg.created_at);
+        return msgDate.toDateString() === selectedDateStr;
       });
-      
-      if (hasMatch) {
-        console.log(`✅ Chat ${chatNumber} SÍ tiene mensajes en ${targetDateStr}`);
-      }
-      
-      return hasMatch;
     };
     
     // Aplicar todos los filtros
@@ -405,7 +387,7 @@ export default function InboxPage() {
         if (!hasTag) return false;
       }
       
-      // 3. Filtro de fecha (CORREGIDO)
+      // 3. Filtro de fecha
       if (filterDate) {
         const hasMessagesOnDate = chatHasMessagesOnDate(chat.number, filterDate);
         if (!hasMessagesOnDate) return false;
@@ -414,7 +396,6 @@ export default function InboxPage() {
       return true;
     });
     
-    console.log("🎯 Resultado final - Chats filtrados:", result.length);
     return result;
     
   }, [chats, searchQuery, filterTag, filterDate, contactTagsMap, dbMessages]);
@@ -1029,9 +1010,6 @@ export default function InboxPage() {
                   )}
                   {filterTag && filterDate && (
                     <p>📅 No hay chats con la etiqueta "{filterTag}" del {format(filterDate, "dd/MM/yyyy")}</p>
-                  )}
-                  {!filterTag && !filterDate && (
-                    <p>No se encontraron chats con los filtros aplicados</p>
                   )}
                 </div>
               )}
