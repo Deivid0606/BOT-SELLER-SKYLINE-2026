@@ -299,16 +299,6 @@ export default function InboxPage() {
     return () => { supabase.removeChannel(channel); };
   }, [user]);
 
-  const chatSearchIndex = useMemo(() => {
-    const idx = new Map<string, string>();
-    for (const msg of dbMessages) {
-      const number = msg.from_number || "Sin número";
-      const prev = idx.get(number) || "";
-      idx.set(number, prev + " " + (msg.message || "").toLowerCase());
-    }
-    return idx;
-  }, [dbMessages]);
-
   const chats = useMemo<Chat[]>(() => {
     const grouped = new Map<string, DbMessage[]>();
     for (const msg of dbMessages) {
@@ -342,21 +332,52 @@ export default function InboxPage() {
 
   const filteredChats = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    
+    // Si no hay búsqueda, solo aplicar filtros de etiqueta y fecha
+    if (!q) {
+      return chats.filter((chat) => {
+        if (filterTag) {
+          const tagsForChat = contactTagsMap[chat.number] || [];
+          const hasTag = tagsForChat.includes(filterTag) || chat.tag === filterTag;
+          if (!hasTag) return false;
+        }
+        
+        if (filterDate) {
+          const targetDate = format(filterDate, "yyyy-MM-dd");
+          const chatMessages = dbMessages.filter(m => m.from_number === chat.number);
+          const hasMessageOnDate = chatMessages.some(m => {
+            const msgDate = m.created_at ? format(new Date(m.created_at), "yyyy-MM-dd") : null;
+            return msgDate === targetDate;
+          });
+          if (!hasMessageOnDate) return false;
+        }
+        
+        return true;
+      });
+    }
+    
+    // Con búsqueda: filtrar chats que tengan el texto en CUALQUIER mensaje
     return chats.filter((chat) => {
-      if (q) {
-        const numberMatch = chat.number.toLowerCase().includes(q);
-        const lastMsgMatch = chat.lastMsg.toLowerCase().includes(q);
-        const historyMatch = (chatSearchIndex.get(chat.number) || "").includes(q);
-        if (!numberMatch && !lastMsgMatch && !historyMatch) return false;
-      }
-
+      // Buscar en número
+      const numberMatch = chat.number.toLowerCase().includes(q);
+      
+      // Buscar en todos los mensajes del chat
+      const allMessages = dbMessages.filter(m => m.from_number === chat.number);
+      const hasMatchInHistory = allMessages.some(msg => {
+        const msgText = (msg.message || "").toLowerCase();
+        return msgText.includes(q);
+      });
+      
+      // Si no hay coincidencia, excluir este chat
+      if (!numberMatch && !hasMatchInHistory) return false;
+      
+      // Aplicar filtros de etiqueta y fecha después de la búsqueda
       if (filterTag) {
         const tagsForChat = contactTagsMap[chat.number] || [];
         const hasTag = tagsForChat.includes(filterTag) || chat.tag === filterTag;
         if (!hasTag) return false;
       }
       
-      // 🔧 FILTRO DE FECHA CORREGIDO
       if (filterDate) {
         const targetDate = format(filterDate, "yyyy-MM-dd");
         const chatMessages = dbMessages.filter(m => m.from_number === chat.number);
@@ -366,10 +387,10 @@ export default function InboxPage() {
         });
         if (!hasMessageOnDate) return false;
       }
-
+      
       return true;
     });
-  }, [chats, searchQuery, filterTag, filterDate, contactTagsMap, chatSearchIndex, dbMessages]);
+  }, [chats, searchQuery, filterTag, filterDate, contactTagsMap, dbMessages]);
 
   const selectedNumber = selectedChatNumber;
 
@@ -460,9 +481,6 @@ export default function InboxPage() {
 
   const hasActiveFilters = !!(filterTag || filterDate);
 
-  // ============================================================
-  // 🔧 FUNCIÓN CORREGIDA - NO BLOQUEA SI NO HAY tenant_id
-  // ============================================================
   const handleSendMessage = async () => {
     if (!selectedNumber) {
       toast({ title: "Selecciona un chat", description: "Primero selecciona un chat para responder.", variant: "destructive" });
@@ -482,7 +500,6 @@ export default function InboxPage() {
     try {
       setSending(true);
 
-      // ✅ Obtener perfil sin romper si no existe tenant_id
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("tenant_id, connection_type")
@@ -514,7 +531,6 @@ export default function InboxPage() {
         mediaType = selectedTemplateMedia.type;
       }
 
-      // ✅ Payload flexible: manda tenant_id si existe, pero NO bloquea si está vacío
       const payload: any = {
         user_id: user.id,
         tenant_id: profile?.tenant_id ?? null,
@@ -565,7 +581,6 @@ export default function InboxPage() {
       setSending(false);
     }
   };
-  // ============================================================
 
   const handlePauseAI = async () => {
     if (!selectedNumber) return;
