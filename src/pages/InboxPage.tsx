@@ -355,11 +355,21 @@ export default function InboxPage() {
         const hasTag = tagsForChat.includes(filterTag) || chat.tag === filterTag;
         if (!hasTag) return false;
       }
-      if (filterDate && chat.date !== format(filterDate, "yyyy-MM-dd")) return false;
+      
+      // 🔧 FILTRO DE FECHA CORREGIDO
+      if (filterDate) {
+        const targetDate = format(filterDate, "yyyy-MM-dd");
+        const chatMessages = dbMessages.filter(m => m.from_number === chat.number);
+        const hasMessageOnDate = chatMessages.some(m => {
+          const msgDate = m.created_at ? format(new Date(m.created_at), "yyyy-MM-dd") : null;
+          return msgDate === targetDate;
+        });
+        if (!hasMessageOnDate) return false;
+      }
 
       return true;
     });
-  }, [chats, searchQuery, filterTag, filterDate, contactTagsMap, chatSearchIndex]);
+  }, [chats, searchQuery, filterTag, filterDate, contactTagsMap, chatSearchIndex, dbMessages]);
 
   const selectedNumber = selectedChatNumber;
 
