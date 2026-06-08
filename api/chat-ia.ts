@@ -72,16 +72,39 @@ function extractCityFromText(text: string): string {
 function buildCoverageOnlyResponse(city: string): string {
   const tipo = getTipoCobertura(city);
   if (tipo === "con_cobertura") {
-    return `✅ Perfecto 😊 ${city} tiene ENVÍO GRATIS contra-entrega 🚚\n\n¿Cuál producto te interesa? ✨`;
+    return `✅ ¡Genial! ${city} tiene cobertura 🟢
+
+🚚 **Envío GRATIS** a tu domicilio
+💵 **Pagás al recibir** (efectivo, transferencia o QR)
+
+¿Cuál producto te interesa? ✨`;
   }
   if (tipo === "sin_cobertura") {
-    return `ℹ️ ${city} no entra dentro de nuestra zona de contra-entrega 😊\n\nPero sí hacemos envíos seguros por:\n🚚 TSI / NASA / Occidental / MG Express / Multienvíos\n\n¿Cuál producto te interesa? ✨`;
+    return `ℹ️ ${city} no tiene cobertura de delivery 🔴
+
+🚚 **Envío por encomienda** (transportadora: TSI / NASA / Occidental / MG Express)
+💵 **Pago anticipado por transferencia**
+
+¿Cuál producto te interesa? ✨`;
   }
-  return `Perfecto 😊 ¿Cuál producto te interesa? ✨`;
+  return `😊 ¡Hola! ¿Cuál producto te interesa? ✨`;
 }
 
 function buildWaitingPaymentResponse(order: any): string {
-  return `✅ Perfecto ${order.customer_name ? order.customer_name.split(" ")[0] : ""} 😊\n\nYa registré:\n\n📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}\n📍 ${order.city}\n📞 ${order.phone}\n\n📲 Ahora solo falta que envíes el comprobante de transferencia y confirmamos tu envío 🚚✨`;
+  return `✅ ¡Gracias ${order.customer_name ? order.customer_name.split(" ")[0] : ""}! 🤗
+
+Ya registré tu pedido:
+
+📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}
+📍 ${order.city}
+📞 ${order.phone}
+
+📲 Ahora solo falta que me envíes el **comprobante de transferencia** y confirmamos tu envío por encomienda 🚚✨
+
+📲 DATOS PARA TRANSFERENCIA:
+   Titular: DAVID AGUSTIN ALCARAZ AGUILAR
+   Banco Familiar · Cuenta: 81-4981442
+   Alias: 0994130022`;
 }
 
 function isInformationRequest(text: string): boolean {
@@ -276,7 +299,6 @@ function getDestapaCañeriasProductName(): string {
 
 // =======================================================
 // 🧮 CÁLCULO DE TOTALES - VERSIÓN MEJORADA
-// Busca en TODO el entrenamiento, no solo líneas cercanas
 // =======================================================
 
 function parseGsAmount(text: string): number {
@@ -297,11 +319,9 @@ function calculateTotal(product: string, quantity: number, training: string): nu
     const line = lines[i];
     const nLine = normalize(line);
     
-    // Verificar si la línea contiene el nombre del producto
     let matchScore = 0;
     if (nLine.includes(p)) matchScore = 100;
     else {
-      // Buscar palabras clave del producto
       const productWords = p.split(" ").filter(w => w.length >= 4);
       for (const word of productWords) {
         if (nLine.includes(word)) matchScore += 20;
@@ -310,14 +330,12 @@ function calculateTotal(product: string, quantity: number, training: string): nu
     
     if (matchScore === 0) continue;
     
-    // Buscar precio en la misma línea o en las siguientes (hasta 5 líneas después)
     const searchWindow = lines.slice(i, Math.min(lines.length, i + 5));
     
     for (const searchLine of searchWindow) {
       const amount = parseGsAmount(searchLine);
       if (!amount) continue;
       
-      // Verificar si es PROMO (2x, 3x, etc.)
       const promoMatch = normalize(searchLine).match(/(\d+)\s*(?:x|unidades|uds?)\s*(?:por\s*)?/i);
       let promoQty = 0;
       let isExactPromo = false;
@@ -327,15 +345,13 @@ function calculateTotal(product: string, quantity: number, training: string): nu
         isExactPromo = (promoQty === quantity);
       }
       
-      // Verificar si el precio parece unitario (no tiene promo o es 1x)
       const isUnitPrice = !promoMatch || promoQty === 1;
       
       let finalScore = matchScore;
-      if (isExactPromo) finalScore += 100;  // Prioridad máxima para promo exacta
+      if (isExactPromo) finalScore += 100;
       else if (isUnitPrice && quantity === 1) finalScore += 50;
       else if (isUnitPrice) finalScore += 20;
       
-      // Si es la mejor coincidencia hasta ahora
       if (!bestMatch || finalScore > bestMatch.score) {
         bestMatch = {
           price: amount,
@@ -361,7 +377,7 @@ function getProductPrice(product: string, quantity: number, training: string): n
 }
 
 // =======================================================
-// 🎯 DETECCIÓN DE PRODUCTO - MEJORADA
+// 🎯 DETECCIÓN DE PRODUCTO
 // =======================================================
 
 function detectProductRaw(
@@ -373,7 +389,6 @@ function detectProductRaw(
 ) {
   const msg = normalize(text);
   
-  // PRIMERO: Detectar productos conocidos por palabras clave
   if (msg.includes("destapa") || msg.includes("cañeria") || msg.includes("tornado") ||
       msg.includes("desagüe") || msg.includes("tuberia") || msg.includes("agua tarda") ||
       msg.includes("cañería") || msg.includes("tapa cañerias")) {
@@ -393,7 +408,7 @@ function detectProductRaw(
     return getDefaultShoeProductName();
   }
   
-  if (msg.includes("pelador") || msg.includes("peladora")) {
+  if (msg.includes("pelador") || msg.includes("peladora") || msg.includes("pelar papas")) {
     return "Peladora Automática";
   }
   
@@ -421,40 +436,28 @@ function detectProductRaw(
     return getAntiVibrationProductName();
   }
   
-  // SEGUNDO: Buscar coincidencias en el entrenamiento
   const trainingLines = training.split("\n").map(l => normalize(l)).filter(Boolean);
   
   let bestMatch = "";
   let bestScore = 0;
   
   for (const line of trainingLines) {
-    // Extraer nombre del producto (antes del precio)
     let productName = line;
-    
-    // Cortar en el primer precio o símbolo
     const priceMatch = line.match(/(\d{1,3}(?:\.\d{3})+|\d{4,})\s*(?:Gs|₲|\$)/i);
     if (priceMatch) {
       productName = line.substring(0, priceMatch.index).trim();
     }
-    
-    // Cortar en guiones, pipes, etc.
     productName = productName.split(/[—–\-|•·]/)[0].trim();
     
     if (productName.length < 3) continue;
     
     const pn = normalize(productName);
     let score = 0;
-    
-    // Coincidencia exacta
     if (msg.includes(pn)) score += 50;
-    
-    // Palabras clave del producto
     const productWords = pn.split(" ").filter(w => w.length >= 3);
     for (const w of productWords) {
       if (msg.includes(w)) score += 10;
     }
-    
-    // Coincidencia parcial
     if (pn.includes(msg) && msg.length >= 4) score += 20;
     
     if (score > bestScore && score >= 5) {
@@ -483,7 +486,7 @@ function detectProductRespectingActive(
   const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas|destapa|cañeria|tornado|desagüe)\b/i.test(msg);
   
   if (activeProduct && !explicitNewProductRequest) {
-    console.log(`🔄 Manteniendo producto activo: "${activeProduct}" (cliente no pidió cambio explícito)`);
+    console.log(`🔄 Manteniendo producto activo: "${activeProduct}"`);
     return activeProduct;
   }
   
@@ -612,7 +615,8 @@ function botWasAskingCity(history: any[]): boolean {
     lastAssistantMessage.includes("qué ciudad") ||
     lastAssistantMessage.includes("para qué ciudad") ||
     lastAssistantMessage.includes("ciudad querés") ||
-    lastAssistantMessage.includes("ciudad para el envío")
+    lastAssistantMessage.includes("a qué ciudad") ||
+    lastAssistantMessage.includes("ciudad lo enviamos")
   );
 }
 
@@ -962,10 +966,6 @@ function buildItemsLines(items: CartItem[]): string {
 function buildCartSummaryResponse(order: any, tipoCobertura: string) {
   const items = getCartItems(order);
   const total = cartGrandTotal(items) || Number(order?.total_amount || 0);
-  const tipoEnvio =
-    tipoCobertura === "sin_cobertura"
-      ? "Envío por transportadora / encomienda"
-      : "Envío GRATIS contra-entrega";
 
   const lines = items.length
     ? buildItemsLines(items)
@@ -973,28 +973,50 @@ function buildCartSummaryResponse(order: any, tipoCobertura: string) {
 
   let promoNote = "";
   if (order.quantity === 2) {
-    promoNote = `\n\n🎯 ¡APROVECHA LA PROMO! 🎯`;
+    promoNote = `🎯 ¡APROVECHASTE LA PROMO! 🎯\n\n`;
   }
 
-  return `${promoNote}🔥 Perfecto 😊
-
-Tu pedido queda así:
+  if (tipoCobertura === "con_cobertura") {
+    return `${promoNote}🔥 ¡Perfecto! Tu pedido quedó así 🤗
 
 ${lines}
 
 💰 Total: ${formatGs(total)} Gs
 
-🚚 ${tipoEnvio}
+🚚 **ENVÍO GRATIS** a ${order.city}
+💵 **Pagás al recibir** (efectivo, transferencia o QR)
 
-📎 Pasame TODO JUNTO en un solo mensaje:
+📎 Ahora solo me falta tu información:
 
-✅ nombre y apellido
-✅ dirección exacta o ubicación por Google Maps
-✅ número de celular
+✅ Nombre y apellido
+✅ Dirección exacta o ubicación
+✅ Número de celular
 
-📲 Si no enviás número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
+📲 En cuanto reciba tus datos, agendamos tu entrega ✨`;
+  } else {
+    return `${promoNote}🔥 ¡Perfecto! Tu pedido quedó así 🤗
 
-y agendamos tu entrega ✨`;
+${lines}
+
+💰 Total: ${formatGs(total)} Gs
+
+🚚 **ENVÍO POR ENCOMIENDA** (transportadora)
+   ${order.city} - TSI / NASA / Occidental / MG Express
+
+💵 **PAGO ANTICIPADO por transferencia**
+
+📲 **DATOS PARA TRANSFERENCIA:**
+   Titular: DAVID AGUSTIN ALCARAZ AGUILAR
+   Banco Familiar · Cuenta: 81-4981442
+   Alias: 0994130022
+
+📎 Enviame:
+✅ Comprobante de transferencia
+✅ Nombre completo
+✅ Teléfono
+
+y confirmamos tu envío 🚚✨`;
+  }
 }
 
 function buildAddedItemResponse(order: any, tipoCobertura: string) {
@@ -1004,129 +1026,114 @@ function buildAddedItemResponse(order: any, tipoCobertura: string) {
 function buildOrderSummaryResponse(order: any, tipoCobertura: string) {
   const items = getCartItems(order);
   if (items.length > 1) return buildCartSummaryResponse(order, tipoCobertura);
-
-  const total = Number(order?.total_amount || 0);
-  const tipoEnvio =
-    tipoCobertura === "sin_cobertura"
-      ? "Envío por transportadora / encomienda"
-      : "Envío GRATIS contra-entrega";
-
-  let promoNote = "";
-  if (order.quantity === 2) {
-    promoNote = `🎯 ¡APROVECHA LA PROMO! 🎯\n\n`;
-  }
-
-  return `${promoNote}🔥 Perfecto 😊
-
-Tu pedido queda así:
-
-📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}
-🔢 Cantidad: ${order.quantity}
-💰 Total: ${formatGs(total)} Gs
-
-🚚 ${tipoEnvio}
-
-📎 Pasame TODO JUNTO en un solo mensaje:
-
-✅ nombre y apellido
-✅ dirección exacta o ubicación por Google Maps
-✅ número de celular
-
-📲 Si no enviés número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
-
-y agendamos tu entrega ✨`;
+  return buildCartSummaryResponse(order, tipoCobertura);
 }
 
 // =======================================================
-// 🆕 RESPUESTA DE PRODUCTO CON PRECIOS DEL ENTRENAMIENTO
+// 🆕 RESPUESTA DE PRODUCTO CON PRECIOS DEL ENTRENAMIENTO (CÁLIDA)
 // =======================================================
 
 function buildProductResponse(product: string, training: string): string {
   const unitPrice = getProductPrice(product, 1, training);
   
   if (unitPrice === null) {
-    return `${product} 😊\n\n⚠️ No encontré el precio de este producto en el entrenamiento.\n\nPor favor, asegurate de que el producto esté correctamente configurado en el sistema.\n\n📍 ¿Para qué ciudad sería el envío? (Confirmame igual y lo resolvemos)`;
+    return `🤗 ¡Gracias por tu interés en ${product}!
+
+⚠️ Estoy verificando el precio en el sistema, dame un segundito...
+
+📍 Mientras tanto, ¿a qué ciudad te gustaría recibirlo? Así voy preparando todo 🚚`;
   }
   
   const promoPrice = getProductPrice(product, 2, training);
   
-  let response = `${product} 😊\n\n💰 ${formatGs(unitPrice)} Gs`;
+  let response = `🤗 ¡Qué buena elección! ${product} es uno de nuestros favoritos ⭐
+
+💰 Precio especial: ${formatGs(unitPrice)} Gs`;
   
   if (promoPrice !== null && promoPrice !== unitPrice * 2) {
-    response += `\n🔥 PROMO 2x → ${formatGs(promoPrice)} Gs`;
+    const savings = unitPrice * 2 - promoPrice;
+    response += `\n🔥 PROMO 2x → ${formatGs(promoPrice)} Gs (ahorrás ${formatGs(savings)} Gs)`;
   }
   
-  response += `\n\n⚠️ STOCK LIMITADO por la alta demanda.\n\n📍 ¿Para qué ciudad sería el envío?`;
+  response += `\n\n⚠️ STOCK LIMITADO - Solo quedan unidades para envíos de HOY.
+
+📍 ¿A qué ciudad te gustaría recibirlo? 😊
+
+Te explico cómo funciona según tu ubicación:
+
+🟢 **Ciudades con cobertura** → Envío GRATIS · Pagás al recibir
+🔴 **Otras ciudades** → Envío por encomienda · Pago anticipado
+
+Escribime tu ciudad y te confirmo cómo llega tu pedido 🚚✨`;
   
   return response;
 }
 
 // =======================================================
-// 🆕 RESPUESTA DESPUÉS DE CIUDAD CON PRECIOS DEL ENTRENAMIENTO
+// 🆕 RESPUESTA DESPUÉS DE CIUDAD (CON VERIFICACIÓN CLARA)
 // =======================================================
 
 function buildQuantityAfterCityResponse(product: string, city: string, training: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
-  
   const unitPrice = getProductPrice(product, 1, training);
+  const tipoCobertura = getTipoCobertura(city);
   
   if (unitPrice === null) {
-    return `✅ Perfecto, enviamos a ${city} 😊
+    return `✅ ¡Gracias! ${city} registrada 📍
 
 📦 ${productName}
 
-⚠️ No encontré el precio de este producto en el entrenamiento.
+⚠️ Estoy verificando el precio en el sistema, dame un segundo...
 
-¿Cuántas UNIDADES querés? (Confirmame igual y lo resolvemos)
+${tipoCobertura === "con_cobertura" ? 
+  `🟢 **${city} tiene cobertura** → Envío GRATIS · Pagás al recibir` : 
+  `🔴 **${city} NO tiene cobertura** → Envío por encomienda · Pago anticipado por transferencia`}
 
-Respondé con el número (1, 2, 3...)`;
+📍 ¿Cuántas unidades querés? (1, 2, 3...)`;
   }
   
   const promoPrice = getProductPrice(product, 2, training);
-  
-  let priceInfo = `💰 Precio: ${formatGs(unitPrice)} Gs`;
-  
+  let priceInfo = `💰 ${formatGs(unitPrice)} Gs`;
   if (promoPrice !== null && promoPrice !== unitPrice * 2) {
     priceInfo += `\n🔥 PROMO 2x → ${formatGs(promoPrice)} Gs`;
   }
   
-  const isKit = normalize(product).includes("kit antivibracion") || 
-                normalize(product).includes("patitas antideslizantes");
-  
-  if (isKit) {
-    return `✅ Perfecto, enviamos a ${city} 😊
+  if (tipoCobertura === "con_cobertura") {
+    return `✅ ¡Perfecto! **${city}** tiene cobertura 🟢
 
 📦 ${productName}
 ${priceInfo}
 
-¿Cuántos KITS querés? (Cada kit incluye 4 patitas)
+🚚 **Envío GRATIS** a tu domicilio
+💵 **Pagás al recibir** (efectivo, transferencia o QR)
 
-Ejemplos:
-• 1 kit
-• 2 kits
-• 3 kits
+💡 Tip: La mayoría lleva 2 unidades porque rinde muchísimo y el stock es limitado.
 
-Respondé con el número (1, 2, 3...)`;
+🔥 ¿Cuántas unidades querés llevar?
+
+Respondé con el número (1, 2, 3...) ✨`;
+  } else {
+    return `ℹ️ **${city}** no tiene cobertura de delivery 🔴
+
+📦 ${productName}
+${priceInfo}
+
+🚚 **Envío por encomienda** (transportadora: TSI / NASA / Occidental / MG Express)
+💵 **Pago anticipado por transferencia**
+
+📲 **DATOS PARA TRANSFERENCIA:**
+   Titular: DAVID AGUSTIN ALCARAZ AGUILAR
+   Banco Familiar · Cuenta: 81-4981442
+   Alias: 0994130022
+
+🔥 ¿Cuántas unidades querés llevar?
+
+Respondé con el número (1, 2, 3...) y te preparo el total ✨`;
   }
-  
-  return `✅ Perfecto, enviamos a ${city} 😊
-
-📦 ${productName}
-${priceInfo}
-
-¿Cuántas UNIDADES querés?
-
-Ejemplos:
-• 1 unidad
-• 2 unidades (consulta promo)
-• 3 unidades
-
-Respondé con el número (1, 2, 3...)`;
 }
 
 // =======================================================
-// 🆕 HANDLE PRODUCT SELECTION - Usando entrenamiento
-// SIEMPRE pregunta ciudad, NUNCA asume ciudad del contexto anterior
+// 🆕 HANDLE PRODUCT SELECTION - SIEMPRE pregunta ciudad
 // =======================================================
 
 function handleProductSelection(product: string, training: string, shoeSize?: any) {
@@ -1134,7 +1141,7 @@ function handleProductSelection(product: string, training: string, shoeSize?: an
     product: product,
     quantity: 0,
     shoe_size: shoeSize || "",
-    city: "",  // 🔥 FORZAR ciudad vacía para que SIEMPRE pregunte
+    city: "",
     customer_name: "",
     phone: "",
     address: "",
@@ -1147,13 +1154,12 @@ function handleProductSelection(product: string, training: string, shoeSize?: an
   return {
     response: productResponse,
     order: newOrder,
-    step: "collecting_city"  // 🔥 FORZAR estado "esperando ciudad"
+    step: "collecting_city"
   };
 }
 
 // =======================================================
-// 🆕 nextStep() - CIUDAD primero, luego CANTIDAD
-// NUNCA asume ciudad, siempre la exige
+// 🆕 nextStep() - CIUDAD primero, NUNCA asume
 // =======================================================
 
 function nextStep(order: any, tipoCobertura?: string) {
@@ -1161,11 +1167,8 @@ function nextStep(order: any, tipoCobertura?: string) {
   
   if (!order.product && !items.length) return "selling";
   
-  // 🔥 CIUDAD es SIEMPRE lo PRIMERO que preguntamos
-  // NUNCA asumir ciudad, incluso si existe en contexto viejo
   if (!order.city || order.city === "") return "collecting_city";
   
-  // Después de ciudad, preguntamos CANTIDAD
   const hasValidQuantity = safeQuantity(order.quantity) > 0;
   if (!hasValidQuantity && !items.length) return "collecting_quantity";
   
@@ -1454,7 +1457,7 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 
 export default async function handler(req: any, res: any) {
   console.log("🔥 VERSION FINAL - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
-  console.log("🔥 LOS PRECIOS VIENEN EXCLUSIVAMENTE DEL ENTRENAMIENTO - NUNCA SE INVENTAN");
+  console.log("🔥 LOS PRECIOS VIENEN EXCLUSIVAMENTE DEL ENTRENAMIENTO");
   console.log("🔥 NUNCA SE ASUME CIUDAD - SIEMPRE SE PREGUNTA");
 
   if (req.method !== "POST") {
@@ -1522,7 +1525,7 @@ export default async function handler(req: any, res: any) {
           if (norm.includes("raqueta")) { lastUserProduct = "Raqueta Eléctrica para Insectos"; break; }
           if (norm.includes("veneno") || norm.includes("abeja")) { lastUserProduct = "Veneno de Abeja"; break; }
           if (norm.includes("plantilla") || norm.includes("ortopiex")) { lastUserProduct = getDefaultShoeProductName(); break; }
-          if (norm.includes("pelador")) { lastUserProduct = "Peladora Automática"; break; }
+          if (norm.includes("pelador") || norm.includes("peladora")) { lastUserProduct = "Peladora Automática"; break; }
           if (norm.includes("pororo") || norm.includes("popcorn") || norm.includes("pochoclo")) { lastUserProduct = "Máquina para hacer Pororo"; break; }
           if (norm.includes("nebulizador")) { lastUserProduct = "Nebulizador portátil"; break; }
           if (norm.includes("tabla") && (norm.includes("picar") || norm.includes("marmol"))) { lastUserProduct = "Tabla de Picar de Mármol"; break; }
@@ -1549,7 +1552,11 @@ export default async function handler(req: any, res: any) {
 
     if (isOriginQuestion(texto)) {
       return res.json({
-        response: `Somos de Asunción, Paraguay 😊\nHacemos envíos a todo el país 🚚\n\n¿Cuál producto te interesa? ✨`,
+        response: `🤗 ¡Somos de Asunción, Paraguay! 😊
+
+Hacemos envíos a todo el país 🚚
+
+¿Cuál producto te interesa? ✨`,
         context: {
           ...(context || {}),
           step: previousStep || "selling",
@@ -1657,15 +1664,48 @@ export default async function handler(req: any, res: any) {
     let extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
     // =======================================================
+    // 🆕 VERIFICAR SI EL CLIENTE CAMBIÓ DE PRODUCTO
+    // =======================================================
+    if (product && oldOrder?.product && !sameProduct(product, oldOrder.product) && !wantsAddMore) {
+      console.log(`🔄 Cliente cambió de "${oldOrder.product}" a "${product}" - Reiniciando pedido`);
+      
+      const newOrder = {
+        product: product,
+        quantity: 0,
+        shoe_size: extracted.shoe_size || "",
+        city: "",
+        customer_name: "",
+        phone: "",
+        address: "",
+        items: [],
+        total_amount: 0,
+      };
+      
+      await safeUpsertOrder(user_id, fromNumber, newOrder, false);
+      
+      return res.json({
+        response: buildProductResponse(product, fullTraining),
+        context: {
+          ...(context || {}),
+          current_product: product,
+          last_user_product: product,
+          step: "collecting_city",
+          tipo_cobertura: null,
+          order_data: newOrder,
+          last_topic: product,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    // =======================================================
     // 🆕 NUEVO PRODUCTO SELECCIONADO → PREGUNTAR CIUDAD
-    // 🔥 NUNCA asume ciudad del contexto anterior
     // =======================================================
     if (product && !wantsAddMore && !isQuantityReply && !isPureShoeSizeReply && !isCityReply) {
-      // Verificar si es un producto nuevo o si ya estábamos en flujo
       const isNewProductSelection = !oldOrder?.product || !sameProduct(product, oldOrder.product);
       
       if (isNewProductSelection) {
-        // 🔥 FORZAR pregunta de ciudad, ignorando cualquier ciudad existente en el contexto
         const { response, order: newOrder, step: newStep } = handleProductSelection(product, fullTraining, extracted.shoe_size);
         
         await safeUpsertOrder(user_id, fromNumber, newOrder, false);
@@ -1748,7 +1788,14 @@ export default async function handler(req: any, res: any) {
       // Verificar que tenemos ciudad antes de continuar
       if (!orderData.city || orderData.city === "") {
         return res.json({
-          response: `📍 ¿Para qué CIUDAD querés el envío?\n\n(Ejemplo: Asunción, Capiatá, Luque...)`,
+          response: `📍 ¡Genial! ¿A qué ciudad lo enviamos? 😊
+
+Te explico cómo funciona según tu ubicación:
+
+🟢 **Ciudades con cobertura** → Envío GRATIS · Pagás al recibir
+🔴 **Otras ciudades** → Envío por encomienda · Pago anticipado
+
+Escribime tu ciudad y te confirmo cómo llega tu pedido 🚚✨`,
           context: {
             ...(context || {}),
             current_product: product,
@@ -1821,11 +1868,13 @@ export default async function handler(req: any, res: any) {
           const receiver = analysis.receiverName || expectedReceiverName || "nuestro titular";
 
           return res.json({
-            response: `¡Perfecto! 🙏 Recibimos tu comprobante${amountText} a nombre de ${receiver}.
+            response: `✅ ¡Perfecto! 🙏 Recibimos tu comprobante${amountText} a nombre de ${receiver}.
 
 Ya estamos verificando el pago ✅
 
-Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu comprobante de encomienda 🚚✨`,
+Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu comprobante de envío 🚚✨
+
+¡Gracias por confiar en Mega Todo Store! 💜`,
             is_payment_proof: true,
             context: {
               ...(context || {}),
@@ -1863,11 +1912,18 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
               : `💰 Precio: ${analysis.productPrice} Gs`;
 
             return res.json({
-              response: `Sí 😊 es ${visualProduct}.
+              response: `🤗 ¡Sí! Es ${visualProduct}.
 
 ${promoLine}
 
-📍 ¿Para qué ciudad sería el envío?`,
+📍 ¿A qué ciudad te gustaría recibirlo? 😊
+
+Te explico cómo funciona según tu ubicación:
+
+🟢 **Ciudades con cobertura** → Envío GRATIS · Pagás al recibir
+🔴 **Otras ciudades** → Envío por encomienda · Pago anticipado
+
+Escribime tu ciudad y te confirmo cómo llega tu pedido 🚚✨`,
               context: {
                 ...(context || {}),
                 current_product: visualProduct,
@@ -1889,13 +1945,12 @@ Producto del catálogo detectado: ${catalogProduct || "no encontrado"}
 Precio visible en imagen: ${analysis.productPrice || "no visible"}
 Promo visible en imagen: ${analysis.promoText || "no visible"}
 
-Si hay producto del catálogo detectado, respondé con su nombre, precio exacto del entrenamiento, promoción si existe y preguntá para qué ciudad sería el envío.
-Si no hay producto del catálogo pero hay producto visual y precio visible, respondé con ese producto y precio visible.
-Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
+Respondé de manera cálida y amigable. Si hay producto del catálogo, mostrá su precio y preguntá por la CIUDAD.
+Si no hay producto claro, pedí amablemente que te diga qué producto le interesa.`;
         } else {
           texto =
             texto ||
-            `El cliente envió una imagen. Descripción: ${analysis.transcript || "imagen no identificada"}. Si no corresponde a producto ni comprobante, pedí más detalle.`;
+            `El cliente envió una imagen. Descripción: ${analysis.transcript || "imagen no identificada"}. Pedile amablemente que te diga qué producto le interesa o si es un comprobante de pago.`;
         }
       } else {
         texto = texto || "Te mandé una imagen pero no pudiste descargarla.";
@@ -1922,7 +1977,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
         if (!isBuyIntent(texto) && !audioHasProduct && !audioHasUsefulData) {
           return res.json({
             response:
-              "🎤 Escuché tu audio 😊 ¿Podrías decirme qué producto te interesa o qué necesitás exactamente?",
+              "🎤 ¡Escuché tu audio! 😊 ¿Podrías decirme qué producto te interesa o qué necesitás exactamente? Así te ayudo mejor 🤗",
             context: {
               ...(context || {}),
               step: previousStep || "selling",
@@ -1958,9 +2013,15 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
 
     // Verificar que tenemos ciudad antes de calcular total si hay cantidad
     if (orderData.product && orderData.quantity > 0 && (!orderData.city || orderData.city === "")) {
-      // No tenemos ciudad, preguntar ciudad
       return res.json({
-        response: `📍 ¿Para qué CIUDAD querés el envío?\n\n(Ejemplo: Asunción, Capiatá, Luque...)`,
+        response: `📍 ¡Genial! ¿A qué ciudad lo enviamos? 😊
+
+Te explico cómo funciona según tu ubicación:
+
+🟢 **Ciudades con cobertura** → Envío GRATIS · Pagás al recibir
+🔴 **Otras ciudades** → Envío por encomienda · Pago anticipado
+
+Escribime tu ciudad y te confirmo cómo llega tu pedido 🚚✨`,
         context: {
           ...(context || {}),
           current_product: orderData.product,
@@ -1990,8 +2051,63 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     if (step === "confirm_order") {
       await safeUpsertOrder(user_id, fromNumber, orderData, true);
       
+      const confirmResponse = finalTipoCobertura === "con_cobertura" 
+        ? `✅ **PEDIDO CONFIRMADO** ✅
+
+✅ Producto: ${orderData.product}
+✅ Cliente: ${orderData.customer_name}
+✅ Ubicación: ${orderData.city} — ${orderData.address}
+✅ Contacto: ${orderData.phone}
+✅ Cantidad: ${orderData.quantity} u.
+💰 Total: ${formatGs(orderData.total_amount)} Gs
+
+🚚 **ENVÍO GRATIS** · **Pagás al recibir**
+
+📦 Tu pedido queda agendado. El delivery se comunicará contigo al llegar a tu zona.
+
+⏰ Oferta válida hoy
+
+¡Gracias por elegir Mega Todo Store! 💜✨
+
+💵 Podés pagar en EFECTIVO o TRANSFERENCIA al delivery cuando recibas tu producto.
+
+¡Gracias por tu compra! 🛍️✨
+
+Te dejo nuestro catálogo completo 👇
+
+👉 ${CATALOG_URL}
+
+Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`
+        : `✅ **PEDIDO CONFIRMADO** ✅
+
+✅ Producto: ${orderData.product}
+✅ Cliente: ${orderData.customer_name}
+✅ Ciudad: ${orderData.city}
+✅ Contacto: ${orderData.phone}
+✅ Cantidad: ${orderData.quantity} u.
+💰 Total: ${formatGs(orderData.total_amount)} Gs
+
+🚚 **ENVÍO POR ENCOMIENDA**
+
+📎 Una vez confirmado tu pago, te enviaremos el comprobante de envío.
+
+💵 **DATOS PARA TRANSFERENCIA:**
+   Titular: DAVID AGUSTIN ALCARAZ AGUILAR
+   Banco Familiar · Cuenta: 81-4981442
+   Alias: 0994130022
+
+📲 Enviame el comprobante y confirmamos tu envío 🚚✨
+
+¡Gracias por tu compra! 🛍️✨
+
+Te dejo nuestro catálogo completo 👇
+
+👉 ${CATALOG_URL}
+
+Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
+
       return res.json({
-        response: buildOrderSummaryResponse(orderData, finalTipoCobertura),
+        response: confirmResponse,
         context: {
           ...(context || {}),
           current_product: orderData.product,
@@ -2013,18 +2129,21 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     if (isQuantityReply || isPureShoeSizeReply) cleanHistory = [];
 
     const system = `
-Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento oficial del usuario.
+Sos el asistente de ventas de Mega Todo Store, una tienda paraguaya. Tu nombre es Araceli Galeano.
 
 REGLA FUNDAMENTAL: Los precios los sacás SIEMPRE del entrenamiento. NUNCA inventes ni asumas precios.
-Si el entrenamiento no tiene un precio, decí que no encontraste el precio.
 
 FLUJO DE VENTAS (RESPETAR ESTRICTAMENTE):
-1. Cliente dice producto → preguntar CIUDAD (ej: "📍 ¿Para qué ciudad querés el envío?")
-2. Cliente responde ciudad → preguntar CANTIDAD con ejemplos (ej: "¿Cuántas unidades querés? Ej: 1, 2, 3...")
+1. Cliente dice producto → preguntar CIUDAD (explicando los dos métodos de envío)
+2. Cliente responde ciudad → verificar cobertura y preguntar CANTIDAD
 3. Cliente responde cantidad → mostrar resumen y pedir datos de envío
 
-⚠️ IMPORTANTE: NUNCA asumas que sabes la ciudad. SIEMPRE pregúntala.
-⚠️ NUNCA uses una ciudad de conversaciones anteriores.
+TONO DE VOZ:
+- Cálido, amigable, como una vendedora de barrio
+- Usá emojis 🤗 😊 ✨ 🔥 💜
+- Tratá al cliente de "vos" o "tú" como sea más natural
+- Mostrá entusiasmo por los productos
+- Creá urgencia con "stock limitado", "oferta válida hoy"
 
 ═══════════════════════════════════
 ENTRENAMIENTO OFICIAL DEL USUARIO:
@@ -2046,8 +2165,7 @@ REGLAS:
 - Si paso es collecting_phone → pedir teléfono
 - Si paso es collecting_address → pedir dirección
 
-Catálogo: ${CATALOG_URL}
-Español paraguayo natural, con emojis.`;
+⚠️ IMPORTANTE: NUNCA asumas que sabes la ciudad. SIEMPRE pregúntala.`;
 
     const contents = cleanHistory
       .slice(-8)
@@ -2086,7 +2204,7 @@ Español paraguayo natural, con emojis.`;
     };
 
     return res.json({
-      response: response || `📋 Te invito a revisar nuestro catálogo:\n${CATALOG_URL}`,
+      response: response || `🤗 ¡Hola! Te invito a revisar nuestro catálogo:\n${CATALOG_URL}\n\n¿Qué producto te interesa? ✨`,
       context: newContext,
       is_payment_proof: isPaymentProof,
     });
