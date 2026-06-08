@@ -1480,9 +1480,13 @@ export default async function handler(req: any, res: any) {
 
     const normalizedText = normalize(texto);
 
-    // ✅ FIX 1: "QUIERO" solo (sin número) también activa el modo compra
+    // ✅ FIX 1: "QUIERO" solo o "QUIERO 1" activan el modo compra
     const isGenericBuyIntent = /^(quiero|llevo|dame|compro|comprar|mandame)(\s+\d{1,3})?$/i.test(normalizedText);
     const isGenericBuyQuantity = isGenericBuyIntent;
+
+    // Cantidad implícita en el mensaje de compra ("QUIERO 1" → 1)
+    const impliedQuantityMatch = normalizedText.match(/^(?:quiero|llevo|dame|compro|comprar|mandame)\s+(\d{1,3})$/i);
+    const impliedQuantity = impliedQuantityMatch ? parseInt(impliedQuantityMatch[1]) : 0;
 
     const recentConversationText = getRecentConversationText(texto, history || []);
     const recentAdProduct = detectPriorityProductFromRecentText(recentConversationText);
@@ -1610,6 +1614,32 @@ export default async function handler(req: any, res: any) {
         confirmed: false, confirm_count: 0,
       };
 
+      // Si ya teníamos cantidad guardada (ej: "QUIERO 1"), usarla y pedir datos directamente
+      const savedQty = safeQuantity(oldOrder?.quantity);
+      if (savedQty > 0) {
+        orderData.quantity = savedQty;
+        orderData.total_amount = calculateTotal(finalProduct, savedQty, fullTraining) ||
+          (sameProduct(finalProduct, getTornadoProductName()) ? TORNADO_PRICE * savedQty : 0);
+        await safeUpsertOrder(user_id, fromNumber, orderData, false);
+
+        console.log("✅ Ciudad+Cantidad ya conocida:", city, savedQty);
+
+        return res.json({
+          response: buildOrderSummaryResponse(orderData, getTipoCobertura(city)),
+          context: {
+            ...(context || {}),
+            current_product: finalProduct,
+            last_user_product: finalProduct,
+            step: "collecting_name",
+            tipo_cobertura: getTipoCobertura(city),
+            order_data: orderData,
+            last_topic: finalProduct,
+            updated_at: new Date().toISOString(),
+          },
+          is_payment_proof: false,
+        });
+      }
+
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
       return res.json({
@@ -1629,28 +1659,37 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🔥 TORNADO / CUALQUIER PRODUCTO SIN CIUDAD → PEDIR CIUDAD
+    // 🔥 PRODUCTO DETECTADO SIN CIUDAD → PEDIR CIUDAD SIEMPRE PRIMERO
+    // Preserva cantidad implícita de "QUIERO 1"
     // =======================================================
-    if (product && !oldOrder?.city && previousStep !== "collecting_city") {
+    const effectiveProduct = product || oldOrder?.product || "";
+    if (effectiveProduct && !oldOrder?.city && previousStep !== "collecting_city") {
       const newOrder = {
-        product: product,
-        quantity: 0, shoe_size: "", city: "",
-        customer_name: "", phone: "", address: "", items: [],
-        total_amount: product === getTornadoProductName() ? TORNADO_PRICE : 0,
+        product: effectiveProduct,
+        quantity: impliedQuantity || 0,   // guarda "1" si vino "QUIERO 1"
+        shoe_size: oldOrder?.shoe_size || "",
+        city: "",
+        customer_name: oldOrder?.customer_name || "",
+        phone: oldOrder?.phone || "",
+        address: oldOrder?.address || "",
+        items: [],
+        total_amount: effectiveProduct === getTornadoProductName() ? TORNADO_PRICE : 0,
         confirmed: false, confirm_count: 0,
       };
       await safeUpsertOrder(user_id, fromNumber, newOrder, false);
 
+      console.log("📍 Sin ciudad → pedir ciudad. Producto:", effectiveProduct, "| Cantidad guardada:", impliedQuantity);
+
       return res.json({
-        response: buildCityQuestionResponse(product),
+        response: buildCityQuestionResponse(effectiveProduct),
         context: {
           ...(context || {}),
-          current_product: product,
-          last_user_product: product,
+          current_product: effectiveProduct,
+          last_user_product: effectiveProduct,
           step: "collecting_city",
           tipo_cobertura: null,
           order_data: newOrder,
-          last_topic: product,
+          last_topic: effectiveProduct,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
