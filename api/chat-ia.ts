@@ -16,6 +16,16 @@ const normalize = (t: string): string =>
     .trim();
 
 // =======================================================
+// 🧠 PRODUCTOS RECONOCIDOS
+// =======================================================
+const TORNADO_PRODUCT = "Destapa Cañerías Tornado";
+const TORNADO_PRICE = 159900;
+
+function getTornadoProductName(): string {
+  return TORNADO_PRODUCT;
+}
+
+// =======================================================
 // 🧠 GUARDRAILS DETERMINÍSTICOS
 // =======================================================
 function hasExplicitProductMention(text: string): boolean {
@@ -137,10 +147,6 @@ function getAntiVibrationProductName(): string {
   return "Kit Antivibración x4 Patitas Antideslizantes";
 }
 
-function getTornadoProductName(): string {
-  return "Destapa Cañerías Tornado";
-}
-
 function buildCityQuestionResponse(product: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
   return `🔥 Perfecto 😊
@@ -159,7 +165,7 @@ function buildQuantityAfterCityResponse(product: string, city: string, shoeSize?
     return `✅ ¡Perfecto! ${city} tiene ENVÍO GRATIS contra-entrega 🚚
 
 🔥 ${productName}:
-• 1 unidad → Precio promocional
+• 1 unidad → 159.900 Gs
 
 💵 Pagás al recibir sin problema 😊
 
@@ -209,7 +215,6 @@ function detectProductRespectingActive(
 ): string {
   const msg = normalize(text);
   
-  // 🔥 Si es solo un número, NO cambiar producto
   if (/^\d{1,3}$/.test(msg)) {
     return activeProduct || "";
   }
@@ -248,16 +253,14 @@ function detectProductRaw(
 ) {
   const msg = normalize(text);
   
-  // 🔥 Si es solo un número, NO detectar producto nuevo
   if (/^\d{1,3}$/.test(msg)) {
     return "";
   }
 
-  // 🔥 Detectar Tornado / Destapa Cañerías
   if (msg.includes("tornado") || msg.includes("destapa") || msg.includes("cañeria") || 
       msg.includes("cañería") || msg.includes("tuberia") || msg.includes("tubería") || 
       msg.includes("desagüe") || msg.includes("desague") || msg.includes("quiero 1") ||
-      msg.includes("quiero1")) {
+      msg.includes("quiero1") || msg.includes("wild tornado")) {
     return getTornadoProductName();
   }
 
@@ -339,8 +342,7 @@ function detectProductRaw(
 function canonicalProductFromText(text: string): string {
   const n = normalize(text);
 
-  // 🔥 Detectar Tornado
-  if (/\b(tornado|destapa|cañeria|cañería|tuberia|tubería|desagüe|desague|quiero\s+1|quiero1)\b/.test(n)) {
+  if (/\b(tornado|destapa|cañeria|cañería|tuberia|tubería|desagüe|desague|quiero\s+1|quiero1|wild\s+tornado)\b/.test(n)) {
     return getTornadoProductName();
   }
 
@@ -458,7 +460,7 @@ function isProductName(text: string): boolean {
     "perfume asad", "asad",
     "almohadillas antivibracion", "soporte para lavarropas", "lavarropas", "kit x4 patitas", "patitas antideslizantes",
     "raqueta electrica", "raqueta para insectos", "flayes pro", "raqueta flayes",
-    "destapa cañerias tornado", "tornado", "destapa cañerías"
+    "destapa cañerias tornado", "tornado", "destapa cañerías", "wild tornado"
   ];
   const normalizedText = n;
   return productNames.some(p => normalizedText.includes(p) || p.includes(normalizedText));
@@ -632,6 +634,9 @@ function botWasAskingShoeSize(history: any[]) {
   );
 }
 
+// =======================================================
+// 🔥 FUNCIÓN EXTRACTDATA MEJORADA - RECONOCE NOMBRE, DIRECCIÓN, TELÉFONO
+// =======================================================
 function extractData(
   msg: string,
   currentStep?: string,
@@ -645,145 +650,98 @@ function extractData(
     return { quantity: 0, shoe_size: "", city: "", name: "", phone: "", address: "" };
   }
 
-  const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
-  const isPackReference = isPackReferenceText(text);
+  // 🔥 Extraer teléfono (prioridad alta)
+  const phone = text.match(/(?:09\d{8}|\+595\d{9}|\d{10})/)?.[0] || "";
+  
+  // 🔥 Extraer ciudad
+  let city = extractCityFromText(norm);
+  
+  // 🔥 Extraer dirección (líneas que no son nombre, ciudad, teléfono)
+  let address = "";
+  
+  // 🔥 Extraer nombre mejorado
+  let name = "";
 
-  const shoeSizeMatch = norm.match(/\b(?:talle|numero|nro|num|uso|calzo|soy|en|del|de|para)\s*(\d{2})\b/);
-  const explicitShoeSize = shoeSizeMatch ? Number(shoeSizeMatch[1]) : 0;
-
-  const waitingForShoeSize =
-    forceShoeSizeMode ||
-    currentStep === "collecting_shoe_size" ||
-    currentStep === "esperando_calce" ||
-    currentStep === "collecting_calce";
-
-  const onlyShoeSizeMatch = waitingForShoeSize ? norm.match(/^\s*(\d{2})\s*$/) : null;
-  const implicitShoeSize = onlyShoeSizeMatch ? Number(onlyShoeSizeMatch[1]) : 0;
-
-  const shoe_size =
-    explicitShoeSize >= 20 && explicitShoeSize <= 50 ? explicitShoeSize :
-    implicitShoeSize >= 20 && implicitShoeSize <= 50 ? implicitShoeSize : 0;
-
-  const isShoeSizeMessage = shoe_size >= 20 && shoe_size <= 50;
-
-  let quantity = 0;
-
-  if (
-    !isShoeSizeMessage &&
-    !waitingForShoeSize &&
-    (forceQuantityMode || currentStep === "collecting_quantity" || currentStep === "esperando_cantidad")
-  ) {
-    const onlyNumber = norm.match(/^\s*(\d{1,3})\s*$/);
-    if (onlyNumber) {
-      const num = Number(onlyNumber[1]);
-      if (num >= 1 && num <= 999) quantity = num;
-    }
-  }
-
-  if (!forceQuantityMode && currentStep !== "collecting_quantity" && currentStep !== "esperando_cantidad") {
-    quantity = 0;
-  }
-
-  if (!quantity && !isShoeSizeMessage && !waitingForShoeSize) {
-    const q1 = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
-    if (q1) quantity = Number(q1[1]);
-
-    const q2 = norm.match(/^(quiero|llevo|compro|reservo|dame|mandame)\s+(\d{1,3})$/i);
-    if (!quantity && q2) quantity = Number(q2[2]);
-  }
-
-  if (isPackReference && (currentStep === "collecting_quantity" || currentStep === "esperando_cantidad")) {
-    quantity = 1;
-  }
-
-  const cityAliases: Record<string, string> = {
-    "cruce san alberto": "Cruce San Alberto", "cruse san alberto": "Cruce San Alberto", "san alberto": "San Alberto",
-    asuncion: "Asunción", capiata: "Capiatá", capilata: "Capiatá", kapiata: "Capiatá",
-    cde: "Ciudad del Este", "ciudad del este": "Ciudad del Este", luque: "Luque",
-    ita: "Itá", lambare: "Lambaré", "san lorenzo": "San Lorenzo", sanlo: "San Lorenzo",
-    "san lorenso": "San Lorenzo", fdm: "Fernando de la Mora", "fernando de la mora": "Fernando de la Mora",
-    nemby: "Ñemby", ñemby: "Ñemby", ypane: "Ypané", limpio: "Limpio",
-    "villa elisa": "Villa Elisa", hernandarias: "Hernandarias", "presidente franco": "Presidente Franco",
-    "pte franco": "Presidente Franco", aregua: "Areguá", areguá: "Areguá",
-    sanber: "San Bernardino", "san ber": "San Bernardino", "san bernardino": "San Bernardino",
-    pjc: "Pedro Juan Caballero", "pedro juan": "Pedro Juan Caballero",
-    "pedro juan caballero": "Pedro Juan Caballero",
-  };
-
-  let city = "";
-  for (const [k, v] of Object.entries(cityAliases)) {
-    if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`, "i").test(norm)) {
-      city = v;
+  // Patrón para nombre completo (dos palabras con mayúscula inicial o todo mayúsculas)
+  const namePatterns = [
+    /(?:me\s+llamo|nombre|soy|mi nombre es)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)/i,
+    /^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]+)$/,
+    /^([A-Z]{3,}\s+[A-Z]{3,})$/,
+    /^([A-Z][a-z]+\s+[A-Z][a-z]+)$/,
+  ];
+  
+  for (const pattern of namePatterns) {
+    const match = text.match(pattern);
+    if (match && match[1] && !isProductName(match[1]) && match[1].length < 50) {
+      name = clean(match[1]);
       break;
     }
   }
-
-  const address = text.match(/(?:dirección|dir|ubicacion|ubicación)\s*[:-]?\s*(.+)/i)?.[1] || "";
-
-  let name = "";
-
-  const invalidName =
-    norm.includes("unidad") || norm.includes("unidades") ||
-    norm.includes("precio") || norm.includes("delivery") ||
-    norm.includes("envio") || norm.includes("envío") ||
-    norm.includes("ubicacion") || norm.includes("ubicación") ||
-    norm.includes("direccion") || norm.includes("dirección") ||
-    norm.includes("calce") || norm.includes("talle") ||
-    norm.includes("numero") || norm.includes("nro") ||
-    norm.includes("veneno") || norm.includes("abeja") ||
-    norm.includes("plantilla") || norm.includes("crema") ||
-    norm.includes("ortopiex") || norm.includes("pelador") ||
-    norm.includes("afilador") || norm.includes("vital") ||
-    norm.includes("perfume") || norm.includes("soporte") ||
-    norm.includes("lavarropas") || norm.includes("cuchillo") ||
-    norm.includes("5d") || norm.includes("ortoflex") ||
-    norm.includes("pororo") || norm.includes("maquina") ||
-    norm.includes("nebulizador") || norm.includes("tabla") ||
-    norm.includes("patitas") || norm.includes("antideslizantes") ||
-    norm.includes("kit") || norm.includes("raqueta") ||
-    norm.includes("tornado") || norm.includes("destapa");
-
-  const nameMatch = text.match(/(?:me\s+llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,80})/i)?.[1];
-
-  if (nameMatch && !invalidName && !isProductName(nameMatch)) {
-    name = clean(nameMatch).replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "").trim();
-  }
-
-  if (!name && phone) {
-    const possibleName = normalize(text)
-      .replace(normalize(phone), " ")
-      .replace(/\b(tel|tef|telefono|teléfono|cel|celular|nro|numero|número|contacto)\b/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    const titleName = possibleName
-      .split(" ")
-      .filter(Boolean)
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-      .join(" ");
-
-    if (titleName.length >= 5 && /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(titleName) && !isProductName(titleName)) {
-      name = titleName;
+  
+  // Si el texto completo es un nombre simple (sin números, no muy largo)
+  if (!name && !/\d/.test(text) && text.length < 40 && text.length > 5 && text.includes(" ")) {
+    const words = text.split(" ");
+    if (words.length === 2 && words[0].length > 2 && words[1].length > 2) {
+      name = text;
     }
   }
+  
+  // 🔥 Extraer dirección (después de limpiar nombre y teléfono)
+  let tempText = text;
+  if (name) tempText = tempText.replace(name, "");
+  if (phone) tempText = tempText.replace(phone, "");
+  if (city) tempText = tempText.replace(new RegExp(city, "i"), "");
+  
+  const addressMatch = tempText.match(/([A-ZÁÉÍÓÚÑa-záéíóúñ0-9\s,.#\-]{5,})/);
+  if (addressMatch && addressMatch[1].trim().length > 5 && !isProductName(addressMatch[1])) {
+    address = clean(addressMatch[1]);
+  }
+  
+  // Si no hay nombre pero hay dirección, la dirección no es el nombre
+  if (!name && address && address.length > 10 && !address.includes(" ")) {
+    address = "";
+  }
 
-  if (
-    !name && !invalidName && !/\d/.test(text) &&
-    /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s\.]{5,80}$/.test(text) &&
-    !city && !phone && !quantity &&
-    !norm.includes("hola") && !norm.includes("si") &&
-    !isProductName(text)
-  ) {
-    name = clean(text.replace(/[.]+/g, " ").replace(/\s+/g, " "));
+  // 🔥 Extraer cantidad
+  let quantity = 0;
+  
+  // Si estamos en modo cantidad o el step lo requiere
+  if (forceQuantityMode || currentStep === "collecting_quantity" || currentStep === "esperando_cantidad") {
+    const onlyNumber = norm.match(/^\s*(\d{1,3})\s*$/);
+    if (onlyNumber) {
+      quantity = Number(onlyNumber[1]);
+    } else {
+      const qMatch = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
+      if (qMatch) quantity = Number(qMatch[1]);
+    }
+  }
+  
+  // Si el mensaje dice "1 UNIDAD" o similar
+  if (!quantity && /\b1\s*unidad\b/i.test(text)) {
+    quantity = 1;
+  }
+  if (!quantity && /\b2\s*unidades\b/i.test(text)) {
+    quantity = 2;
+  }
+  if (!quantity && /\b3\s*unidades\b/i.test(text)) {
+    quantity = 3;
+  }
+
+  // 🔥 Extraer talle/zapato
+  let shoe_size = 0;
+  const shoeSizeMatch = norm.match(/\b(?:talle|numero|nro|num|uso|calzo|soy|en|del|de|para)\s*(\d{2})\b/);
+  if (shoeSizeMatch) {
+    const size = Number(shoeSizeMatch[1]);
+    if (size >= 20 && size <= 50) shoe_size = size;
   }
 
   return {
-    quantity,
-    shoe_size: isShoeSizeMessage ? shoe_size : "",
-    city,
-    name,
-    phone,
-    address: clean(address),
+    quantity: Math.min(quantity, 999),
+    shoe_size: shoe_size,
+    city: city,
+    name: name,
+    phone: phone,
+    address: address,
   };
 }
 
@@ -844,6 +802,11 @@ function calculateTotal(product: string, quantity: number, training: string): nu
   if (!product || !quantity || quantity < 1) return null;
 
   const p = normalize(product);
+  
+  if (p.includes("tornado") || p.includes("destapa")) {
+    return TORNADO_PRICE * quantity;
+  }
+
   const lines = training.split("\n").map((l) => clean(l)).filter(Boolean);
 
   let bestMatchScore = 0;
@@ -897,11 +860,6 @@ function calculateTotal(product: string, quantity: number, training: string): nu
 
   if (bestPromoPrice && quantity === 2) return bestPromoPrice;
   if (bestUnitPrice) return bestUnitPrice * quantity;
-
-  // 🔥 Precio por defecto para Tornado si no se encuentra en entrenamiento
-  if (p.includes("tornado") || p.includes("destapa")) {
-    return 159900 * quantity;
-  }
 
   return null;
 }
@@ -1078,11 +1036,14 @@ function buildOrderSummaryResponse(order: any, tipoCobertura: string) {
     promoNote = `🎯 ¡APROVECHA LA PROMO! 🎯\n\n`;
   }
 
+  const displayProduct = order.product || items[0]?.product || "";
+  const finalProductName = normalize(displayProduct).includes("tornado") ? getTornadoProductName() : displayProduct;
+
   return `${promoNote}🔥 Perfecto 😊
 
 Tu pedido queda así:
 
-📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}
+📦 ${formatProductWithShoeSize(finalProductName, order.shoe_size)}
 🔢 Cantidad: ${order.quantity}
 💰 Total: ${formatGs(total)} Gs
 
@@ -1110,15 +1071,25 @@ function nextStep(order: any, tipoCobertura?: string, wasConfirmed?: boolean): s
   const hasValidQuantity = safeQuantity(order.quantity) > 0;
   if (!hasValidQuantity && !items.length) return "collecting_quantity";
   
+  // 🔥 Si ya tenemos nombre, dirección y teléfono, pasar a confirmación
+  const hasName = order.customer_name && order.customer_name.length > 3;
+  const hasAddress = order.address && order.address.length > 5;
+  const hasPhone = order.phone && order.phone.length > 8;
+  
   if (tipoCobertura === "sin_cobertura") {
-    if (!order.customer_name) return "collecting_name";
-    if (!order.phone) return "collecting_phone";
+    if (!hasName) return "collecting_name";
+    if (!hasPhone) return "collecting_phone";
     return "waiting_payment_proof";
   }
   
-  if (!order.customer_name) return "collecting_name";
-  if (!order.phone) return "collecting_phone";
-  if (!order.address) return "collecting_address";
+  // Para cobertura normal, si tenemos todos los datos → confirmar pedido
+  if (hasName && hasPhone && hasAddress) {
+    return "confirm_order";
+  }
+  
+  if (!hasName) return "collecting_name";
+  if (!hasPhone) return "collecting_phone";
+  if (!hasAddress) return "collecting_address";
   
   return "confirm_order";
 }
@@ -1133,7 +1104,7 @@ function handleProductSelection(product: string, shoeSize?: any) {
     phone: "",
     address: "",
     items: [],
-    total_amount: 0,
+    total_amount: product === getTornadoProductName() ? TORNADO_PRICE : 0,
     confirmed: false,
     confirm_count: 0,
   };
@@ -1334,21 +1305,14 @@ Si el receptor aparece parecido al esperado, devolvé el nombre esperado del ent
 
 Si ves un producto físico, artículo, herramienta, máquina, envase, caja, frasco, accesorio o promo comercial → kind = "product".
 
-Si es producto, NUNCA lo clasifiques como comprobante aunque tenga precio, números o texto de promo.
+Si ves una imagen con texto "TORNADO", "WILD TORNADO", "Destapa Cañerías" → productName = "Destapa Cañerías Tornado", productPrice = "159.900"
 
-Si ves una imagen con texto "PROMO 2 UNIDADES 129.900Gs" y un producto físico → kind = "product", productPrice = "129.900", promoText = "PROMO 2 UNIDADES".
+Si ves un afilador de cuchillos → productName = "Afilador de Cuchillos".
+Si ves un pelador de papas → productName = "Peladora Automática".
 
-Si ves un producto con texto "TORNADO" o "Destapa Cañerías" → productName = "Destapa Cañerías Tornado", productPrice = "159.900"
-
-Si ves un afilador de cuchillos, sharpener, herramienta negra/roja con ranuras para cuchillos → productName = "Afilador de Cuchillos".
-
-Si ves un pelador de papas, pelador automático, peladora de verduras → productName = "Peladora Automática".
-
-Si el producto no está en catálogo, igual identificá el productName genérico visual.
+Si el producto no está en catálogo, igual identificá el productName genérico.
 
 matchedProduct solo va si encontrás coincidencia clara con el catálogo.
-
-Si no estás seguro, usá kind = "other".
 
 Caption del cliente: "${clean(caption) || "(vacío)"}"
 
@@ -1430,7 +1394,7 @@ function isNewConversation(text: string, history: any[]): boolean {
 // 🚀 HANDLER PRINCIPAL
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
+  console.log("🔥 VERSION FINAL - TORNADO FIX + EXTRACCIÓN DE DATOS MEJORADA");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1533,40 +1497,81 @@ export default async function handler(req: any, res: any) {
     const previousStep = clean(context?.step);
     const previousTipoCobertura = clean(context?.tipo_cobertura);
 
-    if (isOriginQuestion(texto)) {
+    // =======================================================
+    // 🔥 DETECCIÓN DE TORNADO
+    // =======================================================
+    let product = "";
+    const isTornadoMessage = normalize(texto).includes("tornado") || 
+                             normalize(texto).includes("destapa") ||
+                             normalize(texto).includes("quiero 1") ||
+                             normalize(texto).includes("quiero1") ||
+                             (mediaUrl && mediaType === "image");
+    
+    if (mediaUrl && mediaType === "image" && (texto.toLowerCase().includes("tornado") || texto.toLowerCase().includes("destapa") || texto === "QUIERO 1" || texto === "")) {
+      product = getTornadoProductName();
+      console.log("🔥 TORNADO DETECTADO por imagen + mensaje");
+    } else {
+      product = detectProductRespectingActive(
+        texto,
+        fullTraining,
+        oldOrder?.product || lastUserProduct,
+        getLastAssistantMessage(history || []),
+        lastUserProduct
+      );
+    }
+    
+    if (!product && (normalize(texto).includes("tornado") || normalize(texto).includes("destapa"))) {
+      product = getTornadoProductName();
+      console.log("🔥 TORNADO DETECTADO por palabra clave");
+    }
+    
+    if (product && !isInvalidProductCandidate(product) && isValidProductString(product)) {
+      lastUserProduct = product;
+    }
+
+    // =======================================================
+    // 🔥 SI ES TORNADO Y NO TIENE CIUDAD → PREGUNTAR CIUDAD
+    // =======================================================
+    if ((product === getTornadoProductName() || isTornadoMessage) && (!oldOrder?.city || oldOrder?.product !== getTornadoProductName())) {
+      const newOrder = {
+        product: getTornadoProductName(),
+        quantity: 0,
+        shoe_size: "",
+        city: "",
+        customer_name: "",
+        phone: "",
+        address: "",
+        items: [],
+        total_amount: TORNADO_PRICE,
+        confirmed: false,
+        confirm_count: 0,
+      };
+      
+      await safeUpsertOrder(user_id, fromNumber, newOrder, false);
+      
       return res.json({
-        response: `Somos de Asunción, Paraguay 😊\nHacemos envíos a todo el país 🚚\n\n¿Cuál producto te interesa? ✨`,
+        response: `🔥 Perfecto 😊
+
+Me confirmaste que querés ${getTornadoProductName()}.
+
+📍 ¿Para qué CIUDAD querés el envío?
+
+(Ejemplo: Asunción, Capiatá, Luque, San Lorenzo, Fernando de la Mora...)`,
         context: {
           ...(context || {}),
-          step: previousStep || "selling",
-          order_data: oldOrder,
-          current_product: oldOrder?.product || context?.current_product || null,
-          last_user_product: lastUserProduct || null,
+          current_product: getTornadoProductName(),
+          last_user_product: getTornadoProductName(),
+          step: "collecting_city",
+          tipo_cobertura: null,
+          order_data: newOrder,
+          last_topic: getTornadoProductName(),
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
       });
     }
 
-    const currentActiveProduct =
-      (isValidProductString(oldOrder?.product) ? oldOrder.product : null) ||
-      (isValidProductString(context?.current_product) ? context.current_product : null) ||
-      (isValidProductString(lastUserProduct) ? lastUserProduct : null) ||
-      null;
-    
-    let product = detectProductRespectingActive(
-      texto,
-      fullTraining,
-      currentActiveProduct,
-      getLastAssistantMessage(history || []),
-      lastUserProduct
-    );
-    
-    if (product && !isInvalidProductCandidate(product) && isValidProductString(product)) {
-      lastUserProduct = product;
-    }
-
-    const activeProductForLocation = product || currentActiveProduct;
+    const activeProductForLocation = product || oldOrder?.product;
     const locationOnlyCity = isLocationOnlyMessage(texto) ? extractCityFromText(texto) : "";
 
     if (locationOnlyCity && !activeProductForLocation) {
@@ -1580,6 +1585,21 @@ export default async function handler(req: any, res: any) {
           order_data: coverageOrder,
           current_product: null,
           last_user_product: null,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    if (isOriginQuestion(texto)) {
+      return res.json({
+        response: `Somos de Asunción, Paraguay 😊\nHacemos envíos a todo el país 🚚\n\n¿Cuál producto te interesa? ✨`,
+        context: {
+          ...(context || {}),
+          step: previousStep || "selling",
+          order_data: oldOrder,
+          current_product: oldOrder?.product || context?.current_product || null,
+          last_user_product: lastUserProduct || null,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
@@ -1609,6 +1629,7 @@ export default async function handler(req: any, res: any) {
     const wasAskingShoeSize = botWasAskingShoeSize(history || []);
 
     const isOnlyNumber = /^\s*\d{1,3}\s*$/.test(texto);
+    const isOneUnidad = /1\s*unidad/i.test(texto);
 
     const shoeSizeFromText = extractShoeSizeFromText(texto);
     const shoeProductContext = isShoeProductText(
@@ -1630,13 +1651,22 @@ export default async function handler(req: any, res: any) {
     const isCityReply = !product && !isOnlyNumber && extractCityFromText(texto) && 
       (wasAskingCity || previousStep === "collecting_city");
     
-    const isQuantityReply = isOnlyNumber && !isPureShoeSizeReply && !isPriceIntent(texto) &&
+    const isQuantityReply = (isOnlyNumber || isOneUnidad) && !isPureShoeSizeReply && !isPriceIntent(texto) &&
       (wasAskingQuantity || previousStep === "collecting_quantity");
 
     const wantsAddMore = isAddMoreIntent(texto);
     const wantsConfirm = isConfirmIntent(texto);
     
+    // 🔥 Extraer datos con la función mejorada
     let extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
+    
+    console.log("📝 DATOS EXTRAÍDOS:", {
+      name: extracted.name,
+      phone: extracted.phone,
+      address: extracted.address,
+      city: extracted.city,
+      quantity: extracted.quantity
+    });
 
     const isAlreadyConfirmed = oldOrder.confirmed === true;
     
@@ -1662,17 +1692,12 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // 🔥 NUEVO PRODUCTO SELECCIONADO → PREGUNTAR CIUDAD
-    if (product && !wantsAddMore && !isQuantityReply && !isPureShoeSizeReply && !isCityReply) {
+    // 🔥 NUEVO PRODUCTO (no Tornado porque ya se manejó)
+    if (product && !wantsAddMore && !isQuantityReply && !isPureShoeSizeReply && !isCityReply && product !== getTornadoProductName()) {
       const productChanged = !oldOrder?.product || !sameProduct(product, oldOrder.product);
       
       if (productChanged) {
         const { response, order: newOrder, step: newStep } = handleProductSelection(product, extracted.shoe_size);
-        
-        if (normalize(product).includes("tornado") || normalize(product).includes("destapa")) {
-          const price = calculateTotal(product, 1, fullTraining);
-          if (price) newOrder.total_amount = price;
-        }
         
         await safeUpsertOrder(user_id, fromNumber, newOrder, false);
         
@@ -1693,30 +1718,25 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // 🔥 RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD
-    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && (product || currentActiveProduct)) {
-      const finalProduct = product || currentActiveProduct || "";
+    // 🔥 RESPUESTA DE CIUDAD
+    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && (product || oldOrder?.product)) {
+      const finalProduct = product || oldOrder?.product || "";
       const city = extracted.city || extractCityFromText(texto);
       
       if (city && finalProduct) {
         let orderData = {
           product: finalProduct,
           quantity: 0,
-          shoe_size: extracted.shoe_size || "",
+          shoe_size: extracted.shoe_size || oldOrder?.shoe_size || "",
           city: city,
-          customer_name: "",
-          phone: "",
-          address: "",
-          items: [],
-          total_amount: 0,
+          customer_name: extracted.name || oldOrder?.customer_name || "",
+          phone: extracted.phone || oldOrder?.phone || "",
+          address: extracted.address || oldOrder?.address || "",
+          items: oldOrder?.items || [],
+          total_amount: finalProduct === getTornadoProductName() ? TORNADO_PRICE : oldOrder?.total_amount || 0,
           confirmed: false,
           confirm_count: 0,
         };
-        
-        if (normalize(finalProduct).includes("tornado") || normalize(finalProduct).includes("destapa")) {
-          const price = calculateTotal(finalProduct, 1, fullTraining);
-          if (price) orderData.total_amount = price;
-        }
         
         await safeUpsertOrder(user_id, fromNumber, orderData, false);
         
@@ -1737,32 +1757,52 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // 🔥 RESPUESTA DE CANTIDAD - USAR EL PRODUCTO DEL ORDER_DATA
-    if (isQuantityReply && (product || currentActiveProduct) && extracted.quantity > 0) {
-      // 🔥 IMPORTANTE: Usar el producto del order_data, no re-detectar
-      const finalProduct = oldOrder?.product || currentActiveProduct || product || "";
+    // 🔥 RESPUESTA DE CANTIDAD
+    if (isQuantityReply && (oldOrder?.product || product) && (extracted.quantity > 0 || isOneUnidad)) {
+      const finalProduct = oldOrder?.product || product || "";
+      const quantity = extracted.quantity || (isOneUnidad ? 1 : 0);
       
       let orderData = {
         product: finalProduct,
-        quantity: extracted.quantity,
+        quantity: quantity,
         shoe_size: extracted.shoe_size || oldOrder?.shoe_size || "",
-        city: oldOrder?.city || context?.order_data?.city || "",
-        customer_name: oldOrder?.customer_name || "",
-        phone: oldOrder?.phone || "",
-        address: oldOrder?.address || "",
+        city: oldOrder?.city || extracted.city || "",
+        customer_name: extracted.name || oldOrder?.customer_name || "",
+        phone: extracted.phone || oldOrder?.phone || "",
+        address: extracted.address || oldOrder?.address || "",
         items: oldOrder?.items || [],
         total_amount: 0,
         confirmed: false,
         confirm_count: oldOrder?.confirm_count || 0,
       };
       
-      const total = calculateTotal(finalProduct, extracted.quantity, fullTraining);
+      const total = calculateTotal(finalProduct, quantity, fullTraining);
       if (total) orderData.total_amount = total;
       
       console.log("📦 PRODUCTO FINAL (cantidad):", finalProduct);
       console.log("💰 TOTAL:", total);
       
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
+      
+      // 🔥 Si ya tenemos nombre, dirección y teléfono, ir directo a confirmación
+      const hasAllData = orderData.customer_name && orderData.phone && orderData.address;
+      
+      if (hasAllData) {
+        return res.json({
+          response: buildOrderSummaryResponse(orderData, getTipoCobertura(orderData.city)),
+          context: {
+            ...(context || {}),
+            current_product: finalProduct,
+            last_user_product: finalProduct,
+            step: "confirm_order",
+            tipo_cobertura: getTipoCobertura(orderData.city),
+            order_data: orderData,
+            last_topic: finalProduct,
+            updated_at: new Date().toISOString(),
+          },
+          is_payment_proof: false,
+        });
+      }
       
       return res.json({
         response: buildOrderSummaryResponse(orderData, getTipoCobertura(orderData.city)),
@@ -1781,7 +1821,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // ========== PROCESAMIENTO DE MEDIA ==========
-    if (mediaUrl && mediaType === "image") {
+    if (mediaUrl && mediaType === "image" && !texto) {
       const fetched = await fetchMediaAsBase64(mediaUrl);
 
       if (fetched) {
@@ -1796,91 +1836,44 @@ export default async function handler(req: any, res: any) {
           expectedReceiverName,
         });
 
-        if (analysis.kind === "payment_proof") {
-          isPaymentProof = true;
-          const isWaitingPaymentProof =
-            getTipoCobertura(oldOrder?.city) === "sin_cobertura" &&
-            previousStep === "waiting_payment_proof";
-
-          await safeUpsertOrder(
-            user_id, fromNumber, oldOrder, false,
-            isWaitingPaymentProof ? "payment_verified" : undefined
-          );
-
-          const amountText = analysis.amount ? ` por Gs. ${analysis.amount}` : "";
-          const receiver = analysis.receiverName || expectedReceiverName || "nuestro titular";
-
+        if (analysis.kind === "product" && (analysis.productName?.toLowerCase().includes("tornado") || analysis.matchedProduct?.toLowerCase().includes("tornado"))) {
+          const newOrder = {
+            product: getTornadoProductName(),
+            quantity: 0,
+            shoe_size: "",
+            city: "",
+            customer_name: "",
+            phone: "",
+            address: "",
+            items: [],
+            total_amount: TORNADO_PRICE,
+            confirmed: false,
+            confirm_count: 0,
+          };
+          
+          await safeUpsertOrder(user_id, fromNumber, newOrder, false);
+          
           return res.json({
-            response: `¡Perfecto! 🙏 Recibimos tu comprobante${amountText} a nombre de ${receiver}.
+            response: `🔥 Perfecto 😊
 
-Ya estamos verificando el pago ✅
+Me confirmaste que querés ${getTornadoProductName()}.
 
-Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu comprobante de encomienda 🚚✨`,
-            is_payment_proof: true,
+📍 ¿Para qué CIUDAD querés el envío?
+
+(Ejemplo: Asunción, Capiatá, Luque, San Lorenzo, Fernando de la Mora...)`,
             context: {
               ...(context || {}),
-              current_product: oldOrder?.product || context?.current_product || null,
-              last_user_product: lastUserProduct || oldOrder?.product || null,
-              step: isWaitingPaymentProof ? "payment_verified" : previousStep || "selling",
-              tipo_cobertura: getTipoCobertura(oldOrder?.city) || previousTipoCobertura || null,
-              order_data: oldOrder,
-              last_topic: "payment_verified",
-              payment_amount: analysis.amount || null,
-              payment_receiver: receiver,
+              current_product: getTornadoProductName(),
+              last_user_product: getTornadoProductName(),
+              step: "collecting_city",
+              tipo_cobertura: null,
+              order_data: newOrder,
+              last_topic: getTornadoProductName(),
               updated_at: new Date().toISOString(),
             },
+            is_payment_proof: false,
           });
         }
-
-        if (analysis.kind === "product") {
-          const productSignal = [
-            analysis.matchedProduct,
-            analysis.productName,
-            analysis.transcript,
-            analysis.promoText,
-          ]
-            .filter(Boolean)
-            .join(" ");
-
-          const catalogProduct = detectProductRaw(productSignal, fullTraining, "", lastUserProduct);
-          const visualProduct = catalogProduct || analysis.matchedProduct || analysis.productName || "";
-          product = visualProduct || product;
-
-          if (!catalogProduct && visualProduct && analysis.productPrice) {
-            return res.json({
-              response: `Sí 😊 es ${visualProduct}.
-
-💰 Precio: ${analysis.productPrice} Gs
-
-📍 ¿Para qué ciudad sería el envío?`,
-              context: {
-                ...(context || {}),
-                current_product: visualProduct,
-                last_user_product: visualProduct,
-                step: "collecting_city",
-                tipo_cobertura: previousTipoCobertura || null,
-                order_data: { ...(oldOrder || {}), product: visualProduct },
-                last_topic: visualProduct,
-                updated_at: new Date().toISOString(),
-              },
-              is_payment_proof: false,
-            });
-          }
-
-          texto = `El cliente envió una FOTO DE PRODUCTO.
-Descripción detectada: ${analysis.transcript || "producto no identificado"}
-Producto visual detectado: ${visualProduct || "no identificado"}
-Producto del catálogo detectado: ${catalogProduct || "no encontrado"}
-Precio visible en imagen: ${analysis.productPrice || "no visible"}
-
-Si hay producto detectado, respondé con su nombre, precio y preguntá para qué ciudad sería el envío.`;
-        } else {
-          texto =
-            texto ||
-            `El cliente envió una imagen. Descripción: ${analysis.transcript || "imagen no identificada"}. Si no corresponde a producto ni comprobante, pedí más detalle.`;
-        }
-      } else {
-        texto = texto || "Te mandé una imagen pero no pudiste descargarla.";
       }
     }
 
@@ -1893,29 +1886,6 @@ Si hay producto detectado, respondé con su nombre, precio y preguntá para qué
           apiKey, model, audioBase64: fetched.data, mime,
         });
         texto = transcript || texto || "Te mandé un audio.";
-
-        const audioHasProduct = !!detectProductRaw(texto, fullTraining, "", lastUserProduct);
-        const audioExtracted = extractData(texto, previousStep, false, false);
-        const audioHasUsefulData = !!(
-          audioExtracted.quantity || audioExtracted.city ||
-          audioExtracted.name || audioExtracted.phone || audioExtracted.address
-        );
-
-        if (!isBuyIntent(texto) && !audioHasProduct && !audioHasUsefulData) {
-          return res.json({
-            response:
-              "🎤 Escuché tu audio 😊 ¿Podrías decirme qué producto te interesa o qué necesitás exactamente?",
-            context: {
-              ...(context || {}),
-              step: previousStep || "selling",
-              order_data: oldOrder,
-              current_product: oldOrder?.product || context?.current_product || null,
-              last_user_product: lastUserProduct || oldOrder?.product || null,
-              updated_at: new Date().toISOString(),
-            },
-            is_payment_proof: false,
-          });
-        }
       } else {
         texto = texto || "Te mandé un audio pero no pudiste descargarlo.";
       }
@@ -1923,9 +1893,13 @@ Si hay producto detectado, respondé con su nombre, precio y preguntá para qué
 
     if (!texto) texto = "(mensaje sin texto)";
 
-    extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
+    // 🔥 Extraer datos nuevamente por si hay datos en el texto original
+    if (!extracted.name || !extracted.phone || !extracted.address) {
+      const newExtracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
+      extracted = { ...extracted, ...newExtracted };
+    }
 
-    const finalProduct = product || currentActiveProduct || oldOrder?.product || "";
+    const finalProduct = product || oldOrder?.product || "";
 
     let orderData = {
       product: finalProduct,
@@ -1949,6 +1923,15 @@ Si hay producto detectado, respondé con su nombre, precio y preguntá para qué
     const finalTipoCobertura = getTipoCobertura(orderData.city) || previousTipoCobertura || "";
     let step = nextStep(orderData, finalTipoCobertura, orderData.confirmed);
 
+    // 🔥 Si ya tenemos todos los datos, ir a confirmación
+    const hasName = orderData.customer_name && orderData.customer_name.length > 3;
+    const hasAddress = orderData.address && orderData.address.length > 5;
+    const hasPhone = orderData.phone && orderData.phone.length > 8;
+    
+    if (hasName && hasPhone && hasAddress && orderData.city && orderData.quantity > 0 && step !== "confirmed_already") {
+      step = "confirm_order";
+    }
+
     // 🔥 MANEJO DE CONFIRMACIÓN
     if (step === "confirm_order" || wantsConfirm) {
       let confirmCount = orderData.confirm_count || 0;
@@ -1969,6 +1952,7 @@ Si hay producto detectado, respondé con su nombre, precio y preguntá para qué
 📍 ${orderData.city}
 💰 Total: ${formatGs(orderData.total_amount)} Gs
 📞 ${orderData.phone}
+📍 Dirección: ${orderData.address}
 
 🚚 Envío GRATIS contra-entrega
 
@@ -1995,14 +1979,7 @@ Si hay producto detectado, respondé con su nombre, precio y preguntá para qué
 Tu pedido actual es:
 📦 ${formatProductWithShoeSize(orderData.product, orderData.shoe_size)} x${orderData.quantity}
 
-¿Qué otro producto querés AGREGAR?
-
-Podés decirme:
-• "agregar raqueta eléctrica"
-• "sumar veneno de abeja"
-• "también las plantillas"
-
-O si ya está todo, decí "listo" y cerramos el pedido ✨`,
+¿Qué otro producto querés AGREGAR?`,
             context: {
               ...(context || {}),
               step: "adding_more_products",
@@ -2014,14 +1991,7 @@ O si ya está todo, decí "listo" y cerramos el pedido ✨`,
           });
         } else if (confirmCount >= 2) {
           return res.json({
-            response: `✅ ${orderData.customer_name?.split(" ")[0] || ""}, tu pedido YA ESTÁ CONFIRMADO.
-
-📦 ${formatProductWithShoeSize(orderData.product, orderData.shoe_size)} x${orderData.quantity}
-💰 Total: ${formatGs(orderData.total_amount)} Gs
-
-🚚 Envío en camino en las próximas 24 horas hábiles.
-
-✨ ¿Necesitas algo más?`,
+            response: `✅ ${orderData.customer_name?.split(" ")[0] || ""}, tu pedido YA ESTÁ CONFIRMADO.`,
             context: {
               ...(context || {}),
               step: "confirmed",
@@ -2053,46 +2023,8 @@ O si ya está todo, decí "listo" y cerramos el pedido ✨`,
       }
     }
 
-    if (wantsAddMore && orderData.confirmed === true && orderData.confirm_count === 1) {
-      return res.json({
-        response: `🔥 Perfecto 😊 ¿Qué otro producto querés agregar a tu pedido?
-
-Podés decirme:
-• "agregar raqueta eléctrica"
-• "sumar veneno de abeja"
-• "también las plantillas"
-
-Tu pedido actual: ${formatProductWithShoeSize(orderData.product, orderData.shoe_size)} x${orderData.quantity}`,
-        context: {
-          ...(context || {}),
-          step: "adding_more_products",
-          order_data: orderData,
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
-
     if (step !== "confirm_order" && step !== "confirmed_already" && !wantsConfirm) {
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
-    }
-
-    if (step === "confirm_order" && !orderData.confirmed && !wantsConfirm) {
-      return res.json({
-        response: buildOrderSummaryResponse(orderData, finalTipoCobertura),
-        context: {
-          ...(context || {}),
-          current_product: orderData.product,
-          last_user_product: orderData.product,
-          step: "awaiting_confirmation",
-          confirm_count: orderData.confirm_count,
-          tipo_cobertura: finalTipoCobertura,
-          order_data: orderData,
-          last_topic: orderData.product,
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
     }
 
     let cleanHistory = Array.isArray(history) ? history : [];
@@ -2101,53 +2033,33 @@ Tu pedido actual: ${formatProductWithShoeSize(orderData.product, orderData.shoe_
     const system = `
 Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento oficial del usuario.
 
-REGLA FUNDAMENTAL: Los precios los sacás SIEMPRE del entrenamiento. NUNCA inventes ni asumas precios.
+REGLA FUNDAMENTAL: Los precios los sacás SIEMPRE del entrenamiento.
 
-FLUJO DE VENTAS (RESPETAR ESTRICTAMENTE):
-1. Cliente dice producto → preguntar CIUDAD (SIEMPRE)
-2. Cliente responde ciudad → preguntar CANTIDAD con ejemplos
-3. Cliente responde cantidad → mostrar resumen y pedir datos de envío
-4. Cliente da sus datos → mostrar resumen y preguntar CONFIRMACIÓN
-5. Cliente dice "confirmo" → CERRAR PEDIDO UNA SOLA VEZ
+FLUJO DE VENTAS:
+1. Producto → preguntar CIUDAD
+2. Ciudad → preguntar CANTIDAD
+3. Cantidad → pedir DATOS (nombre, dirección, teléfono)
+4. Con todos los datos → mostrar resumen y pedir CONFIRMACIÓN
 
-PRODUCTOS RECONOCIDOS:
-- Destapa Cañerías Tornado (precio: 159.900 Gs)
-- Peladora Automática (precio: 99.000 Gs)
-- Raqueta Eléctrica para Insectos
-- Veneno de Abeja
-- Plantillas Ortopiex 5D
-- Máquina para hacer Pororo
-- Nebulizador portátil
-- Kit Antivibración x4 Patitas Antideslizantes
+PRODUCTOS:
+- Destapa Cañerías Tornado - Precio: 159.900 Gs
+- Peladora Automática - Precio: 99.000 Gs
 
 ═══════════════════════════════════
-ENTRENAMIENTO OFICIAL DEL USUARIO:
+ENTRENAMIENTO:
 ═══════════════════════════════════
 ${fullTraining}
-═══════════════════════════════════
 
-ESTADO ACTUAL DEL CLIENTE:
-
+ESTADO ACTUAL:
 Producto: ${orderData.product || "ninguno"}
 Ciudad: ${orderData.city || "pendiente"}
 Cantidad: ${orderData.quantity || "pendiente"}
 Nombre: ${orderData.customer_name || "pendiente"}
 Teléfono: ${orderData.phone || "pendiente"}
 Dirección: ${orderData.address || "pendiente"}
-Paso actual: ${step}
-Pedido ya confirmado: ${orderData.confirmed ? "SÍ" : "NO"}
+Paso: ${step}
 
-REGLAS:
-- Si paso es collecting_city → preguntar CIUDAD (obligatorio)
-- Si paso es collecting_quantity → preguntar CANTIDAD con ejemplos
-- Si paso es collecting_name → pedir nombre
-- Si paso es collecting_phone → pedir teléfono
-- Si paso es collecting_address → pedir dirección
-- Si paso es awaiting_confirmation → mostrar resumen y pedir que CONFIRME
-- Si pedido ya está confirmado → NO repetir confirmación
-
-Catálogo: ${CATALOG_URL}
-Español paraguayo natural, con emojis.`;
+Español paraguayo, con emojis.`;
 
     const contents = cleanHistory
       .slice(-8)
