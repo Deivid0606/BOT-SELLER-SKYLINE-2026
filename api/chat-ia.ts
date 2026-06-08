@@ -30,24 +30,24 @@ function getTornadoProductName(): string {
 // =======================================================
 function extractQuantityFromAnyText(text: string): { quantity: number; isPromo: boolean } {
   const n = normalize(text);
-  
+
   if (/\b(la\s+promo|promo|2x|2\s*unidades\s+promo)\b/i.test(n)) {
     return { quantity: 2, isPromo: true };
   }
-  
+
   const wordMap: Record<string, number> = {
     "una": 1, "un": 1, "uno": 1,
     "dos": 2, "dos unidades": 2,
     "tres": 3, "cuatro": 4, "cinco": 5,
     "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10
   };
-  
+
   for (const [word, qty] of Object.entries(wordMap)) {
     if (n.includes(word)) {
       return { quantity: qty, isPromo: false };
     }
   }
-  
+
   const numberMatch = n.match(/\b(\d{1,3})\b/);
   if (numberMatch) {
     const qty = parseInt(numberMatch[1], 10);
@@ -55,19 +55,19 @@ function extractQuantityFromAnyText(text: string): { quantity: number; isPromo: 
       return { quantity: qty, isPromo: false };
     }
   }
-  
+
   return { quantity: 0, isPromo: false };
 }
 
 function isUserRespondingWithQuantity(text: string, previousStep: string, history: any[]): boolean {
   const n = normalize(text);
   const quantityResult = extractQuantityFromAnyText(text);
-  
+
   if (quantityResult.quantity > 0) return true;
   if (previousStep === "collecting_quantity") return true;
   if (botWasAskingQuantity(history)) return true;
   if (/\b(si|sí|quiero|dale|ok|listo|confirmo)\b/i.test(n) && botWasAskingQuantity(history)) return true;
-  
+
   return false;
 }
 
@@ -470,15 +470,15 @@ function isBuyIntent(text: string) {
 
 function isInformationRequest(text: string): boolean {
   const n = normalize(text);
-  
+
   if (/\b(si|sí|quiero|compro|reservo|confirmo|dale|ok|listo)\b/.test(n)) return false;
   if (/^\d{1,3}$/.test(n)) return false;
   if (/^\d{1,3}\s*(unidad|unidades|u)$/.test(n)) return false;
   if (/\b(quiero|comprar|llevo|dame|mandame)\s+\d+\b/.test(n)) return false;
-  
+
   const infoWords = /\b(informaci[oó]n|info|más info|mas info|quiero saber|consultar|dudas?|más datos|mas datos|detalles|más detalles|mas detalles|explicame|qué es|que es|cómo funciona|como funciona)\b/i;
   const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes|tornado|destapa)\b/i;
-  
+
   if (productWords.test(n)) return false;
   return infoWords.test(n);
 }
@@ -672,8 +672,7 @@ function botWasAskingCity(history: any[]): boolean {
     (lastAssistantMessage.includes("envío") && lastAssistantMessage.includes("ciudad")) ||
     lastAssistantMessage.includes("ciudad para el") ||
     lastAssistantMessage.includes("cuál es tu ciudad") ||
-    lastAssistantMessage.includes("en qué ciudad") ||
-    lastAssistantMessage.includes("para qué ciudad sería")
+    lastAssistantMessage.includes("en qué ciudad")
   );
 }
 
@@ -695,6 +694,20 @@ function botWasAskingShoeSize(history: any[]) {
   );
 }
 
+function botWasAskingCustomerData(history: any[]): boolean {
+  const lastAssistantMessage = normalize(getLastAssistantMessage(history));
+  return (
+    lastAssistantMessage.includes("nombre y apellido") ||
+    lastAssistantMessage.includes("nombre completo") ||
+    lastAssistantMessage.includes("dirección exacta") ||
+    lastAssistantMessage.includes("direccion exacta") ||
+    lastAssistantMessage.includes("número de celular") ||
+    lastAssistantMessage.includes("numero de celular") ||
+    lastAssistantMessage.includes("pasame todo junto") ||
+    lastAssistantMessage.includes("agendamos tu entrega")
+  );
+}
+
 function isBuyIntentMessage(text: string): boolean {
   const n = normalize(text);
   return /^(quiero|llevo|dame|compro|comprar|mandame)\s+\d+$/i.test(n) ||
@@ -704,13 +717,14 @@ function isBuyIntentMessage(text: string): boolean {
 function looksLikeCustomerNameLine(line: string): boolean {
   const raw = clean(line);
   const n = normalize(raw);
-  if (!raw || raw.length < 5 || raw.length > 60) return false;
+  if (!raw || raw.length < 5 || raw.length > 80) return false;
   if (/\d/.test(raw)) return false;
   if (isProductName(raw)) return false;
   if (extractCityFromText(raw)) return false;
   if (/\b(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio|compania|compañia|frente|lado|casa|numero|nro|manzana|lote|ubicacion|ubicación|maps|google)\b/i.test(n)) return false;
   const words = n.split(" ").filter(Boolean);
-  return words.length >= 2 && words.length <= 5 && words.every((w) => w.length >= 2);
+  // FIX: ampliado de <= 5 a <= 6 para permitir nombres con segundo apellido
+  return words.length >= 2 && words.length <= 6 && words.every((w) => w.length >= 2);
 }
 
 function looksLikeAddressLine(line: string): boolean {
@@ -721,22 +735,27 @@ function looksLikeAddressLine(line: string): boolean {
   if (/^(09\d{8}|\+595\d{9}|\d{10})$/.test(raw.replace(/\s+/g, ""))) return false;
   if (looksLikeCustomerNameLine(raw)) return false;
 
-  const addressHints = /\b(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio|compania|compañia|frente|lado|costado|casa|numero|nro|manzana|mz|lote|lt|edificio|piso|departamento|depto|local|google|maps|ubicacion|ubicación|rca|republica|república)\b/i;
+  const addressHints = /\b(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio|compania|compañia|frente|lado|costado|casa|numero|nro|manzana|mz|lote|lt|edificio|piso|departamento|depto|local|google|maps|ubicacion|ubicación|rca|republica|república|padre|madre|general|san\s+\w+|sta\s+\w+)\b/i;
   if (addressHints.test(n)) return true;
 
   const words = n.split(" ").filter(Boolean);
   return words.length >= 3;
 }
 
+// =======================================================
+// 🔧 FIX PRINCIPAL: extractData con parsing inteligente
+//    de nombre + dirección en un mismo mensaje
+// =======================================================
 function extractData(
   msg: string,
   currentStep?: string,
   forceQuantityMode = false,
-  forceShoeSizeMode = false
+  forceShoeSizeMode = false,
+  history: any[] = []
 ) {
   const text = clean(msg);
   const norm = normalize(text);
-  
+
   if (isBuyIntentMessage(text)) {
     return { quantity: 0, shoe_size: "", city: "", name: "", phone: "", address: "" };
   }
@@ -755,35 +774,68 @@ function extractData(
   let address = "";
   let name = "";
 
-  const lines = text
-    .split(/[\n\r,]+/g)
-    .map((x) => clean(x))
-    .filter((x) => x.length > 0);
+  // -------------------------------------------------------
+  // 🔧 FIX: Parsing inteligente cuando el bot pidió datos
+  //    Detecta "Nombre Apellido Calle y referencia" en una sola línea
+  // -------------------------------------------------------
+  const isBotAskingData = botWasAskingCustomerData(history) ||
+    currentStep === "collecting_name" ||
+    currentStep === "collecting_address" ||
+    currentStep === "collecting_phone";
 
-  for (const line of lines) {
-    const lineTrim = clean(line);
-    const lineNorm = normalize(lineTrim);
-    
-    if (lineTrim.match(/(09\d{8}|\+595\d{9}|\d{9,10})/)) {
-      continue;
-    }
-    
-    if (!name && lineTrim.split(" ").length >= 2 && !lineTrim.match(/\d/) && !extractCityFromText(lineNorm) && !lineTrim.match(/^(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio)/i)) {
-      name = lineTrim;
-      continue;
-    }
-    
-    if (!address && lineTrim.length > 5 && lineTrim !== name && !lineTrim.match(/^\d{1,3}$/)) {
-      address = lineTrim;
-      continue;
+  if (isBotAskingData && !phone) {
+    const words = text.split(/\s+/).filter(Boolean);
+    const noNumbers = !/\d/.test(text);
+
+    if (noNumbers && words.length >= 3) {
+      // Buscar palabras clave de calle/dirección para split inteligente
+      const streetKeywords = /^(padre|madre|avda|avenida|av|ruta|km|casi|calle|bv|boulevard|barrio|general|san|sta|santa|fdo|fernando|mariscal|mcal|mcl|independencia|republica)$/i;
+
+      // Encontrar primer índice de palabra de calle (mínimo después de 2 palabras de nombre)
+      let splitIdx = -1;
+      for (let i = 2; i < words.length; i++) {
+        if (streetKeywords.test(words[i])) {
+          splitIdx = i;
+          break;
+        }
+      }
+
+      if (splitIdx >= 2) {
+        // Nombre = primeras splitIdx palabras, dirección = el resto
+        name = words.slice(0, splitIdx).join(" ");
+        address = words.slice(splitIdx).join(" ");
+      } else if (words.length >= 4) {
+        // Sin palabra clave de calle: primeras 2 palabras = nombre, resto = dirección
+        name = words.slice(0, 2).join(" ");
+        address = words.slice(2).join(" ");
+      }
     }
   }
 
+  // Si no aplicó el fix anterior, intentar por líneas (comportamiento original)
   if (!name) {
-    const namePatterns = [
-      /(?:me\s+llamo|nombre|soy|mi nombre es)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)/i,
-      /^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]+)$/,
-    ];
+    const lines = text
+      .split(/\n+|\r+|\s{2,}/g)
+      .map((x) => clean(x))
+      .filter(Boolean);
+
+    for (const line of lines) {
+      if (!name && looksLikeCustomerNameLine(line)) {
+        name = line;
+        continue;
+      }
+    }
+  }
+
+  // Patrones de nombre explícito
+  const namePatterns = [
+    /(?:me\s+llamo|nombre|soy|mi nombre es)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)/i,
+    /^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]+)$/,
+    /^([A-Z]{3,}\s+[A-Z]{3,})$/,
+    /^([A-Z][a-z]+\s+[A-Z][a-z]+)$/,
+  ];
+
+  if (!name) {
     for (const pattern of namePatterns) {
       const match = text.match(pattern);
       if (match && match[1] && !isProductName(match[1]) && match[1].length < 50) {
@@ -793,15 +845,36 @@ function extractData(
     }
   }
 
-  if (!address && text.length > 10) {
-    const addressKeywords = /\b(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio|manzana|mz|lote|casa|numero|nro|frente|costado|padre|san|santa|rca|república|colombia|españa|caballero)\b/i;
-    if (addressKeywords.test(text)) {
-      address = text;
+  if (!name && !/\d/.test(text) && text.length < 40 && text.length > 5 && text.includes(" ")) {
+    const words = text.split(" ");
+    if (words.length === 2 && words[0].length > 2 && words[1].length > 2) {
+      name = text;
+    }
+  }
+
+  // Limpiar texto removiendo datos ya extraídos
+  let tempText = text;
+  if (name) tempText = tempText.replace(new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), " ");
+  if (phone) tempText = tempText.replace(phone, " ").replace(phone.replace(/^595/, "0"), " ");
+  if (city) tempText = tempText.replace(new RegExp(city, "i"), " ");
+
+  // Extraer dirección del texto restante si no fue detectada arriba
+  if (!address) {
+    const remainingLines = tempText
+      .split(/\n+|\r+|\s{2,}/g)
+      .map((x) => clean(x))
+      .filter(Boolean);
+
+    for (const line of remainingLines) {
+      if (looksLikeAddressLine(line)) {
+        address = line;
+        break;
+      }
     }
   }
 
   if (!address) {
-    const addressMatch = text.match(/([A-ZÁÉÍÓÚÑa-záéíóúñ0-9\s,.#\-]{5,})/);
+    const addressMatch = tempText.match(/([A-ZÁÉÍÓÚÑa-záéíóúñ0-9\s,.#\-]{5,})/);
     if (addressMatch && addressMatch[1].trim().length > 5 && !isProductName(addressMatch[1])) {
       const candidate = clean(addressMatch[1]);
       if (!looksLikeCustomerNameLine(candidate)) address = candidate;
@@ -1081,9 +1154,9 @@ function buildAutoConfirmResponse(order: any): string {
   const displayProduct = formatProductWithShoeSize(order.product, order.shoe_size);
   const quantity = safeQuantity(order.quantity);
   const total = formatGs(order.total_amount);
-  
+
   const direccionValida = clean(order.address || "");
-  const ubicacion = direccionValida && direccionValida.length > 5 
+  const ubicacion = direccionValida && direccionValida.length > 5
     ? `${clean(order.city)} — ${direccionValida}`
     : clean(order.city);
 
@@ -1716,21 +1789,21 @@ function buildDataRequestByMissing(order: any): string {
 
 function isOldConversation(history: any[]): boolean {
   if (!Array.isArray(history) || history.length === 0) return false;
-  
+
   const lastUserMsg = [...history].reverse().find((h: any) => h?.role === "user");
   if (!lastUserMsg?.timestamp) return false;
-  
+
   const lastTime = new Date(lastUserMsg.timestamp).getTime();
   const hoursDiff = (Date.now() - lastTime) / (1000 * 60 * 60);
-  
+
   return hoursDiff >= 24;
 }
 
 // =======================================================
-// 🚀 HANDLER PRINCIPAL - VERSION FINAL DEFINITIVA
+// 🚀 HANDLER PRINCIPAL
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL v12.0 - DEFINITIVA CON EXTRACCIÓN MEJORADA");
+  console.log("🔥 VERSION FINAL v10.1 - FIX PARSING NOMBRE+DIRECCIÓN EN MISMO MENSAJE");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1752,10 +1825,10 @@ export default async function handler(req: any, res: any) {
     // 🕐 VERIFICAR SI PASARON MÁS DE 24 HORAS
     // =======================================================
     const isOld = isOldConversation(history);
-    
+
     if (isOld) {
       console.log("🕐 Conversación con más de 24hs - Reiniciando venta");
-      
+
       await supabase
         .from("orders")
         .update({ status: "abandoned", updated_at: new Date().toISOString() })
@@ -1945,7 +2018,7 @@ export default async function handler(req: any, res: any) {
     // 💰 PRECIO/INFO - solo si hay producto en contexto y NO es confirmación
     // =======================================================
     const isConfirmWord = /\b(si|sí|quiero|compro|reservo|confirmo|dale|ok|listo)\b/i.test(normalizedText);
-    
+
     if (isPriceIntent(texto) && (product || activeProduct || oldOrder?.product) && !isConfirmWord) {
       const priceProduct = product || activeProduct || oldOrder?.product || "";
       if (priceProduct) {
@@ -1981,7 +2054,7 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     if (detectedQuantity > 0 && !oldOrder?.city && !oldOrder?.product && !previousStep) {
       const finalProduct = product || activeProduct || recentAdProduct || lastUserProduct || "";
-      
+
       if (!finalProduct) {
         return res.json({
           response: "😊 ¿Qué producto querés llevar? Así te paso el precio correcto y agendamos.",
@@ -2033,7 +2106,7 @@ export default async function handler(req: any, res: any) {
     // 📍 Respuesta de ciudad (cuando el bot preguntó ciudad)
     // =======================================================
     const isCityReply = !!extractedCity && (previousStep === "collecting_city" || (oldOrder?.product && !oldOrder?.city) || botWasAskingCity(history || []));
-    
+
     if (isCityReply && oldOrder?.product) {
       const quantity = safeQuantity(context?.pending_quantity || oldOrder?.quantity || 1) || 1;
       const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
@@ -2162,74 +2235,54 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🧾 Datos del cliente - ACUMULACIÓN PROGRESIVA MEJORADA
+    // 🧾 Datos del cliente (nombre, dirección, teléfono)
+    // FIX: se pasa history para que extractData detecte contexto
     // =======================================================
     let extracted: any = { name: "", phone: "", address: "", city: "", quantity: 0, shoe_size: 0 };
     if (detectedQuantity === 0 && !isPriceIntent(texto) && !isCatalogQuery(texto) && !isConfirmWord) {
-      extracted = extractData(texto, previousStep, false, false);
+      extracted = extractData(texto, previousStep, false, false, history || []);
     }
 
-    // Si el mensaje contiene nombre O teléfono O dirección (en cualquier formato)
-    const hasCustomerData = extracted.name || extracted.phone || extracted.address;
-    
-    // Si ya tenemos producto, ciudad y cantidad, y el cliente envía datos
-    if (hasCustomerData && oldOrder?.product && oldOrder?.quantity > 0 && oldOrder?.city) {
-      
-      // Actualizar el pedido con los nuevos datos
-      const updatedOrder = {
+    if ((extracted.name || extracted.phone || extracted.address) && oldOrder?.product && oldOrder?.quantity > 0 && oldOrder?.city) {
+      const quantity = safeQuantity(oldOrder?.quantity || 1) || 1;
+      const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
+
+      if (!total || total <= 0) {
+        return res.json({
+          response: buildMissingPriceResponse(oldOrder.product),
+          context: { ...(context || {}), step: "selling", order_data: oldOrder, updated_at: new Date().toISOString() },
+          is_payment_proof: false,
+        });
+      }
+
+      const orderData = {
         ...oldOrder,
+        quantity,
+        total_amount: total,
         customer_name: extracted.name || oldOrder.customer_name || "",
         phone: extracted.phone || oldOrder.phone || fromNumber || "",
         address: extracted.address || oldOrder.address || "",
       };
-      
-      // Guardar en BD
-      await safeUpsertOrder(user_id, fromNumber, updatedOrder, false);
-      
-      // Verificar si YA TENEMOS TODOS los datos
-      const hasName = updatedOrder.customer_name && updatedOrder.customer_name.length > 3;
-      const hasPhone = updatedOrder.phone && updatedOrder.phone.length > 8;
-      const hasAddress = updatedOrder.address && updatedOrder.address.length > 5;
-      
-      // Si el cliente envió TODO en este mensaje (nombre, teléfono y dirección)
-      const allDataInOneMessage = extracted.name && extracted.phone && extracted.address;
-      
-      if ((hasName && hasPhone && hasAddress) || allDataInOneMessage) {
-        // ✅ CONFIRMAR PEDIDO
-        updatedOrder.confirmed = true;
-        const total = getSafeTotal(updatedOrder.product, updatedOrder.quantity, fullTraining);
-        updatedOrder.total_amount = total || 0;
-        
-        await safeUpsertOrder(user_id, fromNumber, updatedOrder, true, "confirmed");
-        
+
+      if (isOrderCompleteForConfirmation(orderData, fullTraining)) {
+        orderData.confirmed = true;
+        await safeUpsertOrder(user_id, fromNumber, orderData, true, "confirmed");
+
         return res.json({
-          response: buildSafeAutoConfirmResponse(updatedOrder, fullTraining),
-          context: { ...(context || {}), step: "confirmed", order_data: updatedOrder, updated_at: new Date().toISOString() },
+          response: buildSafeAutoConfirmResponse(orderData, fullTraining),
+          context: { ...(context || {}), step: "confirmed", order_data: orderData, updated_at: new Date().toISOString() },
           is_payment_proof: false,
         });
       }
-      
-      // Si no, mostrar lo que falta
-      const missingFields = [];
-      if (!hasName) missingFields.push("✅ nombre y apellido");
-      if (!hasAddress) missingFields.push("✅ dirección exacta o ubicación por Google Maps");
-      if (!hasPhone) missingFields.push("✅ número de celular");
-      
-      const haveFields = [];
-      if (hasName) haveFields.push(`✅ Nombre: ${updatedOrder.customer_name}`);
-      if (hasAddress) haveFields.push(`✅ Dirección: ${updatedOrder.address}`);
-      if (hasPhone) haveFields.push(`✅ Teléfono: ${updatedOrder.phone}`);
-      
-      const mensaje = haveFields.length > 0
-        ? `✅ Ya tengo registrado:\n${haveFields.join("\n")}\n\n📝 Solo me falta:\n${missingFields.join("\n")}\n\n📲 Enviámelo y confirmamos tu pedido ✨`
-        : `📎 Para agendar tu entrega necesito:\n\n✅ nombre y apellido\n✅ dirección exacta o ubicación por Google Maps\n✅ número de celular\n\n📲 Envialo TODO JUNTO o de a uno, voy registrando 😊`;
-      
+
+      await safeUpsertOrder(user_id, fromNumber, orderData, false);
+
       return res.json({
-        response: mensaje,
+        response: buildDataRequestByMissing(orderData),
         context: {
           ...(context || {}),
-          step: "collecting_name",
-          order_data: updatedOrder,
+          step: nextStep(orderData, getTipoCobertura(orderData.city), false),
+          order_data: orderData,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
