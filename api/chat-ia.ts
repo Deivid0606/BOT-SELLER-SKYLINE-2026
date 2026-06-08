@@ -640,6 +640,35 @@ function isBuyIntentMessage(text: string): boolean {
          /^\d+\s*(unidad|unidades)?$/i.test(n);
 }
 
+function looksLikeCustomerNameLine(line: string): boolean {
+  const raw = clean(line);
+  const n = normalize(raw);
+  if (!raw || raw.length < 5 || raw.length > 60) return false;
+  if (/\d/.test(raw)) return false;
+  if (isProductName(raw)) return false;
+  if (extractCityFromText(raw)) return false;
+  if (/\b(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio|compania|compañia|frente|lado|casa|numero|nro|manzana|lote|ubicacion|ubicación|maps|google)\b/i.test(n)) return false;
+  const words = n.split(" ").filter(Boolean);
+  return words.length >= 2 && words.length <= 5 && words.every((w) => w.length >= 2);
+}
+
+function looksLikeAddressLine(line: string): boolean {
+  const raw = clean(line);
+  const n = normalize(raw);
+  if (!raw || raw.length < 6 || raw.length > 180) return false;
+  if (isProductName(raw)) return false;
+  if (/^(09\d{8}|\+595\d{9}|\d{10})$/.test(raw.replace(/\s+/g, ""))) return false;
+  if (looksLikeCustomerNameLine(raw)) return false;
+
+  const addressHints = /\b(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio|compania|compañia|frente|lado|costado|casa|numero|nro|manzana|mz|lote|lt|edificio|piso|departamento|depto|local|google|maps|ubicacion|ubicación|rca|republica|república)\b/i;
+  if (addressHints.test(n)) return true;
+
+  // Si queda una línea de texto razonable después de sacar nombre/teléfono/ciudad,
+  // tratala como dirección aunque no tenga palabra clave.
+  const words = n.split(" ").filter(Boolean);
+  return words.length >= 3;
+}
+
 function extractData(
   msg: string,
   currentStep?: string,
@@ -658,10 +687,29 @@ function extractData(
     return { quantity: 0, shoe_size: "", city: "", name: "", phone: "", address: "" };
   }
 
-  const phone = text.match(/(?:09\d{8}|\+595\d{9}|\d{10})/)?.[0] || "";
+  const compactText = text.replace(/[()\-.\s]/g, "");
+  const phone =
+    text.match(/(?:09\d{8}|\+595\d{9}|\d{10})/)?.[0] ||
+    compactText.match(/(?:09\d{8}|5959\d{8})/)?.[0] ||
+    "";
+
   let city = extractCityFromText(norm);
   let address = "";
   let name = "";
+
+  const lines = text
+    .split(/\n+|\r+|\s{2,}/g)
+    .map((x) => clean(x))
+    .filter(Boolean);
+
+  // ✅ Caso típico: cliente manda TODO JUNTO en varias líneas:
+  // nombre / teléfono / dirección
+  for (const line of lines) {
+    if (!name && looksLikeCustomerNameLine(line)) {
+      name = line;
+      continue;
+    }
+  }
 
   const namePatterns = [
     /(?:me\s+llamo|nombre|soy|mi nombre es)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)/i,
@@ -670,11 +718,13 @@ function extractData(
     /^([A-Z][a-z]+\s+[A-Z][a-z]+)$/,
   ];
 
-  for (const pattern of namePatterns) {
-    const match = text.match(pattern);
-    if (match && match[1] && !isProductName(match[1]) && match[1].length < 50) {
-      name = clean(match[1]);
-      break;
+  if (!name) {
+    for (const pattern of namePatterns) {
+      const match = text.match(pattern);
+      if (match && match[1] && !isProductName(match[1]) && match[1].length < 50) {
+        name = clean(match[1]);
+        break;
+      }
     }
   }
 
@@ -686,13 +736,28 @@ function extractData(
   }
 
   let tempText = text;
-  if (name) tempText = tempText.replace(name, "");
-  if (phone) tempText = tempText.replace(phone, "");
-  if (city) tempText = tempText.replace(new RegExp(city, "i"), "");
+  if (name) tempText = tempText.replace(new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), " ");
+  if (phone) tempText = tempText.replace(phone, " ").replace(phone.replace(/^595/, "0"), " ");
+  if (city) tempText = tempText.replace(new RegExp(city, "i"), " ");
 
-  const addressMatch = tempText.match(/([A-ZÁÉÍÓÚÑa-záéíóúñ0-9\s,.#\-]{5,})/);
-  if (addressMatch && addressMatch[1].trim().length > 5 && !isProductName(addressMatch[1])) {
-    address = clean(addressMatch[1]);
+  const remainingLines = tempText
+    .split(/\n+|\r+|\s{2,}/g)
+    .map((x) => clean(x))
+    .filter(Boolean);
+
+  for (const line of remainingLines) {
+    if (looksLikeAddressLine(line)) {
+      address = line;
+      break;
+    }
+  }
+
+  if (!address) {
+    const addressMatch = tempText.match(/([A-ZÁÉÍÓÚÑa-záéíóúñ0-9\s,.#\-]{5,})/);
+    if (addressMatch && addressMatch[1].trim().length > 5 && !isProductName(addressMatch[1])) {
+      const candidate = clean(addressMatch[1]);
+      if (!looksLikeCustomerNameLine(candidate)) address = candidate;
+    }
   }
 
   let quantity = 0;
@@ -1606,7 +1671,7 @@ function buildDataRequestByMissing(order: any): string {
 // 🚀 HANDLER PRINCIPAL
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL v5 - PRECIO SEGURO / SIN TOTAL 0 / SIN CONFIRMACIÓN FALSA");
+  console.log("🔥 VERSION FINAL v5.2 - FIX DATOS MULTILINEA / CONFIRMACION SEGURA / SIN TOTAL 0");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1651,7 +1716,10 @@ export default async function handler(req: any, res: any) {
     const normalizedText = normalize(texto);
     const previousStep = clean(context?.step || "");
 
-    const isQuantityIntentWithNumber = /^(quiero|llevo|dame|compro|comprar|mandame|reservame|reserva)\s+\d+$/i.test(normalizedText);
+    // ✅ Compra/cantidad directa.
+    // Cubre: "quiero 1", "si 1", "sí 1", "dale 1", "ok 1", "si quiero 1", "confirmo 2".
+    // IMPORTANTE: normalize() convierte "sí" en "si".
+    const isQuantityIntentWithNumber = /^(quiero|llevo|dame|compro|comprar|mandame|reservame|reserva|si|dale|ok|listo|confirmo|acepto)(\s+(quiero|llevo|dame|compro|comprar|mandame|reservame|reserva))?\s+\d{1,3}$/i.test(normalizedText);
     const isPlainNumber = /^\d{1,3}$/.test(normalizedText);
     const isBuyIntentWithNumber = isQuantityIntentWithNumber || (isPlainNumber && (previousStep === "collecting_quantity" || botWasAskingQuantity(history || [])));
 
