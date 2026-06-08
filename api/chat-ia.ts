@@ -275,8 +275,8 @@ function getDestapaCañeriasProductName(): string {
 }
 
 // =======================================================
-// 🧮 CÁLCULO DE TOTALES - EXCLUSIVAMENTE DEL ENTRENAMIENTO
-// NUNCA inventa precios. Si no encuentra, retorna null.
+// 🧮 CÁLCULO DE TOTALES - VERSIÓN MEJORADA
+// Busca en TODO el entrenamiento, no solo líneas cercanas
 // =======================================================
 
 function parseGsAmount(text: string): number {
@@ -290,85 +290,69 @@ function calculateTotal(product: string, quantity: number, training: string): nu
 
   const p = normalize(product);
   const lines = training.split("\n").map((l) => clean(l)).filter(Boolean);
-
-  let bestMatchScore = 0;
-  let bestUnitPrice: number | null = null;
-  let bestPromoPrice: number | null = null;
-  let bestPromoQuantity = 0;
+  
+  let bestMatch: { price: number; isPromo: boolean; promoQty: number; score: number } | null = null;
 
   for (let i = 0; i < lines.length; i++) {
-    const current = normalize(lines[i]);
-
-    // Buscar coincidencia del nombre del producto
+    const line = lines[i];
+    const nLine = normalize(line);
+    
+    // Verificar si la línea contiene el nombre del producto
     let matchScore = 0;
-    if (current.includes(p)) matchScore += 10;
-    else if (p.includes(current) && current.length >= 5) matchScore += 5;
+    if (nLine.includes(p)) matchScore = 100;
     else {
-      const productWords = p.split(" ").filter((w) => w.length >= 4);
-      for (const w of productWords) {
-        if (current.includes(w)) matchScore += 2;
+      // Buscar palabras clave del producto
+      const productWords = p.split(" ").filter(w => w.length >= 4);
+      for (const word of productWords) {
+        if (nLine.includes(word)) matchScore += 20;
       }
     }
-
-    if (matchScore === 0) continue;
-
-    // Buscar precios en las líneas cercanas
-    const windowStart = Math.max(0, i - 3);
-    const windowEnd = Math.min(lines.length, i + 8);
     
-    for (let j = windowStart; j < windowEnd; j++) {
-      const line = lines[j];
-      const nLine = normalize(line);
-      const amount = parseGsAmount(line);
+    if (matchScore === 0) continue;
+    
+    // Buscar precio en la misma línea o en las siguientes (hasta 5 líneas después)
+    const searchWindow = lines.slice(i, Math.min(lines.length, i + 5));
+    
+    for (const searchLine of searchWindow) {
+      const amount = parseGsAmount(searchLine);
       if (!amount) continue;
-
-      // Detectar PROMO (2x, 3x, etc.)
-      const promoMatch = nLine.match(/(\d+)\s*(?:x|unidades|uds?)\s*(?:por\s*)?(\d{1,3}(?:\.\d{3})*)/i) ||
-                         nLine.match(/promo\s*(\d+)\s*(?:x|unidades|uds?)\s*[a-z]*\s*(\d{1,3}(?:\.\d{3})*)/i);
+      
+      // Verificar si es PROMO (2x, 3x, etc.)
+      const promoMatch = normalize(searchLine).match(/(\d+)\s*(?:x|unidades|uds?)\s*(?:por\s*)?/i);
+      let promoQty = 0;
+      let isExactPromo = false;
       
       if (promoMatch) {
-        const promoQty = parseInt(promoMatch[1]);
-        const promoAmount = parseGsAmount(promoMatch[2] || line);
-        if (promoQty === quantity && promoAmount) {
-          if (matchScore > bestMatchScore || (matchScore === bestMatchScore && !bestPromoPrice)) {
-            bestPromoPrice = promoAmount;
-            bestPromoQuantity = promoQty;
-            bestMatchScore = matchScore;
-          }
-        }
-        continue;
-      }
-
-      // Precio unitario (formato: "145.000 Gs", "Gs. 145.000", "$ 145.000")
-      if (!bestUnitPrice && /(?:Gs\.?|₲|\$)\s*[\d\.]+|[\d\.]+\s*(?:Gs\.?|₲)/i.test(line)) {
-        if (matchScore > bestMatchScore || (matchScore === bestMatchScore && !bestUnitPrice)) {
-          bestUnitPrice = amount;
-          bestMatchScore = matchScore;
-        }
+        promoQty = parseInt(promoMatch[1]);
+        isExactPromo = (promoQty === quantity);
       }
       
-      // Si el número está muy cerca del nombre del producto
-      if (!bestUnitPrice && Math.abs(j - i) <= 2) {
-        if (matchScore > bestMatchScore || (matchScore === bestMatchScore && !bestUnitPrice)) {
-          bestUnitPrice = amount;
-          bestMatchScore = matchScore;
-        }
+      // Verificar si el precio parece unitario (no tiene promo o es 1x)
+      const isUnitPrice = !promoMatch || promoQty === 1;
+      
+      let finalScore = matchScore;
+      if (isExactPromo) finalScore += 100;  // Prioridad máxima para promo exacta
+      else if (isUnitPrice && quantity === 1) finalScore += 50;
+      else if (isUnitPrice) finalScore += 20;
+      
+      // Si es la mejor coincidencia hasta ahora
+      if (!bestMatch || finalScore > bestMatch.score) {
+        bestMatch = {
+          price: amount,
+          isPromo: isExactPromo,
+          promoQty: promoQty,
+          score: finalScore
+        };
       }
     }
   }
-
-  // Priorizar promo si existe para la cantidad exacta
-  if (bestPromoPrice && quantity === bestPromoQuantity) {
-    return bestPromoPrice;
+  
+  if (bestMatch) {
+    if (bestMatch.isPromo) return bestMatch.price;
+    return bestMatch.price * quantity;
   }
   
-  // Si no hay promo, usar precio unitario
-  if (bestUnitPrice !== null) {
-    return bestUnitPrice * quantity;
-  }
-
-  // NUNCA inventar precio - retornar null explícitamente
-  console.warn(`⚠️ NO se encontró precio en el entrenamiento para: "${product}", cantidad: ${quantity}`);
+  console.warn(`⚠️ No se encontró precio para: "${product}", cantidad: ${quantity}`);
   return null;
 }
 
@@ -377,7 +361,7 @@ function getProductPrice(product: string, quantity: number, training: string): n
 }
 
 // =======================================================
-// 🎯 DETECCIÓN DE PRODUCTO - SOLO DEL ENTRENAMIENTO
+// 🎯 DETECCIÓN DE PRODUCTO - MEJORADA
 // =======================================================
 
 function detectProductRaw(
@@ -389,56 +373,10 @@ function detectProductRaw(
 ) {
   const msg = normalize(text);
   
-  // PRIMERO: Buscar coincidencias SOLO en el entrenamiento
-  const trainingLines = training.split("\n").map(l => normalize(l)).filter(Boolean);
-  
-  let bestMatch = "";
-  let bestScore = 0;
-  
-  for (const line of trainingLines) {
-    // Extraer nombre del producto (antes del precio)
-    let productName = line;
-    
-    // Cortar en el primer precio o símbolo
-    const priceMatch = line.match(/(\d{1,3}(?:\.\d{3})+|\d{4,})\s*(?:Gs|₲|\$)/i);
-    if (priceMatch) {
-      productName = line.substring(0, priceMatch.index).trim();
-    }
-    
-    // Cortar en guiones, pipes, etc.
-    productName = productName.split(/[—–\-|•·]/)[0].trim();
-    
-    if (productName.length < 3) continue;
-    
-    const pn = normalize(productName);
-    let score = 0;
-    
-    // Coincidencia exacta
-    if (msg.includes(pn)) score += 50;
-    
-    // Palabras clave del producto
-    const productWords = pn.split(" ").filter(w => w.length >= 3);
-    for (const w of productWords) {
-      if (msg.includes(w)) score += 10;
-    }
-    
-    // Coincidencia parcial
-    if (pn.includes(msg) && msg.length >= 4) score += 20;
-    
-    if (score > bestScore && score >= 5) {
-      bestScore = score;
-      bestMatch = productName;
-    }
-  }
-  
-  // Si encontramos en entrenamiento, usar eso
-  if (bestMatch) return bestMatch;
-  
-  // SEGUNDO: Fallback SOLO para productos que NO tienen precio en el entrenamiento
-  // (esto es para detectar el nombre, pero los precios vendrán del entrenamiento después)
-  
+  // PRIMERO: Detectar productos conocidos por palabras clave
   if (msg.includes("destapa") || msg.includes("cañeria") || msg.includes("tornado") ||
-      msg.includes("desagüe") || msg.includes("tuberia")) {
+      msg.includes("desagüe") || msg.includes("tuberia") || msg.includes("agua tarda") ||
+      msg.includes("cañería") || msg.includes("tapa cañerias")) {
     return getDestapaCañeriasProductName();
   }
   
@@ -482,8 +420,50 @@ function detectProductRaw(
   if (msg.includes("kit antivibracion") || msg.includes("patitas antideslizantes")) {
     return getAntiVibrationProductName();
   }
-
-  return "";
+  
+  // SEGUNDO: Buscar coincidencias en el entrenamiento
+  const trainingLines = training.split("\n").map(l => normalize(l)).filter(Boolean);
+  
+  let bestMatch = "";
+  let bestScore = 0;
+  
+  for (const line of trainingLines) {
+    // Extraer nombre del producto (antes del precio)
+    let productName = line;
+    
+    // Cortar en el primer precio o símbolo
+    const priceMatch = line.match(/(\d{1,3}(?:\.\d{3})+|\d{4,})\s*(?:Gs|₲|\$)/i);
+    if (priceMatch) {
+      productName = line.substring(0, priceMatch.index).trim();
+    }
+    
+    // Cortar en guiones, pipes, etc.
+    productName = productName.split(/[—–\-|•·]/)[0].trim();
+    
+    if (productName.length < 3) continue;
+    
+    const pn = normalize(productName);
+    let score = 0;
+    
+    // Coincidencia exacta
+    if (msg.includes(pn)) score += 50;
+    
+    // Palabras clave del producto
+    const productWords = pn.split(" ").filter(w => w.length >= 3);
+    for (const w of productWords) {
+      if (msg.includes(w)) score += 10;
+    }
+    
+    // Coincidencia parcial
+    if (pn.includes(msg) && msg.length >= 4) score += 20;
+    
+    if (score > bestScore && score >= 5) {
+      bestScore = score;
+      bestMatch = productName;
+    }
+  }
+  
+  return bestMatch || "";
 }
 
 function detectProductRespectingActive(
@@ -1059,7 +1039,6 @@ y agendamos tu entrega ✨`;
 
 // =======================================================
 // 🆕 RESPUESTA DE PRODUCTO CON PRECIOS DEL ENTRENAMIENTO
-// Si no encuentra precio, informa que falta en el entrenamiento
 // =======================================================
 
 function buildProductResponse(product: string, training: string): string {
@@ -1147,6 +1126,7 @@ Respondé con el número (1, 2, 3...)`;
 
 // =======================================================
 // 🆕 HANDLE PRODUCT SELECTION - Usando entrenamiento
+// SIEMPRE pregunta ciudad, NUNCA asume ciudad del contexto anterior
 // =======================================================
 
 function handleProductSelection(product: string, training: string, shoeSize?: any) {
@@ -1154,7 +1134,7 @@ function handleProductSelection(product: string, training: string, shoeSize?: an
     product: product,
     quantity: 0,
     shoe_size: shoeSize || "",
-    city: "",
+    city: "",  // 🔥 FORZAR ciudad vacía para que SIEMPRE pregunte
     customer_name: "",
     phone: "",
     address: "",
@@ -1167,12 +1147,13 @@ function handleProductSelection(product: string, training: string, shoeSize?: an
   return {
     response: productResponse,
     order: newOrder,
-    step: "collecting_city"
+    step: "collecting_city"  // 🔥 FORZAR estado "esperando ciudad"
   };
 }
 
 // =======================================================
 // 🆕 nextStep() - CIUDAD primero, luego CANTIDAD
+// NUNCA asume ciudad, siempre la exige
 // =======================================================
 
 function nextStep(order: any, tipoCobertura?: string) {
@@ -1180,8 +1161,9 @@ function nextStep(order: any, tipoCobertura?: string) {
   
   if (!order.product && !items.length) return "selling";
   
-  // 🔥 CIUDAD es lo PRIMERO que preguntamos
-  if (!order.city) return "collecting_city";
+  // 🔥 CIUDAD es SIEMPRE lo PRIMERO que preguntamos
+  // NUNCA asumir ciudad, incluso si existe en contexto viejo
+  if (!order.city || order.city === "") return "collecting_city";
   
   // Después de ciudad, preguntamos CANTIDAD
   const hasValidQuantity = safeQuantity(order.quantity) > 0;
@@ -1473,6 +1455,7 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 export default async function handler(req: any, res: any) {
   console.log("🔥 VERSION FINAL - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
   console.log("🔥 LOS PRECIOS VIENEN EXCLUSIVAMENTE DEL ENTRENAMIENTO - NUNCA SE INVENTAN");
+  console.log("🔥 NUNCA SE ASUME CIUDAD - SIEMPRE SE PREGUNTA");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1663,11 +1646,9 @@ export default async function handler(req: any, res: any) {
         shoeProductContext ||
         productRequiresSize(String(oldOrder?.product || context?.current_product || product || "")));
 
-    // Verificar si es respuesta de ciudad
     const isCityReply = !product && !isOnlyNumber && extractCityFromText(texto) && 
       (wasAskingCity || previousStep === "collecting_city");
     
-    // Verificar si es respuesta de cantidad
     const isQuantityReply = isOnlyNumber && !isPureShoeSizeReply && !isPriceIntent(texto) &&
       (wasAskingQuantity || previousStep === "collecting_quantity");
 
@@ -1677,11 +1658,14 @@ export default async function handler(req: any, res: any) {
 
     // =======================================================
     // 🆕 NUEVO PRODUCTO SELECCIONADO → PREGUNTAR CIUDAD
+    // 🔥 NUNCA asume ciudad del contexto anterior
     // =======================================================
     if (product && !wantsAddMore && !isQuantityReply && !isPureShoeSizeReply && !isCityReply) {
-      const productChanged = !oldOrder?.product || !sameProduct(product, oldOrder.product);
+      // Verificar si es un producto nuevo o si ya estábamos en flujo
+      const isNewProductSelection = !oldOrder?.product || !sameProduct(product, oldOrder.product);
       
-      if (productChanged) {
+      if (isNewProductSelection) {
+        // 🔥 FORZAR pregunta de ciudad, ignorando cualquier ciudad existente en el contexto
         const { response, order: newOrder, step: newStep } = handleProductSelection(product, fullTraining, extracted.shoe_size);
         
         await safeUpsertOrder(user_id, fromNumber, newOrder, false);
@@ -1704,7 +1688,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🆕 RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD (con ejemplos)
+    // 🆕 RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD
     // =======================================================
     if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && product) {
       const city = extracted.city || extractCityFromText(texto);
@@ -1759,6 +1743,24 @@ export default async function handler(req: any, res: any) {
       
       if (orderData.quantity === 0 && /^\d+$/.test(texto)) {
         orderData.quantity = parseInt(texto);
+      }
+      
+      // Verificar que tenemos ciudad antes de continuar
+      if (!orderData.city || orderData.city === "") {
+        return res.json({
+          response: `📍 ¿Para qué CIUDAD querés el envío?\n\n(Ejemplo: Asunción, Capiatá, Luque...)`,
+          context: {
+            ...(context || {}),
+            current_product: product,
+            last_user_product: product,
+            step: "collecting_city",
+            tipo_cobertura: null,
+            order_data: { ...orderData, city: "" },
+            last_topic: product,
+            updated_at: new Date().toISOString(),
+          },
+          is_payment_proof: false,
+        });
       }
       
       const total = calculateTotal(product, orderData.quantity, fullTraining);
@@ -1872,7 +1874,7 @@ ${promoLine}
                 last_user_product: visualProduct,
                 step: "collecting_city",
                 tipo_cobertura: previousTipoCobertura || null,
-                order_data: { ...(oldOrder || {}), product: visualProduct },
+                order_data: { ...(oldOrder || {}), product: visualProduct, city: "" },
                 last_topic: visualProduct,
                 updated_at: new Date().toISOString(),
               },
@@ -1954,6 +1956,25 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
       total_amount: oldOrder?.total_amount || 0,
     };
 
+    // Verificar que tenemos ciudad antes de calcular total si hay cantidad
+    if (orderData.product && orderData.quantity > 0 && (!orderData.city || orderData.city === "")) {
+      // No tenemos ciudad, preguntar ciudad
+      return res.json({
+        response: `📍 ¿Para qué CIUDAD querés el envío?\n\n(Ejemplo: Asunción, Capiatá, Luque...)`,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product,
+          last_user_product: orderData.product,
+          step: "collecting_city",
+          tipo_cobertura: null,
+          order_data: { ...orderData, city: "" },
+          last_topic: orderData.product,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
     // Calcular total si hay producto y cantidad
     if (orderData.product && orderData.quantity > 0) {
       const calculated = calculateTotal(orderData.product, orderData.quantity, fullTraining);
@@ -2001,6 +2022,9 @@ FLUJO DE VENTAS (RESPETAR ESTRICTAMENTE):
 1. Cliente dice producto → preguntar CIUDAD (ej: "📍 ¿Para qué ciudad querés el envío?")
 2. Cliente responde ciudad → preguntar CANTIDAD con ejemplos (ej: "¿Cuántas unidades querés? Ej: 1, 2, 3...")
 3. Cliente responde cantidad → mostrar resumen y pedir datos de envío
+
+⚠️ IMPORTANTE: NUNCA asumas que sabes la ciudad. SIEMPRE pregúntala.
+⚠️ NUNCA uses una ciudad de conversaciones anteriores.
 
 ═══════════════════════════════════
 ENTRENAMIENTO OFICIAL DEL USUARIO:
