@@ -108,7 +108,7 @@ function getTipoCobertura(city: string): "con_cobertura" | "sin_cobertura" | "" 
   if (!city) return "";
   const c = normalize(city);
   if (/\b(cruce\s+san\s+alberto|cruse\s+san\s+alberto|san\s+alberto|pedro\s+juan\s+caballero|pjc)\b/.test(c)) return "sin_cobertura";
-  
+
   const ZONAS_COBERTURA = [
     "Altos", "Areguá", "Asunción", "Atyrá", "Benjamín Aceval", "Caacupé",
     "Capiatá", "Ciudad del Este", "Colonia Yguazú", "Emboscada", "Eusebio Ayala",
@@ -121,7 +121,7 @@ function getTipoCobertura(city: string): "con_cobertura" | "sin_cobertura" | "" 
     "Santa Rita", "Tobatí", "Villa Elisa", "Villa Hayes", "Villarrica",
     "Villeta", "Yaguarón", "Yguazú", "Ypacaraí", "Ypané",
   ];
-  
+
   return ZONAS_COBERTURA.some((z) => normalize(z) === c) ? "con_cobertura" : "sin_cobertura";
 }
 
@@ -160,7 +160,7 @@ Me confirmaste que querés ${productName}.
 
 function buildQuantityAfterCityResponse(product: string, city: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
-  
+
   if (normalize(product).includes("tornado") || normalize(product).includes("destapa")) {
     return `✅ ¡Perfecto! ${city} tiene ENVÍO GRATIS contra-entrega 🚚
 
@@ -173,7 +173,7 @@ function buildQuantityAfterCityResponse(product: string, city: string, shoeSize?
 
 🔥 ¿Cuántas unidades te gustaría llevar? ✨`;
   }
-  
+
   if (
     normalize(product).includes("kit antivibracion") ||
     normalize(product).includes("patitas antideslizantes")
@@ -191,7 +191,7 @@ Ejemplos:
 
 Respondé con el número (1, 2, 3...)`;
   }
-  
+
   return `✅ Perfecto, enviamos a ${city} 😊
 
 📦 ${productName}
@@ -214,33 +214,33 @@ function detectProductRespectingActive(
   lastUserProduct?: string
 ): string {
   const msg = normalize(text);
-  
+
   if (/^\d{1,3}$/.test(msg)) {
     return activeProduct || "";
   }
-  
+
   if (isPriceIntent(text) || isProductInquiry(text)) {
     return activeProduct || "";
   }
-  
+
   const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas|tornado|destapa)\b/i.test(msg);
-  
+
   if (activeProduct && !explicitNewProductRequest) {
     return activeProduct;
   }
-  
+
   if (explicitNewProductRequest) {
     const newProduct = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
     if (newProduct && !isInvalidProductCandidate(newProduct)) {
       return newProduct;
     }
   }
-  
+
   const detected = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
   if (detected && !isInvalidProductCandidate(detected)) {
     return detected;
   }
-  
+
   return activeProduct || "";
 }
 
@@ -252,13 +252,13 @@ function detectProductRaw(
   lastUserProduct?: string
 ) {
   const msg = normalize(text);
-  
+
   if (/^\d{1,3}$/.test(msg)) {
     return "";
   }
 
-  if (msg.includes("tornado") || msg.includes("destapa") || msg.includes("cañeria") || 
-      msg.includes("cañería") || msg.includes("tuberia") || msg.includes("tubería") || 
+  if (msg.includes("tornado") || msg.includes("destapa") || msg.includes("cañeria") ||
+      msg.includes("cañería") || msg.includes("tuberia") || msg.includes("tubería") ||
       msg.includes("desagüe") || msg.includes("desague") || msg.includes("wild tornado")) {
     return getTornadoProductName();
   }
@@ -657,7 +657,7 @@ function extractData(
     /^([A-Z]{3,}\s+[A-Z]{3,})$/,
     /^([A-Z][a-z]+\s+[A-Z][a-z]+)$/,
   ];
-  
+
   for (const pattern of namePatterns) {
     const match = text.match(pattern);
     if (match && match[1] && !isProductName(match[1]) && match[1].length < 50) {
@@ -665,26 +665,26 @@ function extractData(
       break;
     }
   }
-  
+
   if (!name && !/\d/.test(text) && text.length < 40 && text.length > 5 && text.includes(" ")) {
     const words = text.split(" ");
     if (words.length === 2 && words[0].length > 2 && words[1].length > 2) {
       name = text;
     }
   }
-  
+
   let tempText = text;
   if (name) tempText = tempText.replace(name, "");
   if (phone) tempText = tempText.replace(phone, "");
   if (city) tempText = tempText.replace(new RegExp(city, "i"), "");
-  
+
   const addressMatch = tempText.match(/([A-ZÁÉÍÓÚÑa-záéíóúñ0-9\s,.#\-]{5,})/);
   if (addressMatch && addressMatch[1].trim().length > 5 && !isProductName(addressMatch[1])) {
     address = clean(addressMatch[1]);
   }
 
   let quantity = 0;
-  
+
   if (forceQuantityMode || currentStep === "collecting_quantity" || currentStep === "esperando_cantidad") {
     const onlyNumber = norm.match(/^\s*(\d{1,3})\s*$/);
     if (onlyNumber) {
@@ -694,7 +694,7 @@ function extractData(
       if (qMatch) quantity = Number(qMatch[1]);
     }
   }
-  
+
   if (!quantity && /\b1\s*unidad\b/i.test(text)) quantity = 1;
   if (!quantity && /\b2\s*unidades\b/i.test(text)) quantity = 2;
   if (!quantity && /\b3\s*unidades\b/i.test(text)) quantity = 3;
@@ -765,7 +765,7 @@ function calculateTotal(product: string, quantity: number, training: string): nu
   if (!product || !quantity || quantity < 1) return null;
 
   const p = normalize(product);
-  
+
   if (p.includes("tornado") || p.includes("destapa")) {
     return TORNADO_PRICE * quantity;
   }
@@ -942,6 +942,50 @@ function buildItemsLines(items: CartItem[]): string {
     .join("\n");
 }
 
+// =======================================================
+// ✅ CONFIRMACIÓN AUTOMÁTICA - FORMATO OFICIAL
+// =======================================================
+function buildAutoConfirmResponse(order: any): string {
+  const tipoCobertura = getTipoCobertura(order.city || "");
+  const tipoEnvio =
+    tipoCobertura === "sin_cobertura"
+      ? "Envío por transportadora · Pagás al retirar"
+      : "Envío GRATIS · Pagás al recibir";
+
+  const displayProduct = formatProductWithShoeSize(order.product, order.shoe_size);
+  const quantity = safeQuantity(order.quantity);
+  const total = formatGs(order.total_amount);
+  const firstName = clean(order.customer_name || "").split(" ")[0] || "";
+
+  return `✅ PEDIDO CONFIRMADO ✅
+
+✅ Producto: ${displayProduct}
+✅ Cliente: ${clean(order.customer_name)}
+✅ Ubicación: ${clean(order.city)} — ${clean(order.address)}
+✅ Contacto: ${clean(order.phone)}
+✅ Cantidad: ${quantity} u.
+💰 Total: ${total} Gs
+🚚 ${tipoEnvio}
+
+🚚 Tu pedido queda agendado para la próxima ronda de envíos.
+Si pagás al recibir, el delivery lo confirma al llegar a tu zona.
+
+⏰ Oferta válida hoy
+
+¡Gracias por elegir Mega Todo Store! 💜✨
+
+💵 Podés pagar en EFECTIVO o TRANSFERENCIA AL DELIVERY cuando recibas tu producto.
+¡Como te quede más cómodo! 🚚
+
+¡Gracias por tu compra! 🛍️✨
+
+Te dejo nuestro catálogo completo 👇
+👉 ${CATALOG_URL}
+
+Podés pedir cualquier producto con el mismo proceso rápido y seguro.
+¡Te esperamos! 💜`;
+}
+
 function buildCartSummaryResponse(order: any, tipoCobertura: string) {
   const items = getCartItems(order);
   const total = cartGrandTotal(items) || Number(order?.total_amount || 0);
@@ -1011,33 +1055,33 @@ y agendamos tu entrega ✨`;
 
 function nextStep(order: any, tipoCobertura?: string, wasConfirmed?: boolean): string {
   if (wasConfirmed) return "confirmed_already";
-  
+
   const items = getCartItems(order);
-  
+
   if (!order.product && !items.length) return "selling";
   if (!order.city) return "collecting_city";
-  
+
   const hasValidQuantity = safeQuantity(order.quantity) > 0;
   if (!hasValidQuantity && !items.length) return "collecting_quantity";
-  
+
   const hasName = order.customer_name && order.customer_name.length > 3;
   const hasAddress = order.address && order.address.length > 5;
   const hasPhone = order.phone && order.phone.length > 8;
-  
+
   if (tipoCobertura === "sin_cobertura") {
     if (!hasName) return "collecting_name";
     if (!hasPhone) return "collecting_phone";
     return "waiting_payment_proof";
   }
-  
+
   if (hasName && hasPhone && hasAddress) {
     return "confirm_order";
   }
-  
+
   if (!hasName) return "collecting_name";
   if (!hasPhone) return "collecting_phone";
   if (!hasAddress) return "collecting_address";
-  
+
   return "confirm_order";
 }
 
@@ -1055,7 +1099,7 @@ function handleProductSelection(product: string, shoeSize?: any) {
     confirmed: false,
     confirm_count: 0,
   };
-  
+
   return {
     response: buildCityQuestionResponse(product, shoeSize),
     order: newOrder,
@@ -1353,8 +1397,6 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 function detectPriorityProductFromRecentText(text: string): string {
   const n = normalize(text);
 
-  // Productos con palabras muy específicas que suelen venir del anuncio o copy.
-  // IMPORTANTE: No usar "quiero 1" acá porque es un CTA genérico.
   if (/\b(tornado|wild\s*tornado|destapa|cañeria|cañerias|cañería|cañerías|caneria|canerias|tuberia|tuberias|tubería|tuberías|desagüe|desague)\b/.test(n)) {
     return getTornadoProductName();
   }
@@ -1389,7 +1431,7 @@ function isNewConversation(text: string, history: any[]): boolean {
 // 🚀 HANDLER PRINCIPAL
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL - PRODUCTO ACTIVO + SIN BUCLE - CTA FIX");
+  console.log("🔥 VERSION FINAL v2 - QUIERO SOLO FIX + AUTOCONFIRM");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1437,14 +1479,21 @@ export default async function handler(req: any, res: any) {
     if (!isValidProductString(lastUserProduct)) lastUserProduct = "";
 
     const normalizedText = normalize(texto);
-    const isGenericBuyQuantity = /^(quiero|llevo|dame|compro|comprar|mandame)\s*\d{1,3}$/.test(normalizedText);
+
+    // ✅ FIX 1: "QUIERO" solo (sin número) también activa el modo compra
+    const isGenericBuyIntent = /^(quiero|llevo|dame|compro|comprar|mandame)(\s+\d{1,3})?$/i.test(normalizedText);
+    const isGenericBuyQuantity = isGenericBuyIntent;
 
     const recentConversationText = getRecentConversationText(texto, history || []);
     const recentAdProduct = detectPriorityProductFromRecentText(recentConversationText);
 
-    // Si el usuario viene de un anuncio reciente y responde "QUIERO 1",
-    // ese anuncio manda. NO dejamos que un pedido viejo del mismo número contamine el producto.
-    const isNewChat = isNewConversation(texto, history || []) || !!(isGenericBuyQuantity && recentAdProduct);
+    // ✅ FIX 2: "QUIERO" solo + anuncio reciente → nueva conversación, ignorar Supabase
+    const isBareIntent = /^(quiero|llevo|dame|compro|comprar|mandame)$/i.test(normalizedText);
+    const isNewChat =
+      isNewConversation(texto, history || []) ||
+      !!(isGenericBuyQuantity && recentAdProduct) ||
+      !!(isBareIntent && recentAdProduct && !sameProduct(recentAdProduct, context?.order_data?.product || ""));
+
     const dbOrder = await fetchLatestActiveOrder(user_id, fromNumber);
     const hasContextOrder = !!(context?.order_data?.product || context?.order_data?.city || context?.order_data?.quantity);
 
@@ -1455,20 +1504,18 @@ export default async function handler(req: any, res: any) {
       oldOrder.confirmed = context?.order_data?.confirmed || false;
       oldOrder.confirm_count = context?.order_data?.confirm_count || 0;
     } else if (dbOrder?.product && !isNewChat) {
-      // Recuperamos de Supabase solo si NO es una conversación nueva.
-      // Esto evita que un "Quiero 1" de un anuncio nuevo tome un producto viejo.
       oldOrder = normalizeOrderWithItems(dbOrder, fullTraining);
       console.log("♻️ Pedido recuperado desde Supabase:", oldOrder.product, oldOrder.city, oldOrder.quantity);
     } else {
       oldOrder = emptyOrder();
-      if (isNewChat) console.log("🔄 Nueva conversación / anuncio nuevo");
+      if (isNewChat) console.log("🔄 Nueva conversación / anuncio nuevo detectado");
     }
 
     const previousStep = clean(isNewChat ? "" : (context?.step || dbOrder?.status || ""));
     const previousTipoCobertura = clean(context?.tipo_cobertura || getTipoCobertura(oldOrder?.city || ""));
 
     // =======================================================
-    // 🔥 DETECCIÓN DE PRODUCTO SIN ROMPER "QUIERO 1"
+    // 🔥 DETECCIÓN DE PRODUCTO
     // =======================================================
     let product = "";
     const activeProduct = safeProductName(
@@ -1478,18 +1525,16 @@ export default async function handler(req: any, res: any) {
     const hasTornadoKeyword = !!detectPriorityProductFromRecentText(texto);
 
     if (isGenericBuyQuantity && recentAdProduct) {
-      // Prioridad absoluta: el último anuncio/copy detectado en el historial.
+      // Prioridad absoluta: anuncio reciente detectado en el historial
       product = recentAdProduct;
-      console.log("🎯 Producto por anuncio reciente + CTA genérico:", product);
+      console.log("🎯 Producto por anuncio reciente + intent de compra:", product);
     } else if (isGenericBuyQuantity && activeProduct) {
       product = activeProduct;
-      console.log("🎯 Producto activo por CTA genérico:", product);
+      console.log("🎯 Producto activo por intent de compra:", product);
     } else if (hasTornadoKeyword) {
       product = getTornadoProductName();
       console.log("🔥 TORNADO por palabra clave");
     } else if (mediaUrl && mediaType === "image" && !activeProduct) {
-      // Solo analizamos imagen cuando NO hay producto activo.
-      // Así evitamos que una imagen vieja o confusa cambie el producto.
       const media = await fetchMediaAsBase64(mediaUrl);
       if (media) {
         const img = await analyzeImageWithGemini({
@@ -1522,6 +1567,7 @@ export default async function handler(req: any, res: any) {
 
     if (product && !isInvalidProductCandidate(product)) lastUserProduct = product;
 
+    // Sin producto y sin intent claro → pedir que especifique
     if (isGenericBuyQuantity && !product && !activeProduct) {
       return res.json({
         response: `Perfecto 😊 ¿Cuál producto querés llevar?\n\nEscribime el nombre del producto o enviame la imagen del anuncio para agendarte correctamente.`,
@@ -1536,22 +1582,21 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🔥 RESPUESTA DE CIUDAD - PRIMERO, PARA EVITAR BUCLE
+    // 🔥 RESPUESTA DE CIUDAD - EVITAR BUCLE
     // =======================================================
     const extractedCity = extractCityFromText(texto);
     const isCityReply =
       !!extractedCity &&
       !/^\d+$/.test(normalize(texto)) &&
       (previousStep === "collecting_city" || !!oldOrder?.product || !!product);
-    
+
     if (isCityReply && extractedCity && (oldOrder?.product || product || lastUserProduct)) {
       const finalProduct = oldOrder?.product || product || lastUserProduct || "";
       const city = extractedCity;
-      
+
       console.log("📍 CIUDAD DETECTADA:", city);
       console.log("📦 PRODUCTO:", finalProduct);
-      console.log("🔁 STEP ANTERIOR:", previousStep);
-      
+
       const orderData = {
         product: finalProduct,
         quantity: 0,
@@ -1564,11 +1609,9 @@ export default async function handler(req: any, res: any) {
         total_amount: finalProduct === getTornadoProductName() ? TORNADO_PRICE : 0,
         confirmed: false, confirm_count: 0,
       };
-      
+
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
-      
-      console.log("➡️ NUEVO STEP: collecting_quantity");
-      
+
       return res.json({
         response: buildQuantityAfterCityResponse(finalProduct, city),
         context: {
@@ -1586,27 +1629,28 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🔥 TORNADO SIN CIUDAD → PREGUNTAR CIUDAD SOLO UNA VEZ
+    // 🔥 TORNADO / CUALQUIER PRODUCTO SIN CIUDAD → PEDIR CIUDAD
     // =======================================================
-    if (product === getTornadoProductName() && !oldOrder?.city && previousStep !== "collecting_city") {
+    if (product && !oldOrder?.city && previousStep !== "collecting_city") {
       const newOrder = {
-        product: getTornadoProductName(),
+        product: product,
         quantity: 0, shoe_size: "", city: "",
         customer_name: "", phone: "", address: "", items: [],
-        total_amount: TORNADO_PRICE, confirmed: false, confirm_count: 0,
+        total_amount: product === getTornadoProductName() ? TORNADO_PRICE : 0,
+        confirmed: false, confirm_count: 0,
       };
       await safeUpsertOrder(user_id, fromNumber, newOrder, false);
-      
+
       return res.json({
-        response: buildCityQuestionResponse(getTornadoProductName()),
+        response: buildCityQuestionResponse(product),
         context: {
           ...(context || {}),
-          current_product: getTornadoProductName(),
-          last_user_product: getTornadoProductName(),
+          current_product: product,
+          last_user_product: product,
           step: "collecting_city",
           tipo_cobertura: null,
           order_data: newOrder,
-          last_topic: getTornadoProductName(),
+          last_topic: product,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
@@ -1616,14 +1660,14 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 🔥 RESPUESTA DE CANTIDAD
     // =======================================================
-    const quantityMatch = texto.match(/^(\d+)$|(\d+)\s*unidad|1\s*unidad/i);
+    const quantityMatch = texto.match(/^(\d+)$|(\d+)\s*unidad/i);
     const isQuantityReply = (previousStep === "collecting_quantity" && quantityMatch);
-    
+
     if (isQuantityReply && (oldOrder?.product || product)) {
       let quantity = 1;
       if (quantityMatch?.[1]) quantity = parseInt(quantityMatch[1]);
       else if (quantityMatch?.[2]) quantity = parseInt(quantityMatch[2]);
-      
+
       const finalProduct = oldOrder?.product || product || "";
       const orderData = {
         product: finalProduct,
@@ -1637,9 +1681,9 @@ export default async function handler(req: any, res: any) {
         total_amount: calculateTotal(finalProduct, quantity, fullTraining) || (sameProduct(finalProduct, getTornadoProductName()) ? TORNADO_PRICE * quantity : 0),
         confirmed: false, confirm_count: 0,
       };
-      
+
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
-      
+
       return res.json({
         response: buildOrderSummaryResponse(orderData, getTipoCobertura(orderData.city)),
         context: {
@@ -1657,55 +1701,74 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🔥 RESPUESTA CON DATOS (nombre, dirección, teléfono)
+    // ✅ FIX 3: DATOS DEL CLIENTE → AUTO-CONFIRMAR SI ESTÁN COMPLETOS
     // =======================================================
     const extracted = extractData(texto, previousStep, false, false);
-    
-    if ((extracted.name || extracted.phone || extracted.address) && oldOrder?.product && oldOrder?.city && oldOrder?.quantity > 0) {
+
+    if ((extracted.name || extracted.phone || extracted.address) && oldOrder?.product && oldOrder?.city && safeQuantity(oldOrder?.quantity) > 0) {
       const orderData = {
         ...oldOrder,
-        customer_name: extracted.name || oldOrder.customer_name,
-        phone: extracted.phone || oldOrder.phone,
-        address: extracted.address || oldOrder.address,
+        customer_name: extracted.name || oldOrder.customer_name || "",
+        phone: extracted.phone || oldOrder.phone || "",
+        address: extracted.address || oldOrder.address || "",
       };
-      
-      await safeUpsertOrder(user_id, fromNumber, orderData, false);
-      
-      const hasAllData = orderData.customer_name && orderData.phone && orderData.address;
-      
-      if (hasAllData) {
+
+      const hasName = !!(orderData.customer_name && orderData.customer_name.length > 3);
+      const hasPhone = !!(orderData.phone && orderData.phone.length > 8);
+      const hasAddress = !!(orderData.address && orderData.address.length > 5);
+
+      // ✅ SI TIENE TODOS LOS DATOS → CONFIRMAR AUTOMÁTICAMENTE
+      if (hasName && hasPhone && hasAddress) {
+        orderData.confirmed = true;
+        await safeUpsertOrder(user_id, fromNumber, orderData, true, "confirmed");
+
+        console.log("✅ AUTO-CONFIRMADO:", orderData.customer_name, orderData.city);
+
         return res.json({
-          response: buildOrderSummaryResponse(orderData, getTipoCobertura(orderData.city)),
+          response: buildAutoConfirmResponse(orderData),
           context: {
             ...(context || {}),
-            step: "confirm_order",
+            step: "confirmed",
             order_data: orderData,
             updated_at: new Date().toISOString(),
           },
           is_payment_proof: false,
         });
       }
+
+      // Si faltan datos, guardar y pedir lo que falta
+      await safeUpsertOrder(user_id, fromNumber, orderData, false);
+
+      let missingMsg = "";
+      if (!hasName) {
+        missingMsg = `😊 ¿Y tu nombre y apellido completo?`;
+      } else if (!hasPhone) {
+        missingMsg = `📲 ¿Y tu número de celular? (Ej: 0981 123 456)`;
+      } else if (!hasAddress) {
+        missingMsg = `📍 ¿Y tu dirección exacta o ubicación por Google Maps?`;
+      }
+
+      return res.json({
+        response: missingMsg,
+        context: {
+          ...(context || {}),
+          step: hasName && hasPhone ? "collecting_address" : hasName ? "collecting_phone" : "collecting_name",
+          order_data: orderData,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
     }
 
     // =======================================================
-    // 🔥 CONFIRMACIÓN
+    // 🔥 CONFIRMACIÓN MANUAL EXPLÍCITA
     // =======================================================
-    if (isConfirmIntent(texto) && oldOrder?.customer_name && oldOrder?.city && oldOrder?.quantity > 0) {
+    if (isConfirmIntent(texto) && oldOrder?.customer_name && oldOrder?.city && safeQuantity(oldOrder?.quantity) > 0) {
       oldOrder.confirmed = true;
       await safeUpsertOrder(user_id, fromNumber, oldOrder, true, "confirmed");
-      
+
       return res.json({
-        response: `✅ ¡PEDIDO CONFIRMADO! ${oldOrder.customer_name?.split(" ")[0] || ""} 😊
-
-📦 ${formatProductWithShoeSize(oldOrder.product, oldOrder.shoe_size)} x${oldOrder.quantity}
-📍 ${oldOrder.city}
-💰 Total: ${formatGs(oldOrder.total_amount)} Gs
-📞 ${oldOrder.phone}
-📍 Dirección: ${oldOrder.address}
-
-🚚 Envío GRATIS contra-entrega
-
-✨ ¡Gracias por tu compra! 🎯`,
+        response: buildAutoConfirmResponse(oldOrder),
         context: {
           ...(context || {}),
           step: "confirmed",
@@ -1721,7 +1784,8 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     const system = `Asistente de ventas de Mega Todo Store.
 Producto especial: Destapa Cañerías Tornado - 159.900 Gs
-Flujo: Producto → Ciudad → Cantidad → Datos → Confirmar
+Flujo: Producto → Ciudad → Cantidad → Datos (nombre, dirección, teléfono) → Confirmar automáticamente
+Cuando el cliente manda nombre, dirección y teléfono juntos, confirmá el pedido directamente.
 Español paraguayo, con emojis.`;
 
     const contents = (history || [])
