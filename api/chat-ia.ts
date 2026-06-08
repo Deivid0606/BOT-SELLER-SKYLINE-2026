@@ -635,7 +635,6 @@ function botWasAskingShoeSize(history: any[]) {
 
 function isBuyIntentMessage(text: string): boolean {
   const n = normalize(text);
-  // Detectar "quiero 1", "llevo 2", "dame 3", etc.
   return /^(quiero|llevo|dame|compro|comprar|mandame)\s+\d+$/i.test(n) ||
          /^\d+\s*(unidad|unidades)?$/i.test(n);
 }
@@ -663,8 +662,6 @@ function looksLikeAddressLine(line: string): boolean {
   const addressHints = /\b(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio|compania|compañia|frente|lado|costado|casa|numero|nro|manzana|mz|lote|lt|edificio|piso|departamento|depto|local|google|maps|ubicacion|ubicación|rca|republica|república)\b/i;
   if (addressHints.test(n)) return true;
 
-  // Si queda una línea de texto razonable después de sacar nombre/teléfono/ciudad,
-  // tratala como dirección aunque no tenga palabra clave.
   const words = n.split(" ").filter(Boolean);
   return words.length >= 3;
 }
@@ -678,7 +675,6 @@ function extractData(
   const text = clean(msg);
   const norm = normalize(text);
   
-  // ⚠️ CRUCIAL: Si es un intent de compra como "quiero 1", NO extraer datos
   if (isBuyIntentMessage(text)) {
     return { quantity: 0, shoe_size: "", city: "", name: "", phone: "", address: "" };
   }
@@ -702,8 +698,6 @@ function extractData(
     .map((x) => clean(x))
     .filter(Boolean);
 
-  // ✅ Caso típico: cliente manda TODO JUNTO en varias líneas:
-  // nombre / teléfono / dirección
   for (const line of lines) {
     if (!name && looksLikeCustomerNameLine(line)) {
       name = line;
@@ -1019,9 +1013,6 @@ function buildItemsLines(items: CartItem[]): string {
     .join("\n");
 }
 
-// =======================================================
-// ✅ CONFIRMACIÓN AUTOMÁTICA - FORMATO OFICIAL
-// =======================================================
 function buildAutoConfirmResponse(order: any): string {
   const tipoCobertura = getTipoCobertura(order.city || "");
   const tipoEnvio =
@@ -1205,7 +1196,7 @@ async function safeUpsertOrder(
 
     const { data: existing, error: findErr } = await supabase
       .from("orders")
-      .select("*")
+      select("*")
       .eq("user_id", userId)
       .eq("from_number", from)
       .in("status", [
@@ -1504,18 +1495,12 @@ function isNewConversation(text: string, history: any[]): boolean {
   return noHistory || newConversationMarkers.test(n);
 }
 
-
-// =======================================================
-// 🛡️ FIX PRECIO / CONFIRMACIÓN SEGURA v5
-// =======================================================
 function getAuthoritativeUnitPrice(product: string, training: string): number | null {
   const p = normalize(product);
   if (!p) return null;
 
-  // Producto protegido: nunca sale 0, nunca se inventa.
   if (p.includes("tornado") || p.includes("destapa")) return TORNADO_PRICE;
 
-  // Buscar precio en entrenamiento activo, por ventana cercana al nombre del producto.
   const lines = training.split("\n").map((l) => clean(l)).filter(Boolean);
   let bestScore = 0;
   let bestPrice = 0;
@@ -1667,11 +1652,23 @@ function buildDataRequestByMissing(order: any): string {
   return "✅ Ya tengo tus datos. ¿Confirmás el pedido?";
 }
 
+function isOldConversation(history: any[]): boolean {
+  if (!Array.isArray(history) || history.length === 0) return false;
+  
+  const lastUserMsg = [...history].reverse().find((h: any) => h?.role === "user");
+  if (!lastUserMsg?.timestamp) return false;
+  
+  const lastTime = new Date(lastUserMsg.timestamp).getTime();
+  const hoursDiff = (Date.now() - lastTime) / (1000 * 60 * 60);
+  
+  return hoursDiff >= 24;
+}
+
 // =======================================================
 // 🚀 HANDLER PRINCIPAL
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL v5.2 - FIX DATOS MULTILINEA / CONFIRMACION SEGURA / SIN TOTAL 0");
+  console.log("🔥 VERSION FINAL v6.0 - CON ENTRENAMIENTO COMPLETO EN GEMINI");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1688,6 +1685,22 @@ export default async function handler(req: any, res: any) {
 
     if (!user_id) return res.status(400).json({ error: "Falta user_id" });
     if (!fromNumber) return res.status(400).json({ error: "Falta from_number" });
+
+    // =======================================================
+    // 🕐 VERIFICAR SI PASARON MÁS DE 24 HORAS
+    // =======================================================
+    const isOld = isOldConversation(history);
+    
+    if (isOld) {
+      console.log("🕐 Conversación con más de 24hs - Reiniciando venta");
+      
+      await supabase
+        .from("orders")
+        .update({ status: "abandoned", updated_at: new Date().toISOString() })
+        .eq("user_id", user_id)
+        .eq("from_number", fromNumber)
+        .in("status", ["draft", "collecting_name", "collecting_city", "collecting_quantity", "waiting_payment_proof"]);
+    }
 
     const { data: iaConfig } = await supabase
       .from("chat_ia_gemini")
@@ -1716,9 +1729,6 @@ export default async function handler(req: any, res: any) {
     const normalizedText = normalize(texto);
     const previousStep = clean(context?.step || "");
 
-    // ✅ Compra/cantidad directa.
-    // Cubre: "quiero 1", "si 1", "sí 1", "dale 1", "ok 1", "si quiero 1", "confirmo 2".
-    // IMPORTANTE: normalize() convierte "sí" en "si".
     const isQuantityIntentWithNumber = /^(quiero|llevo|dame|compro|comprar|mandame|reservame|reserva|si|dale|ok|listo|confirmo|acepto)(\s+(quiero|llevo|dame|compro|comprar|mandame|reservame|reserva))?\s+\d{1,3}$/i.test(normalizedText);
     const isPlainNumber = /^\d{1,3}$/.test(normalizedText);
     const isBuyIntentWithNumber = isQuantityIntentWithNumber || (isPlainNumber && (previousStep === "collecting_quantity" || botWasAskingQuantity(history || [])));
@@ -1726,7 +1736,7 @@ export default async function handler(req: any, res: any) {
     const recentConversationText = getRecentConversationText(texto, history || []);
     const recentAdProduct = detectPriorityProductFromRecentText(recentConversationText);
 
-    const dbOrder = await fetchLatestActiveOrder(user_id, fromNumber);
+    let dbOrder = isOld ? null : await fetchLatestActiveOrder(user_id, fromNumber);
     let oldOrder = dbOrder?.product ? normalizeOrderWithItems(dbOrder, fullTraining) : emptyOrder();
 
     let lastUserProduct = context?.last_user_product || oldOrder?.product || recentAdProduct || "";
@@ -1752,7 +1762,7 @@ export default async function handler(req: any, res: any) {
     if (product && !isInvalidProductCandidate(product)) lastUserProduct = product;
 
     // =======================================================
-    // 🖼️ MEDIA: si es producto detectado por imagen, responder info/precio seguro.
+    // 🖼️ MEDIA: si es producto detectado por imagen
     // =======================================================
     if (mediaUrl && mediaType && /image|photo|media/i.test(mediaType)) {
       const media = await fetchMediaAsBase64(mediaUrl);
@@ -1788,10 +1798,66 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🧠 REGLA CRÍTICA: precio/info NO crea pedido, NO pide dirección, NO confirma.
+    // 📋 CLIENTE PIDIÓ CATÁLOGO / INFORMACIÓN GENERAL SIN PRODUCTO
     // =======================================================
-    if (isPriceIntent(texto)) {
-      const priceProduct = product || activeProduct || recentAdProduct || lastUserProduct || oldOrder?.product || "";
+    if ((isCatalogQuery(texto) || (isInformationRequest(texto) && !product && !activeProduct && !oldOrder?.product)) && !isOld) {
+      const mensajeMasVendidos = `🔥 Estos son nuestros productos más vendidos 😊
+
+⭐ Veneno de Abeja
+💰 145.000 Gs
+🔥 PROMO 2x → 249.900 Gs
+⚠️ Stock limitado
+
+⭐ Raqueta para Insectos
+💰 1 unidad → 119.900 Gs
+
+⭐ Peladora Automática
+💰 1 unidad → 179.900 Gs
+
+⭐ Perfume Asad
+💰 1 unidad → 169.900 Gs
+
+⭐ Tabla de Picar de Mármol
+💰 1 unidad → 169.900 Gs
+
+⭐ Nebulizador portátil
+💰 1 unidad → 169.900 Gs
+
+⭐ Limpiador de Ollas y Carbonilla
+💰 1 unidad → 149.900 Gs
+🔥 2 unidades en promo → 259.900 Gs
+
+⭐ Destapa Cañerías Tornado
+💰 1 unidad → 159.900 Gs
+
+⭐ Afilador de cuchillos
+💰 1 unidad → 99.000 Gs
+🔥 2 unidades en promo → 129.900 Gs
+
+⭐ Plantillas Ortopiex 5D (calce 35 a 46)
+💰 159.000 Gs
+
+⭐ Almohadillas Antivibración (x4 unidades)
+💰 98.000 Gs
+
+¿Cuál te interesa? ✨`;
+
+      return res.json({
+        response: mensajeMasVendidos,
+        context: {
+          ...(context || {}),
+          step: "selling",
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    // =======================================================
+    // 💰 PRECIO/INFO - solo si hay producto en contexto
+    // =======================================================
+    if (isPriceIntent(texto) && (product || activeProduct || oldOrder?.product)) {
+      const priceProduct = product || activeProduct || oldOrder?.product || "";
       if (priceProduct) {
         return res.json({
           response: buildPriceResponse(priceProduct, fullTraining),
@@ -1806,16 +1872,10 @@ export default async function handler(req: any, res: any) {
           is_payment_proof: false,
         });
       }
-
-      return res.json({
-        response: `💰 Decime qué producto te interesa y te paso el precio exacto 😊\n\nNo puedo inventar precios ni confirmar pedidos sin producto.`,
-        context: { ...(context || {}), step: "selling", updated_at: new Date().toISOString() },
-        is_payment_proof: false,
-      });
     }
 
-    if (isInformationRequest(texto) || isCatalogQuery(texto)) {
-      const infoProduct = product || activeProduct || recentAdProduct || lastUserProduct || oldOrder?.product || "";
+    if (isInformationRequest(texto) && (product || activeProduct || oldOrder?.product)) {
+      const infoProduct = product || activeProduct || oldOrder?.product || "";
       if (infoProduct) {
         return res.json({
           response: buildInformationResponse(infoProduct, fullTraining),
@@ -1833,7 +1893,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 📍 Si solo mandó ciudad sin producto, no armar pedido falso.
+    // 📍 Si solo mandó ciudad sin producto
     // =======================================================
     const extractedCity = extractCityFromText(texto);
     if (extractedCity && !oldOrder?.product && !product) {
@@ -1845,7 +1905,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🛒 Cliente quiere X unidades: guardar producto + cantidad pendiente y pedir ciudad.
+    // 🛒 Cliente quiere X unidades
     // =======================================================
     if (isQuantityIntentWithNumber) {
       const finalProduct = product || activeProduct || recentAdProduct || lastUserProduct || oldOrder?.product || "";
@@ -1899,7 +1959,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 📍 Respuesta de ciudad cuando ya existe producto.
+    // 📍 Respuesta de ciudad
     // =======================================================
     const isCityReply = !!extractedCity && (previousStep === "collecting_city" || (oldOrder?.product && !oldOrder?.city));
     if (isCityReply && oldOrder?.product) {
@@ -1940,7 +2000,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 📦 Producto mencionado sin compra directa: mostrar precio/info, no pedir ciudad todavía.
+    // 📦 Producto mencionado sin compra directa
     // =======================================================
     if (product && !oldOrder?.city && !isBuyIntentWithNumber) {
       const unit = getAuthoritativeUnitPrice(product, fullTraining);
@@ -1974,7 +2034,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🔢 Cantidad cuando el bot preguntó cantidad.
+    // 🔢 Cantidad cuando el bot preguntó cantidad
     // =======================================================
     const quantityMatch = normalizedText.match(/^(\d{1,3})$|^(\d{1,3})\s*(unidad|unidades|u|kit|kits)$/i);
     const isQuantityReply = !!quantityMatch && (previousStep === "collecting_quantity" || botWasAskingQuantity(history || []));
@@ -2002,10 +2062,10 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🧾 Datos del cliente. Solo confirmar si TODO está completo y precio válido.
+    // 🧾 Datos del cliente
     // =======================================================
     let extracted: any = { name: "", phone: "", address: "", city: "", quantity: 0, shoe_size: 0 };
-    if (!isBuyIntentWithNumber && !isPriceIntent(texto)) {
+    if (!isBuyIntentWithNumber && !isPriceIntent(texto) && !isCatalogQuery(texto)) {
       extracted = extractData(texto, previousStep, false, false);
     }
 
@@ -2057,7 +2117,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // ✅ Confirmación manual: bloqueada si falta algo o total es 0.
+    // ✅ Confirmación manual
     // =======================================================
     if (isConfirmIntent(texto) && oldOrder?.product) {
       const quantity = safeQuantity(oldOrder?.quantity || 1) || 1;
@@ -2083,18 +2143,9 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🤖 FALLBACK Gemini con reglas estrictas: no confirmar, no inventar precio.
+    // 🤖 FALLBACK Gemini con TODO el entrenamiento
     // =======================================================
-    const system = `Sos asistente de ventas de Mega Todo Store en Paraguay.
-
-REGLAS OBLIGATORIAS:
-- Nunca inventes precios.
-- Nunca confirmes pedidos.
-- Nunca digas Total 0 Gs.
-- Si preguntan precio, pedí el nombre del producto si no lo sabés.
-- Producto protegido: Destapa Cañerías Tornado cuesta 159.900 Gs.
-- Flujo real: producto + cantidad + ciudad + nombre + dirección + teléfono + precio válido. Solo el sistema confirma, vos no.
-- Respondé breve, en español paraguayo, con emojis.`;
+    const systemPrompt = fullTraining; // ← PASAMOS TODO EL ENTRENAMIENTO A GEMINI
 
     const contents = (history || [])
       .slice(-6)
@@ -2109,7 +2160,7 @@ REGLAS OBLIGATORIAS:
     let response = await callGemini({
       apiKey,
       model,
-      system,
+      system: systemPrompt,
       contents,
       temperature: Math.min(Number(iaConfig.temperature ?? 0.2), 0.3),
       maxTokens: Math.max(iaConfig.max_tokens ?? 0, 1024),
@@ -2117,7 +2168,6 @@ REGLAS OBLIGATORIAS:
 
     if (!response) response = "😊 ¿Qué producto te interesa? Así te paso precio exacto y disponibilidad.";
 
-    // Blindaje final por si Gemini intenta confirmar o poner 0 Gs.
     if (/pedido confirmado|total:\s*0|0\s*gs/i.test(response)) {
       response = "😊 Decime qué producto te interesa y te paso el precio exacto. No puedo confirmar pedidos sin precio válido y datos completos.";
     }
