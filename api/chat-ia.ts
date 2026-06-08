@@ -425,7 +425,6 @@ function isBuyIntent(text: string) {
 function isInformationRequest(text: string): boolean {
   const n = normalize(text);
   
-  // ❌ NO detectar palabras de compra/confirmación como información
   if (/\b(si|sí|quiero|compro|reservo|confirmo|dale|ok|listo)\b/.test(n)) return false;
   if (/^\d{1,3}$/.test(n)) return false;
   if (/^\d{1,3}\s*(unidad|unidades|u)$/.test(n)) return false;
@@ -762,6 +761,11 @@ function extractData(
     }
   }
 
+  // ✅ VALIDACIÓN: No tomar "Solo 1 unidad" como dirección
+  if (address && /^\s*(solo\s+)?\d{1,3}\s*(unidad|unidades|u|kit|kits)?\s*$/i.test(normalize(address))) {
+    address = "";
+  }
+
   let quantity = 0;
 
   if (forceQuantityMode || currentStep === "collecting_quantity" || currentStep === "esperando_cantidad") {
@@ -1031,13 +1035,18 @@ function buildAutoConfirmResponse(order: any): string {
   const displayProduct = formatProductWithShoeSize(order.product, order.shoe_size);
   const quantity = safeQuantity(order.quantity);
   const total = formatGs(order.total_amount);
-  const firstName = clean(order.customer_name || "").split(" ")[0] || "";
+  
+  // ✅ Asegurar que la dirección sea válida, no un texto de cantidad
+  const direccionValida = clean(order.address || "");
+  const ubicacion = direccionValida && direccionValida.length > 5 
+    ? `${clean(order.city)} — ${direccionValida}`
+    : clean(order.city);
 
   return `✅ PEDIDO CONFIRMADO ✅
 
 ✅ Producto: ${displayProduct}
 ✅ Cliente: ${clean(order.customer_name)}
-✅ Ubicación: ${clean(order.city)} — ${clean(order.address)}
+✅ Ubicación: ${ubicacion}
 ✅ Contacto: ${clean(order.phone)}
 ✅ Cantidad: ${quantity} u.
 💰 Total: ${total} Gs
@@ -1676,7 +1685,7 @@ function isOldConversation(history: any[]): boolean {
 // 🚀 HANDLER PRINCIPAL
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL v6.0 - CORREGIDA SIN BUCLE");
+  console.log("🔥 VERSION FINAL v7.0 - CORREGIDA CONFIRMACION Y SIN BUCLE");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1768,6 +1777,22 @@ export default async function handler(req: any, res: any) {
     }
 
     if (product && !isInvalidProductCandidate(product)) lastUserProduct = product;
+
+    // =======================================================
+    // 🙏 Cliente dice "gracias" después de confirmado - NO REINICIAR
+    // =======================================================
+    if ((/gracias|thank you|thanks/i.test(normalizedText) || isNeutralReply(texto)) && oldOrder?.confirmed) {
+      return res.json({
+        response: "¡Gracias a ti! 😊 Quedo atenta por si necesitas algo más. ¡Que tengas un lindo día! 💜",
+        context: {
+          ...(context || {}),
+          step: "confirmed",
+          order_data: oldOrder,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
 
     // =======================================================
     // 🖼️ MEDIA: si es producto detectado por imagen
@@ -1975,7 +2000,6 @@ export default async function handler(req: any, res: any) {
 
       await safeUpsertOrder(user_id, fromNumber, orderData, false, "collecting_quantity");
 
-      // Preguntar cantidad después de la ciudad
       return res.json({
         response: buildQuantityAfterCityResponse(orderData.product, extractedCity, orderData.shoe_size),
         context: {
@@ -2012,7 +2036,6 @@ export default async function handler(req: any, res: any) {
         });
       }
 
-      // Crear orden con producto pero sin ciudad aún
       const newOrder = {
         ...emptyOrder(),
         product: product,
@@ -2066,7 +2089,6 @@ export default async function handler(req: any, res: any) {
     // ✅ Confirmación "si" después de que el bot preguntó "¿Querés que te reserve?"
     // =======================================================
     if (isConfirmWord && oldOrder?.product && oldOrder?.city && !oldOrder?.quantity) {
-      // El cliente dijo "si" - asumir cantidad 1
       const quantity = 1;
       const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
 
