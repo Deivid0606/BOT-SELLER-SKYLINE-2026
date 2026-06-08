@@ -756,25 +756,34 @@ function extractData(
   let name = "";
 
   const lines = text
-    .split(/\n+|\r+|\s{2,}/g)
+    .split(/[\n\r,]+/g)
     .map((x) => clean(x))
-    .filter(Boolean);
+    .filter((x) => x.length > 0);
 
   for (const line of lines) {
-    if (!name && looksLikeCustomerNameLine(line)) {
-      name = line;
+    const lineTrim = clean(line);
+    const lineNorm = normalize(lineTrim);
+    
+    if (lineTrim.match(/(09\d{8}|\+595\d{9}|\d{9,10})/)) {
+      continue;
+    }
+    
+    if (!name && lineTrim.split(" ").length >= 2 && !lineTrim.match(/\d/) && !extractCityFromText(lineNorm) && !lineTrim.match(/^(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio)/i)) {
+      name = lineTrim;
+      continue;
+    }
+    
+    if (!address && lineTrim.length > 5 && lineTrim !== name && !lineTrim.match(/^\d{1,3}$/)) {
+      address = lineTrim;
       continue;
     }
   }
 
-  const namePatterns = [
-    /(?:me\s+llamo|nombre|soy|mi nombre es)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)/i,
-    /^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]+)$/,
-    /^([A-Z]{3,}\s+[A-Z]{3,})$/,
-    /^([A-Z][a-z]+\s+[A-Z][a-z]+)$/,
-  ];
-
   if (!name) {
+    const namePatterns = [
+      /(?:me\s+llamo|nombre|soy|mi nombre es)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)/i,
+      /^([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]+)$/,
+    ];
     for (const pattern of namePatterns) {
       const match = text.match(pattern);
       if (match && match[1] && !isProductName(match[1]) && match[1].length < 50) {
@@ -784,32 +793,15 @@ function extractData(
     }
   }
 
-  if (!name && !/\d/.test(text) && text.length < 40 && text.length > 5 && text.includes(" ")) {
-    const words = text.split(" ");
-    if (words.length === 2 && words[0].length > 2 && words[1].length > 2) {
-      name = text;
-    }
-  }
-
-  let tempText = text;
-  if (name) tempText = tempText.replace(new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"), " ");
-  if (phone) tempText = tempText.replace(phone, " ").replace(phone.replace(/^595/, "0"), " ");
-  if (city) tempText = tempText.replace(new RegExp(city, "i"), " ");
-
-  const remainingLines = tempText
-    .split(/\n+|\r+|\s{2,}/g)
-    .map((x) => clean(x))
-    .filter(Boolean);
-
-  for (const line of remainingLines) {
-    if (looksLikeAddressLine(line)) {
-      address = line;
-      break;
+  if (!address && text.length > 10) {
+    const addressKeywords = /\b(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio|manzana|mz|lote|casa|numero|nro|frente|costado|padre|san|santa|rca|república|colombia|españa|caballero)\b/i;
+    if (addressKeywords.test(text)) {
+      address = text;
     }
   }
 
   if (!address) {
-    const addressMatch = tempText.match(/([A-ZÁÉÍÓÚÑa-záéíóúñ0-9\s,.#\-]{5,})/);
+    const addressMatch = text.match(/([A-ZÁÉÍÓÚÑa-záéíóúñ0-9\s,.#\-]{5,})/);
     if (addressMatch && addressMatch[1].trim().length > 5 && !isProductName(addressMatch[1])) {
       const candidate = clean(addressMatch[1]);
       if (!looksLikeCustomerNameLine(candidate)) address = candidate;
@@ -1735,10 +1727,10 @@ function isOldConversation(history: any[]): boolean {
 }
 
 // =======================================================
-// 🚀 HANDLER PRINCIPAL - VERSION FINAL CON ACUMULACIÓN PROGRESIVA
+// 🚀 HANDLER PRINCIPAL - VERSION FINAL DEFINITIVA
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL v11.0 - ACUMULA DATOS PROGRESIVAMENTE (cualquier orden)");
+  console.log("🔥 VERSION FINAL v12.0 - DEFINITIVA CON EXTRACCIÓN MEJORADA");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -2170,17 +2162,20 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🧾 Datos del cliente - ACUMULACIÓN PROGRESIVA (cualquier orden)
+    // 🧾 Datos del cliente - ACUMULACIÓN PROGRESIVA MEJORADA
     // =======================================================
     let extracted: any = { name: "", phone: "", address: "", city: "", quantity: 0, shoe_size: 0 };
     if (detectedQuantity === 0 && !isPriceIntent(texto) && !isCatalogQuery(texto) && !isConfirmWord) {
       extracted = extractData(texto, previousStep, false, false);
     }
 
-    // ✅ ACUMULAR DATOS - actualizar oldOrder con lo que el cliente envió (en cualquier orden)
-    if ((extracted.name || extracted.phone || extracted.address) && oldOrder?.product && oldOrder?.quantity > 0 && oldOrder?.city) {
+    // Si el mensaje contiene nombre O teléfono O dirección (en cualquier formato)
+    const hasCustomerData = extracted.name || extracted.phone || extracted.address;
+    
+    // Si ya tenemos producto, ciudad y cantidad, y el cliente envía datos
+    if (hasCustomerData && oldOrder?.product && oldOrder?.quantity > 0 && oldOrder?.city) {
       
-      // Actualizar solo los campos que el cliente envió en este mensaje
+      // Actualizar el pedido con los nuevos datos
       const updatedOrder = {
         ...oldOrder,
         customer_name: extracted.name || oldOrder.customer_name || "",
@@ -2188,15 +2183,19 @@ export default async function handler(req: any, res: any) {
         address: extracted.address || oldOrder.address || "",
       };
       
-      // Guardar los datos acumulados
+      // Guardar en BD
       await safeUpsertOrder(user_id, fromNumber, updatedOrder, false);
       
-      // Verificar si ya tenemos todos los datos para confirmar
-      if (updatedOrder.customer_name && updatedOrder.customer_name.length > 3 &&
-          updatedOrder.address && updatedOrder.address.length > 5 &&
-          updatedOrder.phone && updatedOrder.phone.length > 8) {
-        
-        // ✅ TODOS LOS DATOS COMPLETOS - CONFIRMAR PEDIDO
+      // Verificar si YA TENEMOS TODOS los datos
+      const hasName = updatedOrder.customer_name && updatedOrder.customer_name.length > 3;
+      const hasPhone = updatedOrder.phone && updatedOrder.phone.length > 8;
+      const hasAddress = updatedOrder.address && updatedOrder.address.length > 5;
+      
+      // Si el cliente envió TODO en este mensaje (nombre, teléfono y dirección)
+      const allDataInOneMessage = extracted.name && extracted.phone && extracted.address;
+      
+      if ((hasName && hasPhone && hasAddress) || allDataInOneMessage) {
+        // ✅ CONFIRMAR PEDIDO
         updatedOrder.confirmed = true;
         const total = getSafeTotal(updatedOrder.product, updatedOrder.quantity, fullTraining);
         updatedOrder.total_amount = total || 0;
@@ -2210,20 +2209,19 @@ export default async function handler(req: any, res: any) {
         });
       }
       
-      // ❌ FALTAN DATOS - pedir lo que falta específicamente
-      let mensajeFaltante = "";
-      if (!updatedOrder.customer_name) mensajeFaltante = "✅ nombre y apellido";
-      else if (!updatedOrder.address) mensajeFaltante = "✅ dirección exacta o ubicación por Google Maps";
-      else if (!updatedOrder.phone) mensajeFaltante = "✅ número de celular";
+      // Si no, mostrar lo que falta
+      const missingFields = [];
+      if (!hasName) missingFields.push("✅ nombre y apellido");
+      if (!hasAddress) missingFields.push("✅ dirección exacta o ubicación por Google Maps");
+      if (!hasPhone) missingFields.push("✅ número de celular");
       
-      // Mostrar lo que ya tenemos y lo que falta
-      const tenemos = [];
-      if (updatedOrder.customer_name) tenemos.push(`✅ Nombre: ${updatedOrder.customer_name}`);
-      if (updatedOrder.address) tenemos.push(`✅ Dirección: ${updatedOrder.address}`);
-      if (updatedOrder.phone) tenemos.push(`✅ Teléfono: ${updatedOrder.phone}`);
+      const haveFields = [];
+      if (hasName) haveFields.push(`✅ Nombre: ${updatedOrder.customer_name}`);
+      if (hasAddress) haveFields.push(`✅ Dirección: ${updatedOrder.address}`);
+      if (hasPhone) haveFields.push(`✅ Teléfono: ${updatedOrder.phone}`);
       
-      const mensaje = tenemos.length > 0 
-        ? `✅ Ya tengo registrado:\n${tenemos.join("\n")}\n\n📝 Solo me falta: ${mensajeFaltante}\n\n📲 Enviámelo y confirmamos tu pedido ✨`
+      const mensaje = haveFields.length > 0
+        ? `✅ Ya tengo registrado:\n${haveFields.join("\n")}\n\n📝 Solo me falta:\n${missingFields.join("\n")}\n\n📲 Enviámelo y confirmamos tu pedido ✨`
         : `📎 Para agendar tu entrega necesito:\n\n✅ nombre y apellido\n✅ dirección exacta o ubicación por Google Maps\n✅ número de celular\n\n📲 Envialo TODO JUNTO o de a uno, voy registrando 😊`;
       
       return res.json({
