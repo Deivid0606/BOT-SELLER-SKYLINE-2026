@@ -742,6 +742,85 @@ function looksLikeAddressLine(line: string): boolean {
   return words.length >= 3;
 }
 
+// =======================================================
+// 🧠 EXTRACCIÓN DE DATOS DEL CLIENTE — VERSIÓN PERMISIVA
+// Acepta nombre+tel+dir juntos o por separado, mayúsc/minúsc,
+// teléfono pegado/con espacios/guiones, links de Google Maps, etc.
+// =======================================================
+
+const NON_NAME_WORDS = new Set([
+  "si", "sí", "no", "ok", "okay", "dale", "listo", "quiero", "compro",
+  "reservo", "confirmo", "gracias", "hola", "buenas", "buenos", "buen",
+  "dia", "día", "tarde", "noche", "promo", "oferta", "precio", "info",
+  "informacion", "información", "envio", "envío", "delivery", "pago",
+  "efectivo", "transferencia", "tarjeta", "como", "cómo", "cuanto",
+  "cuánto", "donde", "dónde", "cuando", "cuándo", "que", "qué",
+  "unidad", "unidades", "kit", "tornado", "destapa", "cañeria", "cañerias",
+  "caneria", "canerias",
+]);
+
+function stripPhonesFromText(text: string): string {
+  return text
+    .replace(/\+?595[\s\-().]*9\d{2}[\s\-().]*\d{3}[\s\-().]*\d{3}/g, " ")
+    .replace(/\b0?9\d{2}[\s\-().]*\d{3}[\s\-().]*\d{3}\b/g, " ")
+    .replace(/\b\d{6,}\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractPhonePY(text: string): string {
+  const compact = text.replace(/[()\-.\s]/g, "");
+  const patterns = [
+    /\+595(9\d{8})/,
+    /595(9\d{8})/,
+    /\b(09\d{8})\b/,
+    /\b(9\d{8})\b/,
+  ];
+  for (const re of patterns) {
+    const m = compact.match(re);
+    if (m) {
+      const digits = m[1];
+      return digits.startsWith("0") ? digits : "0" + digits;
+    }
+  }
+  return "";
+}
+
+function titleCaseName(s: string): string {
+  return s
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ")
+    .trim();
+}
+
+function looksLikeName(candidate: string): boolean {
+  const c = candidate.trim();
+  if (!c) return false;
+  if (c.length < 3 || c.length > 60) return false;
+  if (/\d/.test(c)) return false;
+  const words = c.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length < 1 || words.length > 4) return false;
+  if (words.every((w) => NON_NAME_WORDS.has(w))) return false;
+  if (extractCityFromText(normalize(c))) return false;
+  if (isProductName(c)) return false;
+  return true;
+}
+
+const ADDRESS_KEYWORDS_RE = /\b(calle|avenida|avda|av|ruta|km|casi|c\/|esq|esquina|entre|barrio|bo|compania|compañia|cia|manzana|mz|lote|lt|casa|numero|nro|n°|frente|cerca|detras|detrás|costado|al\s+lado|rca|republica|república|edificio|piso|departamento|depto|dpto|local|google|maps|maps\.app|goo\.gl|ubicacion|ubicación)\b/i;
+
+function looksLikeAddress(candidate: string): boolean {
+  const c = candidate.trim();
+  if (!c) return false;
+  if (c.length < 5 || c.length > 200) return false;
+  if (/https?:\/\/(maps\.app\.goo\.gl|goo\.gl\/maps|maps\.google|www\.google\.[^\/]+\/maps)/i.test(c)) return true;
+  if (ADDRESS_KEYWORDS_RE.test(c)) return true;
+  const words = c.split(/\s+/).filter((w) => w.length > 1);
+  if (words.length >= 3 && !isProductName(c)) return true;
+  return false;
+}
+
 function extractData(
   msg: string,
   currentStep?: string,
@@ -750,84 +829,90 @@ function extractData(
 ) {
   const text = clean(msg);
   const norm = normalize(text);
-  
-  // Si es solo una cantidad, no extraer como nombre/dirección
-  if (/^\d{1,3}$/.test(norm) || /^\d{1,3}\s*(unidad|unidades|u|kit)$/.test(norm)) {
-    return { quantity: 0, shoe_size: "", city: "", name: "", phone: "", address: "" };
+
+  const empty = { quantity: 0, shoe_size: 0, city: "", name: "", phone: "", address: "" };
+
+  if (/^\d{1,3}$/.test(norm) || /^\d{1,3}\s*(unidad|unidades|u|kit)s?$/.test(norm)) {
+    return { ...empty };
   }
-  
-  // Si es solo "si" o "quiero", no extraer
-  if (/^(si|sí|quiero|compro|reservo|confirmo|dale|ok|listo)$/.test(norm)) {
-    return { quantity: 0, shoe_size: "", city: "", name: "", phone: "", address: "" };
+  if (/^(si|sí|quiero|compro|reservo|confirmo|dale|ok|listo|gracias|hola)$/.test(norm)) {
+    return { ...empty };
   }
-  
-  // Si es información o catálogo, no extraer
   if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
-    return { quantity: 0, shoe_size: "", city: "", name: "", phone: "", address: "" };
+    return { ...empty };
   }
-  
-  // Extraer teléfono - formato paraguayo
-  const compactText = text.replace(/[()\-.\s]/g, "");
-  let phone = "";
-  const phoneMatch = compactText.match(/(09\d{8}|5959\d{8}|\+595\d{9})/);
-  if (phoneMatch) {
-    phone = phoneMatch[0];
-    if (phone.startsWith("5959")) phone = "0" + phone.slice(3);
-    if (phone.startsWith("+595")) phone = "0" + phone.slice(4);
-  }
-  
-  // Extraer ciudad
-  let city = extractCityFromText(norm);
-  
-  // Extraer nombre - si es solo texto sin números y no es producto
+
+  // ---------- TELÉFONO ----------
+  const phone = extractPhonePY(text);
+
+  // ---------- TEXTO SIN TELÉFONO ----------
+  const textNoPhone = stripPhonesFromText(text);
+
+  // ---------- CIUDAD ----------
+  const city = extractCityFromText(norm);
+
+  // ---------- NOMBRE ----------
   let name = "";
-  const isLikelyName = /^[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+$/;
-  if (isLikelyName.test(text) && !isProductName(text) && !city && !phone && text.length < 50) {
-    name = text;
-  }
-  
-  // Extraer dirección - si contiene palabras clave de dirección
-  let address = "";
-  const addressKeywords = /\b(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio|manzana|mz|lote|casa|numero|nro|frente|cerca|detras|costado|rca|república|colombia|españa|caballero|san|santa|padre)\b/i;
-  if (addressKeywords.test(text) && text.length > 5 && !phone && !city && text.length < 150) {
-    address = text;
-  }
-  
-  // Si no se detectó dirección pero el texto parece una ubicación
-  if (!address && text.length > 8 && text.length < 120 && !phone && !isLikelyName.test(text) && !isProductName(text)) {
-    const words = text.split(" ").filter(w => w.length > 2);
-    if (words.length >= 3) {
-      address = text;
+  const nameMatch = textNoPhone.match(
+    /^([A-Za-zÁÉÍÓÚÑÜáéíóúñü]{2,}(?:\s+[A-Za-zÁÉÍÓÚÑÜáéíóúñü]{2,}){0,3})\b/
+  );
+  if (nameMatch) {
+    const candidates = nameMatch[1].split(/\s+/);
+    for (let take = Math.min(candidates.length, 4); take >= 1; take--) {
+      const cand = candidates.slice(0, take).join(" ");
+      if (looksLikeName(cand)) {
+        name = titleCaseName(cand);
+        break;
+      }
     }
   }
-  
+
+  // ---------- DIRECCIÓN ----------
+  let address = "";
+  let remainder = textNoPhone;
+  if (name) {
+    const idx = textNoPhone.toLowerCase().indexOf(name.toLowerCase());
+    if (idx >= 0) {
+      remainder = textNoPhone.slice(idx + name.length).trim();
+    }
+  }
+  remainder = remainder.replace(/^[\s,;:.\-—|/]+/, "").trim();
+
+  if (looksLikeAddress(remainder)) {
+    address = remainder;
+  } else if (!name && looksLikeAddress(textNoPhone)) {
+    address = textNoPhone;
+  }
+
+  // Si quedó solo un nombre (sin tel ni dir)
+  if (!name && !address && !phone && looksLikeName(textNoPhone)) {
+    name = titleCaseName(textNoPhone);
+  }
+
+  // ---------- CANTIDAD ----------
   let quantity = 0;
   if (forceQuantityMode || currentStep === "collecting_quantity") {
-    const onlyNumber = norm.match(/^\s*(\d{1,3})\s*$/);
-    if (onlyNumber) {
-      quantity = Number(onlyNumber[1]);
-    } else {
-      const qMatch = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
-      if (qMatch) quantity = Number(qMatch[1]);
-    }
+    const fromAny = extractQuantityFromAnyText(text);
+    quantity = fromAny.quantity;
   }
-  
+
+  // ---------- TALLE ----------
   let shoe_size = 0;
   if (forceShoeSizeMode || currentStep === "collecting_shoe_size") {
-    const shoeSizeMatch = norm.match(/\b(?:talle|numero|nro|num|uso|calzo|soy|en|del|de|para)\s*(\d{2})\b/);
+    const shoeSizeMatch = norm.match(/\b(?:talle|numero|nro|num|uso|calzo|soy|en|del|de|para)?\s*(\d{2})\b/);
     if (shoeSizeMatch) {
       const size = Number(shoeSizeMatch[1]);
       if (size >= 20 && size <= 50) shoe_size = size;
     }
   }
-  
+
   return {
     quantity: Math.min(quantity, 999),
-    shoe_size: shoe_size,
-    city: city,
-    name: name,
-    phone: phone,
-    address: address,
+    shoe_size,
+    city,
+    name,
+    phone,
+    address,
   };
 }
 
