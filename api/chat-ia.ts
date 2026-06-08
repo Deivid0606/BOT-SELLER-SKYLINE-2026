@@ -275,7 +275,8 @@ function getDestapaCañeriasProductName(): string {
 }
 
 // =======================================================
-// 🧮 CÁLCULO DE TOTALES - SOLO DESDE ENTRENAMIENTO
+// 🧮 CÁLCULO DE TOTALES - EXCLUSIVAMENTE DEL ENTRENAMIENTO
+// NUNCA inventa precios. Si no encuentra, retorna null.
 // =======================================================
 
 function parseGsAmount(text: string): number {
@@ -291,8 +292,8 @@ function calculateTotal(product: string, quantity: number, training: string): nu
   const lines = training.split("\n").map((l) => clean(l)).filter(Boolean);
 
   let bestMatchScore = 0;
-  let bestUnitPrice = 0;
-  let bestPromoPrice = 0;
+  let bestUnitPrice: number | null = null;
+  let bestPromoPrice: number | null = null;
   let bestPromoQuantity = 0;
 
   for (let i = 0; i < lines.length; i++) {
@@ -314,10 +315,7 @@ function calculateTotal(product: string, quantity: number, training: string): nu
     // Buscar precios en las líneas cercanas
     const windowStart = Math.max(0, i - 3);
     const windowEnd = Math.min(lines.length, i + 8);
-    let foundUnit = 0;
-    let foundPromo = 0;
-    let foundPromoQty = 0;
-
+    
     for (let j = windowStart; j < windowEnd; j++) {
       const line = lines[j];
       const nLine = normalize(line);
@@ -331,40 +329,46 @@ function calculateTotal(product: string, quantity: number, training: string): nu
       if (promoMatch) {
         const promoQty = parseInt(promoMatch[1]);
         const promoAmount = parseGsAmount(promoMatch[2] || line);
-        if (promoQty === quantity && promoAmount && !foundPromo) {
-          foundPromo = promoAmount;
-          foundPromoQty = promoQty;
+        if (promoQty === quantity && promoAmount) {
+          if (matchScore > bestMatchScore || (matchScore === bestMatchScore && !bestPromoPrice)) {
+            bestPromoPrice = promoAmount;
+            bestPromoQuantity = promoQty;
+            bestMatchScore = matchScore;
+          }
         }
         continue;
       }
 
       // Precio unitario (formato: "145.000 Gs", "Gs. 145.000", "$ 145.000")
-      if (!foundUnit && /(?:Gs\.?|₲|\$)\s*[\d\.]+|[\d\.]+\s*(?:Gs\.?|₲)/i.test(line)) {
-        foundUnit = amount;
+      if (!bestUnitPrice && /(?:Gs\.?|₲|\$)\s*[\d\.]+|[\d\.]+\s*(?:Gs\.?|₲)/i.test(line)) {
+        if (matchScore > bestMatchScore || (matchScore === bestMatchScore && !bestUnitPrice)) {
+          bestUnitPrice = amount;
+          bestMatchScore = matchScore;
+        }
       }
       
-      // Si el número está cerca del nombre del producto
-      if (Math.abs(j - i) <= 2 && !foundUnit) {
-        foundUnit = amount;
+      // Si el número está muy cerca del nombre del producto
+      if (!bestUnitPrice && Math.abs(j - i) <= 2) {
+        if (matchScore > bestMatchScore || (matchScore === bestMatchScore && !bestUnitPrice)) {
+          bestUnitPrice = amount;
+          bestMatchScore = matchScore;
+        }
       }
-    }
-
-    if (matchScore > bestMatchScore) {
-      bestMatchScore = matchScore;
-      bestUnitPrice = foundUnit;
-      bestPromoPrice = foundPromo;
-      bestPromoQuantity = foundPromoQty;
     }
   }
 
-  // Si encontramos promo para la cantidad exacta
-  if (bestPromoPrice && quantity === bestPromoQuantity) return bestPromoPrice;
-  if (bestPromoPrice && quantity === 2 && bestPromoQuantity === 2) return bestPromoPrice;
+  // Priorizar promo si existe para la cantidad exacta
+  if (bestPromoPrice && quantity === bestPromoQuantity) {
+    return bestPromoPrice;
+  }
   
-  // Si encontramos precio unitario
-  if (bestUnitPrice) return bestUnitPrice * quantity;
+  // Si no hay promo, usar precio unitario
+  if (bestUnitPrice !== null) {
+    return bestUnitPrice * quantity;
+  }
 
-  console.warn(`⚠️ No se encontró precio para: ${product}, cantidad: ${quantity}`);
+  // NUNCA inventar precio - retornar null explícitamente
+  console.warn(`⚠️ NO se encontró precio en el entrenamiento para: "${product}", cantidad: ${quantity}`);
   return null;
 }
 
@@ -373,7 +377,7 @@ function getProductPrice(product: string, quantity: number, training: string): n
 }
 
 // =======================================================
-// 🎯 DETECCIÓN DE PRODUCTO - PRIORIZA ENTRENAMIENTO
+// 🎯 DETECCIÓN DE PRODUCTO - SOLO DEL ENTRENAMIENTO
 // =======================================================
 
 function detectProductRaw(
@@ -385,7 +389,7 @@ function detectProductRaw(
 ) {
   const msg = normalize(text);
   
-  // PRIMERO: Buscar coincidencias en el entrenamiento
+  // PRIMERO: Buscar coincidencias SOLO en el entrenamiento
   const trainingLines = training.split("\n").map(l => normalize(l)).filter(Boolean);
   
   let bestMatch = "";
@@ -430,7 +434,9 @@ function detectProductRaw(
   // Si encontramos en entrenamiento, usar eso
   if (bestMatch) return bestMatch;
   
-  // SEGUNDO: Fallback para productos comunes (solo el nombre, sin precios)
+  // SEGUNDO: Fallback SOLO para productos que NO tienen precio en el entrenamiento
+  // (esto es para detectar el nombre, pero los precios vendrán del entrenamiento después)
+  
   if (msg.includes("destapa") || msg.includes("cañeria") || msg.includes("tornado") ||
       msg.includes("desagüe") || msg.includes("tuberia")) {
     return getDestapaCañeriasProductName();
@@ -948,7 +954,7 @@ function normalizeOrderWithItems(order: any, training: string): any {
     return {
       product: i.product,
       quantity: qty,
-      total: recalculated || Number(i.total || 0),
+      total: recalculated !== null ? recalculated : Number(i.total || 0),
       shoe_size: i.shoe_size || "",
     };
   });
@@ -1053,15 +1059,21 @@ y agendamos tu entrega ✨`;
 
 // =======================================================
 // 🆕 RESPUESTA DE PRODUCTO CON PRECIOS DEL ENTRENAMIENTO
+// Si no encuentra precio, informa que falta en el entrenamiento
 // =======================================================
 
 function buildProductResponse(product: string, training: string): string {
   const unitPrice = getProductPrice(product, 1, training);
+  
+  if (unitPrice === null) {
+    return `${product} 😊\n\n⚠️ No encontré el precio de este producto en el entrenamiento.\n\nPor favor, asegurate de que el producto esté correctamente configurado en el sistema.\n\n📍 ¿Para qué ciudad sería el envío? (Confirmame igual y lo resolvemos)`;
+  }
+  
   const promoPrice = getProductPrice(product, 2, training);
   
-  let response = `${product} 😊\n\n💰 ${formatGs(unitPrice || 0)} Gs`;
+  let response = `${product} 😊\n\n💰 ${formatGs(unitPrice)} Gs`;
   
-  if (promoPrice && promoPrice !== (unitPrice || 0) * 2) {
+  if (promoPrice !== null && promoPrice !== unitPrice * 2) {
     response += `\n🔥 PROMO 2x → ${formatGs(promoPrice)} Gs`;
   }
   
@@ -1078,11 +1090,24 @@ function buildQuantityAfterCityResponse(product: string, city: string, training:
   const productName = formatProductWithShoeSize(product, shoeSize);
   
   const unitPrice = getProductPrice(product, 1, training);
+  
+  if (unitPrice === null) {
+    return `✅ Perfecto, enviamos a ${city} 😊
+
+📦 ${productName}
+
+⚠️ No encontré el precio de este producto en el entrenamiento.
+
+¿Cuántas UNIDADES querés? (Confirmame igual y lo resolvemos)
+
+Respondé con el número (1, 2, 3...)`;
+  }
+  
   const promoPrice = getProductPrice(product, 2, training);
   
-  let priceInfo = `💰 Precio: ${formatGs(unitPrice || 0)} Gs`;
+  let priceInfo = `💰 Precio: ${formatGs(unitPrice)} Gs`;
   
-  if (promoPrice && promoPrice !== (unitPrice || 0) * 2) {
+  if (promoPrice !== null && promoPrice !== unitPrice * 2) {
     priceInfo += `\n🔥 PROMO 2x → ${formatGs(promoPrice)} Gs`;
   }
   
@@ -1447,6 +1472,7 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 
 export default async function handler(req: any, res: any) {
   console.log("🔥 VERSION FINAL - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
+  console.log("🔥 LOS PRECIOS VIENEN EXCLUSIVAMENTE DEL ENTRENAMIENTO - NUNCA SE INVENTAN");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1736,7 +1762,11 @@ export default async function handler(req: any, res: any) {
       }
       
       const total = calculateTotal(product, orderData.quantity, fullTraining);
-      if (total) orderData.total_amount = total;
+      if (total !== null) {
+        orderData.total_amount = total;
+      } else {
+        console.warn(`⚠️ No se pudo calcular total para ${product} x${orderData.quantity}`);
+      }
       
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
       
@@ -1927,7 +1957,9 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     // Calcular total si hay producto y cantidad
     if (orderData.product && orderData.quantity > 0) {
       const calculated = calculateTotal(orderData.product, orderData.quantity, fullTraining);
-      if (calculated) orderData.total_amount = calculated;
+      if (calculated !== null) {
+        orderData.total_amount = calculated;
+      }
     }
 
     const finalTipoCobertura = getTipoCobertura(orderData.city) || previousTipoCobertura || "";
@@ -1963,6 +1995,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
 Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento oficial del usuario.
 
 REGLA FUNDAMENTAL: Los precios los sacás SIEMPRE del entrenamiento. NUNCA inventes ni asumas precios.
+Si el entrenamiento no tiene un precio, decí que no encontraste el precio.
 
 FLUJO DE VENTAS (RESPETAR ESTRICTAMENTE):
 1. Cliente dice producto → preguntar CIUDAD (ej: "📍 ¿Para qué ciudad querés el envío?")
