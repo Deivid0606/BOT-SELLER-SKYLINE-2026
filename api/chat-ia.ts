@@ -26,6 +26,58 @@ function getTornadoProductName(): string {
 }
 
 // =======================================================
+// 🧠 EXTRACCIÓN DE CANTIDAD - CUALQUIER FORMATO
+// =======================================================
+function extractQuantityFromAnyText(text: string): { quantity: number; isPromo: boolean } {
+  const n = normalize(text);
+  
+  // Detectar "la promo" → 2 unidades
+  if (/\b(la\s+promo|promo|2x|2\s*unidades\s+promo)\b/i.test(n)) {
+    return { quantity: 2, isPromo: true };
+  }
+  
+  // Palabras escritas: una, dos, tres, cuatro, cinco
+  const wordMap: Record<string, number> = {
+    "una": 1, "un": 1, "uno": 1,
+    "dos": 2, "dos unidades": 2,
+    "tres": 3, "cuatro": 4, "cinco": 5,
+    "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10
+  };
+  
+  for (const [word, qty] of Object.entries(wordMap)) {
+    if (n.includes(word)) {
+      return { quantity: qty, isPromo: false };
+    }
+  }
+  
+  // Extraer cualquier número del texto (1-999)
+  const numberMatch = n.match(/\b(\d{1,3})\b/);
+  if (numberMatch) {
+    const qty = parseInt(numberMatch[1], 10);
+    if (qty >= 1 && qty <= 999) {
+      return { quantity: qty, isPromo: false };
+    }
+  }
+  
+  return { quantity: 0, isPromo: false };
+}
+
+// =======================================================
+// 🧠 DETECTAR SI EL CLIENTE ESTÁ RESPONDIENDO CANTIDAD
+// =======================================================
+function isUserRespondingWithQuantity(text: string, previousStep: string, history: any[]): boolean {
+  const n = normalize(text);
+  const quantityResult = extractQuantityFromAnyText(text);
+  
+  if (quantityResult.quantity > 0) return true;
+  if (previousStep === "collecting_quantity") return true;
+  if (botWasAskingQuantity(history)) return true;
+  if (/\b(si|sí|quiero|dale|ok|listo|confirmo)\b/i.test(n) && botWasAskingQuantity(history)) return true;
+  
+  return false;
+}
+
+// =======================================================
 // 🧠 GUARDRAILS DETERMINÍSTICOS
 // =======================================================
 function hasExplicitProductMention(text: string): boolean {
@@ -604,7 +656,8 @@ function botWasAskingQuantity(history: any[]) {
     lastAssistantMessage.includes("cuantas te gustaria") ||
     lastAssistantMessage.includes("cuántas unidades") ||
     lastAssistantMessage.includes("responde con el numero") ||
-    lastAssistantMessage.includes("cuántas unidades te gustaría llevar")
+    lastAssistantMessage.includes("cuántas unidades te gustaría llevar") ||
+    lastAssistantMessage.includes("cuántas unidades te gustaría llevar?")
   );
 }
 
@@ -761,7 +814,6 @@ function extractData(
     }
   }
 
-  // ✅ VALIDACIÓN: No tomar "Solo 1 unidad" como dirección
   if (address && /^\s*(solo\s+)?\d{1,3}\s*(unidad|unidades|u|kit|kits)?\s*$/i.test(normalize(address))) {
     address = "";
   }
@@ -1036,7 +1088,6 @@ function buildAutoConfirmResponse(order: any): string {
   const quantity = safeQuantity(order.quantity);
   const total = formatGs(order.total_amount);
   
-  // ✅ Asegurar que la dirección sea válida, no un texto de cantidad
   const direccionValida = clean(order.address || "");
   const ubicacion = direccionValida && direccionValida.length > 5 
     ? `${clean(order.city)} — ${direccionValida}`
@@ -1685,7 +1736,7 @@ function isOldConversation(history: any[]): boolean {
 // 🚀 HANDLER PRINCIPAL
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL v7.0 - CORREGIDA CONFIRMACION Y SIN BUCLE");
+  console.log("🔥 VERSION FINAL v8.0 - DETECTA CUALQUIER FORMATO DE CANTIDAD");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1746,9 +1797,19 @@ export default async function handler(req: any, res: any) {
     const normalizedText = normalize(texto);
     const previousStep = clean(context?.step || "");
 
-    const isQuantityIntentWithNumber = /^(quiero|llevo|dame|compro|comprar|mandame|reservame|reserva|si|dale|ok|listo|confirmo|acepto)(\s+(quiero|llevo|dame|compro|comprar|mandame|reservame|reserva))?\s+\d{1,3}$/i.test(normalizedText);
-    const isPlainNumber = /^\d{1,3}$/.test(normalizedText);
-    const isBuyIntentWithNumber = isQuantityIntentWithNumber || (isPlainNumber && (previousStep === "collecting_quantity" || botWasAskingQuantity(history || [])));
+    // =======================================================
+    // 🔢 DETECTAR CANTIDAD - CUALQUIER FORMATO
+    // =======================================================
+    const quantityResult = extractQuantityFromAnyText(texto);
+    const isUserSendingQuantity = isUserRespondingWithQuantity(texto, previousStep, history || []);
+    const isPromo = quantityResult.isPromo;
+    let detectedQuantity = quantityResult.quantity;
+
+    if (!detectedQuantity && isUserSendingQuantity && botWasAskingQuantity(history || [])) {
+      detectedQuantity = 1;
+    }
+
+    if (isPromo) detectedQuantity = 2;
 
     const recentConversationText = getRecentConversationText(texto, history || []);
     const recentAdProduct = detectPriorityProductFromRecentText(recentConversationText);
@@ -1762,7 +1823,7 @@ export default async function handler(req: any, res: any) {
     const activeProduct = safeProductName(oldOrder?.product || context?.current_product || lastUserProduct || recentAdProduct || "");
 
     let product = "";
-    if (recentAdProduct && (isInformationRequest(texto) || isPriceIntent(texto) || isQuantityIntentWithNumber || normalizedText.includes("hola"))) {
+    if (recentAdProduct && (isInformationRequest(texto) || isPriceIntent(texto) || detectedQuantity > 0 || normalizedText.includes("hola"))) {
       product = recentAdProduct;
     } else if (/tornado|wild\s*tornado|destapa|cañer|caner|tuber|desag/i.test(normalizedText)) {
       product = getTornadoProductName();
@@ -1922,12 +1983,11 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🛒 Cliente quiere X unidades (compra directa)
+    // 🛒 Cliente quiere X unidades (compra directa) - CUALQUIER FORMATO
     // =======================================================
-    if (isQuantityIntentWithNumber) {
+    if (detectedQuantity > 0 && !oldOrder?.city && (previousStep !== "collecting_quantity" || isUserSendingQuantity)) {
       const finalProduct = product || activeProduct || recentAdProduct || lastUserProduct || oldOrder?.product || "";
-      const quantity = safeQuantity(texto.match(/\d{1,3}/)?.[0] || 1) || 1;
-
+      
       if (!finalProduct) {
         return res.json({
           response: "😊 ¿Qué producto querés llevar? Así te paso el precio correcto y agendamos.",
@@ -1936,7 +1996,7 @@ export default async function handler(req: any, res: any) {
         });
       }
 
-      const total = getSafeTotal(finalProduct, quantity, fullTraining);
+      const total = getSafeTotal(finalProduct, detectedQuantity, fullTraining);
       if (!total || total <= 0) {
         return res.json({
           response: buildMissingPriceResponse(finalProduct),
@@ -1954,7 +2014,7 @@ export default async function handler(req: any, res: any) {
       const orderData = {
         ...emptyOrder(),
         product: finalProduct,
-        quantity,
+        quantity: detectedQuantity,
         total_amount: total,
       };
 
@@ -1967,7 +2027,7 @@ export default async function handler(req: any, res: any) {
           current_product: finalProduct,
           last_user_product: finalProduct,
           step: "collecting_city",
-          pending_quantity: quantity,
+          pending_quantity: detectedQuantity,
           order_data: orderData,
           updated_at: new Date().toISOString(),
         },
@@ -2019,7 +2079,7 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 📦 Producto mencionado sin compra directa - mostrar info y preguntar ciudad
     // =======================================================
-    if (product && !oldOrder?.city && !isBuyIntentWithNumber && !isConfirmWord) {
+    if (product && !oldOrder?.city && detectedQuantity === 0 && !isConfirmWord) {
       const unit = getAuthoritativeUnitPrice(product, fullTraining);
       if (!unit || unit <= 0) {
         return res.json({
@@ -2058,14 +2118,10 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🔢 Cantidad cuando el bot preguntó cantidad
+    // 🔢 Cantidad cuando el bot preguntó cantidad - CUALQUIER FORMATO
     // =======================================================
-    const quantityMatch = normalizedText.match(/^(\d{1,3})$|^(\d{1,3})\s*(unidad|unidades|u|kit|kits)$/i);
-    const isQuantityReply = !!quantityMatch && (previousStep === "collecting_quantity" || botWasAskingQuantity(history || []));
-
-    if (isQuantityReply && oldOrder?.product && oldOrder?.city) {
-      const quantity = safeQuantity(quantityMatch[1] || quantityMatch[2] || 1) || 1;
-      const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
+    if (detectedQuantity > 0 && oldOrder?.product && oldOrder?.city && (previousStep === "collecting_quantity" || botWasAskingQuantity(history || []))) {
+      const total = getSafeTotal(oldOrder.product, detectedQuantity, fullTraining);
 
       if (!total || total <= 0) {
         return res.json({
@@ -2075,7 +2131,7 @@ export default async function handler(req: any, res: any) {
         });
       }
 
-      const orderData = { ...oldOrder, quantity, total_amount: total };
+      const orderData = { ...oldOrder, quantity: detectedQuantity, total_amount: total };
       await safeUpsertOrder(user_id, fromNumber, orderData, false, "collecting_name");
 
       return res.json({
@@ -2114,7 +2170,7 @@ export default async function handler(req: any, res: any) {
     // 🧾 Datos del cliente (nombre, dirección, teléfono)
     // =======================================================
     let extracted: any = { name: "", phone: "", address: "", city: "", quantity: 0, shoe_size: 0 };
-    if (!isBuyIntentWithNumber && !isPriceIntent(texto) && !isCatalogQuery(texto) && !isConfirmWord) {
+    if (detectedQuantity === 0 && !isPriceIntent(texto) && !isCatalogQuery(texto) && !isConfirmWord) {
       extracted = extractData(texto, previousStep, false, false);
     }
 
