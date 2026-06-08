@@ -1439,19 +1439,181 @@ function isNewConversation(text: string, history: any[]): boolean {
   return noHistory || newConversationMarkers.test(n);
 }
 
+
+// =======================================================
+// 🛡️ FIX PRECIO / CONFIRMACIÓN SEGURA v5
+// =======================================================
+function getAuthoritativeUnitPrice(product: string, training: string): number | null {
+  const p = normalize(product);
+  if (!p) return null;
+
+  // Producto protegido: nunca sale 0, nunca se inventa.
+  if (p.includes("tornado") || p.includes("destapa")) return TORNADO_PRICE;
+
+  // Buscar precio en entrenamiento activo, por ventana cercana al nombre del producto.
+  const lines = training.split("\n").map((l) => clean(l)).filter(Boolean);
+  let bestScore = 0;
+  let bestPrice = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineNorm = normalize(lines[i]);
+    let score = 0;
+
+    if (lineNorm.includes(p)) score += 50;
+    const productWords = p.split(" ").filter((w) => w.length >= 4);
+    for (const w of productWords) if (lineNorm.includes(w)) score += 8;
+
+    if (!score) continue;
+
+    const window = lines.slice(i, i + 8);
+    for (const wLine of window) {
+      const amount = parseGsAmount(wLine);
+      if (amount > 0 && score > bestScore) {
+        bestScore = score;
+        bestPrice = amount;
+      }
+    }
+  }
+
+  return bestPrice > 0 ? bestPrice : null;
+}
+
+function getSafeTotal(product: string, quantity: any, training: string): number | null {
+  const q = safeQuantity(quantity);
+  if (!product || q < 1) return null;
+
+  const calculated = calculateTotal(product, q, training);
+  if (calculated && calculated > 0) return calculated;
+
+  const unit = getAuthoritativeUnitPrice(product, training);
+  if (!unit || unit <= 0) return null;
+
+  return unit * q;
+}
+
+function hasSafePrice(product: string, quantity: any, training: string): boolean {
+  const total = getSafeTotal(product, quantity, training);
+  return !!total && total > 0;
+}
+
+function isOrderCompleteForConfirmation(order: any, training: string): boolean {
+  const hasProduct = !!safeProductName(order?.product);
+  const hasQuantity = safeQuantity(order?.quantity) > 0;
+  const hasCity = !!clean(order?.city);
+  const hasName = clean(order?.customer_name).length > 3;
+  const hasPhone = clean(order?.phone).length > 8;
+  const hasAddress = clean(order?.address).length > 5;
+  const hasPrice = hasSafePrice(order?.product, order?.quantity, training);
+  return hasProduct && hasQuantity && hasCity && hasName && hasPhone && hasAddress && hasPrice;
+}
+
+function buildMissingPriceResponse(product: string): string {
+  return `⚠️ Todavía no tengo el precio cargado para ${clean(product) || "este producto"}.
+
+No puedo confirmar el pedido ni calcular el total hasta que el precio esté configurado en el entrenamiento o catálogo.`;
+}
+
+function buildPriceResponse(product: string, training: string): string {
+  const productName = safeProductName(product) || getTornadoProductName();
+  const unit = getAuthoritativeUnitPrice(productName, training);
+
+  if (!unit || unit <= 0) return buildMissingPriceResponse(productName);
+
+  return `💰 ${productName} cuesta ${formatGs(unit)} Gs.
+
+🚚 Envío GRATIS contra-entrega en zonas con cobertura.
+💵 Pagás al recibir.
+
+¿Querés que te reserve 1 unidad? 😊`;
+}
+
+function buildInformationResponse(product: string, training: string): string {
+  const productName = safeProductName(product) || getTornadoProductName();
+  const unit = getAuthoritativeUnitPrice(productName, training);
+
+  if (normalize(productName).includes("tornado") || normalize(productName).includes("destapa")) {
+    return `Claro 😊
+
+💥 ${getTornadoProductName()}
+
+✅ Ayuda a destapar cañerías de cocina, baño y lavadero
+✅ Ayuda a eliminar malos olores
+✅ Fórmula de acción rápida
+✅ Fácil aplicación
+✅ Ideal para mantenimiento del hogar
+
+💰 Precio: ${formatGs(TORNADO_PRICE)} Gs
+🚚 Envío GRATIS contra-entrega en zonas con cobertura
+💵 Pagás al recibir
+
+¿Querés que te reserve 1 unidad? 🔥`;
+  }
+
+  if (!unit || unit <= 0) return buildMissingPriceResponse(productName);
+
+  return `Claro 😊
+
+📦 ${productName}
+💰 Precio: ${formatGs(unit)} Gs
+🚚 Envío GRATIS contra-entrega en zonas con cobertura
+💵 Pagás al recibir
+
+¿Querés que te reserve 1 unidad?`;
+}
+
+function buildSafeOrderSummaryResponse(order: any, tipoCobertura: string, training: string): string {
+  const q = safeQuantity(order?.quantity);
+  const total = getSafeTotal(order?.product, q, training);
+  if (!total || total <= 0) return buildMissingPriceResponse(order?.product);
+
+  const safeOrder = { ...order, quantity: q, total_amount: total };
+  return buildOrderSummaryResponse(safeOrder, tipoCobertura);
+}
+
+function buildSafeAutoConfirmResponse(order: any, training: string): string {
+  const q = safeQuantity(order?.quantity);
+  const total = getSafeTotal(order?.product, q, training);
+
+  if (!total || total <= 0) return buildMissingPriceResponse(order?.product);
+  if (!isOrderCompleteForConfirmation({ ...order, quantity: q, total_amount: total }, training)) {
+    return `⚠️ Todavía faltan datos para confirmar el pedido.
+
+Necesito:
+✅ Producto
+✅ Cantidad
+✅ Ciudad
+✅ Nombre y apellido
+✅ Dirección exacta
+✅ Número de celular
+✅ Precio válido`;
+  }
+
+  return buildAutoConfirmResponse({ ...order, quantity: q, total_amount: total });
+}
+
+function buildDataRequestByMissing(order: any): string {
+  const hasName = clean(order?.customer_name).length > 3;
+  const hasPhone = clean(order?.phone).length > 8;
+  const hasAddress = clean(order?.address).length > 5;
+
+  if (!hasName) return "😊 ¿Me pasás tu nombre y apellido completo?";
+  if (!hasAddress) return "📍 ¿Me pasás tu dirección exacta o ubicación por Google Maps?";
+  if (!hasPhone) return "📲 ¿Me pasás tu número de celular? (Ej: 0981 123 456)";
+  return "✅ Ya tengo tus datos. ¿Confirmás el pedido?";
+}
+
 // =======================================================
 // 🚀 HANDLER PRINCIPAL
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL v4 - FIX COMPLETO QUIERO 1");
+  console.log("🔥 VERSION FINAL v5 - PRECIO SEGURO / SIN TOTAL 0 / SIN CONFIRMACIÓN FALSA");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    const { user_id, message, from_number, context, history, media_url, media_type, mime_type } =
-      req.body;
+    const { user_id, message, from_number, context, history, media_url, media_type, mime_type } = req.body;
 
     let texto = clean(message);
     const fromNumber = clean(from_number);
@@ -1483,51 +1645,33 @@ export default async function handler(req: any, res: any) {
       .maybeSingle();
 
     const fullTraining = clean(trainingRow?.response);
-    const expectedReceiverName = extractBankReceiverFromTraining(fullTraining);
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    let lastUserProduct = context?.last_user_product || "";
-    if (!isValidProductString(lastUserProduct)) lastUserProduct = "";
-
     const normalizedText = normalize(texto);
+    const previousStep = clean(context?.step || "");
 
-    // ✅ Detectar intent de compra con número (ej: "quiero 1", "llevo 2", "dame 3")
-    const isQuantityIntentWithNumber = /^(quiero|llevo|dame|compro|comprar|mandame)\s+\d+$/i.test(normalizedText);
-    const isPlainNumber = /^\d+$/.test(normalizedText);
-    const isBuyIntentWithNumber = isQuantityIntentWithNumber || isPlainNumber;
+    const isQuantityIntentWithNumber = /^(quiero|llevo|dame|compro|comprar|mandame|reservame|reserva)\s+\d+$/i.test(normalizedText);
+    const isPlainNumber = /^\d{1,3}$/.test(normalizedText);
+    const isBuyIntentWithNumber = isQuantityIntentWithNumber || (isPlainNumber && (previousStep === "collecting_quantity" || botWasAskingQuantity(history || [])));
 
     const recentConversationText = getRecentConversationText(texto, history || []);
     const recentAdProduct = detectPriorityProductFromRecentText(recentConversationText);
 
     const dbOrder = await fetchLatestActiveOrder(user_id, fromNumber);
-    
-    let oldOrder;
-    if (dbOrder?.product) {
-      oldOrder = normalizeOrderWithItems(dbOrder, fullTraining);
-      console.log("♻️ Pedido recuperado desde Supabase:", oldOrder.product, oldOrder.city, oldOrder.quantity);
-    } else {
-      oldOrder = emptyOrder();
-    }
+    let oldOrder = dbOrder?.product ? normalizeOrderWithItems(dbOrder, fullTraining) : emptyOrder();
 
-    const previousStep = clean(context?.step || dbOrder?.status || "");
+    let lastUserProduct = context?.last_user_product || oldOrder?.product || recentAdProduct || "";
+    if (!isValidProductString(lastUserProduct)) lastUserProduct = "";
 
-    // =======================================================
-    // 🔥 DETECCIÓN DE PRODUCTO
-    // =======================================================
+    const activeProduct = safeProductName(oldOrder?.product || context?.current_product || lastUserProduct || recentAdProduct || "");
+
     let product = "";
-    const activeProduct = safeProductName(oldOrder?.product || context?.current_product || "");
-
-    const hasTornadoKeyword = /tornado|destapa|cañer|wild/i.test(normalizedText);
-
-    // Si el mensaje es "QUIERO 1" y hay un anuncio reciente de Tornado
-    if (isQuantityIntentWithNumber && recentAdProduct) {
+    if (recentAdProduct && (isInformationRequest(texto) || isPriceIntent(texto) || isQuantityIntentWithNumber || normalizedText.includes("hola"))) {
       product = recentAdProduct;
-      console.log("🎯 Producto por anuncio reciente + QUIERO X:", product);
-    } else if (hasTornadoKeyword) {
+    } else if (/tornado|wild\s*tornado|destapa|cañer|caner|tuber|desag/i.test(normalizedText)) {
       product = getTornadoProductName();
-      console.log("🔥 TORNADO por palabra clave");
-    } else if (!product) {
+    } else {
       product = detectProductRespectingActive(
         texto,
         fullTraining,
@@ -1540,122 +1684,185 @@ export default async function handler(req: any, res: any) {
     if (product && !isInvalidProductCandidate(product)) lastUserProduct = product;
 
     // =======================================================
-    // 🔥 FLUJO PRINCIPAL - ORDEN CORRECTO
+    // 🖼️ MEDIA: si es producto detectado por imagen, responder info/precio seguro.
     // =======================================================
-    
-    // 🔥 PASO 1: Si el mensaje es "QUIERO 1" o similar y hay producto detectado pero SIN CIUDAD
-    if (isBuyIntentWithNumber && product && !oldOrder?.city) {
-      console.log("📍 PASO 1: QUIERO X sin ciudad, preguntando ciudad. Producto:", product);
-      
-      // Extraer la cantidad del mensaje
-      const quantityMatch = texto.match(/\d+/);
-      const pendingQuantity = quantityMatch ? parseInt(quantityMatch[0]) : 1;
-      
-      const newOrder = {
-        product: product,
-        quantity: 0, // La cantidad se aplicará después de la ciudad
-        shoe_size: "",
-        city: "",
-        customer_name: "",
-        phone: "",
-        address: "",
-        items: [],
-        total_amount: product === getTornadoProductName() ? TORNADO_PRICE : 0,
-        confirmed: false,
-        confirm_count: 0,
-      };
-      
-      await safeUpsertOrder(user_id, fromNumber, newOrder, false);
+    if (mediaUrl && mediaType && /image|photo|media/i.test(mediaType)) {
+      const media = await fetchMediaAsBase64(mediaUrl);
+      if (media) {
+        const visual = await analyzeImageWithGemini({
+          apiKey,
+          model,
+          imageBase64: media.data,
+          mime: mimeHint || media.mime,
+          caption: texto,
+          productList: fullTraining,
+          expectedReceiverName: extractBankReceiverFromTraining(fullTraining),
+        });
 
-      return res.json({
-        response: buildCityQuestionResponse(product),
-        context: {
-          ...(context || {}),
-          current_product: product,
-          last_user_product: product,
-          step: "collecting_city",
-          pending_quantity: pendingQuantity,
-          order_data: newOrder,
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
+        if (visual.kind === "product") {
+          const visualProduct = safeProductName(visual.matchedProduct || visual.productName || product || recentAdProduct || "");
+          if (visualProduct) {
+            return res.json({
+              response: buildInformationResponse(visualProduct, fullTraining),
+              context: {
+                ...(context || {}),
+                current_product: visualProduct,
+                last_user_product: visualProduct,
+                step: "selling",
+                order_data: oldOrder,
+                updated_at: new Date().toISOString(),
+              },
+              is_payment_proof: false,
+            });
+          }
+        }
+      }
     }
-    
-    // 🔥 PASO 2: Producto detectado pero sin ciudad (sin número en el mensaje)
-    if (product && !oldOrder?.city && previousStep !== "collecting_city" && !isBuyIntentWithNumber) {
-      console.log("📍 PASO 2: Producto sin ciudad, preguntando ciudad. Producto:", product);
-      
-      const newOrder = {
-        product: product,
-        quantity: 0,
-        shoe_size: "",
-        city: "",
-        customer_name: "",
-        phone: "",
-        address: "",
-        items: [],
-        total_amount: product === getTornadoProductName() ? TORNADO_PRICE : 0,
-        confirmed: false,
-        confirm_count: 0,
-      };
-      
-      await safeUpsertOrder(user_id, fromNumber, newOrder, false);
+
+    // =======================================================
+    // 🧠 REGLA CRÍTICA: precio/info NO crea pedido, NO pide dirección, NO confirma.
+    // =======================================================
+    if (isPriceIntent(texto)) {
+      const priceProduct = product || activeProduct || recentAdProduct || lastUserProduct || oldOrder?.product || "";
+      if (priceProduct) {
+        return res.json({
+          response: buildPriceResponse(priceProduct, fullTraining),
+          context: {
+            ...(context || {}),
+            current_product: priceProduct,
+            last_user_product: priceProduct,
+            step: "selling",
+            order_data: oldOrder,
+            updated_at: new Date().toISOString(),
+          },
+          is_payment_proof: false,
+        });
+      }
 
       return res.json({
-        response: buildCityQuestionResponse(product),
-        context: {
-          ...(context || {}),
-          current_product: product,
-          last_user_product: product,
-          step: "collecting_city",
-          order_data: newOrder,
-          updated_at: new Date().toISOString(),
-        },
+        response: `💰 Decime qué producto te interesa y te paso el precio exacto 😊\n\nNo puedo inventar precios ni confirmar pedidos sin producto.`,
+        context: { ...(context || {}), step: "selling", updated_at: new Date().toISOString() },
         is_payment_proof: false,
       });
     }
 
+    if (isInformationRequest(texto) || isCatalogQuery(texto)) {
+      const infoProduct = product || activeProduct || recentAdProduct || lastUserProduct || oldOrder?.product || "";
+      if (infoProduct) {
+        return res.json({
+          response: buildInformationResponse(infoProduct, fullTraining),
+          context: {
+            ...(context || {}),
+            current_product: infoProduct,
+            last_user_product: infoProduct,
+            step: "selling",
+            order_data: oldOrder,
+            updated_at: new Date().toISOString(),
+          },
+          is_payment_proof: false,
+        });
+      }
+    }
+
     // =======================================================
-    // 🔥 RESPUESTA DE CIUDAD
+    // 📍 Si solo mandó ciudad sin producto, no armar pedido falso.
     // =======================================================
     const extractedCity = extractCityFromText(texto);
-    
-    // Solo procesar como ciudad si NO es un intent de compra con número
-    const isCityReply =
-      !!extractedCity &&
-      !isBuyIntentWithNumber &&
-      (previousStep === "collecting_city" || (oldOrder?.product && !oldOrder?.city));
+    if (extractedCity && !oldOrder?.product && !product) {
+      return res.json({
+        response: buildCoverageOnlyResponse(extractedCity),
+        context: { ...(context || {}), step: "selling", updated_at: new Date().toISOString() },
+        is_payment_proof: false,
+      });
+    }
 
-    if (isCityReply && extractedCity && oldOrder?.product) {
-      const finalProduct = oldOrder.product;
-      const city = extractedCity;
-      
-      // Recuperar cantidad pendiente
-      const pendingQuantity = context?.pending_quantity || 1;
+    // =======================================================
+    // 🛒 Cliente quiere X unidades: guardar producto + cantidad pendiente y pedir ciudad.
+    // =======================================================
+    if (isQuantityIntentWithNumber) {
+      const finalProduct = product || activeProduct || recentAdProduct || lastUserProduct || oldOrder?.product || "";
+      const quantity = safeQuantity(texto.match(/\d{1,3}/)?.[0] || 1) || 1;
 
-      console.log("📍 CIUDAD DETECTADA:", city);
-      console.log("📦 PRODUCTO:", finalProduct);
-      console.log("📦 CANTIDAD PENDIENTE:", pendingQuantity);
+      if (!finalProduct) {
+        return res.json({
+          response: "😊 ¿Qué producto querés llevar? Así te paso el precio correcto y agendamos.",
+          context: { ...(context || {}), step: "selling", updated_at: new Date().toISOString() },
+          is_payment_proof: false,
+        });
+      }
+
+      const total = getSafeTotal(finalProduct, quantity, fullTraining);
+      if (!total || total <= 0) {
+        return res.json({
+          response: buildMissingPriceResponse(finalProduct),
+          context: {
+            ...(context || {}),
+            current_product: finalProduct,
+            last_user_product: finalProduct,
+            step: "selling",
+            updated_at: new Date().toISOString(),
+          },
+          is_payment_proof: false,
+        });
+      }
 
       const orderData = {
-        ...oldOrder,
-        quantity: pendingQuantity,
-        city: city,
-        total_amount: finalProduct === getTornadoProductName() ? TORNADO_PRICE * pendingQuantity : 0,
+        ...emptyOrder(),
+        product: finalProduct,
+        quantity,
+        total_amount: total,
       };
 
-      await safeUpsertOrder(user_id, fromNumber, orderData, false);
+      await safeUpsertOrder(user_id, fromNumber, orderData, false, "collecting_city");
 
-      // Ir directo a pedir datos porque ya tenemos producto, ciudad y cantidad
       return res.json({
-        response: buildOrderSummaryResponse(orderData, getTipoCobertura(city)),
+        response: buildCityQuestionResponse(finalProduct),
         context: {
           ...(context || {}),
           current_product: finalProduct,
           last_user_product: finalProduct,
+          step: "collecting_city",
+          pending_quantity: quantity,
+          order_data: orderData,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    // =======================================================
+    // 📍 Respuesta de ciudad cuando ya existe producto.
+    // =======================================================
+    const isCityReply = !!extractedCity && (previousStep === "collecting_city" || (oldOrder?.product && !oldOrder?.city));
+    if (isCityReply && oldOrder?.product) {
+      const quantity = safeQuantity(context?.pending_quantity || oldOrder?.quantity || 1) || 1;
+      const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
+
+      if (!total || total <= 0) {
+        return res.json({
+          response: buildMissingPriceResponse(oldOrder.product),
+          context: { ...(context || {}), step: "selling", order_data: oldOrder, updated_at: new Date().toISOString() },
+          is_payment_proof: false,
+        });
+      }
+
+      const orderData = {
+        ...oldOrder,
+        city: extractedCity,
+        quantity,
+        total_amount: total,
+      };
+
+      await safeUpsertOrder(user_id, fromNumber, orderData, false, "collecting_name");
+
+      return res.json({
+        response: buildSafeOrderSummaryResponse(orderData, getTipoCobertura(extractedCity), fullTraining),
+        context: {
+          ...(context || {}),
+          current_product: orderData.product,
+          last_user_product: orderData.product,
           step: "collecting_name",
-          tipo_cobertura: getTipoCobertura(city),
+          tipo_cobertura: getTipoCobertura(extractedCity),
           order_data: orderData,
           pending_quantity: null,
           updated_at: new Date().toISOString(),
@@ -1665,93 +1872,115 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🔥 RESPUESTA DE CANTIDAD (cuando el bot preguntó cantidad)
+    // 📦 Producto mencionado sin compra directa: mostrar precio/info, no pedir ciudad todavía.
     // =======================================================
-    const quantityMatch = texto.match(/^(\d+)$|(\d+)\s*unidad/i);
-    const isQuantityReply = (previousStep === "collecting_quantity" && quantityMatch);
-
-    if (isQuantityReply && oldOrder?.product && oldOrder?.city) {
-      let quantity = 1;
-      if (quantityMatch?.[1]) quantity = parseInt(quantityMatch[1]);
-      else if (quantityMatch?.[2]) quantity = parseInt(quantityMatch[2]);
-
-      const orderData = {
-        ...oldOrder,
-        quantity: quantity,
-        total_amount: calculateTotal(oldOrder.product, quantity, fullTraining) || 
-                      (sameProduct(oldOrder.product, getTornadoProductName()) ? TORNADO_PRICE * quantity : 0),
-      };
-
-      await safeUpsertOrder(user_id, fromNumber, orderData, false);
-
-      return res.json({
-        response: buildOrderSummaryResponse(orderData, getTipoCobertura(orderData.city)),
-        context: {
-          ...(context || {}),
-          step: "collecting_name",
-          order_data: orderData,
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
-
-    // =======================================================
-    // 🔥 DATOS DEL CLIENTE → AUTO-CONFIRMAR
-    // =======================================================
-    // Solo extraer datos si NO es un intent de compra
-    let extracted = { name: "", phone: "", address: "", city: "", quantity: 0, shoe_size: 0 };
-    
-    if (!isBuyIntentWithNumber) {
-      extracted = extractData(texto, previousStep, false, false);
-    }
-
-    if ((extracted.name || extracted.phone || extracted.address) && oldOrder?.product && oldOrder?.city && safeQuantity(oldOrder?.quantity) > 0) {
-      const orderData = {
-        ...oldOrder,
-        customer_name: extracted.name || oldOrder.customer_name || "",
-        phone: extracted.phone || oldOrder.phone || "",
-        address: extracted.address || oldOrder.address || "",
-      };
-
-      const hasName = !!(orderData.customer_name && orderData.customer_name.length > 3);
-      const hasPhone = !!(orderData.phone && orderData.phone.length > 8);
-      const hasAddress = !!(orderData.address && orderData.address.length > 5);
-
-      if (hasName && hasPhone && hasAddress) {
-        orderData.confirmed = true;
-        await safeUpsertOrder(user_id, fromNumber, orderData, true, "confirmed");
-
-        console.log("✅ AUTO-CONFIRMADO:", orderData.customer_name, orderData.city);
-
+    if (product && !oldOrder?.city && !isBuyIntentWithNumber) {
+      const unit = getAuthoritativeUnitPrice(product, fullTraining);
+      if (!unit || unit <= 0) {
         return res.json({
-          response: buildAutoConfirmResponse(orderData),
+          response: buildMissingPriceResponse(product),
           context: {
             ...(context || {}),
-            step: "confirmed",
-            order_data: orderData,
+            current_product: product,
+            last_user_product: product,
+            step: "selling",
+            order_data: oldOrder,
             updated_at: new Date().toISOString(),
           },
           is_payment_proof: false,
         });
       }
 
-      await safeUpsertOrder(user_id, fromNumber, orderData, false);
-
-      let missingMsg = "";
-      if (!hasName) {
-        missingMsg = `😊 ¿Y tu nombre y apellido completo?`;
-      } else if (!hasPhone) {
-        missingMsg = `📲 ¿Y tu número de celular? (Ej: 0981 123 456)`;
-      } else if (!hasAddress) {
-        missingMsg = `📍 ¿Y tu dirección exacta o ubicación por Google Maps?`;
-      }
-
       return res.json({
-        response: missingMsg,
+        response: buildInformationResponse(product, fullTraining),
         context: {
           ...(context || {}),
-          step: hasName && hasPhone ? "collecting_address" : hasName ? "collecting_phone" : "collecting_name",
+          current_product: product,
+          last_user_product: product,
+          step: "selling",
+          order_data: { ...oldOrder, product, total_amount: unit },
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    // =======================================================
+    // 🔢 Cantidad cuando el bot preguntó cantidad.
+    // =======================================================
+    const quantityMatch = normalizedText.match(/^(\d{1,3})$|^(\d{1,3})\s*(unidad|unidades|u|kit|kits)$/i);
+    const isQuantityReply = !!quantityMatch && (previousStep === "collecting_quantity" || botWasAskingQuantity(history || []));
+
+    if (isQuantityReply && oldOrder?.product && oldOrder?.city) {
+      const quantity = safeQuantity(quantityMatch[1] || quantityMatch[2] || 1) || 1;
+      const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
+
+      if (!total || total <= 0) {
+        return res.json({
+          response: buildMissingPriceResponse(oldOrder.product),
+          context: { ...(context || {}), step: "selling", order_data: oldOrder, updated_at: new Date().toISOString() },
+          is_payment_proof: false,
+        });
+      }
+
+      const orderData = { ...oldOrder, quantity, total_amount: total };
+      await safeUpsertOrder(user_id, fromNumber, orderData, false, "collecting_name");
+
+      return res.json({
+        response: buildSafeOrderSummaryResponse(orderData, getTipoCobertura(orderData.city), fullTraining),
+        context: { ...(context || {}), step: "collecting_name", order_data: orderData, updated_at: new Date().toISOString() },
+        is_payment_proof: false,
+      });
+    }
+
+    // =======================================================
+    // 🧾 Datos del cliente. Solo confirmar si TODO está completo y precio válido.
+    // =======================================================
+    let extracted: any = { name: "", phone: "", address: "", city: "", quantity: 0, shoe_size: 0 };
+    if (!isBuyIntentWithNumber && !isPriceIntent(texto)) {
+      extracted = extractData(texto, previousStep, false, false);
+    }
+
+    if ((extracted.name || extracted.phone || extracted.address || extracted.city) && oldOrder?.product) {
+      const quantity = safeQuantity(oldOrder?.quantity || context?.pending_quantity || 1) || 1;
+      const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
+
+      if (!total || total <= 0) {
+        return res.json({
+          response: buildMissingPriceResponse(oldOrder.product),
+          context: { ...(context || {}), step: "selling", order_data: oldOrder, updated_at: new Date().toISOString() },
+          is_payment_proof: false,
+        });
+      }
+
+      const orderData = {
+        ...oldOrder,
+        quantity,
+        total_amount: total,
+        city: extracted.city || oldOrder.city || "",
+        customer_name: extracted.name || oldOrder.customer_name || "",
+        phone: extracted.phone || oldOrder.phone || fromNumber || "",
+        address: extracted.address || oldOrder.address || "",
+      };
+
+      if (isOrderCompleteForConfirmation(orderData, fullTraining)) {
+        orderData.confirmed = true;
+        await safeUpsertOrder(user_id, fromNumber, orderData, true, "confirmed");
+
+        return res.json({
+          response: buildSafeAutoConfirmResponse(orderData, fullTraining),
+          context: { ...(context || {}), step: "confirmed", order_data: orderData, updated_at: new Date().toISOString() },
+          is_payment_proof: false,
+        });
+      }
+
+      await safeUpsertOrder(user_id, fromNumber, orderData, false);
+
+      return res.json({
+        response: buildDataRequestByMissing(orderData),
+        context: {
+          ...(context || {}),
+          step: nextStep(orderData, getTipoCobertura(orderData.city), false),
           order_data: orderData,
           updated_at: new Date().toISOString(),
         },
@@ -1760,32 +1989,44 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🔥 CONFIRMACIÓN MANUAL EXPLÍCITA
+    // ✅ Confirmación manual: bloqueada si falta algo o total es 0.
     // =======================================================
-    if (isConfirmIntent(texto) && oldOrder?.customer_name && oldOrder?.city && safeQuantity(oldOrder?.quantity) > 0) {
-      oldOrder.confirmed = true;
-      await safeUpsertOrder(user_id, fromNumber, oldOrder, true, "confirmed");
+    if (isConfirmIntent(texto) && oldOrder?.product) {
+      const quantity = safeQuantity(oldOrder?.quantity || 1) || 1;
+      const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
+      const orderData = { ...oldOrder, quantity, total_amount: total || 0 };
+
+      if (!isOrderCompleteForConfirmation(orderData, fullTraining)) {
+        return res.json({
+          response: `⚠️ Todavía no puedo confirmar el pedido porque faltan datos o precio válido.\n\n${buildDataRequestByMissing(orderData)}`,
+          context: { ...(context || {}), step: nextStep(orderData, getTipoCobertura(orderData.city), false), order_data: orderData, updated_at: new Date().toISOString() },
+          is_payment_proof: false,
+        });
+      }
+
+      orderData.confirmed = true;
+      await safeUpsertOrder(user_id, fromNumber, orderData, true, "confirmed");
 
       return res.json({
-        response: buildAutoConfirmResponse(oldOrder),
-        context: {
-          ...(context || {}),
-          step: "confirmed",
-          order_data: oldOrder,
-          updated_at: new Date().toISOString(),
-        },
+        response: buildSafeAutoConfirmResponse(orderData, fullTraining),
+        context: { ...(context || {}), step: "confirmed", order_data: orderData, updated_at: new Date().toISOString() },
         is_payment_proof: false,
       });
     }
 
     // =======================================================
-    // 🔥 FALLBACK - GEMINI
+    // 🤖 FALLBACK Gemini con reglas estrictas: no confirmar, no inventar precio.
     // =======================================================
-    const system = `Asistente de ventas de Mega Todo Store.
-Producto especial: Destapa Cañerías Tornado - 159.900 Gs
-Flujo: Producto → Ciudad → Cantidad → Datos (nombre, dirección, teléfono) → Confirmar automáticamente
-Cuando el cliente manda nombre, dirección y teléfono juntos, confirmá el pedido directamente.
-Español paraguayo, con emojis.`;
+    const system = `Sos asistente de ventas de Mega Todo Store en Paraguay.
+
+REGLAS OBLIGATORIAS:
+- Nunca inventes precios.
+- Nunca confirmes pedidos.
+- Nunca digas Total 0 Gs.
+- Si preguntan precio, pedí el nombre del producto si no lo sabés.
+- Producto protegido: Destapa Cañerías Tornado cuesta 159.900 Gs.
+- Flujo real: producto + cantidad + ciudad + nombre + dirección + teléfono + precio válido. Solo el sistema confirma, vos no.
+- Respondé breve, en español paraguayo, con emojis.`;
 
     const contents = (history || [])
       .slice(-6)
@@ -1798,20 +2039,26 @@ Español paraguayo, con emojis.`;
     contents.push({ role: "user", parts: [{ text: texto }] });
 
     let response = await callGemini({
-      apiKey, model, system, contents,
-      temperature: iaConfig.temperature ?? 0.3,
-      maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
+      apiKey,
+      model,
+      system,
+      contents,
+      temperature: Math.min(Number(iaConfig.temperature ?? 0.2), 0.3),
+      maxTokens: Math.max(iaConfig.max_tokens ?? 0, 1024),
     });
 
-    if (!response) {
-      response = "😊 ¿En qué puedo ayudarte? Decime qué producto te interesa.";
+    if (!response) response = "😊 ¿Qué producto te interesa? Así te paso precio exacto y disponibilidad.";
+
+    // Blindaje final por si Gemini intenta confirmar o poner 0 Gs.
+    if (/pedido confirmado|total:\s*0|0\s*gs/i.test(response)) {
+      response = "😊 Decime qué producto te interesa y te paso el precio exacto. No puedo confirmar pedidos sin precio válido y datos completos.";
     }
 
     return res.json({
-      response: response,
+      response,
       context: {
         ...(context || {}),
-        current_product: oldOrder?.product || null,
+        current_product: oldOrder?.product || product || null,
         last_user_product: lastUserProduct || null,
         step: previousStep || "selling",
         order_data: oldOrder,
@@ -1819,7 +2066,6 @@ Español paraguayo, con emojis.`;
       },
       is_payment_proof: false,
     });
-
   } catch (error: any) {
     console.error("❌ chat-ia:", error);
     return res.status(500).json({ error: error.message || "Error interno" });
