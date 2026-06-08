@@ -1161,6 +1161,47 @@ async function safeUpsertOrder(
   }
 }
 
+
+async function fetchLatestActiveOrder(userId: string, from: string): Promise<any | null> {
+  try {
+    if (!userId || !from) return null;
+
+    const { data, error } = await supabase
+      .from("orders")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("from_number", from)
+      .in("status", [
+        "draft", "collecting_name", "collecting_city", "collecting_quantity",
+        "collecting_phone", "collecting_address", "waiting_payment_proof",
+        "payment_verified", "confirm_pending"
+      ])
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data) return null;
+
+    return {
+      product: data.product || data.producto || "",
+      quantity: safeQuantity(data.quantity),
+      shoe_size: data.shoe_size || "",
+      city: data.city || data.ciudad || "",
+      customer_name: data.customer_name || "",
+      phone: data.phone || "",
+      address: data.address || "",
+      items: [],
+      total_amount: Number(data.total_amount || 0),
+      confirmed: data.status === "confirmed",
+      confirm_count: 0,
+      status: data.status || "",
+    };
+  } catch (e) {
+    console.error("❌ fetchLatestActiveOrder:", e);
+    return null;
+  }
+}
+
 async function fetchMediaAsBase64(url: string): Promise<{ data: string; mime: string } | null> {
   try {
     const r = await fetch(url);
@@ -1368,24 +1409,29 @@ export default async function handler(req: any, res: any) {
     if (!isValidProductString(lastUserProduct)) lastUserProduct = "";
 
     const isNewChat = isNewConversation(texto, history || []);
+    const dbOrder = await fetchLatestActiveOrder(user_id, fromNumber);
+    const hasContextOrder = !!(context?.order_data?.product || context?.order_data?.city || context?.order_data?.quantity);
 
     let oldOrder;
-    if (isNewChat) {
+    if (hasContextOrder) {
+      oldOrder = normalizeOrderWithItems(context?.order_data || {}, fullTraining);
+      if (oldOrder?.product && !isValidProductString(oldOrder.product)) oldOrder.product = "";
+      oldOrder.confirmed = context?.order_data?.confirmed || false;
+      oldOrder.confirm_count = context?.order_data?.confirm_count || 0;
+    } else if (dbOrder?.product) {
+      oldOrder = normalizeOrderWithItems(dbOrder, fullTraining);
+      console.log("♻️ Pedido recuperado desde Supabase:", oldOrder.product, oldOrder.city, oldOrder.quantity);
+    } else {
       oldOrder = {
         product: "", quantity: 0, shoe_size: "", city: "",
         customer_name: "", phone: "", address: "", items: [], total_amount: 0,
         confirmed: false, confirm_count: 0,
       };
-      console.log("🔄 Nueva conversación");
-    } else {
-      oldOrder = normalizeOrderWithItems(context?.order_data || {}, fullTraining);
-      if (oldOrder?.product && !isValidProductString(oldOrder.product)) oldOrder.product = "";
-      oldOrder.confirmed = context?.order_data?.confirmed || false;
-      oldOrder.confirm_count = context?.order_data?.confirm_count || 0;
+      if (isNewChat) console.log("🔄 Nueva conversación");
     }
 
-    const previousStep = clean(context?.step);
-    const previousTipoCobertura = clean(context?.tipo_cobertura);
+    const previousStep = clean(context?.step || dbOrder?.status || "");
+    const previousTipoCobertura = clean(context?.tipo_cobertura || getTipoCobertura(oldOrder?.city || ""));
 
     // =======================================================
     // 🔥 DETECCIÓN DE TORNADO
@@ -1412,42 +1458,16 @@ export default async function handler(req: any, res: any) {
     if (product && !isInvalidProductCandidate(product)) lastUserProduct = product;
 
     // =======================================================
-    // 🔥 TORNADO SIN CIUDAD → PREGUNTAR CIUDAD (UNA SOLA VEZ)
-    // =======================================================
-    if (product === getTornadoProductName() && !oldOrder?.city) {
-      const newOrder = {
-        product: getTornadoProductName(),
-        quantity: 0, shoe_size: "", city: "",
-        customer_name: "", phone: "", address: "", items: [],
-        total_amount: TORNADO_PRICE, confirmed: false, confirm_count: 0,
-      };
-      await safeUpsertOrder(user_id, fromNumber, newOrder, false);
-      
-      return res.json({
-        response: buildCityQuestionResponse(getTornadoProductName()),
-        context: {
-          ...(context || {}),
-          current_product: getTornadoProductName(),
-          last_user_product: getTornadoProductName(),
-          step: "collecting_city",
-          tipo_cobertura: null,
-          order_data: newOrder,
-          last_topic: getTornadoProductName(),
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
-
-    // =======================================================
-    // 🔥 RESPUESTA DE CIUDAD - CAMBIAR STEP SÍ O SÍ
+    // 🔥 RESPUESTA DE CIUDAD - PRIMERO, PARA EVITAR BUCLE
     // =======================================================
     const extractedCity = extractCityFromText(texto);
-    const isCityReply = (previousStep === "collecting_city" && extractedCity) || 
-                        (extractedCity && !product && !/^\d+$/.test(texto));
+    const isCityReply =
+      !!extractedCity &&
+      !/^\d+$/.test(normalize(texto)) &&
+      (previousStep === "collecting_city" || !!oldOrder?.product || !!product);
     
-    if (isCityReply && extractedCity && (oldOrder?.product || product)) {
-      const finalProduct = oldOrder?.product || product || "";
+    if (isCityReply && extractedCity && (oldOrder?.product || product || lastUserProduct)) {
+      const finalProduct = oldOrder?.product || product || lastUserProduct || "";
       const city = extractedCity;
       
       console.log("📍 CIUDAD DETECTADA:", city);
@@ -1488,6 +1508,34 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
+    // 🔥 TORNADO SIN CIUDAD → PREGUNTAR CIUDAD SOLO UNA VEZ
+    // =======================================================
+    if (product === getTornadoProductName() && !oldOrder?.city && previousStep !== "collecting_city") {
+      const newOrder = {
+        product: getTornadoProductName(),
+        quantity: 0, shoe_size: "", city: "",
+        customer_name: "", phone: "", address: "", items: [],
+        total_amount: TORNADO_PRICE, confirmed: false, confirm_count: 0,
+      };
+      await safeUpsertOrder(user_id, fromNumber, newOrder, false);
+      
+      return res.json({
+        response: buildCityQuestionResponse(getTornadoProductName()),
+        context: {
+          ...(context || {}),
+          current_product: getTornadoProductName(),
+          last_user_product: getTornadoProductName(),
+          step: "collecting_city",
+          tipo_cobertura: null,
+          order_data: newOrder,
+          last_topic: getTornadoProductName(),
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    // =======================================================
     // 🔥 RESPUESTA DE CANTIDAD
     // =======================================================
     const quantityMatch = texto.match(/^(\d+)$|(\d+)\s*unidad|1\s*unidad/i);
@@ -1495,7 +1543,8 @@ export default async function handler(req: any, res: any) {
     
     if (isQuantityReply && (oldOrder?.product || product)) {
       let quantity = 1;
-      if (quantityMatch && quantityMatch[1]) quantity = parseInt(quantityMatch[1]);
+      if (quantityMatch?.[1]) quantity = parseInt(quantityMatch[1]);
+      else if (quantityMatch?.[2]) quantity = parseInt(quantityMatch[2]);
       
       const finalProduct = oldOrder?.product || product || "";
       const orderData = {
