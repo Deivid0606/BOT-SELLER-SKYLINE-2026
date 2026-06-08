@@ -1134,7 +1134,7 @@ async function safeUpsertOrder(
       .in("status", [
         "draft", "collecting_name", "collecting_city", "collecting_quantity",
         "collecting_phone", "collecting_address", "waiting_payment_proof",
-        "payment_verified", "confirm_pending", "confirmed",
+        "payment_verified", "confirm_pending",
       ])
       .order("created_at", { ascending: false })
       .limit(1)
@@ -1431,7 +1431,7 @@ function isNewConversation(text: string, history: any[]): boolean {
 // 🚀 HANDLER PRINCIPAL
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL v2 - QUIERO SOLO FIX + AUTOCONFIRM");
+  console.log("🔥 VERSION FINAL v3 - FIX QUIERO 1");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1480,29 +1480,26 @@ export default async function handler(req: any, res: any) {
 
     const normalizedText = normalize(texto);
 
-    // ✅ FIX 1: "QUIERO" solo o "QUIERO 1" activan el modo compra
+    // ✅ Detectar intent de compra con número (ej: "quiero 1", "llevo 2", "dame 3")
     const isGenericBuyIntent = /^(quiero|llevo|dame|compro|comprar|mandame)(\s+\d{1,3})?$/i.test(normalizedText);
-    const isGenericBuyQuantity = isGenericBuyIntent;
-
-    // Cantidad implícita en el mensaje de compra ("QUIERO 1" → 1)
-    const impliedQuantityMatch = normalizedText.match(/^(?:quiero|llevo|dame|compro|comprar|mandame)\s+(\d{1,3})$/i);
-    const impliedQuantity = impliedQuantityMatch ? parseInt(impliedQuantityMatch[1]) : 0;
+    const hasNumberInMessage = /\d/.test(texto);
+    const isQuantityIntentWithNumber = isGenericBuyIntent && hasNumberInMessage;
 
     const recentConversationText = getRecentConversationText(texto, history || []);
     const recentAdProduct = detectPriorityProductFromRecentText(recentConversationText);
 
-    // ✅ FIX 2: "QUIERO" solo + anuncio reciente → nueva conversación, ignorar Supabase
+    // ✅ Detectar "quiero" solo sin número
     const isBareIntent = /^(quiero|llevo|dame|compro|comprar|mandame)$/i.test(normalizedText);
     const isNewChat =
       isNewConversation(texto, history || []) ||
-      !!(isGenericBuyQuantity && recentAdProduct) ||
+      !!(isGenericBuyIntent && recentAdProduct) ||
       !!(isBareIntent && recentAdProduct && !sameProduct(recentAdProduct, context?.order_data?.product || ""));
 
     const dbOrder = await fetchLatestActiveOrder(user_id, fromNumber);
     const hasContextOrder = !!(context?.order_data?.product || context?.order_data?.city || context?.order_data?.quantity);
 
     let oldOrder;
-    if (hasContextOrder && !(isGenericBuyQuantity && recentAdProduct && !sameProduct(recentAdProduct, context?.order_data?.product || ""))) {
+    if (hasContextOrder && !(isGenericBuyIntent && recentAdProduct && !sameProduct(recentAdProduct, context?.order_data?.product || ""))) {
       oldOrder = normalizeOrderWithItems(context?.order_data || {}, fullTraining);
       if (oldOrder?.product && !isValidProductString(oldOrder.product)) oldOrder.product = "";
       oldOrder.confirmed = context?.order_data?.confirmed || false;
@@ -1528,11 +1525,10 @@ export default async function handler(req: any, res: any) {
 
     const hasTornadoKeyword = !!detectPriorityProductFromRecentText(texto);
 
-    if (isGenericBuyQuantity && recentAdProduct) {
-      // Prioridad absoluta: anuncio reciente detectado en el historial
+    if (isGenericBuyIntent && recentAdProduct) {
       product = recentAdProduct;
       console.log("🎯 Producto por anuncio reciente + intent de compra:", product);
-    } else if (isGenericBuyQuantity && activeProduct) {
+    } else if (isGenericBuyIntent && activeProduct) {
       product = activeProduct;
       console.log("🎯 Producto activo por intent de compra:", product);
     } else if (hasTornadoKeyword) {
@@ -1571,8 +1567,12 @@ export default async function handler(req: any, res: any) {
 
     if (product && !isInvalidProductCandidate(product)) lastUserProduct = product;
 
-    // Sin producto y sin intent claro → pedir que especifique
-    if (isGenericBuyQuantity && !product && !activeProduct) {
+    // =======================================================
+    // 🔥 FLUJO PRINCIPAL - ORDEN CORRECTO
+    // =======================================================
+    
+    // 🔥 PASO 1: Sin producto y sin intent claro → pedir producto
+    if (isGenericBuyIntent && !product && !activeProduct) {
       return res.json({
         response: `Perfecto 😊 ¿Cuál producto querés llevar?\n\nEscribime el nombre del producto o enviame la imagen del anuncio para agendarte correctamente.`,
         context: {
@@ -1585,45 +1585,94 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    // 🔥 PASO 2: Producto detectado pero sin ciudad → PREGUNTAR CIUDAD (incluso con número tipo "quiero 1")
+    if (product && !oldOrder?.city && previousStep !== "collecting_city") {
+      console.log("📍 PASO 2: Producto sin ciudad, preguntando ciudad. Producto:", product);
+      
+      const newOrder = {
+        product: product,
+        quantity: 0,
+        shoe_size: oldOrder?.shoe_size || "",
+        city: "",
+        customer_name: "",
+        phone: "",
+        address: "",
+        items: [],
+        total_amount: product === getTornadoProductName() ? TORNADO_PRICE : 0,
+        confirmed: false,
+        confirm_count: 0,
+      };
+      
+      await safeUpsertOrder(user_id, fromNumber, newOrder, false);
+      
+      // Si el mensaje ya tenía un número (ej: "quiero 1"), guardamos la cantidad
+      let quantityToShow = 0;
+      const quantityMatch = texto.match(/(\d+)/);
+      if (quantityMatch && isQuantityIntentWithNumber) {
+        quantityToShow = parseInt(quantityMatch[1]);
+        // Guardar la cantidad en el contexto para usarla después
+        newOrder.quantity = quantityToShow;
+        await safeUpsertOrder(user_id, fromNumber, newOrder, false);
+      }
+
+      return res.json({
+        response: buildCityQuestionResponse(product),
+        context: {
+          ...(context || {}),
+          current_product: product,
+          last_user_product: product,
+          step: "collecting_city",
+          tipo_cobertura: null,
+          order_data: newOrder,
+          pending_quantity: quantityToShow > 0 ? quantityToShow : null, // Guardar cantidad pendiente
+          last_topic: product,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
     // =======================================================
     // 🔥 RESPUESTA DE CIUDAD - EVITAR BUCLE
     // =======================================================
     const extractedCity = extractCityFromText(texto);
+    const isPlainNumber = /^\d+$/.test(normalize(texto));
+    
+    // ⚠️ CRUCIAL: Un número solo o "quiero 1" NO puede ser tratado como ciudad
     const isCityReply =
       !!extractedCity &&
-      !/^\d+$/.test(normalize(texto)) &&
+      !isPlainNumber &&
+      !isQuantityIntentWithNumber && // Excluir "quiero 1" de ser ciudad
       (previousStep === "collecting_city" || !!oldOrder?.product || !!product);
 
     if (isCityReply && extractedCity && (oldOrder?.product || product || lastUserProduct)) {
       const finalProduct = oldOrder?.product || product || lastUserProduct || "";
       const city = extractedCity;
+      
+      // Recuperar cantidad pendiente si existe
+      const pendingQuantity = context?.pending_quantity || 0;
 
       console.log("📍 CIUDAD DETECTADA:", city);
       console.log("📦 PRODUCTO:", finalProduct);
+      console.log("📦 CANTIDAD PENDIENTE:", pendingQuantity);
 
       const orderData = {
         product: finalProduct,
-        quantity: 0,
+        quantity: pendingQuantity || 0,
         shoe_size: oldOrder?.shoe_size || "",
         city: city,
         customer_name: oldOrder?.customer_name || "",
         phone: oldOrder?.phone || "",
         address: oldOrder?.address || "",
         items: [],
-        total_amount: finalProduct === getTornadoProductName() ? TORNADO_PRICE : 0,
+        total_amount: finalProduct === getTornadoProductName() ? TORNADO_PRICE * (pendingQuantity || 1) : 0,
         confirmed: false, confirm_count: 0,
       };
 
-      // Si ya teníamos cantidad guardada (ej: "QUIERO 1"), usarla y pedir datos directamente
-      const savedQty = safeQuantity(oldOrder?.quantity);
-      if (savedQty > 0) {
-        orderData.quantity = savedQty;
-        orderData.total_amount = calculateTotal(finalProduct, savedQty, fullTraining) ||
-          (sameProduct(finalProduct, getTornadoProductName()) ? TORNADO_PRICE * savedQty : 0);
-        await safeUpsertOrder(user_id, fromNumber, orderData, false);
+      await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
-        console.log("✅ Ciudad+Cantidad ya conocida:", city, savedQty);
-
+      // Si hay cantidad pendiente, ir directo a pedir datos
+      if (pendingQuantity > 0) {
         return res.json({
           response: buildOrderSummaryResponse(orderData, getTipoCobertura(city)),
           context: {
@@ -1634,13 +1683,12 @@ export default async function handler(req: any, res: any) {
             tipo_cobertura: getTipoCobertura(city),
             order_data: orderData,
             last_topic: finalProduct,
+            pending_quantity: null,
             updated_at: new Date().toISOString(),
           },
           is_payment_proof: false,
         });
       }
-
-      await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
       return res.json({
         response: buildQuantityAfterCityResponse(finalProduct, city),
@@ -1652,44 +1700,6 @@ export default async function handler(req: any, res: any) {
           tipo_cobertura: getTipoCobertura(city),
           order_data: orderData,
           last_topic: finalProduct,
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
-
-    // =======================================================
-    // 🔥 PRODUCTO DETECTADO SIN CIUDAD → PEDIR CIUDAD SIEMPRE PRIMERO
-    // Preserva cantidad implícita de "QUIERO 1"
-    // =======================================================
-    const effectiveProduct = product || oldOrder?.product || "";
-    if (effectiveProduct && !oldOrder?.city && previousStep !== "collecting_city") {
-      const newOrder = {
-        product: effectiveProduct,
-        quantity: impliedQuantity || 0,   // guarda "1" si vino "QUIERO 1"
-        shoe_size: oldOrder?.shoe_size || "",
-        city: "",
-        customer_name: oldOrder?.customer_name || "",
-        phone: oldOrder?.phone || "",
-        address: oldOrder?.address || "",
-        items: [],
-        total_amount: effectiveProduct === getTornadoProductName() ? TORNADO_PRICE : 0,
-        confirmed: false, confirm_count: 0,
-      };
-      await safeUpsertOrder(user_id, fromNumber, newOrder, false);
-
-      console.log("📍 Sin ciudad → pedir ciudad. Producto:", effectiveProduct, "| Cantidad guardada:", impliedQuantity);
-
-      return res.json({
-        response: buildCityQuestionResponse(effectiveProduct),
-        context: {
-          ...(context || {}),
-          current_product: effectiveProduct,
-          last_user_product: effectiveProduct,
-          step: "collecting_city",
-          tipo_cobertura: null,
-          order_data: newOrder,
-          last_topic: effectiveProduct,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
@@ -1740,7 +1750,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // ✅ FIX 3: DATOS DEL CLIENTE → AUTO-CONFIRMAR SI ESTÁN COMPLETOS
+    // 🔥 DATOS DEL CLIENTE → AUTO-CONFIRMAR SI ESTÁN COMPLETOS
     // =======================================================
     const extracted = extractData(texto, previousStep, false, false);
 
@@ -1756,7 +1766,6 @@ export default async function handler(req: any, res: any) {
       const hasPhone = !!(orderData.phone && orderData.phone.length > 8);
       const hasAddress = !!(orderData.address && orderData.address.length > 5);
 
-      // ✅ SI TIENE TODOS LOS DATOS → CONFIRMAR AUTOMÁTICAMENTE
       if (hasName && hasPhone && hasAddress) {
         orderData.confirmed = true;
         await safeUpsertOrder(user_id, fromNumber, orderData, true, "confirmed");
@@ -1775,7 +1784,6 @@ export default async function handler(req: any, res: any) {
         });
       }
 
-      // Si faltan datos, guardar y pedir lo que falta
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
       let missingMsg = "";
