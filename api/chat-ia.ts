@@ -1,3 +1,4 @@
+// api/chat-ia.ts
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(process.env.SUPABASE_URL as string, process.env.SUPABASE_SERVICE_ROLE_KEY as string);
@@ -16,68 +17,12 @@ const normalize = (t: string): string =>
     .trim();
 
 // =======================================================
-// 🧠 PRODUCTOS RECONOCIDOS
-// =======================================================
-const TORNADO_PRODUCT = "Destapa Cañerías Tornado";
-const TORNADO_PRICE = 159900;
-
-function getTornadoProductName(): string {
-  return TORNADO_PRODUCT;
-}
-
-// =======================================================
-// 🧠 EXTRACCIÓN DE CANTIDAD - CUALQUIER FORMATO
-// =======================================================
-function extractQuantityFromAnyText(text: string): { quantity: number; isPromo: boolean } {
-  const n = normalize(text);
-  
-  if (/\b(la\s+promo|promo|2x|2\s*unidades\s+promo)\b/i.test(n)) {
-    return { quantity: 2, isPromo: true };
-  }
-  
-  const wordMap: Record<string, number> = {
-    "una": 1, "un": 1, "uno": 1,
-    "dos": 2, "dos unidades": 2,
-    "tres": 3, "cuatro": 4, "cinco": 5,
-    "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10
-  };
-  
-  for (const [word, qty] of Object.entries(wordMap)) {
-    if (n.includes(word)) {
-      return { quantity: qty, isPromo: false };
-    }
-  }
-  
-  const numberMatch = n.match(/\b(\d{1,3})\b/);
-  if (numberMatch) {
-    const qty = parseInt(numberMatch[1], 10);
-    if (qty >= 1 && qty <= 999) {
-      return { quantity: qty, isPromo: false };
-    }
-  }
-  
-  return { quantity: 0, isPromo: false };
-}
-
-function isUserRespondingWithQuantity(text: string, previousStep: string, history: any[]): boolean {
-  const n = normalize(text);
-  const quantityResult = extractQuantityFromAnyText(text);
-  
-  if (quantityResult.quantity > 0) return true;
-  if (previousStep === "collecting_quantity") return true;
-  if (botWasAskingQuantity(history)) return true;
-  if (/\b(si|sí|quiero|dale|ok|listo|confirmo)\b/i.test(n) && botWasAskingQuantity(history)) return true;
-  
-  return false;
-}
-
-// =======================================================
 // 🧠 GUARDRAILS DETERMINÍSTICOS
 // =======================================================
 function hasExplicitProductMention(text: string): boolean {
   const n = normalize(text);
-  const buyIndicators = /\b(quiero|comprar|llevo|dame|mandame|reservar|apartar|la\s+raqueta|el\s+veneno|las\s+plantillas|la\s+peladora|el\s+afilador|el\s+kit|la\s+máquina|el\s+nebulizador|la\s+tabla|tornado|destapa|quiero\s+\d+)\b/i;
-  const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas|tornado|destapa|cañeria|cañería|tuberia|desagüe)\b/.test(n);
+  const buyIndicators = /\b(quiero|comprar|llevo|dame|mandame|reservar|apartar|la\s+raqueta|el\s+veneno|las\s+plantillas|la\s+peladora|el\s+afilador|el\s+kit|la\s+máquina|el\s+nebulizador|la\s+tabla)\b/i;
+  const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas)\b/.test(n);
   return buyIndicators.test(n) || productNames;
 }
 
@@ -87,7 +32,7 @@ function isLocationOnlyMessage(text: string): boolean {
   if (hasExplicitProductMention(text)) return false;
   const cityMatch = extractCityFromText(n);
   if (!cityMatch) return false;
-  const noProductWords = !/\b(quiero|comprar|raqueta|veneno|plantilla|pelador|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas|tornado|destapa)\b/i.test(n);
+  const noProductWords = !/\b(quiero|comprar|raqueta|veneno|plantilla|pelador|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas)\b/i.test(n);
   return noProductWords;
 }
 
@@ -99,21 +44,6 @@ function isOriginQuestion(text: string): boolean {
 function isNeutralReply(text: string): boolean {
   const n = normalize(text);
   return /^(te\s+aviso|despues\s+veo|despues\s+te\s+aviso|voy\s+a\s+ver|voy\s+a\s+pensar|cualquier\s+cosa|gracias|ok|dale|esta\s+bien|está\s+bien)$/i.test(n);
-}
-
-function isConfirmIntent(text: string): boolean {
-  const n = normalize(text);
-  return /\b(confirmo|confirmar|si|sí|dale|ok|listo|cerrar|finalizar|acepto|está bien|esta bien|de acuerdo)\b/i.test(n) &&
-         !/\b(agregar|sumar|añadir|otro|también|además|mas|más)\b/i.test(n);
-}
-
-function isAddMoreIntent(text: string): boolean {
-  const n = normalize(text);
-  return (
-    /\b(tambien|también|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí|mas|más|otro|otra|además|y también|y el|y la|y los|y las)\b/.test(n) ||
-    /\by\s+(la|el|los|las)\b/.test(n) ||
-    /\b(agregar|sumar|añadir)\b/.test(n)
-  );
 }
 
 function extractCityFromText(text: string): string {
@@ -150,335 +80,14 @@ function buildCoverageOnlyResponse(city: string): string {
   return `Perfecto 😊 ¿Cuál producto te interesa? ✨`;
 }
 
-function getTipoCobertura(city: string): "con_cobertura" | "sin_cobertura" | "" {
-  if (!city) return "";
-  const c = normalize(city);
-  if (/\b(cruce\s+san\s+alberto|cruse\s+san\s+alberto|san\s+alberto|pedro\s+juan\s+caballero|pjc)\b/.test(c)) return "sin_cobertura";
-
-  const ZONAS_COBERTURA = [
-    "Altos", "Areguá", "Asunción", "Atyrá", "Benjamín Aceval", "Caacupé",
-    "Capiatá", "Ciudad del Este", "Colonia Yguazú", "Emboscada", "Eusebio Ayala",
-    "Fernando de la Mora", "Guarambaré", "Hernandarias", "Itá",
-    "Itacurubí de la Cordillera", "Itauguá", "J. Augusto Saldívar",
-    "Juan León Mallorquín", "Lambaré", "Limpio", "Loma Grande", "Luque",
-    "Mariano Roque Alonso", "Minga Guazú", "Nueva Italia", "Ñemby", "Paraguarí",
-    "Pirayú", "Piribebuy", "Presidente Franco", "Puerto Presidente Franco",
-    "Remansito", "San Alberto", "San Antonio", "San Bernardino", "San Lorenzo",
-    "Santa Rita", "Tobatí", "Villa Elisa", "Villa Hayes", "Villarrica",
-    "Villeta", "Yaguarón", "Yguazú", "Ypacaraí", "Ypané",
-  ];
-
-  return ZONAS_COBERTURA.some((z) => normalize(z) === c) ? "con_cobertura" : "sin_cobertura";
-}
-
-function extractBankReceiverFromTraining(training: string): string {
-  const titular =
-    training.match(/titular\s*[:-]\s*([^\n\r]+)/i)?.[1] ||
-    training.match(/a nombre de\s*[:-]?\s*([^\n\r]+)/i)?.[1] ||
-    "";
-  return clean(titular).replace(/[✅📲💳]/g, "").trim();
-}
-
-function getPriceLines(training: string): string[] {
-  return training.split("\n").map((l) => clean(l)).filter((l) => l.length > 3);
-}
-
-function extractProductNameFromLine(line: string): string {
-  const c = line.replace(/^[-•\s]+/, "").replace(/[💙🦶🎯💰🔥✨⭐✅]/g, "").trim();
-  const parts = c.split(/—|-{2,}|–/);
-  return clean(parts[0] || c);
-}
-
-function getAntiVibrationProductName(): string {
-  return "Kit Antivibración x4 Patitas Antideslizantes";
-}
-
-function buildCityQuestionResponse(product: string, shoeSize?: any): string {
-  const productName = formatProductWithShoeSize(product, shoeSize);
-  return `🔥 Perfecto 😊
-
-Me confirmaste que querés ${productName}.
-
-📍 ¿Para qué CIUDAD querés el envío?
-
-(Ejemplo: Asunción, Capiatá, Luque, San Lorenzo, Fernando de la Mora...)`;
-}
-
-function buildQuantityAfterCityResponse(product: string, city: string, shoeSize?: any): string {
-  const productName = formatProductWithShoeSize(product, shoeSize);
-
-  if (normalize(product).includes("tornado") || normalize(product).includes("destapa")) {
-    return `✅ ¡Perfecto! ${city} tiene ENVÍO GRATIS contra-entrega 🚚
-
-🔥 ${productName}:
-• 1 unidad → 159.900 Gs
-
-💵 Pagás al recibir sin problema 😊
-
-⚠️ El precio promocional es válido solo si confirmás tus datos ahora mismo.
-
-🔥 ¿Cuántas unidades te gustaría llevar? ✨`;
-  }
-
-  if (
-    normalize(product).includes("kit antivibracion") ||
-    normalize(product).includes("patitas antideslizantes")
-  ) {
-    return `✅ Perfecto, enviamos a ${city} 😊
-
-📦 ${productName}
-
-¿Cuántos KITS querés? (Cada kit incluye 4 patitas)
-
-Ejemplos:
-• 1 kit
-• 2 kits
-• 3 kits
-
-Respondé con el número (1, 2, 3...)`;
-  }
-
-  return `✅ Perfecto, enviamos a ${city} 😊
-
-📦 ${productName}
-
-¿Cuántas UNIDADES querés?
-
-Ejemplos:
-• 1 unidad
-• 2 unidades (consultar si hay promo)
-• 3 unidades
-
-Respondé con el número (1, 2, 3...)`;
-}
-
-function detectProductRespectingActive(
-  text: string,
-  training: string,
-  activeProduct: string | null,
-  lastAssistantMessage?: string,
-  lastUserProduct?: string
-): string {
-  const msg = normalize(text);
-
-  if (/^\d{1,3}$/.test(msg)) {
-    return activeProduct || "";
-  }
-
-  if (isPriceIntent(text) || isProductInquiry(text)) {
-    return activeProduct || "";
-  }
-
-  const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas|tornado|destapa)\b/i.test(msg);
-
-  if (activeProduct && !explicitNewProductRequest) {
-    return activeProduct;
-  }
-
-  if (explicitNewProductRequest) {
-    const newProduct = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
-    if (newProduct && !isInvalidProductCandidate(newProduct)) {
-      return newProduct;
-    }
-  }
-
-  const detected = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
-  if (detected && !isInvalidProductCandidate(detected)) {
-    return detected;
-  }
-
-  return activeProduct || "";
-}
-
-function detectProductRaw(
-  text: string,
-  training: string,
-  prev?: string,
-  lastAssistantMessage?: string,
-  lastUserProduct?: string
-) {
-  const msg = normalize(text);
-
-  if (/^\d{1,3}$/.test(msg)) {
-    return "";
-  }
-
-  if (msg.includes("tornado") || msg.includes("destapa") || msg.includes("cañeria") ||
-      msg.includes("cañería") || msg.includes("tuberia") || msg.includes("tubería") ||
-      msg.includes("desagüe") || msg.includes("desague") || msg.includes("wild tornado")) {
-    return getTornadoProductName();
-  }
-
-  if (isAntiVibrationKit(text) || isPackReferenceText(text) ||
-      msg.includes("soporte lavarropas") || msg.includes("almohadillas antivibracion") ||
-      msg.includes("patitas antideslizantes") || msg.includes("kit x4")) {
-    return getAntiVibrationProductName();
-  }
-
-  if (msg.includes("raqueta") || msg.includes("electrica") || msg.includes("flayes") ||
-      msg.includes("mosquitos") || msg.includes("moscas") || msg.includes("insectos")) {
-    return "Raqueta Eléctrica para Insectos";
-  }
-
-  if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja")) {
-    return "Veneno de Abeja";
-  }
-
-  if (msg.includes("plantilla") || msg.includes("ortopiex") || msg.includes("ortoflex") || msg.includes("5d")) {
-    return getDefaultShoeProductName();
-  }
-
-  if (msg.includes("pelador") || msg.includes("peladora") || msg.includes("pelar papas")) {
-    return "Peladora Automática";
-  }
-
-  if (msg.includes("pororo") || msg.includes("popcorn") || msg.includes("pochoclo") || msg.includes("palomita")) {
-    return "Máquina para hacer Pororo";
-  }
-
-  if (msg.includes("nebulizador")) {
-    return "Nebulizador portátil";
-  }
-
-  if ((msg.includes("tabla") && msg.includes("picar")) || msg.includes("tabla de marmol")) {
-    return "Tabla de Picar de Mármol";
-  }
-
-  if (msg.includes("afilador") || msg.includes("cuchillo") || msg.includes("sharpener")) {
-    return "Afilador de Cuchillos";
-  }
-
-  if (msg.includes("vital honey")) {
-    return "Vital Honey VIP";
-  }
-
-  if (msg.includes("perfume asad") || msg.includes("asad")) {
-    return "Perfume Asad";
-  }
-
-  const lines = getPriceLines(training);
-  let best = "";
-  let bestScore = 0;
-
-  for (const line of lines) {
-    const name = extractProductNameFromLine(line);
-    if (isInvalidProductCandidate(name)) continue;
-    const n = normalize(name);
-    if (!n || n.length < 3) continue;
-
-    const words = n.split(" ").filter((w) => w.length >= 4);
-    const msgWords = msg.split(" ").filter((w) => w.length >= 4);
-
-    let score = 0;
-    if (msg.includes(n)) score += 50;
-    if (n.includes(msg) && msg.length >= 4) score += 20;
-    for (const w of words) { if (msg.includes(w)) score += 10; }
-    for (const mw of msgWords) { if (n.includes(mw)) score += 8; }
-
-    if (score > bestScore) {
-      bestScore = score;
-      best = name;
-    }
-  }
-
-  return bestScore >= 5 ? best : "";
-}
-
-function canonicalProductFromText(text: string): string {
-  const n = normalize(text);
-
-  if (/\b(tornado|destapa|cañeria|cañería|tuberia|tubería|desagüe|desague|wild\s+tornado)\b/.test(n)) {
-    return getTornadoProductName();
-  }
-
-  if (/\b(raqueta|electrica|flayes|mosquitos|moscas|insectos)\b/.test(n)) return "Raqueta Eléctrica para Insectos";
-  if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja)\b/.test(n)) return "Veneno de Abeja";
-  if (/\b(pelador|peladora|pelar\s+papas|pelador\s+de\s+papas|peladora\s+automatica)\b/.test(n)) return "Peladora Automática";
-  if (/\b(soporte\s+para\s+lavarropas|lavarropas|almohadillas\s+antivibracion|almohadillas\s+antivibraci[oó]n|patitas\s+antideslizantes|kit\s+x4\s+patitas|kit\s+antivibracion)\b/.test(n)) return getAntiVibrationProductName();
-  if (/\b(plantilla|plantillas|ortopiex|ortoflex)\b/.test(n)) return getDefaultShoeProductName();
-  if (/\b(afilador|afilador\s+de\s+cuchillos|cuchillos)\b/.test(n)) return "Afilador de Cuchillos";
-  if (/\b(vital\s+honey|vital\s+honey\s+vip)\b/.test(n)) return "Vital Honey VIP";
-  if (/\b(perfume\s+asad|asad)\b/.test(n)) return "Perfume Asad";
-
-  return "";
-}
-
-function uniqueProducts(products: string[]): string[] {
-  const out: string[] = [];
-  for (const p of products.map(clean).filter(Boolean)) {
-    if (isInvalidCartProduct(p)) continue;
-    if (!out.some((x) => sameProduct(x, p))) out.push(p);
-  }
-  return out;
-}
-
-function detectMultipleProducts(text: string, training: string): string[] {
-  const raw = clean(text);
-  const n = normalize(raw);
-  const found: string[] = [];
-
-  const fullMatch = canonicalProductFromText(raw);
-  if (fullMatch) found.push(fullMatch);
-
-  const segments = n
-    .split(/\b(?:tambien|también|ademas|además|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí|mas|más)\b/g)
-    .map((x) => x.trim())
-    .filter(Boolean);
-
-  for (const segment of segments) {
-    const protectedProduct = canonicalProductFromText(segment);
-    if (protectedProduct) found.push(protectedProduct);
-
-    const catalogProduct = detectProductRaw(segment, training, "");
-    if (catalogProduct && !isInvalidProductCandidate(catalogProduct)) {
-      found.push(catalogProduct);
-    }
-  }
-
-  return uniqueProducts(found);
-}
-
-function sameProduct(a: string, b: string): boolean {
-  const na = normalize(a);
-  const nb = normalize(b);
-  if (!na || !nb) return false;
-  return na === nb || na.includes(nb) || nb.includes(na);
-}
-
-function isPriceIntent(text: string) {
-  const m = normalize(text);
-  return m.includes("precio") || m.includes("cuanto") || m.includes("cuesta") || m.includes("valor") || m.includes("costo");
-}
-
-function isBuyIntent(text: string) {
-  const m = normalize(text);
-
-  if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) return false;
-
-  const graciasPattern = /\b(gracias|very nice|muy lindo|excelente|bien|okey|oka|perfecto|hermoso|genial|buenisimo)\b/i;
-  if (graciasPattern.test(m)) return false;
-
-  const soloQuieroPattern = /^\s*(quiero|si|sí|dale|ok|listo|confirmo|compro|reservo)\s*$/i;
-  if (soloQuieroPattern.test(m)) return true;
-
-  return (
-    /\b(quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmar|mandame|dame)\s+\d+\b/.test(m) ||
-    /\b\d+\s*(unidad|unidades|u)\b/.test(m) ||
-    /^\d+$/.test(m)
-  );
+function buildWaitingPaymentResponse(order: any): string {
+  return `✅ Perfecto ${order.customer_name ? order.customer_name.split(" ")[0] : ""} 😊\n\nYa registré:\n\n📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}\n📍 ${order.city}\n📞 ${order.phone}\n\n📲 Ahora solo falta que envíes el comprobante de transferencia y confirmamos tu envío 🚚✨`;
 }
 
 function isInformationRequest(text: string): boolean {
   const n = normalize(text);
-  
-  if (/\b(si|sí|quiero|compro|reservo|confirmo|dale|ok|listo)\b/.test(n)) return false;
-  if (/^\d{1,3}$/.test(n)) return false;
-  if (/^\d{1,3}\s*(unidad|unidades|u)$/.test(n)) return false;
-  if (/\b(quiero|comprar|llevo|dame|mandame)\s+\d+\b/.test(n)) return false;
-  
   const infoWords = /\b(informaci[oó]n|info|más info|mas info|quiero saber|consultar|dudas?|más datos|mas datos|detalles|más detalles|mas detalles|explicame|qué es|que es|cómo funciona|como funciona)\b/i;
-  const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes|tornado|destapa)\b/i;
-  
+  const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes)\b/i;
   if (productWords.test(n)) return false;
   return infoWords.test(n);
 }
@@ -487,14 +96,22 @@ function isCatalogQuery(text: string): boolean {
   const n = normalize(text);
   const catalogWords = /\b(cat[aá]logo|productos|qu[eé] venden|tienen|stock|catálogo|precios|catalogo)\b/i;
   const greetingWords = /\b(hola|buenas|buen día|saludos)\b/i;
-  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla|raqueta|tornado|destapa)\b/i;
+  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla|raqueta)\b/i;
   return (catalogWords.test(n) || greetingWords.test(n)) && !productWords.test(n);
+}
+
+function isNewConversation(text: string, history: any[]): boolean {
+  const n = normalize(text);
+  const newConversationMarkers = /\b(creo que guardo|mensaje antiguo|chat viejo|conversación anterior|pedido anterior|viejo mensaje|lo tengo guardado|tengo un mensaje|mensaje guardado|chat pasado|nuevo pedido|empezar de nuevo|borrar pedido|reiniciar)\b/i;
+  const noHistory = !history || history.length === 0;
+  const mentionsOldMessage = newConversationMarkers.test(n);
+  return noHistory || mentionsOldMessage;
 }
 
 function isProductInquiry(text: string): boolean {
   const n = normalize(text);
   const inquiryWords = /\b(qu[eé] es|cómo funciona|para qu[eé] sirve|características|beneficios|tiene|informaci[oó]n|info|cu[aá]nto cuesta|precio|valor|costo|dime|contame|explicame)\b/i;
-  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla|raqueta|tornado|destapa)\b/i;
+  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla|raqueta)\b/i;
   const buyWords = /\b(quiero|comprar|llevo|dame|mandame|agregame|reservar|apartar)\b/i;
   return inquiryWords.test(n) && productWords.test(n) && !buyWords.test(n);
 }
@@ -511,8 +128,7 @@ function isProductName(text: string): boolean {
     "vital honey vip", "vital honey",
     "perfume asad", "asad",
     "almohadillas antivibracion", "soporte para lavarropas", "lavarropas", "kit x4 patitas", "patitas antideslizantes",
-    "raqueta electrica", "raqueta para insectos", "flayes pro", "raqueta flayes",
-    "destapa cañerias tornado", "tornado", "destapa cañerías", "wild tornado"
+    "raqueta electrica", "raqueta para insectos", "flayes pro", "raqueta flayes"
   ];
   const normalizedText = n;
   return productNames.some(p => normalizedText.includes(p) || p.includes(normalizedText));
@@ -611,25 +227,306 @@ function isInvalidCartProduct(name: string): boolean {
   return false;
 }
 
-function isValidProductString(s: string | null | undefined): boolean {
-  if (!s) return false;
-  const trimmed = clean(s);
-  if (!trimmed) return false;
-  if (isInvalidProductCandidate(trimmed)) return false;
-  if (trimmed.includes("?")) return false;
-  if (trimmed.includes("¿")) return false;
-  const lower = trimmed.toLowerCase();
-  if (lower.includes("asistente")) return false;
-  if (lower.includes("cuántas") || lower.includes("cuantas")) return false;
-  if (lower.includes("cuántos") || lower.includes("cuantos")) return false;
-  if (lower.includes("unidades te") || lower.includes("unidad te")) return false;
-  if (lower.includes("gustaría") || lower.includes("gustaria")) return false;
-  if (lower.includes("para qué") || lower.includes("para que ciudad")) return false;
-  if (lower.includes("ciudad querés") || lower.includes("ciudad queres")) return false;
-  if (lower.includes("respondé con") || lower.includes("responde con")) return false;
-  if (lower.includes("ejemplo:") || lower.includes("ejemplos:")) return false;
-  if (trimmed.length > 100) return false;
-  return true;
+const ZONAS_COBERTURA = [
+  "Altos", "Areguá", "Asunción", "Atyrá", "Benjamín Aceval", "Caacupé",
+  "Capiatá", "Ciudad del Este", "Colonia Yguazú", "Emboscada", "Eusebio Ayala",
+  "Fernando de la Mora", "Guarambaré", "Hernandarias", "Itá",
+  "Itacurubí de la Cordillera", "Itauguá", "J. Augusto Saldívar",
+  "Juan León Mallorquín", "Lambaré", "Limpio", "Loma Grande", "Luque",
+  "Mariano Roque Alonso", "Minga Guazú", "Nueva Italia", "Ñemby", "Paraguarí",
+  "Pirayú", "Piribebuy", "Presidente Franco", "Puerto Presidente Franco",
+  "Remansito", "San Alberto", "San Antonio", "San Bernardino", "San Lorenzo",
+  "Santa Rita", "Tobatí", "Villa Elisa", "Villa Hayes", "Villarrica",
+  "Villeta", "Yaguarón", "Yguazú", "Ypacaraí", "Ypané",
+];
+
+function getTipoCobertura(city: string): "con_cobertura" | "sin_cobertura" | "" {
+  if (!city) return "";
+  const c = normalize(city);
+  if (/\b(cruce\s+san\s+alberto|cruse\s+san\s+alberto|san\s+alberto|pedro\s+juan\s+caballero|pjc)\b/.test(c)) return "sin_cobertura";
+  return ZONAS_COBERTURA.some((z) => normalize(z) === c) ? "con_cobertura" : "sin_cobertura";
+}
+
+function extractBankReceiverFromTraining(training: string): string {
+  const titular =
+    training.match(/titular\s*[:-]\s*([^\n\r]+)/i)?.[1] ||
+    training.match(/a nombre de\s*[:-]?\s*([^\n\r]+)/i)?.[1] ||
+    "";
+  return clean(titular).replace(/[✅📲💳]/g, "").trim();
+}
+
+function getPriceLines(training: string): string[] {
+  return training.split("\n").map((l) => clean(l)).filter((l) => l.length > 3);
+}
+
+function extractProductNameFromLine(line: string): string {
+  const c = line.replace(/^[-•\s]+/, "").replace(/[💙🦶🎯💰🔥✨⭐✅]/g, "").trim();
+  const parts = c.split(/—|-{2,}|–/);
+  return clean(parts[0] || c);
+}
+
+function getAntiVibrationProductName(): string {
+  return "Kit Antivibración x4 Patitas Antideslizantes";
+}
+
+// =======================================================
+// 🆕 FUNCIONES PARA EL NUEVO FLUJO: CIUDAD → CANTIDAD
+// =======================================================
+
+function buildCityQuestionResponse(product: string, shoeSize?: any): string {
+  const productName = formatProductWithShoeSize(product, shoeSize);
+  
+  return `🔥 Perfecto 😊
+
+Me confirmaste que querés ${productName}.
+
+📍 ¿Para qué CIUDAD querés el envío?
+
+(Ejemplo: Asunción, Capiatá, Luque, San Lorenzo, Fernando de la Mora...)`;
+}
+
+function buildQuantityAfterCityResponse(product: string, city: string, shoeSize?: any): string {
+  const productName = formatProductWithShoeSize(product, shoeSize);
+  
+  if (
+    normalize(product).includes("kit antivibracion") ||
+    normalize(product).includes("patitas antideslizantes")
+  ) {
+    return `✅ Perfecto, enviamos a ${city} 😊
+
+📦 ${productName}
+
+¿Cuántos KITS querés? (Cada kit incluye 4 patitas)
+
+Ejemplos:
+• 1 kit
+• 2 kits
+• 3 kits
+
+Respondé con el número (1, 2, 3...)`;
+  }
+  
+  return `✅ Perfecto, enviamos a ${city} 😊
+
+📦 ${productName}
+
+¿Cuántas UNIDADES querés?
+
+Ejemplos:
+• 1 unidad
+• 2 unidades (consultar si hay promo)
+• 3 unidades
+
+Respondé con el número (1, 2, 3...)`;
+}
+
+// =======================================================
+// 🎯 DETECCIÓN DE PRODUCTO RESPETANDO ACTIVO
+// =======================================================
+
+function detectProductRespectingActive(
+  text: string,
+  training: string,
+  activeProduct: string | null,
+  lastAssistantMessage?: string,
+  lastUserProduct?: string
+): string {
+  const msg = normalize(text);
+  
+  if (isPriceIntent(text) || isProductInquiry(text)) {
+    console.log(`ℹ️ Consulta de precio/info - manteniendo producto activo: ${activeProduct}`);
+    return activeProduct || "";
+  }
+  
+  const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas)\b/i.test(msg);
+  
+  const isOnlyLocation = isLocationOnlyMessage(text);
+  const isOnlyQuantity = /^\s*\d{1,3}\s*$/.test(text) && !isOnlyShoeVariantText(text);
+  
+  if (activeProduct && !explicitNewProductRequest) {
+    console.log(`🔄 Manteniendo producto activo: "${activeProduct}" (cliente no pidió cambio explícito)`);
+    return activeProduct;
+  }
+  
+  if (explicitNewProductRequest) {
+    console.log(`🔄 Cliente pidió EXPLÍCITAMENTE otro producto. Detectando...`);
+    const newProduct = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
+    if (newProduct && !isInvalidProductCandidate(newProduct)) {
+      console.log(`✅ Nuevo producto detectado: "${newProduct}"`);
+      return newProduct;
+    }
+  }
+  
+  const detected = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
+  if (detected && !isInvalidProductCandidate(detected)) {
+    return detected;
+  }
+  
+  return activeProduct || "";
+}
+
+function detectProductRaw(
+  text: string,
+  training: string,
+  prev?: string,
+  lastAssistantMessage?: string,
+  lastUserProduct?: string
+) {
+  const msg = normalize(text);
+
+  if (isAntiVibrationKit(text) || isPackReferenceText(text) ||
+      msg.includes("soporte lavarropas") || msg.includes("almohadillas antivibracion") ||
+      msg.includes("patitas antideslizantes") || msg.includes("kit x4")) {
+    return getAntiVibrationProductName();
+  }
+
+  if (msg.includes("raqueta") || msg.includes("electrica") || msg.includes("flayes") ||
+      msg.includes("mosquitos") || msg.includes("moscas") || msg.includes("insectos")) {
+    return "Raqueta Eléctrica para Insectos";
+  }
+
+  if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja")) {
+    return "Veneno de Abeja";
+  }
+
+  if (msg.includes("plantilla") || msg.includes("ortopiex") || msg.includes("ortoflex") || msg.includes("5d")) {
+    return getDefaultShoeProductName();
+  }
+
+  if (msg.includes("pelador") || msg.includes("peladora") || msg.includes("pelar papas")) {
+    return "Peladora Automática";
+  }
+
+  if (msg.includes("pororo") || msg.includes("popcorn") || msg.includes("pochoclo") || msg.includes("palomita")) {
+    return "Máquina para hacer Pororo";
+  }
+
+  if (msg.includes("nebulizador")) {
+    return "Nebulizador portátil";
+  }
+
+  if ((msg.includes("tabla") && msg.includes("picar")) || msg.includes("tabla de marmol")) {
+    return "Tabla de Picar de Mármol";
+  }
+
+  if (msg.includes("afilador") || msg.includes("cuchillo") || msg.includes("sharpener")) {
+    return "Afilador de Cuchillos";
+  }
+
+  if (msg.includes("vital honey")) {
+    return "Vital Honey VIP";
+  }
+
+  if (msg.includes("perfume asad") || msg.includes("asad")) {
+    return "Perfume Asad";
+  }
+
+  const lines = getPriceLines(training);
+  let best = "";
+  let bestScore = 0;
+
+  for (const line of lines) {
+    const name = extractProductNameFromLine(line);
+    if (isInvalidProductCandidate(name)) continue;
+    const n = normalize(name);
+    if (!n || n.length < 3) continue;
+
+    const words = n.split(" ").filter((w) => w.length >= 4);
+    const msgWords = msg.split(" ").filter((w) => w.length >= 4);
+
+    let score = 0;
+    if (msg.includes(n)) score += 50;
+    if (n.includes(msg) && msg.length >= 4) score += 20;
+    for (const w of words) { if (msg.includes(w)) score += 10; }
+    for (const mw of msgWords) { if (n.includes(mw)) score += 8; }
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = name;
+    }
+  }
+
+  return bestScore >= 5 ? best : "";
+}
+
+function canonicalProductFromText(text: string): string {
+  const n = normalize(text);
+
+  if (/\b(raqueta|electrica|flayes|mosquitos|moscas|insectos)\b/.test(n)) return "Raqueta Eléctrica para Insectos";
+  if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja)\b/.test(n)) return "Veneno de Abeja";
+  if (/\b(pelador|peladora|pelar\s+papas|pelador\s+de\s+papas|peladora\s+automatica)\b/.test(n)) return "Peladora Automática";
+  if (/\b(soporte\s+para\s+lavarropas|lavarropas|almohadillas\s+antivibracion|almohadillas\s+antivibraci[oó]n|patitas\s+antideslizantes|kit\s+x4\s+patitas|kit\s+antivibracion)\b/.test(n)) return getAntiVibrationProductName();
+  if (/\b(plantilla|plantillas|ortopiex|ortoflex)\b/.test(n)) return getDefaultShoeProductName();
+  if (/\b(afilador|afilador\s+de\s+cuchillos|cuchillos)\b/.test(n)) return "Afilador de Cuchillos";
+  if (/\b(vital\s+honey|vital\s+honey\s+vip)\b/.test(n)) return "Vital Honey VIP";
+  if (/\b(perfume\s+asad|asad)\b/.test(n)) return "Perfume Asad";
+
+  return "";
+}
+
+function uniqueProducts(products: string[]): string[] {
+  const out: string[] = [];
+  for (const p of products.map(clean).filter(Boolean)) {
+    if (isInvalidCartProduct(p)) continue;
+    if (!out.some((x) => sameProduct(x, p))) out.push(p);
+  }
+  return out;
+}
+
+function detectMultipleProducts(text: string, training: string): string[] {
+  const raw = clean(text);
+  const n = normalize(raw);
+  const found: string[] = [];
+
+  const fullMatch = canonicalProductFromText(raw);
+  if (fullMatch) found.push(fullMatch);
+
+  const segments = n
+    .split(/\b(?:tambien|también|ademas|además|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí|mas|más)\b/g)
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+  for (const segment of segments) {
+    const protectedProduct = canonicalProductFromText(segment);
+    if (protectedProduct) found.push(protectedProduct);
+
+    const catalogProduct = detectProductRaw(segment, training, "");
+    if (catalogProduct && !isInvalidProductCandidate(catalogProduct)) {
+      found.push(catalogProduct);
+    }
+  }
+
+  return uniqueProducts(found);
+}
+
+function sameProduct(a: string, b: string): boolean {
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (!na || !nb) return false;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+function isPriceIntent(text: string) {
+  const m = normalize(text);
+  return m.includes("precio") || m.includes("cuanto") || m.includes("cuesta") || m.includes("valor") || m.includes("costo");
+}
+
+function isBuyIntent(text: string) {
+  const m = normalize(text);
+
+  if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) return false;
+
+  const graciasPattern = /\b(gracias|very nice|muy lindo|excelente|bien|okey|oka|perfecto|hermoso|genial|buenisimo)\b/i;
+  if (graciasPattern.test(m)) return false;
+
+  const soloQuieroPattern = /^\s*(quiero|si|sí|dale|ok|listo|confirmo|compro|reservo)\s*$/i;
+  if (soloQuieroPattern.test(m)) return true;
+
+  return (
+    /\b(quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmar|mandame|dame)\s+\d+\b/.test(m) ||
+    /\b\d+\s*(unidad|unidades|u)\b/.test(m) ||
+    /^\d+$/.test(m)
+  );
 }
 
 function getLastAssistantMessage(history: any[]) {
@@ -649,9 +546,7 @@ function botWasAskingQuantity(history: any[]) {
     lastAssistantMessage.includes("cuantas queres") ||
     lastAssistantMessage.includes("cuantas te gustaria") ||
     lastAssistantMessage.includes("cuántas unidades") ||
-    lastAssistantMessage.includes("responde con el numero") ||
-    lastAssistantMessage.includes("cuántas unidades te gustaría llevar") ||
-    lastAssistantMessage.includes("cuántas unidades te gustaría llevar?")
+    lastAssistantMessage.includes("Respondé con el número")
   );
 }
 
@@ -661,19 +556,7 @@ function botWasAskingCity(history: any[]): boolean {
     lastAssistantMessage.includes("qué ciudad") ||
     lastAssistantMessage.includes("para qué ciudad") ||
     lastAssistantMessage.includes("ciudad querés") ||
-    lastAssistantMessage.includes("ciudad para el envío") ||
-    lastAssistantMessage.includes("para que ciudad") ||
-    lastAssistantMessage.includes("ciudad queres") ||
-    lastAssistantMessage.includes("ciudad queres el envio") ||
-    lastAssistantMessage.includes("para qué ciudad sería el envío") ||
-    lastAssistantMessage.includes("para qué ciudad sería") ||
-    lastAssistantMessage.includes("ciudad sería el envío") ||
-    lastAssistantMessage.includes("te confirmo el método de entrega") ||
-    (lastAssistantMessage.includes("envío") && lastAssistantMessage.includes("ciudad")) ||
-    lastAssistantMessage.includes("ciudad para el") ||
-    lastAssistantMessage.includes("cuál es tu ciudad") ||
-    lastAssistantMessage.includes("en qué ciudad") ||
-    lastAssistantMessage.includes("para qué ciudad sería")
+    lastAssistantMessage.includes("ciudad para el envío")
   );
 }
 
@@ -695,56 +578,6 @@ function botWasAskingShoeSize(history: any[]) {
   );
 }
 
-function botWasAskingForCustomerData(history: any[]): boolean {
-  const lastAssistantMessage = normalize(getLastAssistantMessage(history));
-  return (
-    lastAssistantMessage.includes("nombre y apellido") ||
-    lastAssistantMessage.includes("dirección exacta") ||
-    lastAssistantMessage.includes("número de celular") ||
-    lastAssistantMessage.includes("Pasame TODO JUNTO") ||
-    lastAssistantMessage.includes("agendamos tu entrega") ||
-    lastAssistantMessage.includes("nombre y apellido completo") ||
-    lastAssistantMessage.includes("dirección exacta o ubicación") ||
-    lastAssistantMessage.includes("número de celular")
-  );
-}
-
-function isBuyIntentMessage(text: string): boolean {
-  const n = normalize(text);
-  return /^(quiero|llevo|dame|compro|comprar|mandame)\s+\d+$/i.test(n) ||
-         /^\d+\s*(unidad|unidades)?$/i.test(n);
-}
-
-function looksLikeCustomerNameLine(line: string): boolean {
-  const raw = clean(line);
-  const n = normalize(raw);
-  if (!raw || raw.length < 5 || raw.length > 60) return false;
-  if (/\d/.test(raw)) return false;
-  if (isProductName(raw)) return false;
-  if (extractCityFromText(raw)) return false;
-  if (/\b(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio|compania|compañia|frente|lado|casa|numero|nro|manzana|lote|ubicacion|ubicación|maps|google)\b/i.test(n)) return false;
-  const words = n.split(" ").filter(Boolean);
-  return words.length >= 2 && words.length <= 5 && words.every((w) => w.length >= 2);
-}
-
-function looksLikeAddressLine(line: string): boolean {
-  const raw = clean(line);
-  const n = normalize(raw);
-  if (!raw || raw.length < 6 || raw.length > 180) return false;
-  if (isProductName(raw)) return false;
-  if (/^(09\d{8}|\+595\d{9}|\d{10})$/.test(raw.replace(/\s+/g, ""))) return false;
-  if (looksLikeCustomerNameLine(raw)) return false;
-
-  const addressHints = /\b(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio|compania|compañia|frente|lado|costado|casa|numero|nro|manzana|mz|lote|lt|edificio|piso|departamento|depto|local|google|maps|ubicacion|ubicación|rca|republica|república)\b/i;
-  if (addressHints.test(n)) return true;
-
-  const words = n.split(" ").filter(Boolean);
-  return words.length >= 3;
-}
-
-// =======================================================
-// 🧾 EXTRACCIÓN DE DATOS MEJORADA - CUALQUIER FORMATO
-// =======================================================
 function extractData(
   msg: string,
   currentStep?: string,
@@ -753,176 +586,149 @@ function extractData(
 ) {
   const text = clean(msg);
   const norm = normalize(text);
-  
-  // Si es solo una cantidad, no extraer como nombre/dirección
-  if (/^\d{1,3}$/.test(norm) || /^\d{1,3}\s*(unidad|unidades|u|kit)$/.test(norm)) {
-    return { quantity: 0, shoe_size: "", city: "", name: "", phone: "", address: "" };
-  }
-  
-  // Si es solo "si" o "quiero", no extraer
-  if (/^(si|sí|quiero|compro|reservo|confirmo|dale|ok|listo)$/.test(norm)) {
-    return { quantity: 0, shoe_size: "", city: "", name: "", phone: "", address: "" };
-  }
-  
-  // Si es información o catálogo, no extraer
+
   if (isInformationRequest(text) || isCatalogQuery(text) || isProductInquiry(text)) {
     return { quantity: 0, shoe_size: "", city: "", name: "", phone: "", address: "" };
   }
-  
-  // =======================================================
-  // 📍 DIVIDIR EL MENSAJE EN TODOS LOS FORMATOS POSIBLES
-  // =======================================================
-  
-  let segments: string[] = [];
-  
-  if (text.includes('\n')) {
-    segments = text.split(/\r?\n/);
-  } else if (text.includes(',')) {
-    segments = text.split(',').map(s => clean(s));
-  } else if (text.includes(';')) {
-    segments = text.split(';').map(s => clean(s));
-  } else {
-    segments = [text];
-  }
-  
-  segments = segments.filter(s => s.length > 0);
-  
-  let phone = "";
-  let name = "";
-  let address = "";
-  let city = "";
-  
-  // =======================================================
-  // 📞 1. BUSCAR TELÉFONO EN CUALQUIER PARTE
-  // =======================================================
-  const compactText = text.replace(/[()\-.\s]/g, "");
-  const phoneMatch = compactText.match(/(09\d{8}|5959\d{8}|\+595\d{9})/);
-  if (phoneMatch) {
-    phone = phoneMatch[0];
-    if (phone.startsWith("5959")) phone = "0" + phone.slice(3);
-    if (phone.startsWith("+595")) phone = "0" + phone.slice(4);
-  }
-  
-  // =======================================================
-  // 🌆 2. BUSCAR CIUDAD EN CUALQUIER PARTE
-  // =======================================================
-  const extractedCity = extractCityFromText(norm);
-  if (extractedCity) {
-    city = extractedCity;
-  }
-  
-  // =======================================================
-  // 👤 3. BUSCAR NOMBRE (formato: Nombre Apellido)
-  // =======================================================
-  const namePattern = /(?:^|\n|\s)([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)(?:\n|\s|$)/;
-  const nameMatch = text.match(namePattern);
-  if (nameMatch && !isProductName(nameMatch[1]) && nameMatch[1].length < 50) {
-    name = nameMatch[1];
-  }
-  
-  // Si no se encontró con el patrón, buscar líneas que parezcan nombre
-  if (!name) {
-    for (const segment of segments) {
-      const segmentClean = clean(segment);
-      const isOnlyLetters = /^[A-ZÁÉÍÓÚÑa-záéíóúñ\s]+$/.test(segmentClean);
-      const hasTwoOrMoreWords = segmentClean.split(' ').filter(w => w.length > 1).length >= 2;
-      const notTooLong = segmentClean.length < 50;
-      const notProduct = !isProductName(segmentClean);
-      const notAddress = !/\b(calle|avenida|av|ruta|km|casi|esquina|entre|barrio|manzana)\b/i.test(segmentClean);
-      
-      if (isOnlyLetters && hasTwoOrMoreWords && notTooLong && notProduct && notAddress && !phone && !city) {
-        name = segmentClean;
-        break;
-      }
-    }
-  }
-  
-  // =======================================================
-  // 📍 4. BUSCAR DIRECCIÓN (con palabras clave)
-  // =======================================================
-  const addressKeywords = /\b(calle|avenida|avda|av|ruta|km|casi|esquina|entre|barrio|manzana|mz|lote|casa|numero|nro|frente|cerca|detras|costado|rca|república|colombia|españa|caballero|san|santa|padre|monte|cerro|campo|villa|centro|sur|norte|este|oeste)\b/i;
-  
-  // Buscar en el texto completo primero
-  if (addressKeywords.test(text) && text.length > 8 && text.length < 180) {
-    address = text;
-  }
-  
-  // Si no, buscar en segmentos individuales
-  if (!address) {
-    for (const segment of segments) {
-      const segmentClean = clean(segment);
-      if (addressKeywords.test(segmentClean) && segmentClean.length > 8 && segmentClean.length < 150 && segmentClean !== name && !segmentClean.match(/^\d+$/)) {
-        address = segmentClean;
-        break;
-      }
-    }
-  }
-  
-  // Si aún no hay dirección pero hay un segmento largo
-  if (!address) {
-    for (const segment of segments) {
-      const segmentClean = clean(segment);
-      const words = segmentClean.split(' ').filter(w => w.length > 2);
-      const isNotName = segmentClean !== name;
-      const isNotPhone = !segmentClean.includes(phone);
-      const lengthOk = segmentClean.length > 10 && segmentClean.length < 150;
-      
-      if (words.length >= 3 && lengthOk && isNotName && isNotPhone && segmentClean.length > (name?.length || 0)) {
-        address = segmentClean;
-        break;
-      }
-    }
-  }
-  
-  // =======================================================
-  // 5. LIMPIAR DIRECCIÓN
-  // =======================================================
-  if (address && name && address.includes(name)) {
-    address = address.replace(name, '').trim();
-  }
-  if (address && phone && address.includes(phone)) {
-    address = address.replace(phone, '').trim();
-  }
-  if (address && city && address.includes(city)) {
-    address = address.replace(city, '').trim();
-  }
-  
-  // =======================================================
-  // 6. EXTRAER CANTIDAD
-  // =======================================================
+
+  const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
+  const isPackReference = isPackReferenceText(text);
+
+  const shoeSizeMatch = norm.match(/\b(?:talle|numero|nro|num|uso|calzo|soy|en|del|de|para)\s*(\d{2})\b/);
+  const explicitShoeSize = shoeSizeMatch ? Number(shoeSizeMatch[1]) : 0;
+
+  const waitingForShoeSize =
+    forceShoeSizeMode ||
+    currentStep === "collecting_shoe_size" ||
+    currentStep === "esperando_calce" ||
+    currentStep === "collecting_calce";
+
+  const onlyShoeSizeMatch = waitingForShoeSize ? norm.match(/^\s*(\d{2})\s*$/) : null;
+  const implicitShoeSize = onlyShoeSizeMatch ? Number(onlyShoeSizeMatch[1]) : 0;
+
+  const shoe_size =
+    explicitShoeSize >= 20 && explicitShoeSize <= 50 ? explicitShoeSize :
+    implicitShoeSize >= 20 && implicitShoeSize <= 50 ? implicitShoeSize : 0;
+
+  const isShoeSizeMessage = shoe_size >= 20 && shoe_size <= 50;
+
   let quantity = 0;
-  if (forceQuantityMode || currentStep === "collecting_quantity") {
+
+  if (
+    !isShoeSizeMessage &&
+    !waitingForShoeSize &&
+    (forceQuantityMode || currentStep === "collecting_quantity" || currentStep === "esperando_cantidad")
+  ) {
     const onlyNumber = norm.match(/^\s*(\d{1,3})\s*$/);
     if (onlyNumber) {
-      quantity = Number(onlyNumber[1]);
-    } else {
-      const qMatch = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
-      if (qMatch) quantity = Number(qMatch[1]);
+      const num = Number(onlyNumber[1]);
+      if (num >= 1 && num <= 999) quantity = num;
     }
   }
-  
-  // =======================================================
-  // 7. EXTRAER TALLE
-  // =======================================================
-  let shoe_size = 0;
-  if (forceShoeSizeMode || currentStep === "collecting_shoe_size") {
-    const shoeSizeMatch = norm.match(/\b(?:talle|numero|nro|num|uso|calzo|soy|en|del|de|para)\s*(\d{2})\b/);
-    if (shoeSizeMatch) {
-      const size = Number(shoeSizeMatch[1]);
-      if (size >= 20 && size <= 50) shoe_size = size;
+
+  if (!forceQuantityMode && currentStep !== "collecting_quantity" && currentStep !== "esperando_cantidad") {
+    quantity = 0;
+  }
+
+  if (!quantity && !isShoeSizeMessage && !waitingForShoeSize) {
+    const q1 = norm.match(/\b(\d{1,3})\s*(unidad|unidades|u)\b/);
+    if (q1) quantity = Number(q1[1]);
+
+    const q2 = norm.match(/^(quiero|llevo|compro|reservo|dame|mandame)\s+(\d{1,3})$/i);
+    if (!quantity && q2) quantity = Number(q2[2]);
+  }
+
+  if (isPackReference && (currentStep === "collecting_quantity" || currentStep === "esperando_cantidad")) {
+    quantity = 1;
+  }
+
+  const cityAliases: Record<string, string> = {
+    "cruce san alberto": "Cruce San Alberto", "cruse san alberto": "Cruce San Alberto", "san alberto": "San Alberto",
+    asuncion: "Asunción", capiata: "Capiatá", capilata: "Capiatá", kapiata: "Capiatá",
+    cde: "Ciudad del Este", "ciudad del este": "Ciudad del Este", luque: "Luque",
+    ita: "Itá", lambare: "Lambaré", "san lorenzo": "San Lorenzo", sanlo: "San Lorenzo",
+    "san lorenso": "San Lorenzo", fdm: "Fernando de la Mora", "fernando de la mora": "Fernando de la Mora",
+    nemby: "Ñemby", ñemby: "Ñemby", ypane: "Ypané", limpio: "Limpio",
+    "villa elisa": "Villa Elisa", hernandarias: "Hernandarias", "presidente franco": "Presidente Franco",
+    "pte franco": "Presidente Franco", aregua: "Areguá", areguá: "Areguá",
+    sanber: "San Bernardino", "san ber": "San Bernardino", "san bernardino": "San Bernardino",
+    pjc: "Pedro Juan Caballero", "pedro juan": "Pedro Juan Caballero",
+    "pedro juan caballero": "Pedro Juan Caballero",
+  };
+
+  let city = "";
+  for (const [k, v] of Object.entries(cityAliases)) {
+    if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`, "i").test(norm)) {
+      city = v;
+      break;
     }
   }
-  
-  // LOG PARA DEBUG
-  console.log("📊 EXTRACT_DATA:", { original: text.slice(0, 80), name, phone, address: address?.slice(0, 50), city });
-  
+
+  const address = text.match(/(?:dirección|dir|ubicacion|ubicación)\s*[:-]?\s*(.+)/i)?.[1] || "";
+
+  let name = "";
+
+  const invalidName =
+    norm.includes("unidad") || norm.includes("unidades") ||
+    norm.includes("precio") || norm.includes("delivery") ||
+    norm.includes("envio") || norm.includes("envío") ||
+    norm.includes("ubicacion") || norm.includes("ubicación") ||
+    norm.includes("direccion") || norm.includes("dirección") ||
+    norm.includes("calce") || norm.includes("talle") ||
+    norm.includes("numero") || norm.includes("nro") ||
+    norm.includes("veneno") || norm.includes("abeja") ||
+    norm.includes("plantilla") || norm.includes("crema") ||
+    norm.includes("ortopiex") || norm.includes("pelador") ||
+    norm.includes("afilador") || norm.includes("vital") ||
+    norm.includes("perfume") || norm.includes("soporte") ||
+    norm.includes("lavarropas") || norm.includes("cuchillo") ||
+    norm.includes("5d") || norm.includes("ortoflex") ||
+    norm.includes("pororo") || norm.includes("maquina") ||
+    norm.includes("nebulizador") || norm.includes("tabla") ||
+    norm.includes("patitas") || norm.includes("antideslizantes") ||
+    norm.includes("kit") || norm.includes("raqueta");
+
+  const nameMatch = text.match(/(?:me\s+llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,80})/i)?.[1];
+
+  if (nameMatch && !invalidName && !isProductName(nameMatch)) {
+    name = clean(nameMatch).replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "").trim();
+  }
+
+  if (!name && phone) {
+    const possibleName = normalize(text)
+      .replace(normalize(phone), " ")
+      .replace(/\b(tel|tef|telefono|teléfono|cel|celular|nro|numero|número|contacto)\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const titleName = possibleName
+      .split(" ")
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ");
+
+    if (titleName.length >= 5 && /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(titleName) && !isProductName(titleName)) {
+      name = titleName;
+    }
+  }
+
+  if (
+    !name && !invalidName && !/\d/.test(text) &&
+    /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s\.]{5,80}$/.test(text) &&
+    !city && !phone && !quantity &&
+    !norm.includes("hola") && !norm.includes("si") &&
+    !isProductName(text)
+  ) {
+    name = clean(text.replace(/[.]+/g, " ").replace(/\s+/g, " "));
+  }
+
   return {
-    quantity: Math.min(quantity, 999),
-    shoe_size: shoe_size,
-    city: city,
-    name: name,
-    phone: phone,
-    address: address,
+    quantity,
+    shoe_size: isShoeSizeMessage ? shoe_size : "",
+    city,
+    name,
+    phone,
+    address: clean(address),
   };
 }
 
@@ -962,7 +768,15 @@ function formatGs(amount: any): string {
 function formatProductWithShoeSize(product: string, shoeSize?: any): string {
   const size = String(shoeSize || "").trim();
   if (!size) return clean(product);
-  return clean(product);
+
+  const p = clean(product);
+  const n = normalize(p);
+
+  if (n.includes("plantilla") || n.includes("ortopiex") || n.includes("ortoflex")) {
+    return `${p} - Calce ${size}`;
+  }
+
+  return p;
 }
 
 function parseGsAmount(text: string): number {
@@ -975,11 +789,6 @@ function calculateTotal(product: string, quantity: number, training: string): nu
   if (!product || !quantity || quantity < 1) return null;
 
   const p = normalize(product);
-
-  if (p.includes("tornado") || p.includes("destapa")) {
-    return TORNADO_PRICE * quantity;
-  }
-
   const lines = training.split("\n").map((l) => clean(l)).filter(Boolean);
 
   let bestMatchScore = 0;
@@ -1038,6 +847,14 @@ function calculateTotal(product: string, quantity: number, training: string): nu
 }
 
 type CartItem = { product: string; quantity: number; total: number; shoe_size?: any };
+
+function isAddMoreIntent(text: string): boolean {
+  const m = normalize(text);
+  return (
+    /\b(tambien|también|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí|mas|más)\b/.test(m) ||
+    /\by\s+(la|el|los|las)\b/.test(m)
+  );
+}
 
 function getCartItems(order: any): CartItem[] {
   const rawItems = Array.isArray(order?.items) ? order.items : [];
@@ -1152,51 +969,6 @@ function buildItemsLines(items: CartItem[]): string {
     .join("\n");
 }
 
-function buildAutoConfirmResponse(order: any): string {
-  const tipoCobertura = getTipoCobertura(order.city || "");
-  const tipoEnvio =
-    tipoCobertura === "sin_cobertura"
-      ? "Envío por transportadora · Pagás al retirar"
-      : "Envío GRATIS · Pagás al recibir";
-
-  const displayProduct = formatProductWithShoeSize(order.product, order.shoe_size);
-  const quantity = safeQuantity(order.quantity);
-  const total = formatGs(order.total_amount);
-  
-  const direccionValida = clean(order.address || "");
-  const ubicacion = direccionValida && direccionValida.length > 5 
-    ? `${clean(order.city)} — ${direccionValida}`
-    : clean(order.city);
-
-  return `✅ PEDIDO CONFIRMADO ✅
-
-✅ Producto: ${displayProduct}
-✅ Cliente: ${clean(order.customer_name)}
-✅ Ubicación: ${ubicacion}
-✅ Contacto: ${clean(order.phone)}
-✅ Cantidad: ${quantity} u.
-💰 Total: ${total} Gs
-🚚 ${tipoEnvio}
-
-🚚 Tu pedido queda agendado para la próxima ronda de envíos.
-Si pagás al recibir, el delivery lo confirma al llegar a tu zona.
-
-⏰ Oferta válida hoy
-
-¡Gracias por elegir Mega Todo Store! 💜✨
-
-💵 Podés pagar en EFECTIVO o TRANSFERENCIA AL DELIVERY cuando recibas tu producto.
-¡Como te quede más cómodo! 🚚
-
-¡Gracias por tu compra! 🛍️✨
-
-Te dejo nuestro catálogo completo 👇
-👉 ${CATALOG_URL}
-
-Podés pedir cualquier producto con el mismo proceso rápido y seguro.
-¡Te esperamos! 💜`;
-}
-
 function buildCartSummaryResponse(order: any, tipoCobertura: string) {
   const items = getCartItems(order);
   const total = cartGrandTotal(items) || Number(order?.total_amount || 0);
@@ -1209,7 +981,12 @@ function buildCartSummaryResponse(order: any, tipoCobertura: string) {
     ? buildItemsLines(items)
     : `📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}\n🔢 Cantidad: ${order.quantity}`;
 
-  return `🔥 Perfecto 😊
+  let promoNote = "";
+  if (order.quantity === 2) {
+    promoNote = `\n\n🎯 ¡APROVECHA LA PROMO! 🎯`;
+  }
+
+  return `${promoNote}🔥 Perfecto 😊
 
 Tu pedido queda así:
 
@@ -1230,6 +1007,10 @@ ${lines}
 y agendamos tu entrega ✨`;
 }
 
+function buildAddedItemResponse(order: any, tipoCobertura: string) {
+  return buildCartSummaryResponse(order, tipoCobertura);
+}
+
 function buildOrderSummaryResponse(order: any, tipoCobertura: string) {
   const items = getCartItems(order);
   if (items.length > 1) return buildCartSummaryResponse(order, tipoCobertura);
@@ -1240,14 +1021,16 @@ function buildOrderSummaryResponse(order: any, tipoCobertura: string) {
       ? "Envío por transportadora / encomienda"
       : "Envío GRATIS contra-entrega";
 
-  const displayProduct = order.product || items[0]?.product || "";
-  const finalProductName = normalize(displayProduct).includes("tornado") ? getTornadoProductName() : displayProduct;
+  let promoNote = "";
+  if (order.quantity === 2) {
+    promoNote = `🎯 ¡APROVECHA LA PROMO! 🎯\n\n`;
+  }
 
-  return `🔥 Perfecto 😊
+  return `${promoNote}🔥 Perfecto 😊
 
 Tu pedido queda así:
 
-📦 ${formatProductWithShoeSize(finalProductName, order.shoe_size)}
+📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}
 🔢 Cantidad: ${order.quantity}
 💰 Total: ${formatGs(total)} Gs
 
@@ -1259,43 +1042,42 @@ Tu pedido queda así:
 ✅ dirección exacta o ubicación por Google Maps
 ✅ número de celular
 
-📲 Si no enviás número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
+📲 Si no enviés número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
 
 y agendamos tu entrega ✨`;
 }
 
-function nextStep(order: any, tipoCobertura?: string, wasConfirmed?: boolean): string {
-  if (wasConfirmed) return "confirmed_already";
-
+// =======================================================
+// 🆕 NUEVO nextStep() - CIUDAD primero, luego CANTIDAD
+// =======================================================
+function nextStep(order: any, tipoCobertura?: string) {
   const items = getCartItems(order);
-
+  
   if (!order.product && !items.length) return "selling";
+  
+  // 🔥 CIUDAD es lo PRIMERO que preguntamos
   if (!order.city) return "collecting_city";
-
+  
+  // Después de ciudad, preguntamos CANTIDAD
   const hasValidQuantity = safeQuantity(order.quantity) > 0;
   if (!hasValidQuantity && !items.length) return "collecting_quantity";
-
-  const hasName = order.customer_name && order.customer_name.length > 3;
-  const hasAddress = order.address && order.address.length > 5;
-  const hasPhone = order.phone && order.phone.length > 8;
-
+  
   if (tipoCobertura === "sin_cobertura") {
-    if (!hasName) return "collecting_name";
-    if (!hasPhone) return "collecting_phone";
+    if (!order.customer_name) return "collecting_name";
+    if (!order.phone) return "collecting_phone";
     return "waiting_payment_proof";
   }
-
-  if (hasName && hasPhone && hasAddress) {
-    return "confirm_order";
-  }
-
-  if (!hasName) return "collecting_name";
-  if (!hasPhone) return "collecting_phone";
-  if (!hasAddress) return "collecting_address";
-
+  
+  if (!order.customer_name) return "collecting_name";
+  if (!order.phone) return "collecting_phone";
+  if (!order.address) return "collecting_address";
+  
   return "confirm_order";
 }
 
+// =======================================================
+// 🆕 HANDLE PRODUCT SELECTION - Reinicia pedido y pregunta CIUDAD
+// =======================================================
 function handleProductSelection(product: string, shoeSize?: any) {
   const newOrder = {
     product: product,
@@ -1306,23 +1088,14 @@ function handleProductSelection(product: string, shoeSize?: any) {
     phone: "",
     address: "",
     items: [],
-    total_amount: product === getTornadoProductName() ? TORNADO_PRICE : 0,
-    confirmed: false,
-    confirm_count: 0,
+    total_amount: 0,
   };
-
+  
   return {
     response: buildCityQuestionResponse(product, shoeSize),
     order: newOrder,
     step: "collecting_city"
   };
-}
-
-function safeProductName(name: string | null | undefined): string | null {
-  if (!name) return null;
-  const trimmed = clean(name);
-  if (!isValidProductString(trimmed)) return null;
-  return trimmed;
 }
 
 async function safeUpsertOrder(
@@ -1357,7 +1130,7 @@ async function safeUpsertOrder(
     }
 
     const tipoCobertura = getTipoCobertura(order.city);
-    const step = nextStep(order, tipoCobertura, order.confirmed);
+    const step = nextStep(order, tipoCobertura);
 
     const finalStatus =
       forcedStatus ||
@@ -1367,22 +1140,24 @@ async function safeUpsertOrder(
         ? "confirm_pending"
         : step);
 
-    const rawProductName =
-      orderItems.length > 1
-        ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ")
-        : formatProductWithShoeSize(
-            order.product || orderItems[0]?.product || "",
-            order.shoe_size
-          ) || null;
-
-    const validatedProductName = safeProductName(rawProductName);
-
     const payload: any = {
       user_id: userId,
       from_number: from,
       phone: order.phone || from,
-      product: validatedProductName,
-      producto: validatedProductName,
+      product:
+        orderItems.length > 1
+          ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ")
+          : formatProductWithShoeSize(
+              order.product || orderItems[0]?.product || "",
+              order.shoe_size
+            ) || null,
+      producto:
+        orderItems.length > 1
+          ? orderItems.map((i) => `${i.product} x${i.quantity}`).join(" + ")
+          : formatProductWithShoeSize(
+              order.product || orderItems[0]?.product || "",
+              order.shoe_size
+            ) || null,
       customer_name: order.customer_name || null,
       city: order.city || null,
       ciudad: order.city || null,
@@ -1411,47 +1186,6 @@ async function safeUpsertOrder(
     return data?.id || null;
   } catch (e) {
     console.error("❌ safeUpsertOrder:", e);
-    return null;
-  }
-}
-
-
-async function fetchLatestActiveOrder(userId: string, from: string): Promise<any | null> {
-  try {
-    if (!userId || !from) return null;
-
-    const { data, error } = await supabase
-      .from("orders")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("from_number", from)
-      .in("status", [
-        "draft", "collecting_name", "collecting_city", "collecting_quantity",
-        "collecting_phone", "collecting_address", "waiting_payment_proof",
-        "payment_verified", "confirm_pending"
-      ])
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error || !data) return null;
-
-    return {
-      product: data.product || data.producto || "",
-      quantity: safeQuantity(data.quantity),
-      shoe_size: data.shoe_size || "",
-      city: data.city || data.ciudad || "",
-      customer_name: data.customer_name || "",
-      phone: data.phone || "",
-      address: data.address || "",
-      items: [],
-      total_amount: Number(data.total_amount || 0),
-      confirmed: data.status === "confirmed",
-      confirm_count: 0,
-      status: data.status || "",
-    };
-  } catch (e) {
-    console.error("❌ fetchLatestActiveOrder:", e);
     return null;
   }
 }
@@ -1507,6 +1241,8 @@ async function callGemini({ apiKey, model, system, contents, temperature, maxTok
   const c = data?.candidates?.[0];
   const text = clean(c?.content?.parts?.map((p: any) => p.text || "").join("") || "");
 
+  console.log("🧠 finishReason:", c?.finishReason, "len:", text.length);
+
   return text;
 }
 
@@ -1537,13 +1273,37 @@ Devolvé EXCLUSIVAMENTE un JSON válido:
 }
 
 REGLAS IMPORTANTES:
-- Si ves TORNADO, WILD TORNADO, Destapa Cañerías → productName = "Destapa Cañerías Tornado", productPrice = "159.900"
-- Si ves un producto físico, artículo, herramienta → kind = "product"
-- Si ves transferencia, banco, comprobante → kind = "payment_proof"
 
-Caption: "${clean(caption) || "(vacío)"}"
+Si ves transferencia, banco, comprobante, destinatario, nro de comprobante o monto enviado → kind = "payment_proof".
 
-NO devuelvas texto fuera del JSON.`;
+Si es comprobante, extraé amount y receiverName.
+
+El receptor esperado según entrenamiento es: "${expectedReceiverName || "no especificado"}".
+
+Si el receptor aparece parecido al esperado, devolvé el nombre esperado del entrenamiento.
+
+Si ves un producto físico, artículo, herramienta, máquina, envase, caja, frasco, accesorio o promo comercial → kind = "product".
+
+Si es producto, NUNCA lo clasifiques como comprobante aunque tenga precio, números o texto de promo.
+
+Si ves un afilador de cuchillos, sharpener, herramienta negra/roja con ranuras para cuchillos → productName = "Afilador de Cuchillos".
+
+Si ves una imagen con texto "PROMO 2 UNIDADES 129.900Gs" y un producto físico → kind = "product", productPrice = "129.900", promoText = "PROMO 2 UNIDADES".
+
+Si ves un pelador de papas, pelador automático, peladora de verduras → productName = "Peladora Automática".
+
+Si el producto no está en catálogo, igual identificá el productName genérico visual.
+
+matchedProduct solo va si encontrás coincidencia clara con el catálogo.
+
+Si no estás seguro, usá kind = "other".
+
+Caption del cliente: "${clean(caption) || "(vacío)"}"
+
+Catálogo / entrenamiento:
+${productList.slice(0, 5000)}
+
+NO devuelvas texto fuera del JSON.`.trim();
 
   const contents = [
     {
@@ -1589,7 +1349,9 @@ NO devuelvas texto fuera del JSON.`;
 }
 
 async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: any): Promise<string> {
-  const system = "Transcribí el audio al español. Devolvé SOLO la transcripción.";
+  const system =
+    "Transcribí el audio al español tal cual lo dijo el hablante. Devolvé SOLO la transcripción en texto plano.";
+
   const contents = [
     {
       role: "user",
@@ -1604,221 +1366,16 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
   return clean(txt);
 }
 
-
-function detectPriorityProductFromRecentText(text: string): string {
-  const n = normalize(text);
-
-  if (/\b(tornado|wild\s*tornado|destapa|cañeria|cañerias|cañería|cañerías|caneria|canerias|tuberia|tuberias|tubería|tuberías|desagüe|desague)\b/.test(n)) {
-    return getTornadoProductName();
-  }
-
-  return "";
-}
-
-function getRecentConversationText(texto: string, history: any[]): string {
-  const h = Array.isArray(history) ? history.slice(-12) : [];
-  return [
-    ...h.map((x: any) => clean(x?.content || x?.message || x?.text || "")),
-    clean(texto),
-  ].filter(Boolean).join("\n");
-}
-
-function emptyOrder(): any {
-  return {
-    product: "", quantity: 0, shoe_size: "", city: "",
-    customer_name: "", phone: "", address: "", items: [], total_amount: 0,
-    confirmed: false, confirm_count: 0,
-  };
-}
-
-function isNewConversation(text: string, history: any[]): boolean {
-  const n = normalize(text);
-  const newConversationMarkers = /\b(creo que guardo|mensaje antiguo|chat viejo|conversación anterior|pedido anterior|nuevo pedido|empezar de nuevo|borrar pedido|reiniciar)\b/i;
-  const noHistory = !history || history.length === 0;
-  return noHistory || newConversationMarkers.test(n);
-}
-
-function getAuthoritativeUnitPrice(product: string, training: string): number | null {
-  const p = normalize(product);
-  if (!p) return null;
-
-  if (p.includes("tornado") || p.includes("destapa")) return TORNADO_PRICE;
-
-  const lines = training.split("\n").map((l) => clean(l)).filter(Boolean);
-  let bestScore = 0;
-  let bestPrice = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const lineNorm = normalize(lines[i]);
-    let score = 0;
-
-    if (lineNorm.includes(p)) score += 50;
-    const productWords = p.split(" ").filter((w) => w.length >= 4);
-    for (const w of productWords) if (lineNorm.includes(w)) score += 8;
-
-    if (!score) continue;
-
-    const window = lines.slice(i, i + 8);
-    for (const wLine of window) {
-      const amount = parseGsAmount(wLine);
-      if (amount > 0 && score > bestScore) {
-        bestScore = score;
-        bestPrice = amount;
-      }
-    }
-  }
-
-  return bestPrice > 0 ? bestPrice : null;
-}
-
-function getSafeTotal(product: string, quantity: any, training: string): number | null {
-  const q = safeQuantity(quantity);
-  if (!product || q < 1) return null;
-
-  const calculated = calculateTotal(product, q, training);
-  if (calculated && calculated > 0) return calculated;
-
-  const unit = getAuthoritativeUnitPrice(product, training);
-  if (!unit || unit <= 0) return null;
-
-  return unit * q;
-}
-
-function hasSafePrice(product: string, quantity: any, training: string): boolean {
-  const total = getSafeTotal(product, quantity, training);
-  return !!total && total > 0;
-}
-
-function isOrderCompleteForConfirmation(order: any, training: string): boolean {
-  const hasProduct = !!safeProductName(order?.product);
-  const hasQuantity = safeQuantity(order?.quantity) > 0;
-  const hasCity = !!clean(order?.city);
-  const hasName = clean(order?.customer_name).length > 3;
-  const hasPhone = clean(order?.phone).length > 8;
-  const hasAddress = clean(order?.address).length > 5;
-  const hasPrice = hasSafePrice(order?.product, order?.quantity, training);
-  return hasProduct && hasQuantity && hasCity && hasName && hasPhone && hasAddress && hasPrice;
-}
-
-function buildMissingPriceResponse(product: string): string {
-  return `⚠️ Todavía no tengo el precio cargado para ${clean(product) || "este producto"}.
-
-No puedo confirmar el pedido ni calcular el total hasta que el precio esté configurado en el entrenamiento o catálogo.`;
-}
-
-function buildPriceResponse(product: string, training: string): string {
-  const productName = safeProductName(product) || getTornadoProductName();
-  const unit = getAuthoritativeUnitPrice(productName, training);
-
-  if (!unit || unit <= 0) return buildMissingPriceResponse(productName);
-
-  return `💰 ${productName} cuesta ${formatGs(unit)} Gs.
-
-🚚 Envío GRATIS contra-entrega en zonas con cobertura.
-💵 Pagás al recibir.
-
-¿Querés que te reserve 1 unidad? 😊`;
-}
-
-function buildInformationResponse(product: string, training: string): string {
-  const productName = safeProductName(product) || getTornadoProductName();
-  const unit = getAuthoritativeUnitPrice(productName, training);
-
-  if (normalize(productName).includes("tornado") || normalize(productName).includes("destapa")) {
-    return `Claro 😊
-
-💥 ${getTornadoProductName()}
-
-✅ Ayuda a destapar cañerías de cocina, baño y lavadero
-✅ Ayuda a eliminar malos olores
-✅ Fórmula de acción rápida
-✅ Fácil aplicación
-✅ Ideal para mantenimiento del hogar
-
-💰 Precio: ${formatGs(TORNADO_PRICE)} Gs
-🚚 Envío GRATIS contra-entrega en zonas con cobertura
-💵 Pagás al recibir
-
-¿Querés que te reserve 1 unidad? 🔥`;
-  }
-
-  if (!unit || unit <= 0) return buildMissingPriceResponse(productName);
-
-  return `Claro 😊
-
-📦 ${productName}
-💰 Precio: ${formatGs(unit)} Gs
-🚚 Envío GRATIS contra-entrega en zonas con cobertura
-💵 Pagás al recibir
-
-¿Querés que te reserve 1 unidad?`;
-}
-
-function buildSafeOrderSummaryResponse(order: any, tipoCobertura: string, training: string): string {
-  const q = safeQuantity(order?.quantity);
-  const total = getSafeTotal(order?.product, q, training);
-  if (!total || total <= 0) return buildMissingPriceResponse(order?.product);
-
-  const safeOrder = { ...order, quantity: q, total_amount: total };
-  return buildOrderSummaryResponse(safeOrder, tipoCobertura);
-}
-
-function buildSafeAutoConfirmResponse(order: any, training: string): string {
-  const q = safeQuantity(order?.quantity);
-  const total = getSafeTotal(order?.product, q, training);
-
-  if (!total || total <= 0) return buildMissingPriceResponse(order?.product);
-  if (!isOrderCompleteForConfirmation({ ...order, quantity: q, total_amount: total }, training)) {
-    return `⚠️ Todavía faltan datos para confirmar el pedido.
-
-Necesito:
-✅ Producto
-✅ Cantidad
-✅ Ciudad
-✅ Nombre y apellido
-✅ Dirección exacta
-✅ Número de celular
-✅ Precio válido`;
-  }
-
-  return buildAutoConfirmResponse({ ...order, quantity: q, total_amount: total });
-}
-
-function buildDataRequestByMissing(order: any): string {
-  const hasName = clean(order?.customer_name).length > 3;
-  const hasPhone = clean(order?.phone).length > 8;
-  const hasAddress = clean(order?.address).length > 5;
-
-  if (!hasName) return "😊 ¿Me pasás tu nombre y apellido completo?";
-  if (!hasAddress) return "📍 ¿Me pasás tu dirección exacta o ubicación por Google Maps?";
-  if (!hasPhone) return "📲 ¿Me pasás tu número de celular? (Ej: 0981 123 456)";
-  return "✅ Ya tengo tus datos. ¿Confirmás el pedido?";
-}
-
-function isOldConversation(history: any[]): boolean {
-  if (!Array.isArray(history) || history.length === 0) return false;
-  
-  const lastUserMsg = [...history].reverse().find((h: any) => h?.role === "user");
-  if (!lastUserMsg?.timestamp) return false;
-  
-  const lastTime = new Date(lastUserMsg.timestamp).getTime();
-  const hoursDiff = (Date.now() - lastTime) / (1000 * 60 * 60);
-  
-  return hoursDiff >= 24;
-}
-
-// =======================================================
-// 🚀 HANDLER PRINCIPAL - VERSION FINAL DEFINITIVA
-// =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL v14.0 - DETECCIÓN DE DATOS EN CUALQUIER FORMATO");
+  console.log("🔥 VERSION FINAL - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    const { user_id, message, from_number, context, history, media_url, media_type, mime_type } = req.body;
+    const { user_id, message, from_number, context, history, media_url, media_type, mime_type } =
+      req.body;
 
     let texto = clean(message);
     const fromNumber = clean(from_number);
@@ -1828,22 +1385,7 @@ export default async function handler(req: any, res: any) {
 
     if (!user_id) return res.status(400).json({ error: "Falta user_id" });
     if (!fromNumber) return res.status(400).json({ error: "Falta from_number" });
-
-    // =======================================================
-    // 🕐 VERIFICAR SI PASARON MÁS DE 24 HORAS
-    // =======================================================
-    const isOld = isOldConversation(history);
-    
-    if (isOld) {
-      console.log("🕐 Conversación con más de 24hs - Reiniciando venta");
-      
-      await supabase
-        .from("orders")
-        .update({ status: "abandoned", updated_at: new Date().toISOString() })
-        .eq("user_id", user_id)
-        .eq("from_number", fromNumber)
-        .in("status", ["draft", "collecting_name", "collecting_city", "collecting_quantity", "waiting_payment_proof"]);
-    }
+    if (!texto && !mediaUrl) return res.status(400).json({ error: "Faltan message o media" });
 
     const { data: iaConfig } = await supabase
       .from("chat_ia_gemini")
@@ -1866,498 +1408,508 @@ export default async function handler(req: any, res: any) {
       .maybeSingle();
 
     const fullTraining = clean(trainingRow?.response);
+
+    if (!fullTraining) {
+      return res.json({ response: "⚠️ No encontré entrenamiento activo." });
+    }
+
+    const expectedReceiverName = extractBankReceiverFromTraining(fullTraining);
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    const normalizedText = normalize(texto);
-    const previousStep = clean(context?.step || "");
+    let lastUserProduct = context?.last_user_product || "";
 
-    // =======================================================
-    // 🔢 DETECTAR CANTIDAD - CUALQUIER FORMATO
-    // =======================================================
-    const quantityResult = extractQuantityFromAnyText(texto);
-    const isUserSendingQuantity = isUserRespondingWithQuantity(texto, previousStep, history || []);
-    const isPromo = quantityResult.isPromo;
-    let detectedQuantity = quantityResult.quantity;
-
-    if (!detectedQuantity && isUserSendingQuantity && botWasAskingQuantity(history || [])) {
-      detectedQuantity = 1;
+    if (!lastUserProduct && Array.isArray(history)) {
+      for (let i = history.length - 1; i >= 0; i--) {
+        const msg = history[i];
+        if (msg?.role === "user") {
+          const userText = clean(msg.content);
+          const detected = canonicalProductFromText(userText);
+          if (detected && !isInvalidProductCandidate(detected)) {
+            lastUserProduct = detected;
+            break;
+          }
+          const norm = normalize(userText);
+          if (norm.includes("raqueta")) { lastUserProduct = "Raqueta Eléctrica para Insectos"; break; }
+          if (norm.includes("veneno") || norm.includes("abeja")) { lastUserProduct = "Veneno de Abeja"; break; }
+          if (norm.includes("plantilla") || norm.includes("ortopiex")) { lastUserProduct = getDefaultShoeProductName(); break; }
+          if (norm.includes("pelador")) { lastUserProduct = "Peladora Automática"; break; }
+          if (norm.includes("pororo") || norm.includes("popcorn") || norm.includes("pochoclo")) { lastUserProduct = "Máquina para hacer Pororo"; break; }
+          if (norm.includes("nebulizador")) { lastUserProduct = "Nebulizador portátil"; break; }
+          if (norm.includes("tabla") && (norm.includes("picar") || norm.includes("marmol"))) { lastUserProduct = "Tabla de Picar de Mármol"; break; }
+          if (isAntiVibrationKit(userText)) { lastUserProduct = getAntiVibrationProductName(); break; }
+        }
+      }
     }
 
-    if (isPromo) detectedQuantity = 2;
+    const isNewChat = isNewConversation(texto, history || []);
 
-    const recentConversationText = getRecentConversationText(texto, history || []);
-    const recentAdProduct = detectPriorityProductFromRecentText(recentConversationText);
-
-    let dbOrder = isOld ? null : await fetchLatestActiveOrder(user_id, fromNumber);
-    let oldOrder = dbOrder?.product ? normalizeOrderWithItems(dbOrder, fullTraining) : emptyOrder();
-
-    let lastUserProduct = context?.last_user_product || oldOrder?.product || recentAdProduct || "";
-    if (!isValidProductString(lastUserProduct)) lastUserProduct = "";
-
-    const activeProduct = safeProductName(oldOrder?.product || context?.current_product || lastUserProduct || recentAdProduct || "");
-
-    let product = "";
-    if (recentAdProduct && (isInformationRequest(texto) || isPriceIntent(texto) || detectedQuantity > 0 || normalizedText.includes("hola"))) {
-      product = recentAdProduct;
-    } else if (/tornado|wild\s*tornado|destapa|cañer|caner|tuber|desag/i.test(normalizedText)) {
-      product = getTornadoProductName();
+    let oldOrder;
+    if (isNewChat) {
+      oldOrder = {
+        product: "", quantity: 0, shoe_size: "", city: "",
+        customer_name: "", phone: "", address: "", items: [], total_amount: 0,
+      };
+      console.log("🔄 Conversación nueva detectada - Pedido reiniciado");
     } else {
-      product = detectProductRespectingActive(
-        texto,
-        fullTraining,
-        activeProduct || "",
-        getLastAssistantMessage(history || []),
-        lastUserProduct
-      );
+      oldOrder = normalizeOrderWithItems(context?.order_data || {}, fullTraining);
     }
 
-    if (product && !isInvalidProductCandidate(product)) lastUserProduct = product;
+    const previousStep = clean(context?.step);
+    const previousTipoCobertura = clean(context?.tipo_cobertura);
 
-    // =======================================================
-    // 🙏 Cliente dice "gracias" después de confirmado - NO REINICIAR
-    // =======================================================
-    if ((/gracias|thank you|thanks/i.test(normalizedText) || isNeutralReply(texto)) && oldOrder?.confirmed) {
+    if (isOriginQuestion(texto)) {
       return res.json({
-        response: "¡Gracias a ti! 😊 Quedo atenta por si necesitas algo más. ¡Que tengas un lindo día! 💜",
+        response: `Somos de Asunción, Paraguay 😊\nHacemos envíos a todo el país 🚚\n\n¿Cuál producto te interesa? ✨`,
         context: {
           ...(context || {}),
-          step: "confirmed",
+          step: previousStep || "selling",
           order_data: oldOrder,
+          current_product: oldOrder?.product || context?.current_product || null,
+          last_user_product: lastUserProduct || null,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
       });
     }
 
+    const currentActiveProduct = 
+      oldOrder?.product ||
+      context?.current_product ||
+      lastUserProduct ||
+      null;
+    
+    console.log(`🎯 Producto activo actual: "${currentActiveProduct}"`);
+    console.log(`📝 Mensaje del cliente: "${texto}"`);
+    
+    let product = detectProductRespectingActive(
+      texto,
+      fullTraining,
+      currentActiveProduct,
+      getLastAssistantMessage(history || []),
+      lastUserProduct
+    );
+    
+    console.log(`✅ Producto final detectado: "${product}"`);
+    
+    if (product && !isInvalidProductCandidate(product)) {
+      lastUserProduct = product;
+    }
+
+    const activeProductForLocation = product || currentActiveProduct;
+    const locationOnlyCity = isLocationOnlyMessage(texto) ? extractCityFromText(texto) : "";
+
+    if (locationOnlyCity && !activeProductForLocation) {
+      const coverageOrder = { ...(oldOrder || {}), city: locationOnlyCity };
+      return res.json({
+        response: buildCoverageOnlyResponse(locationOnlyCity),
+        context: {
+          ...(context || {}),
+          step: "selling",
+          tipo_cobertura: getTipoCobertura(locationOnlyCity) || null,
+          order_data: coverageOrder,
+          current_product: null,
+          last_user_product: null,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    if (isNeutralReply(texto)) {
+      return res.json({
+        response: "😊 Perfecto, cualquier duda escribime nomás. Estoy para ayudarte ✨",
+        context: {
+          ...(context || {}),
+          step: previousStep || "selling",
+          order_data: oldOrder,
+          current_product: oldOrder?.product || context?.current_product || null,
+          last_user_product: lastUserProduct || oldOrder?.product || null,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    let isPaymentProof = false;
+
+    const lastAssistantMessage = getLastAssistantMessage(history || []);
+    const wasAskingCity = botWasAskingCity(history || []);
+    const wasAskingQuantity = botWasAskingQuantity(history || []);
+    const wasAskingShoeSize = botWasAskingShoeSize(history || []);
+
+    const isOnlyNumber = /^\s*\d{1,3}\s*$/.test(texto);
+
+    const shoeSizeFromText = extractShoeSizeFromText(texto);
+    const shoeProductContext = isShoeProductText(
+      [oldOrder?.product, context?.current_product, context?.last_topic, lastAssistantMessage, product]
+        .filter(Boolean)
+        .join(" ")
+    );
+
+    const isPureShoeSizeReply =
+      shoeSizeFromText > 0 &&
+      !!(oldOrder?.product || context?.current_product || shoeProductContext || product) &&
+      (wasAskingShoeSize ||
+        previousStep === "collecting_shoe_size" ||
+        previousStep === "esperando_calce" ||
+        previousStep === "collecting_calce" ||
+        shoeProductContext ||
+        productRequiresSize(String(oldOrder?.product || context?.current_product || product || "")));
+
+    // Verificar si es respuesta de ciudad
+    const isCityReply = !product && !isOnlyNumber && extractCityFromText(texto) && 
+      (wasAskingCity || previousStep === "collecting_city");
+    
+    // Verificar si es respuesta de cantidad
+    const isQuantityReply = isOnlyNumber && !isPureShoeSizeReply && !isPriceIntent(texto) &&
+      (wasAskingQuantity || previousStep === "collecting_quantity");
+
+    const wantsAddMore = isAddMoreIntent(texto);
+    
+    let extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
+
     // =======================================================
-    // 🖼️ MEDIA: si es producto detectado por imagen
+    // 🆕 NUEVO PRODUCTO SELECCIONADO → PREGUNTAR CIUDAD
     // =======================================================
-    if (mediaUrl && mediaType && /image|photo|media/i.test(mediaType)) {
-      const media = await fetchMediaAsBase64(mediaUrl);
-      if (media) {
-        const visual = await analyzeImageWithGemini({
-          apiKey,
-          model,
-          imageBase64: media.data,
-          mime: mimeHint || media.mime,
+    if (product && !wantsAddMore && !isQuantityReply && !isPureShoeSizeReply && !isCityReply) {
+      const productChanged = !oldOrder?.product || !sameProduct(product, oldOrder.product);
+      
+      if (productChanged) {
+        const { response, order: newOrder, step: newStep } = handleProductSelection(product, extracted.shoe_size);
+        
+        await safeUpsertOrder(user_id, fromNumber, newOrder, false);
+        
+        return res.json({
+          response: response,
+          context: {
+            ...(context || {}),
+            current_product: product,
+            last_user_product: product,
+            step: newStep,
+            tipo_cobertura: null,
+            order_data: newOrder,
+            last_topic: product,
+            updated_at: new Date().toISOString(),
+          },
+          is_payment_proof: false,
+        });
+      }
+    }
+
+    // =======================================================
+    // 🆕 RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD (con ejemplos)
+    // =======================================================
+    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && product) {
+      const city = extracted.city || extractCityFromText(texto);
+      
+      if (city) {
+        let orderData = {
+          product: product,
+          quantity: 0,
+          shoe_size: extracted.shoe_size || "",
+          city: city,
+          customer_name: "",
+          phone: "",
+          address: "",
+          items: [],
+          total_amount: 0,
+        };
+        
+        await safeUpsertOrder(user_id, fromNumber, orderData, false);
+        
+        return res.json({
+          response: buildQuantityAfterCityResponse(product, city, extracted.shoe_size),
+          context: {
+            ...(context || {}),
+            current_product: product,
+            last_user_product: product,
+            step: "collecting_quantity",
+            tipo_cobertura: getTipoCobertura(city),
+            order_data: orderData,
+            last_topic: product,
+            updated_at: new Date().toISOString(),
+          },
+          is_payment_proof: false,
+        });
+      }
+    }
+
+    // =======================================================
+    // 🆕 RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y CONFIRMAR
+    // =======================================================
+    if (isQuantityReply && product && extracted.quantity > 0) {
+      let orderData = {
+        product: product,
+        quantity: extracted.quantity,
+        shoe_size: extracted.shoe_size || "",
+        city: oldOrder?.city || context?.order_data?.city || "",
+        customer_name: "",
+        phone: "",
+        address: "",
+        items: [],
+        total_amount: 0,
+      };
+      
+      const total = calculateTotal(product, extracted.quantity, fullTraining);
+      if (total) orderData.total_amount = total;
+      
+      await safeUpsertOrder(user_id, fromNumber, orderData, false);
+      
+      return res.json({
+        response: buildOrderSummaryResponse(orderData, getTipoCobertura(orderData.city)),
+        context: {
+          ...(context || {}),
+          current_product: product,
+          last_user_product: product,
+          step: nextStep(orderData, getTipoCobertura(orderData.city)),
+          tipo_cobertura: getTipoCobertura(orderData.city),
+          order_data: orderData,
+          last_topic: product,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    // ========== PROCESAMIENTO DE MEDIA ==========
+    if (mediaUrl && mediaType === "image") {
+      const fetched = await fetchMediaAsBase64(mediaUrl);
+
+      if (fetched) {
+        const mime = mimeHint || fetched.mime || "image/jpeg";
+
+        const analysis = await analyzeImageWithGemini({
+          apiKey, model,
+          imageBase64: fetched.data,
+          mime,
           caption: texto,
           productList: fullTraining,
-          expectedReceiverName: extractBankReceiverFromTraining(fullTraining),
+          expectedReceiverName,
         });
 
-        if (visual.kind === "product") {
-          const visualProduct = safeProductName(visual.matchedProduct || visual.productName || product || recentAdProduct || "");
-          if (visualProduct) {
+        console.log("🖼️ Vision:", analysis);
+
+        if (analysis.kind === "payment_proof") {
+          isPaymentProof = true;
+          const isWaitingPaymentProof =
+            getTipoCobertura(oldOrder?.city) === "sin_cobertura" &&
+            previousStep === "waiting_payment_proof";
+
+          await safeUpsertOrder(
+            user_id, fromNumber, oldOrder, false,
+            isWaitingPaymentProof ? "payment_verified" : undefined
+          );
+
+          const amountText = analysis.amount ? ` por Gs. ${analysis.amount}` : "";
+          const receiver = analysis.receiverName || expectedReceiverName || "nuestro titular";
+
+          return res.json({
+            response: `¡Perfecto! 🙏 Recibimos tu comprobante${amountText} a nombre de ${receiver}.
+
+Ya estamos verificando el pago ✅
+
+Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu comprobante de encomienda 🚚✨`,
+            is_payment_proof: true,
+            context: {
+              ...(context || {}),
+              current_product: oldOrder?.product || context?.current_product || null,
+              last_user_product: lastUserProduct || oldOrder?.product || null,
+              step: isWaitingPaymentProof ? "payment_verified" : previousStep || "selling",
+              tipo_cobertura: getTipoCobertura(oldOrder?.city) || previousTipoCobertura || null,
+              order_data: oldOrder,
+              last_topic: "payment_verified",
+              payment_amount: analysis.amount || null,
+              payment_receiver: receiver,
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
+
+        if (analysis.kind === "product") {
+          const productSignal = [
+            analysis.matchedProduct,
+            analysis.productName,
+            analysis.transcript,
+            analysis.promoText,
+          ]
+            .filter(Boolean)
+            .join(" ");
+
+          const catalogProduct = detectProductRaw(productSignal, fullTraining, "", lastUserProduct);
+          const visualProduct = catalogProduct || analysis.matchedProduct || analysis.productName || "";
+          product = visualProduct || product;
+          const hasVisiblePrice = !!analysis.productPrice;
+
+          if (!catalogProduct && visualProduct && hasVisiblePrice) {
+            const promoLine = analysis.promoText
+              ? `🔥 ${analysis.promoText} → ${analysis.productPrice} Gs`
+              : `💰 Precio: ${analysis.productPrice} Gs`;
+
             return res.json({
-              response: buildInformationResponse(visualProduct, fullTraining),
+              response: `Sí 😊 es ${visualProduct}.
+
+${promoLine}
+
+📍 ¿Para qué ciudad sería el envío?`,
               context: {
                 ...(context || {}),
                 current_product: visualProduct,
                 last_user_product: visualProduct,
-                step: "selling",
-                order_data: oldOrder,
+                step: "collecting_city",
+                tipo_cobertura: previousTipoCobertura || null,
+                order_data: { ...(oldOrder || {}), product: visualProduct },
+                last_topic: visualProduct,
                 updated_at: new Date().toISOString(),
               },
               is_payment_proof: false,
             });
           }
+
+          texto = `El cliente envió una FOTO DE PRODUCTO.
+Descripción detectada: ${analysis.transcript || "producto no identificado"}
+Producto visual detectado: ${visualProduct || "no identificado"}
+Producto del catálogo detectado: ${catalogProduct || "no encontrado"}
+Precio visible en imagen: ${analysis.productPrice || "no visible"}
+Promo visible en imagen: ${analysis.promoText || "no visible"}
+
+Si hay producto del catálogo detectado, respondé con su nombre, precio exacto del entrenamiento, promoción si existe y preguntá para qué ciudad sería el envío.
+Si no hay producto del catálogo pero hay producto visual y precio visible, respondé con ese producto y precio visible.
+Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
+        } else {
+          texto =
+            texto ||
+            `El cliente envió una imagen. Descripción: ${analysis.transcript || "imagen no identificada"}. Si no corresponde a producto ni comprobante, pedí más detalle.`;
         }
+      } else {
+        texto = texto || "Te mandé una imagen pero no pudiste descargarla.";
       }
     }
 
-    // =======================================================
-    // 📋 CLIENTE PIDIÓ CATÁLOGO / INFORMACIÓN GENERAL SIN PRODUCTO
-    // =======================================================
-    if ((isCatalogQuery(texto) || (isInformationRequest(texto) && !product && !activeProduct && !oldOrder?.product)) && !isOld) {
-      const mensajeMasVendidos = `🔥 Estos son nuestros productos más vendidos 😊
+    if (mediaUrl && mediaType === "audio") {
+      const fetched = await fetchMediaAsBase64(mediaUrl);
 
-⭐ Veneno de Abeja
-💰 145.000 Gs
-🔥 PROMO 2x → 249.900 Gs
-⚠️ Stock limitado
-
-⭐ Raqueta para Insectos
-💰 1 unidad → 119.900 Gs
-
-⭐ Peladora Automática
-💰 1 unidad → 179.900 Gs
-
-⭐ Perfume Asad
-💰 1 unidad → 169.900 Gs
-
-⭐ Tabla de Picar de Mármol
-💰 1 unidad → 169.900 Gs
-
-⭐ Nebulizador portátil
-💰 1 unidad → 169.900 Gs
-
-⭐ Limpiador de Ollas y Carbonilla
-💰 1 unidad → 149.900 Gs
-🔥 2 unidades en promo → 259.900 Gs
-
-⭐ Destapa Cañerías Tornado
-💰 1 unidad → 159.900 Gs
-
-⭐ Afilador de cuchillos
-💰 1 unidad → 99.000 Gs
-🔥 2 unidades en promo → 129.900 Gs
-
-⭐ Plantillas Ortopiex 5D (calce 35 a 46)
-💰 159.000 Gs
-
-⭐ Almohadillas Antivibración (x4 unidades)
-💰 98.000 Gs
-
-¿Cuál te interesa? ✨`;
-
-      return res.json({
-        response: mensajeMasVendidos,
-        context: {
-          ...(context || {}),
-          step: "selling",
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
-
-    // =======================================================
-    // 💰 PRECIO/INFO - solo si hay producto en contexto y NO es confirmación
-    // =======================================================
-    const isConfirmWord = /\b(si|sí|quiero|compro|reservo|confirmo|dale|ok|listo)\b/i.test(normalizedText);
-    
-    if (isPriceIntent(texto) && (product || activeProduct || oldOrder?.product) && !isConfirmWord) {
-      const priceProduct = product || activeProduct || oldOrder?.product || "";
-      if (priceProduct) {
-        return res.json({
-          response: buildPriceResponse(priceProduct, fullTraining),
-          context: {
-            ...(context || {}),
-            current_product: priceProduct,
-            last_user_product: priceProduct,
-            step: "selling",
-            order_data: oldOrder,
-            updated_at: new Date().toISOString(),
-          },
-          is_payment_proof: false,
+      if (fetched) {
+        const mime = mimeHint || fetched.mime || "audio/ogg";
+        const transcript = await transcribeAudioWithGemini({
+          apiKey, model, audioBase64: fetched.data, mime,
         });
+        texto = transcript || texto || "Te mandé un audio.";
+
+        const audioHasProduct = !!detectProductRaw(texto, fullTraining, "", lastUserProduct);
+        const audioExtracted = extractData(texto, previousStep, false, false);
+        const audioHasUsefulData = !!(
+          audioExtracted.quantity || audioExtracted.city ||
+          audioExtracted.name || audioExtracted.phone || audioExtracted.address
+        );
+
+        if (!isBuyIntent(texto) && !audioHasProduct && !audioHasUsefulData) {
+          return res.json({
+            response:
+              "🎤 Escuché tu audio 😊 ¿Podrías decirme qué producto te interesa o qué necesitás exactamente?",
+            context: {
+              ...(context || {}),
+              step: previousStep || "selling",
+              order_data: oldOrder,
+              current_product: oldOrder?.product || context?.current_product || null,
+              last_user_product: lastUserProduct || oldOrder?.product || null,
+              updated_at: new Date().toISOString(),
+            },
+            is_payment_proof: false,
+          });
+        }
+      } else {
+        texto = texto || "Te mandé un audio pero no pudiste descargarlo.";
       }
     }
 
-    // =======================================================
-    // 📍 Si solo mandó ciudad sin producto
-    // =======================================================
-    const extractedCity = extractCityFromText(texto);
-    if (extractedCity && !oldOrder?.product && !product && !isConfirmWord && detectedQuantity === 0) {
-      return res.json({
-        response: buildCoverageOnlyResponse(extractedCity),
-        context: { ...(context || {}), step: "selling", updated_at: new Date().toISOString() },
-        is_payment_proof: false,
-      });
+    if (!texto) texto = "(mensaje sin texto)";
+
+    extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
+
+    // Construir orderData final
+    let orderData = {
+      product: product || oldOrder?.product || "",
+      quantity: extracted.quantity || oldOrder?.quantity || 0,
+      shoe_size: extracted.shoe_size || oldOrder?.shoe_size || "",
+      city: extracted.city || oldOrder?.city || "",
+      customer_name: extracted.name || oldOrder?.customer_name || "",
+      phone: extracted.phone || oldOrder?.phone || "",
+      address: extracted.address || oldOrder?.address || "",
+      items: oldOrder?.items || [],
+      total_amount: oldOrder?.total_amount || 0,
+    };
+
+    // Calcular total si hay producto y cantidad
+    if (orderData.product && orderData.quantity > 0) {
+      const calculated = calculateTotal(orderData.product, orderData.quantity, fullTraining);
+      if (calculated) orderData.total_amount = calculated;
     }
 
-    // =======================================================
-    // 🛒 Cliente quiere X unidades - PRIMERO PREGUNTAR CIUDAD
-    // =======================================================
-    if (detectedQuantity > 0 && !oldOrder?.city && !oldOrder?.product && !previousStep) {
-      const finalProduct = product || activeProduct || recentAdProduct || lastUserProduct || "";
+    const finalTipoCobertura = getTipoCobertura(orderData.city) || previousTipoCobertura || "";
+    let step = nextStep(orderData, finalTipoCobertura);
+
+    // Si el cliente ya envió todos los datos, confirmar
+    if (step === "confirm_order") {
+      await safeUpsertOrder(user_id, fromNumber, orderData, true);
       
-      if (!finalProduct) {
-        return res.json({
-          response: "😊 ¿Qué producto querés llevar? Así te paso el precio correcto y agendamos.",
-          context: { ...(context || {}), step: "selling", updated_at: new Date().toISOString() },
-          is_payment_proof: false,
-        });
-      }
-
-      const total = getSafeTotal(finalProduct, detectedQuantity, fullTraining);
-      if (!total || total <= 0) {
-        return res.json({
-          response: buildMissingPriceResponse(finalProduct),
-          context: {
-            ...(context || {}),
-            current_product: finalProduct,
-            last_user_product: finalProduct,
-            step: "selling",
-            updated_at: new Date().toISOString(),
-          },
-          is_payment_proof: false,
-        });
-      }
-
-      const orderData = {
-        ...emptyOrder(),
-        product: finalProduct,
-        quantity: detectedQuantity,
-        total_amount: total,
-      };
-
-      await safeUpsertOrder(user_id, fromNumber, orderData, false, "collecting_city");
-
       return res.json({
-        response: buildCityQuestionResponse(finalProduct),
-        context: {
-          ...(context || {}),
-          current_product: finalProduct,
-          last_user_product: finalProduct,
-          step: "collecting_city",
-          pending_quantity: detectedQuantity,
-          order_data: orderData,
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
-
-    // =======================================================
-    // 📍 Respuesta de ciudad (cuando el bot preguntó ciudad)
-    // =======================================================
-    const isCityReply = !!extractedCity && (previousStep === "collecting_city" || (oldOrder?.product && !oldOrder?.city) || botWasAskingCity(history || []));
-    
-    if (isCityReply && oldOrder?.product) {
-      const quantity = safeQuantity(context?.pending_quantity || oldOrder?.quantity || 1) || 1;
-      const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
-
-      if (!total || total <= 0) {
-        return res.json({
-          response: buildMissingPriceResponse(oldOrder.product),
-          context: { ...(context || {}), step: "selling", order_data: oldOrder, updated_at: new Date().toISOString() },
-          is_payment_proof: false,
-        });
-      }
-
-      const orderData = {
-        ...oldOrder,
-        city: extractedCity,
-        quantity,
-        total_amount: total,
-      };
-
-      await safeUpsertOrder(user_id, fromNumber, orderData, false, "collecting_quantity");
-
-      return res.json({
-        response: buildQuantityAfterCityResponse(orderData.product, extractedCity, orderData.shoe_size),
+        response: buildOrderSummaryResponse(orderData, finalTipoCobertura),
         context: {
           ...(context || {}),
           current_product: orderData.product,
           last_user_product: orderData.product,
-          step: "collecting_quantity",
-          tipo_cobertura: getTipoCobertura(extractedCity),
+          step: "confirmed",
+          tipo_cobertura: finalTipoCobertura,
           order_data: orderData,
-          pending_quantity: null,
+          last_topic: orderData.product,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
       });
     }
 
-    // =======================================================
-    // 📦 Producto mencionado sin compra directa - preguntar ciudad
-    // =======================================================
-    if (product && !oldOrder?.city && detectedQuantity === 0 && !isConfirmWord && !oldOrder?.product) {
-      const unit = getAuthoritativeUnitPrice(product, fullTraining);
-      if (!unit || unit <= 0) {
-        return res.json({
-          response: buildMissingPriceResponse(product),
-          context: {
-            ...(context || {}),
-            current_product: product,
-            last_user_product: product,
-            step: "selling",
-            order_data: oldOrder,
-            updated_at: new Date().toISOString(),
-          },
-          is_payment_proof: false,
-        });
-      }
+    // Si estamos en medio del flujo, guardar y continuar con Gemini
+    await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
-      const newOrder = {
-        ...emptyOrder(),
-        product: product,
-        total_amount: unit,
-      };
-      await safeUpsertOrder(user_id, fromNumber, newOrder, false, "collecting_city");
+    let cleanHistory = Array.isArray(history) ? history : [];
+    if (isQuantityReply || isPureShoeSizeReply) cleanHistory = [];
 
-      return res.json({
-        response: buildCityQuestionResponse(product),
-        context: {
-          ...(context || {}),
-          current_product: product,
-          last_user_product: product,
-          step: "collecting_city",
-          order_data: newOrder,
-          updated_at: new Date().toISOString(),
-        },
-        is_payment_proof: false,
-      });
-    }
+    const system = `
+Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento oficial del usuario.
 
-    // =======================================================
-    // 🔢 Cantidad cuando el bot preguntó cantidad
-    // =======================================================
-    if (detectedQuantity > 0 && oldOrder?.product && oldOrder?.city && (previousStep === "collecting_quantity" || botWasAskingQuantity(history || []))) {
-      const total = getSafeTotal(oldOrder.product, detectedQuantity, fullTraining);
+REGLA FUNDAMENTAL: Los precios los sacás SIEMPRE del entrenamiento. NUNCA inventes ni asumas precios.
 
-      if (!total || total <= 0) {
-        return res.json({
-          response: buildMissingPriceResponse(oldOrder.product),
-          context: { ...(context || {}), step: "selling", order_data: oldOrder, updated_at: new Date().toISOString() },
-          is_payment_proof: false,
-        });
-      }
+FLUJO DE VENTAS (RESPETAR ESTRICTAMENTE):
+1. Cliente dice producto → preguntar CIUDAD (ej: "¿Para qué ciudad querés el envío?")
+2. Cliente responde ciudad → preguntar CANTIDAD con ejemplos (ej: "¿Cuántas unidades querés? Ej: 1 unidad, 2 unidades...")
+3. Cliente responde cantidad → mostrar resumen y pedir datos de envío
 
-      const orderData = { ...oldOrder, quantity: detectedQuantity, total_amount: total };
-      await safeUpsertOrder(user_id, fromNumber, orderData, false, "collecting_name");
+═══════════════════════════════════
+ENTRENAMIENTO OFICIAL DEL USUARIO:
+═══════════════════════════════════
+${fullTraining}
+═══════════════════════════════════
 
-      return res.json({
-        response: buildSafeOrderSummaryResponse(orderData, getTipoCobertura(orderData.city), fullTraining),
-        context: { ...(context || {}), step: "collecting_name", order_data: orderData, updated_at: new Date().toISOString() },
-        is_payment_proof: false,
-      });
-    }
+ESTADO ACTUAL DEL CLIENTE:
 
-    // =======================================================
-    // ✅ Confirmación "si" después de información del producto
-    // =======================================================
-    if (isConfirmWord && oldOrder?.product && !oldOrder?.city && !oldOrder?.quantity) {
-      const quantity = 1;
-      const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
+Producto: ${orderData.product || "ninguno"}
+Ciudad: ${orderData.city || "pendiente"}
+Cantidad: ${orderData.quantity || "pendiente"}
+Paso actual: ${step}
 
-      if (!total || total <= 0) {
-        return res.json({
-          response: buildMissingPriceResponse(oldOrder.product),
-          context: { ...(context || {}), step: "selling", order_data: oldOrder, updated_at: new Date().toISOString() },
-          is_payment_proof: false,
-        });
-      }
+REGLAS:
+- Si paso es collecting_city → preguntar CIUDAD
+- Si paso es collecting_quantity → preguntar CANTIDAD con ejemplos
+- Si paso es collecting_name → pedir nombre
+- Si paso es collecting_phone → pedir teléfono
+- Si paso es collecting_address → pedir dirección
 
-      const orderData = { ...oldOrder, quantity, total_amount: total };
-      await safeUpsertOrder(user_id, fromNumber, orderData, false, "collecting_city");
+Catálogo: ${CATALOG_URL}
+Español paraguayo natural, con emojis.`;
 
-      return res.json({
-        response: buildCityQuestionResponse(orderData.product),
-        context: { ...(context || {}), step: "collecting_city", order_data: orderData, updated_at: new Date().toISOString() },
-        is_payment_proof: false,
-      });
-    }
-
-    // =======================================================
-    // 🧾 DATOS DEL CLIENTE - DETECCIÓN EN CUALQUIER FORMATO
-    // =======================================================
-    
-    // Extraer datos del mensaje actual (funciona con cualquier formato)
-    const extracted = extractData(texto, previousStep, false, false);
-    const hasCustomerData = extracted.name || extracted.phone || extracted.address;
-    
-    // Verificar si el bot estaba pidiendo datos
-    const botWasAskingForData = botWasAskingForCustomerData(history || []) || 
-                                previousStep === "collecting_name" || 
-                                previousStep === "collecting_address" || 
-                                previousStep === "collecting_phone";
-    
-    // Si tenemos un pedido activo con producto, ciudad y cantidad, procesar datos
-    if (oldOrder?.product && oldOrder?.quantity > 0 && oldOrder?.city && hasCustomerData) {
-      
-      // ACUMULAR datos (sobrescribe si hay mejores datos)
-      const updatedOrder = {
-        ...oldOrder,
-        customer_name: extracted.name || oldOrder.customer_name || "",
-        phone: extracted.phone || oldOrder.phone || fromNumber || "",
-        address: extracted.address || oldOrder.address || "",
-      };
-      
-      // Guardar en BD
-      await safeUpsertOrder(user_id, fromNumber, updatedOrder, false);
-      
-      // Verificar si YA TENEMOS TODOS los datos
-      const hasName = updatedOrder.customer_name && updatedOrder.customer_name.length > 3;
-      const hasPhone = updatedOrder.phone && updatedOrder.phone.length > 8;
-      const hasAddress = updatedOrder.address && updatedOrder.address.length > 5;
-      
-      // Si ya tenemos todo, CONFIRMAR
-      if (hasName && hasPhone && hasAddress) {
-        updatedOrder.confirmed = true;
-        const total = getSafeTotal(updatedOrder.product, updatedOrder.quantity, fullTraining);
-        updatedOrder.total_amount = total || 0;
-        
-        await safeUpsertOrder(user_id, fromNumber, updatedOrder, true, "confirmed");
-        
-        return res.json({
-          response: buildSafeAutoConfirmResponse(updatedOrder, fullTraining),
-          context: { 
-            ...(context || {}), 
-            step: "confirmed", 
-            order_data: updatedOrder, 
-            updated_at: new Date().toISOString() 
-          },
-          is_payment_proof: false,
-        });
-      }
-      
-      // Si no, mostrar lo que falta
-      const missingFields = [];
-      if (!hasName) missingFields.push("✅ nombre y apellido");
-      if (!hasAddress) missingFields.push("✅ dirección exacta o ubicación por Google Maps");
-      if (!hasPhone) missingFields.push("✅ número de celular");
-      
-      const haveFields = [];
-      if (hasName) haveFields.push(`✅ Nombre: ${updatedOrder.customer_name}`);
-      if (hasAddress) haveFields.push(`✅ Dirección: ${updatedOrder.address}`);
-      if (hasPhone) haveFields.push(`✅ Teléfono: ${updatedOrder.phone}`);
-      
-      let mensaje = "";
-      if (haveFields.length > 0) {
-        mensaje = `✅ Ya tengo registrado:\n${haveFields.join("\n")}\n\n📝 Solo me falta:\n${missingFields.join("\n")}\n\n📲 Enviámelo y confirmamos tu pedido ✨`;
-      } else {
-        mensaje = `📎 Para agendar tu entrega necesito:\n\n✅ nombre y apellido\n✅ dirección exacta o ubicación por Google Maps\n✅ número de celular\n\n📲 Envialo TODO JUNTO o de a uno, voy registrando 😊`;
-      }
-      
-      return res.json({
-        response: mensaje,
-        context: { 
-          ...(context || {}), 
-          step: "collecting_name", 
-          order_data: updatedOrder, 
-          updated_at: new Date().toISOString() 
-        },
-        is_payment_proof: false,
-      });
-    }
-
-    // =======================================================
-    // ✅ Confirmación manual explícita
-    // =======================================================
-    if (isConfirmIntent(texto) && oldOrder?.product && oldOrder?.quantity > 0 && oldOrder?.city && oldOrder?.customer_name && oldOrder?.address) {
-      const quantity = safeQuantity(oldOrder?.quantity || 1) || 1;
-      const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
-      const orderData = { ...oldOrder, quantity, total_amount: total || 0 };
-
-      if (!isOrderCompleteForConfirmation(orderData, fullTraining)) {
-        return res.json({
-          response: `⚠️ Todavía no puedo confirmar el pedido porque faltan datos o precio válido.\n\n${buildDataRequestByMissing(orderData)}`,
-          context: { ...(context || {}), step: nextStep(orderData, getTipoCobertura(orderData.city), false), order_data: orderData, updated_at: new Date().toISOString() },
-          is_payment_proof: false,
-        });
-      }
-
-      orderData.confirmed = true;
-      await safeUpsertOrder(user_id, fromNumber, orderData, true, "confirmed");
-
-      return res.json({
-        response: buildSafeAutoConfirmResponse(orderData, fullTraining),
-        context: { ...(context || {}), step: "confirmed", order_data: orderData, updated_at: new Date().toISOString() },
-        is_payment_proof: false,
-      });
-    }
-
-    // =======================================================
-    // 🤖 FALLBACK Gemini con TODO el entrenamiento
-    // =======================================================
-    const systemPrompt = fullTraining;
-
-    const contents = (history || [])
-      .slice(-6)
+    const contents = cleanHistory
+      .slice(-8)
       .filter((h: any) => clean(h?.content))
       .map((h: any) => ({
         role: h.role === "assistant" ? "model" : "user",
@@ -2369,30 +1921,35 @@ export default async function handler(req: any, res: any) {
     let response = await callGemini({
       apiKey,
       model,
-      system: systemPrompt,
+      system,
       contents,
-      temperature: Math.min(Number(iaConfig.temperature ?? 0.2), 0.3),
-      maxTokens: Math.max(iaConfig.max_tokens ?? 0, 1024),
+      temperature: iaConfig.temperature ?? 0.3,
+      maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
     });
 
-    if (!response) response = "😊 ¿Qué producto te interesa? Así te paso precio exacto y disponibilidad.";
-
-    if (/pedido confirmado|total:\s*0|0\s*gs/i.test(response)) {
-      response = "😊 Decime qué producto te interesa y te paso el precio exacto. No puedo confirmar pedidos sin precio válido y datos completos.";
+    if (!response) {
+      response = await callGemini({
+        apiKey, model, system, contents, temperature: 0.3, maxTokens: 3072,
+      });
     }
 
+    const newContext = {
+      ...(context || {}),
+      current_product: orderData.product || context?.current_product || null,
+      last_user_product: lastUserProduct || orderData.product || null,
+      step: step,
+      tipo_cobertura: finalTipoCobertura || null,
+      order_data: orderData,
+      last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
+      updated_at: new Date().toISOString(),
+    };
+
     return res.json({
-      response,
-      context: {
-        ...(context || {}),
-        current_product: oldOrder?.product || product || null,
-        last_user_product: lastUserProduct || null,
-        step: previousStep || "selling",
-        order_data: oldOrder,
-        updated_at: new Date().toISOString(),
-      },
-      is_payment_proof: false,
+      response: response || `📋 Te invito a revisar nuestro catálogo:\n${CATALOG_URL}`,
+      context: newContext,
+      is_payment_proof: isPaymentProof,
     });
+
   } catch (error: any) {
     console.error("❌ chat-ia:", error);
     return res.status(500).json({ error: error.message || "Error interno" });
