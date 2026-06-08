@@ -20,8 +20,8 @@ const normalize = (t: string): string =>
 // =======================================================
 function hasExplicitProductMention(text: string): boolean {
   const n = normalize(text);
-  const buyIndicators = /\b(quiero|comprar|llevo|dame|mandame|reservar|apartar|la\s+raqueta|el\s+veneno|las\s+plantillas|la\s+peladora|el\s+afilador|el\s+kit|la\s+máquina|el\s+nebulizador|la\s+tabla)\b/i;
-  const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas)\b/.test(n);
+  const buyIndicators = /\b(quiero|comprar|llevo|dame|mandame|reservar|apartar|la\s+raqueta|el\s+veneno|las\s+plantillas|la\s+peladora|el\s+afilador|el\s+kit|la\s+máquina|el\s+nebulizador|la\s+tabla|tornado|destapa)\b/i;
+  const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas|tornado|destapa|cañeria|cañería|tuberia|desagüe)\b/.test(n);
   return buyIndicators.test(n) || productNames;
 }
 
@@ -31,7 +31,7 @@ function isLocationOnlyMessage(text: string): boolean {
   if (hasExplicitProductMention(text)) return false;
   const cityMatch = extractCityFromText(n);
   if (!cityMatch) return false;
-  const noProductWords = !/\b(quiero|comprar|raqueta|veneno|plantilla|pelador|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas)\b/i.test(n);
+  const noProductWords = !/\b(quiero|comprar|raqueta|veneno|plantilla|pelador|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas|tornado|destapa)\b/i.test(n);
   return noProductWords;
 }
 
@@ -137,6 +137,10 @@ function getAntiVibrationProductName(): string {
   return "Kit Antivibración x4 Patitas Antideslizantes";
 }
 
+function getTornadoProductName(): string {
+  return "Destapa Cañerías Tornado";
+}
+
 function buildCityQuestionResponse(product: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
   return `🔥 Perfecto 😊
@@ -150,6 +154,17 @@ Me confirmaste que querés ${productName}.
 
 function buildQuantityAfterCityResponse(product: string, city: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
+  
+  if (normalize(product).includes("tornado") || normalize(product).includes("destapa")) {
+    return `✅ Perfecto, enviamos a ${city} 😊
+
+🔥 ${productName}:
+• 1 unidad → Precio promocional
+
+⚠️ El precio promocional es válido solo si confirmás tus datos ahora mismo.
+
+🔥 ¿Cuántas unidades querés? ✨`;
+  }
   
   if (
     normalize(product).includes("kit antivibracion") ||
@@ -196,7 +211,7 @@ function detectProductRespectingActive(
     return activeProduct || "";
   }
   
-  const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas)\b/i.test(msg);
+  const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas|tornado|destapa)\b/i.test(msg);
   
   if (activeProduct && !explicitNewProductRequest) {
     return activeProduct;
@@ -225,6 +240,13 @@ function detectProductRaw(
   lastUserProduct?: string
 ) {
   const msg = normalize(text);
+
+  // 🔥 NUEVO: Detectar Tornado / Destapa Cañerías
+  if (msg.includes("tornado") || msg.includes("destapa") || msg.includes("cañeria") || 
+      msg.includes("cañería") || msg.includes("tuberia") || msg.includes("tubería") || 
+      msg.includes("desagüe") || msg.includes("desague") || msg.includes("cañeria")) {
+    return getTornadoProductName();
+  }
 
   if (isAntiVibrationKit(text) || isPackReferenceText(text) ||
       msg.includes("soporte lavarropas") || msg.includes("almohadillas antivibracion") ||
@@ -303,6 +325,11 @@ function detectProductRaw(
 
 function canonicalProductFromText(text: string): string {
   const n = normalize(text);
+
+  // 🔥 NUEVO: Detectar Tornado
+  if (/\b(tornado|destapa|cañeria|cañería|tuberia|tubería|desagüe|desague)\b/.test(n)) {
+    return getTornadoProductName();
+  }
 
   if (/\b(raqueta|electrica|flayes|mosquitos|moscas|insectos)\b/.test(n)) return "Raqueta Eléctrica para Insectos";
   if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja)\b/.test(n)) return "Veneno de Abeja";
@@ -384,7 +411,7 @@ function isBuyIntent(text: string) {
 function isInformationRequest(text: string): boolean {
   const n = normalize(text);
   const infoWords = /\b(informaci[oó]n|info|más info|mas info|quiero saber|consultar|dudas?|más datos|mas datos|detalles|más detalles|mas detalles|explicame|qué es|que es|cómo funciona|como funciona)\b/i;
-  const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes)\b/i;
+  const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes|tornado|destapa)\b/i;
   if (productWords.test(n)) return false;
   return infoWords.test(n);
 }
@@ -393,14 +420,14 @@ function isCatalogQuery(text: string): boolean {
   const n = normalize(text);
   const catalogWords = /\b(cat[aá]logo|productos|qu[eé] venden|tienen|stock|catálogo|precios|catalogo)\b/i;
   const greetingWords = /\b(hola|buenas|buen día|saludos)\b/i;
-  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla|raqueta)\b/i;
+  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla|raqueta|tornado|destapa)\b/i;
   return (catalogWords.test(n) || greetingWords.test(n)) && !productWords.test(n);
 }
 
 function isProductInquiry(text: string): boolean {
   const n = normalize(text);
   const inquiryWords = /\b(qu[eé] es|cómo funciona|para qu[eé] sirve|características|beneficios|tiene|informaci[oó]n|info|cu[aá]nto cuesta|precio|valor|costo|dime|contame|explicame)\b/i;
-  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla|raqueta)\b/i;
+  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla|raqueta|tornado|destapa)\b/i;
   const buyWords = /\b(quiero|comprar|llevo|dame|mandame|agregame|reservar|apartar)\b/i;
   return inquiryWords.test(n) && productWords.test(n) && !buyWords.test(n);
 }
@@ -417,7 +444,8 @@ function isProductName(text: string): boolean {
     "vital honey vip", "vital honey",
     "perfume asad", "asad",
     "almohadillas antivibracion", "soporte para lavarropas", "lavarropas", "kit x4 patitas", "patitas antideslizantes",
-    "raqueta electrica", "raqueta para insectos", "flayes pro", "raqueta flayes"
+    "raqueta electrica", "raqueta para insectos", "flayes pro", "raqueta flayes",
+    "destapa cañerias tornado", "tornado", "destapa cañerías"
   ];
   const normalizedText = n;
   return productNames.some(p => normalizedText.includes(p) || p.includes(normalizedText));
@@ -697,7 +725,8 @@ function extractData(
     norm.includes("pororo") || norm.includes("maquina") ||
     norm.includes("nebulizador") || norm.includes("tabla") ||
     norm.includes("patitas") || norm.includes("antideslizantes") ||
-    norm.includes("kit") || norm.includes("raqueta");
+    norm.includes("kit") || norm.includes("raqueta") ||
+    norm.includes("tornado") || norm.includes("destapa");
 
   const nameMatch = text.match(/(?:me\s+llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,80})/i)?.[1];
 
@@ -1050,18 +1079,24 @@ Tu pedido queda así:
 y agendamos tu entrega ✨`;
 }
 
+// 🔥 FUNCIÓN nextStep CORREGIDA - CIUDAD SIEMPRE PRIMERO
 function nextStep(order: any, tipoCobertura?: string, wasConfirmed?: boolean): string {
-  // Si ya se confirmó este pedido, no pedir confirmación de nuevo
+  // Si ya se confirmó, no seguir
   if (wasConfirmed) return "confirmed_already";
   
   const items = getCartItems(order);
   
+  // 1. Sin producto → vender
   if (!order.product && !items.length) return "selling";
+  
+  // 2. Sin CIUDAD → preguntar ciudad (SIEMPRE primero)
   if (!order.city) return "collecting_city";
   
+  // 3. Con ciudad pero sin cantidad → preguntar cantidad
   const hasValidQuantity = safeQuantity(order.quantity) > 0;
   if (!hasValidQuantity && !items.length) return "collecting_quantity";
   
+  // 4. Resto del flujo normal
   if (tipoCobertura === "sin_cobertura") {
     if (!order.customer_name) return "collecting_name";
     if (!order.phone) return "collecting_phone";
@@ -1368,6 +1403,17 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
   return clean(txt);
 }
 
+function isNewConversation(text: string, history: any[]): boolean {
+  const n = normalize(text);
+  const newConversationMarkers = /\b(creo que guardo|mensaje antiguo|chat viejo|conversación anterior|pedido anterior|viejo mensaje|lo tengo guardado|tengo un mensaje|mensaje guardado|chat pasado|nuevo pedido|empezar de nuevo|borrar pedido|reiniciar)\b/i;
+  const noHistory = !history || history.length === 0;
+  const mentionsOldMessage = newConversationMarkers.test(n);
+  return noHistory || mentionsOldMessage;
+}
+
+// =======================================================
+// 🚀 HANDLER PRINCIPAL
+// =======================================================
 export default async function handler(req: any, res: any) {
   console.log("🔥 VERSION FINAL - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
 
@@ -1436,6 +1482,7 @@ export default async function handler(req: any, res: any) {
             break;
           }
           const norm = normalize(userText);
+          if (norm.includes("tornado") || norm.includes("destapa")) { lastUserProduct = getTornadoProductName(); break; }
           if (norm.includes("raqueta")) { lastUserProduct = "Raqueta Eléctrica para Insectos"; break; }
           if (norm.includes("veneno") || norm.includes("abeja")) { lastUserProduct = "Veneno de Abeja"; break; }
           if (norm.includes("plantilla") || norm.includes("ortopiex")) { lastUserProduct = getDefaultShoeProductName(); break; }
@@ -1464,7 +1511,6 @@ export default async function handler(req: any, res: any) {
         console.warn(`⚠️ Producto inválido en oldOrder: "${oldOrder.product}" — limpiando`);
         oldOrder.product = "";
       }
-      // Mantener el contador de confirmaciones
       oldOrder.confirmed = context?.order_data?.confirmed || false;
       oldOrder.confirm_count = context?.order_data?.confirm_count || 0;
     }
@@ -1577,9 +1623,7 @@ export default async function handler(req: any, res: any) {
     
     let extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
-    // =======================================================
-    // VERIFICAR SI EL PEDIDO YA ESTÁ CONFIRMADO
-    // =======================================================
+    // 🔥 VERIFICAR SI EL PEDIDO YA ESTÁ CONFIRMADO
     const isAlreadyConfirmed = oldOrder.confirmed === true;
     
     if (isAlreadyConfirmed && !wantsAddMore) {
@@ -1604,14 +1648,18 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // =======================================================
-    // NUEVO PRODUCTO SELECCIONADO → PREGUNTAR CIUDAD
-    // =======================================================
+    // 🔥 NUEVO PRODUCTO SELECCIONADO → PREGUNTAR CIUDAD (SIEMPRE)
     if (product && !wantsAddMore && !isQuantityReply && !isPureShoeSizeReply && !isCityReply) {
       const productChanged = !oldOrder?.product || !sameProduct(product, oldOrder.product);
       
       if (productChanged) {
         const { response, order: newOrder, step: newStep } = handleProductSelection(product, extracted.shoe_size);
+        
+        // Calcular precio para mostrar si es tornado
+        if (normalize(product).includes("tornado") || normalize(product).includes("destapa")) {
+          const price = calculateTotal(product, 1, fullTraining);
+          if (price) newOrder.total_amount = price;
+        }
         
         await safeUpsertOrder(user_id, fromNumber, newOrder, false);
         
@@ -1632,9 +1680,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // =======================================================
-    // RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD
-    // =======================================================
+    // 🔥 RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD
     if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && (product || currentActiveProduct)) {
       const finalProduct = product || currentActiveProduct || "";
       const city = extracted.city || extractCityFromText(texto);
@@ -1653,6 +1699,12 @@ export default async function handler(req: any, res: any) {
           confirmed: false,
           confirm_count: 0,
         };
+        
+        // Calcular precio para mostrar si es tornado
+        if (normalize(finalProduct).includes("tornado") || normalize(finalProduct).includes("destapa")) {
+          const price = calculateTotal(finalProduct, 1, fullTraining);
+          if (price) orderData.total_amount = price;
+        }
         
         await safeUpsertOrder(user_id, fromNumber, orderData, false);
         
@@ -1673,9 +1725,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // =======================================================
-    // RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y CONFIRMAR
-    // =======================================================
+    // 🔥 RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y MOSTRAR RESUMEN
     if (isQuantityReply && (product || currentActiveProduct) && extracted.quantity > 0) {
       const finalProduct = product || currentActiveProduct || "";
       let orderData = {
@@ -1689,7 +1739,7 @@ export default async function handler(req: any, res: any) {
         items: [],
         total_amount: 0,
         confirmed: false,
-        confirm_count: oldOrder?.confirm_count || 0,
+        confirm_count: 0,
       };
       
       const total = calculateTotal(finalProduct, extracted.quantity, fullTraining);
@@ -1778,17 +1828,12 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
           const catalogProduct = detectProductRaw(productSignal, fullTraining, "", lastUserProduct);
           const visualProduct = catalogProduct || analysis.matchedProduct || analysis.productName || "";
           product = visualProduct || product;
-          const hasVisiblePrice = !!analysis.productPrice;
 
-          if (!catalogProduct && visualProduct && hasVisiblePrice) {
-            const promoLine = analysis.promoText
-              ? `🔥 ${analysis.promoText} → ${analysis.productPrice} Gs`
-              : `💰 Precio: ${analysis.productPrice} Gs`;
-
+          if (!catalogProduct && visualProduct && analysis.productPrice) {
             return res.json({
               response: `Sí 😊 es ${visualProduct}.
 
-${promoLine}
+💰 Precio: ${analysis.productPrice} Gs
 
 📍 ¿Para qué ciudad sería el envío?`,
               context: {
@@ -1810,11 +1855,8 @@ Descripción detectada: ${analysis.transcript || "producto no identificado"}
 Producto visual detectado: ${visualProduct || "no identificado"}
 Producto del catálogo detectado: ${catalogProduct || "no encontrado"}
 Precio visible en imagen: ${analysis.productPrice || "no visible"}
-Promo visible en imagen: ${analysis.promoText || "no visible"}
 
-Si hay producto del catálogo detectado, respondé con su nombre, precio exacto del entrenamiento, promoción si existe y preguntá para qué ciudad sería el envío.
-Si no hay producto del catálogo pero hay producto visual y precio visible, respondé con ese producto y precio visible.
-Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
+Si hay producto detectado, respondé con su nombre, precio y preguntá para qué ciudad sería el envío.`;
         } else {
           texto =
             texto ||
@@ -1892,19 +1934,15 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
     const finalTipoCobertura = getTipoCobertura(orderData.city) || previousTipoCobertura || "";
     let step = nextStep(orderData, finalTipoCobertura, orderData.confirmed);
 
-    // =======================================================
-    // MANEJO DE CONFIRMACIÓN - MÁXIMO 2 VECES
-    // =======================================================
+    // 🔥 MANEJO DE CONFIRMACIÓN
     if (step === "confirm_order" || wantsConfirm) {
       let confirmCount = orderData.confirm_count || 0;
       
-      // Si el cliente quiere confirmar explícitamente
       if (wantsConfirm) {
         confirmCount++;
         
         if (confirmCount === 1) {
-          // Primera confirmación
-          orderData.confirmed = false;
+          orderData.confirmed = true;
           orderData.confirm_count = confirmCount;
           
           await safeUpsertOrder(user_id, fromNumber, orderData, true, "confirmed");
@@ -1936,7 +1974,6 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
             is_payment_proof: false,
           });
         } else if (confirmCount === 2 && wantsAddMore) {
-          // Segunda confirmación - permitir agregar más
           return res.json({
             response: `🔥 Perfecto ${orderData.customer_name?.split(" ")[0] || ""} 😊
 
@@ -1961,7 +1998,6 @@ O si ya está todo, decí "listo" y cerramos el pedido ✨`,
             is_payment_proof: false,
           });
         } else if (confirmCount >= 2) {
-          // Ya confirmado, no repetir
           return res.json({
             response: `✅ ${orderData.customer_name?.split(" ")[0] || ""}, tu pedido YA ESTÁ CONFIRMADO.
 
@@ -1983,9 +2019,7 @@ O si ya está todo, decí "listo" y cerramos el pedido ✨`,
         }
       }
       
-      // Si no confirmó explícitamente pero step es confirm_order
       if (!wantsConfirm && step === "confirm_order" && !orderData.confirmed) {
-        // Mostrar resumen y esperar confirmación
         return res.json({
           response: buildOrderSummaryResponse(orderData, finalTipoCobertura),
           context: {
@@ -2004,7 +2038,6 @@ O si ya está todo, decí "listo" y cerramos el pedido ✨`,
       }
     }
 
-    // Si el cliente quiere agregar más productos después de confirmar
     if (wantsAddMore && orderData.confirmed === true && orderData.confirm_count === 1) {
       return res.json({
         response: `🔥 Perfecto 😊 ¿Qué otro producto querés agregar a tu pedido?
@@ -2025,13 +2058,11 @@ Tu pedido actual: ${formatProductWithShoeSize(orderData.product, orderData.shoe_
       });
     }
 
-    // Si estamos recolectando datos faltantes
     if (step !== "confirm_order" && step !== "confirmed_already" && !wantsConfirm) {
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
     }
 
-    // Si todos los datos están completos pero no se confirmó, preguntar
-    if (step === "confirm_order" && !orderData.confirmed) {
+    if (step === "confirm_order" && !orderData.confirmed && !wantsConfirm) {
       return res.json({
         response: buildOrderSummaryResponse(orderData, finalTipoCobertura),
         context: {
@@ -2058,7 +2089,7 @@ Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el en
 REGLA FUNDAMENTAL: Los precios los sacás SIEMPRE del entrenamiento. NUNCA inventes ni asumas precios.
 
 FLUJO DE VENTAS (RESPETAR ESTRICTAMENTE):
-1. Cliente dice producto → preguntar CIUDAD
+1. Cliente dice producto → preguntar CIUDAD (SIEMPRE)
 2. Cliente responde ciudad → preguntar CANTIDAD con ejemplos
 3. Cliente responde cantidad → mostrar resumen y pedir datos de envío
 4. Cliente da sus datos → mostrar resumen y preguntar CONFIRMACIÓN
@@ -2082,13 +2113,13 @@ Paso actual: ${step}
 Pedido ya confirmado: ${orderData.confirmed ? "SÍ" : "NO"}
 
 REGLAS:
-- Si paso es collecting_city → preguntar CIUDAD
+- Si paso es collecting_city → preguntar CIUDAD (obligatorio)
 - Si paso es collecting_quantity → preguntar CANTIDAD con ejemplos
 - Si paso es collecting_name → pedir nombre
 - Si paso es collecting_phone → pedir teléfono
 - Si paso es collecting_address → pedir dirección
 - Si paso es awaiting_confirmation → mostrar resumen y pedir que CONFIRME
-- Si pedido ya está confirmado → NO repetir confirmación, solo responder amablemente
+- Si pedido ya está confirmado → NO repetir confirmación
 
 Catálogo: ${CATALOG_URL}
 Español paraguayo natural, con emojis.`;
@@ -2139,12 +2170,4 @@ Español paraguayo natural, con emojis.`;
     console.error("❌ chat-ia:", error);
     return res.status(500).json({ error: error.message || "Error interno" });
   }
-}
-
-function isNewConversation(text: string, history: any[]): boolean {
-  const n = normalize(text);
-  const newConversationMarkers = /\b(creo que guardo|mensaje antiguo|chat viejo|conversación anterior|pedido anterior|viejo mensaje|lo tengo guardado|tengo un mensaje|mensaje guardado|chat pasado|nuevo pedido|empezar de nuevo|borrar pedido|reiniciar)\b/i;
-  const noHistory = !history || history.length === 0;
-  const mentionsOldMessage = newConversationMarkers.test(n);
-  return noHistory || mentionsOldMessage;
 }
