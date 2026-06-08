@@ -1349,6 +1349,35 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
   return clean(txt);
 }
 
+
+function detectPriorityProductFromRecentText(text: string): string {
+  const n = normalize(text);
+
+  // Productos con palabras muy específicas que suelen venir del anuncio o copy.
+  // IMPORTANTE: No usar "quiero 1" acá porque es un CTA genérico.
+  if (/\b(tornado|wild\s*tornado|destapa|cañeria|cañerias|cañería|cañerías|caneria|canerias|tuberia|tuberias|tubería|tuberías|desagüe|desague)\b/.test(n)) {
+    return getTornadoProductName();
+  }
+
+  return "";
+}
+
+function getRecentConversationText(texto: string, history: any[]): string {
+  const h = Array.isArray(history) ? history.slice(-12) : [];
+  return [
+    ...h.map((x: any) => clean(x?.content || x?.message || x?.text || "")),
+    clean(texto),
+  ].filter(Boolean).join("\n");
+}
+
+function emptyOrder(): any {
+  return {
+    product: "", quantity: 0, shoe_size: "", city: "",
+    customer_name: "", phone: "", address: "", items: [], total_amount: 0,
+    confirmed: false, confirm_count: 0,
+  };
+}
+
 function isNewConversation(text: string, history: any[]): boolean {
   const n = normalize(text);
   const newConversationMarkers = /\b(creo que guardo|mensaje antiguo|chat viejo|conversación anterior|pedido anterior|nuevo pedido|empezar de nuevo|borrar pedido|reiniciar)\b/i;
@@ -1407,12 +1436,20 @@ export default async function handler(req: any, res: any) {
     let lastUserProduct = context?.last_user_product || "";
     if (!isValidProductString(lastUserProduct)) lastUserProduct = "";
 
-    const isNewChat = isNewConversation(texto, history || []);
+    const normalizedText = normalize(texto);
+    const isGenericBuyQuantity = /^(quiero|llevo|dame|compro|comprar|mandame)\s*\d{1,3}$/.test(normalizedText);
+
+    const recentConversationText = getRecentConversationText(texto, history || []);
+    const recentAdProduct = detectPriorityProductFromRecentText(recentConversationText);
+
+    // Si el usuario viene de un anuncio reciente y responde "QUIERO 1",
+    // ese anuncio manda. NO dejamos que un pedido viejo del mismo número contamine el producto.
+    const isNewChat = isNewConversation(texto, history || []) || !!(isGenericBuyQuantity && recentAdProduct);
     const dbOrder = await fetchLatestActiveOrder(user_id, fromNumber);
     const hasContextOrder = !!(context?.order_data?.product || context?.order_data?.city || context?.order_data?.quantity);
 
     let oldOrder;
-    if (hasContextOrder) {
+    if (hasContextOrder && !(isGenericBuyQuantity && recentAdProduct && !sameProduct(recentAdProduct, context?.order_data?.product || ""))) {
       oldOrder = normalizeOrderWithItems(context?.order_data || {}, fullTraining);
       if (oldOrder?.product && !isValidProductString(oldOrder.product)) oldOrder.product = "";
       oldOrder.confirmed = context?.order_data?.confirmed || false;
@@ -1423,34 +1460,28 @@ export default async function handler(req: any, res: any) {
       oldOrder = normalizeOrderWithItems(dbOrder, fullTraining);
       console.log("♻️ Pedido recuperado desde Supabase:", oldOrder.product, oldOrder.city, oldOrder.quantity);
     } else {
-      oldOrder = {
-        product: "", quantity: 0, shoe_size: "", city: "",
-        customer_name: "", phone: "", address: "", items: [], total_amount: 0,
-        confirmed: false, confirm_count: 0,
-      };
-      if (isNewChat) console.log("🔄 Nueva conversación");
+      oldOrder = emptyOrder();
+      if (isNewChat) console.log("🔄 Nueva conversación / anuncio nuevo");
     }
 
-    const previousStep = clean(context?.step || (!isNewChat ? dbOrder?.status : "") || "");
+    const previousStep = clean(isNewChat ? "" : (context?.step || dbOrder?.status || ""));
     const previousTipoCobertura = clean(context?.tipo_cobertura || getTipoCobertura(oldOrder?.city || ""));
 
     // =======================================================
     // 🔥 DETECCIÓN DE PRODUCTO SIN ROMPER "QUIERO 1"
     // =======================================================
     let product = "";
-    const normalizedText = normalize(texto);
     const activeProduct = safeProductName(
       oldOrder?.product || context?.current_product || context?.last_user_product || lastUserProduct || ""
     );
 
-    // "Quiero 1" es genérico. NUNCA debe forzar Tornado.
-    // Primero usa el producto activo del anuncio/contexto/pedido.
-    const isGenericBuyQuantity = /^(quiero|llevo|dame|compro|comprar|mandame)\s*\d{1,3}$/.test(normalizedText);
+    const hasTornadoKeyword = !!detectPriorityProductFromRecentText(texto);
 
-    const hasTornadoKeyword =
-      /\b(tornado|wild\s*tornado|destapa|cañeria|cañerías|caneria|canerias|tuberia|desagüe|desague)\b/.test(normalizedText);
-
-    if (isGenericBuyQuantity && activeProduct) {
+    if (isGenericBuyQuantity && recentAdProduct) {
+      // Prioridad absoluta: el último anuncio/copy detectado en el historial.
+      product = recentAdProduct;
+      console.log("🎯 Producto por anuncio reciente + CTA genérico:", product);
+    } else if (isGenericBuyQuantity && activeProduct) {
       product = activeProduct;
       console.log("🎯 Producto activo por CTA genérico:", product);
     } else if (hasTornadoKeyword) {
@@ -1603,7 +1634,7 @@ export default async function handler(req: any, res: any) {
         phone: oldOrder?.phone || "",
         address: oldOrder?.address || "",
         items: [],
-        total_amount: calculateTotal(finalProduct, quantity, fullTraining) || TORNADO_PRICE,
+        total_amount: calculateTotal(finalProduct, quantity, fullTraining) || (sameProduct(finalProduct, getTornadoProductName()) ? TORNADO_PRICE * quantity : 0),
         confirmed: false, confirm_count: 0,
       };
       
