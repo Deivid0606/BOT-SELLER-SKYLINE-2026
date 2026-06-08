@@ -20,7 +20,7 @@ const normalize = (t: string): string =>
 // =======================================================
 function hasExplicitProductMention(text: string): boolean {
   const n = normalize(text);
-  const buyIndicators = /\b(quiero|comprar|llevo|dame|mandame|reservar|apartar|la\s+raqueta|el\s+veneno|las\s+plantillas|la\s+peladora|el\s+afilador|el\s+kit|la\s+máquina|el\s+nebulizador|la\s+tabla|tornado|destapa)\b/i;
+  const buyIndicators = /\b(quiero|comprar|llevo|dame|mandame|reservar|apartar|la\s+raqueta|el\s+veneno|las\s+plantillas|la\s+peladora|el\s+afilador|el\s+kit|la\s+máquina|el\s+nebulizador|la\s+tabla|tornado|destapa|quiero\s+\d+)\b/i;
   const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas|tornado|destapa|cañeria|cañería|tuberia|desagüe)\b/.test(n);
   return buyIndicators.test(n) || productNames;
 }
@@ -156,14 +156,16 @@ function buildQuantityAfterCityResponse(product: string, city: string, shoeSize?
   const productName = formatProductWithShoeSize(product, shoeSize);
   
   if (normalize(product).includes("tornado") || normalize(product).includes("destapa")) {
-    return `✅ Perfecto, enviamos a ${city} 😊
+    return `✅ ¡Perfecto! ${city} tiene ENVÍO GRATIS contra-entrega 🚚
 
 🔥 ${productName}:
 • 1 unidad → Precio promocional
 
+💵 Pagás al recibir sin problema 😊
+
 ⚠️ El precio promocional es válido solo si confirmás tus datos ahora mismo.
 
-🔥 ¿Cuántas unidades querés? ✨`;
+🔥 ¿Cuántas unidades te gustaría llevar? ✨`;
   }
   
   if (
@@ -207,6 +209,11 @@ function detectProductRespectingActive(
 ): string {
   const msg = normalize(text);
   
+  // 🔥 Si es solo un número, NO cambiar producto
+  if (/^\d{1,3}$/.test(msg)) {
+    return activeProduct || "";
+  }
+  
   if (isPriceIntent(text) || isProductInquiry(text)) {
     return activeProduct || "";
   }
@@ -240,11 +247,17 @@ function detectProductRaw(
   lastUserProduct?: string
 ) {
   const msg = normalize(text);
+  
+  // 🔥 Si es solo un número, NO detectar producto nuevo
+  if (/^\d{1,3}$/.test(msg)) {
+    return "";
+  }
 
-  // 🔥 NUEVO: Detectar Tornado / Destapa Cañerías
+  // 🔥 Detectar Tornado / Destapa Cañerías
   if (msg.includes("tornado") || msg.includes("destapa") || msg.includes("cañeria") || 
       msg.includes("cañería") || msg.includes("tuberia") || msg.includes("tubería") || 
-      msg.includes("desagüe") || msg.includes("desague") || msg.includes("cañeria")) {
+      msg.includes("desagüe") || msg.includes("desague") || msg.includes("quiero 1") ||
+      msg.includes("quiero1")) {
     return getTornadoProductName();
   }
 
@@ -326,8 +339,8 @@ function detectProductRaw(
 function canonicalProductFromText(text: string): string {
   const n = normalize(text);
 
-  // 🔥 NUEVO: Detectar Tornado
-  if (/\b(tornado|destapa|cañeria|cañería|tuberia|tubería|desagüe|desague)\b/.test(n)) {
+  // 🔥 Detectar Tornado
+  if (/\b(tornado|destapa|cañeria|cañería|tuberia|tubería|desagüe|desague|quiero\s+1|quiero1)\b/.test(n)) {
     return getTornadoProductName();
   }
 
@@ -582,7 +595,8 @@ function botWasAskingQuantity(history: any[]) {
     lastAssistantMessage.includes("cuantas queres") ||
     lastAssistantMessage.includes("cuantas te gustaria") ||
     lastAssistantMessage.includes("cuántas unidades") ||
-    lastAssistantMessage.includes("responde con el numero")
+    lastAssistantMessage.includes("responde con el numero") ||
+    lastAssistantMessage.includes("cuántas unidades te gustaría llevar")
   );
 }
 
@@ -595,7 +609,8 @@ function botWasAskingCity(history: any[]): boolean {
     lastAssistantMessage.includes("ciudad para el envío") ||
     lastAssistantMessage.includes("para que ciudad") ||
     lastAssistantMessage.includes("ciudad queres") ||
-    lastAssistantMessage.includes("ciudad queres el envio")
+    lastAssistantMessage.includes("ciudad queres el envio") ||
+    lastAssistantMessage.includes("para qué ciudad sería el envío")
   );
 }
 
@@ -883,6 +898,11 @@ function calculateTotal(product: string, quantity: number, training: string): nu
   if (bestPromoPrice && quantity === 2) return bestPromoPrice;
   if (bestUnitPrice) return bestUnitPrice * quantity;
 
+  // 🔥 Precio por defecto para Tornado si no se encuentra en entrenamiento
+  if (p.includes("tornado") || p.includes("destapa")) {
+    return 159900 * quantity;
+  }
+
   return null;
 }
 
@@ -1079,24 +1099,17 @@ Tu pedido queda así:
 y agendamos tu entrega ✨`;
 }
 
-// 🔥 FUNCIÓN nextStep CORREGIDA - CIUDAD SIEMPRE PRIMERO
 function nextStep(order: any, tipoCobertura?: string, wasConfirmed?: boolean): string {
-  // Si ya se confirmó, no seguir
   if (wasConfirmed) return "confirmed_already";
   
   const items = getCartItems(order);
   
-  // 1. Sin producto → vender
   if (!order.product && !items.length) return "selling";
-  
-  // 2. Sin CIUDAD → preguntar ciudad (SIEMPRE primero)
   if (!order.city) return "collecting_city";
   
-  // 3. Con ciudad pero sin cantidad → preguntar cantidad
   const hasValidQuantity = safeQuantity(order.quantity) > 0;
   if (!hasValidQuantity && !items.length) return "collecting_quantity";
   
-  // 4. Resto del flujo normal
   if (tipoCobertura === "sin_cobertura") {
     if (!order.customer_name) return "collecting_name";
     if (!order.phone) return "collecting_phone";
@@ -1323,9 +1336,11 @@ Si ves un producto físico, artículo, herramienta, máquina, envase, caja, fras
 
 Si es producto, NUNCA lo clasifiques como comprobante aunque tenga precio, números o texto de promo.
 
-Si ves un afilador de cuchillos, sharpener, herramienta negra/roja con ranuras para cuchillos → productName = "Afilador de Cuchillos".
-
 Si ves una imagen con texto "PROMO 2 UNIDADES 129.900Gs" y un producto físico → kind = "product", productPrice = "129.900", promoText = "PROMO 2 UNIDADES".
+
+Si ves un producto con texto "TORNADO" o "Destapa Cañerías" → productName = "Destapa Cañerías Tornado", productPrice = "159.900"
+
+Si ves un afilador de cuchillos, sharpener, herramienta negra/roja con ranuras para cuchillos → productName = "Afilador de Cuchillos".
 
 Si ves un pelador de papas, pelador automático, peladora de verduras → productName = "Peladora Automática".
 
@@ -1623,7 +1638,6 @@ export default async function handler(req: any, res: any) {
     
     let extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
-    // 🔥 VERIFICAR SI EL PEDIDO YA ESTÁ CONFIRMADO
     const isAlreadyConfirmed = oldOrder.confirmed === true;
     
     if (isAlreadyConfirmed && !wantsAddMore) {
@@ -1648,14 +1662,13 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // 🔥 NUEVO PRODUCTO SELECCIONADO → PREGUNTAR CIUDAD (SIEMPRE)
+    // 🔥 NUEVO PRODUCTO SELECCIONADO → PREGUNTAR CIUDAD
     if (product && !wantsAddMore && !isQuantityReply && !isPureShoeSizeReply && !isCityReply) {
       const productChanged = !oldOrder?.product || !sameProduct(product, oldOrder.product);
       
       if (productChanged) {
         const { response, order: newOrder, step: newStep } = handleProductSelection(product, extracted.shoe_size);
         
-        // Calcular precio para mostrar si es tornado
         if (normalize(product).includes("tornado") || normalize(product).includes("destapa")) {
           const price = calculateTotal(product, 1, fullTraining);
           if (price) newOrder.total_amount = price;
@@ -1700,7 +1713,6 @@ export default async function handler(req: any, res: any) {
           confirm_count: 0,
         };
         
-        // Calcular precio para mostrar si es tornado
         if (normalize(finalProduct).includes("tornado") || normalize(finalProduct).includes("destapa")) {
           const price = calculateTotal(finalProduct, 1, fullTraining);
           if (price) orderData.total_amount = price;
@@ -1725,25 +1737,30 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // 🔥 RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y MOSTRAR RESUMEN
+    // 🔥 RESPUESTA DE CANTIDAD - USAR EL PRODUCTO DEL ORDER_DATA
     if (isQuantityReply && (product || currentActiveProduct) && extracted.quantity > 0) {
-      const finalProduct = product || currentActiveProduct || "";
+      // 🔥 IMPORTANTE: Usar el producto del order_data, no re-detectar
+      const finalProduct = oldOrder?.product || currentActiveProduct || product || "";
+      
       let orderData = {
         product: finalProduct,
         quantity: extracted.quantity,
-        shoe_size: extracted.shoe_size || "",
+        shoe_size: extracted.shoe_size || oldOrder?.shoe_size || "",
         city: oldOrder?.city || context?.order_data?.city || "",
-        customer_name: "",
-        phone: "",
-        address: "",
-        items: [],
+        customer_name: oldOrder?.customer_name || "",
+        phone: oldOrder?.phone || "",
+        address: oldOrder?.address || "",
+        items: oldOrder?.items || [],
         total_amount: 0,
         confirmed: false,
-        confirm_count: 0,
+        confirm_count: oldOrder?.confirm_count || 0,
       };
       
       const total = calculateTotal(finalProduct, extracted.quantity, fullTraining);
       if (total) orderData.total_amount = total;
+      
+      console.log("📦 PRODUCTO FINAL (cantidad):", finalProduct);
+      console.log("💰 TOTAL:", total);
       
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
       
@@ -1908,7 +1925,6 @@ Si hay producto detectado, respondé con su nombre, precio y preguntá para qué
 
     extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
-    // Construir orderData final
     const finalProduct = product || currentActiveProduct || oldOrder?.product || "";
 
     let orderData = {
@@ -1925,7 +1941,6 @@ Si hay producto detectado, respondé con su nombre, precio y preguntá para qué
       confirm_count: oldOrder?.confirm_count || 0,
     };
 
-    // Calcular total si hay producto y cantidad
     if (orderData.product && orderData.quantity > 0) {
       const calculated = calculateTotal(orderData.product, orderData.quantity, fullTraining);
       if (calculated) orderData.total_amount = calculated;
@@ -2094,6 +2109,16 @@ FLUJO DE VENTAS (RESPETAR ESTRICTAMENTE):
 3. Cliente responde cantidad → mostrar resumen y pedir datos de envío
 4. Cliente da sus datos → mostrar resumen y preguntar CONFIRMACIÓN
 5. Cliente dice "confirmo" → CERRAR PEDIDO UNA SOLA VEZ
+
+PRODUCTOS RECONOCIDOS:
+- Destapa Cañerías Tornado (precio: 159.900 Gs)
+- Peladora Automática (precio: 99.000 Gs)
+- Raqueta Eléctrica para Insectos
+- Veneno de Abeja
+- Plantillas Ortopiex 5D
+- Máquina para hacer Pororo
+- Nebulizador portátil
+- Kit Antivibración x4 Patitas Antideslizantes
 
 ═══════════════════════════════════
 ENTRENAMIENTO OFICIAL DEL USUARIO:
