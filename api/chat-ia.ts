@@ -259,8 +259,7 @@ function detectProductRaw(
 
   if (msg.includes("tornado") || msg.includes("destapa") || msg.includes("cañeria") || 
       msg.includes("cañería") || msg.includes("tuberia") || msg.includes("tubería") || 
-      msg.includes("desagüe") || msg.includes("desague") || msg.includes("quiero 1") ||
-      msg.includes("quiero1") || msg.includes("wild tornado")) {
+      msg.includes("desagüe") || msg.includes("desague") || msg.includes("wild tornado")) {
     return getTornadoProductName();
   }
 
@@ -342,7 +341,7 @@ function detectProductRaw(
 function canonicalProductFromText(text: string): string {
   const n = normalize(text);
 
-  if (/\b(tornado|destapa|cañeria|cañería|tuberia|tubería|desagüe|desague|quiero\s+1|quiero1|wild\s+tornado)\b/.test(n)) {
+  if (/\b(tornado|destapa|cañeria|cañería|tuberia|tubería|desagüe|desague|wild\s+tornado)\b/.test(n)) {
     return getTornadoProductName();
   }
 
@@ -1361,7 +1360,7 @@ function isNewConversation(text: string, history: any[]): boolean {
 // 🚀 HANDLER PRINCIPAL
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL - SIN BUCLE - TORNADO FIX");
+  console.log("🔥 VERSION FINAL - PRODUCTO ACTIVO + SIN BUCLE - CTA FIX");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1418,7 +1417,9 @@ export default async function handler(req: any, res: any) {
       if (oldOrder?.product && !isValidProductString(oldOrder.product)) oldOrder.product = "";
       oldOrder.confirmed = context?.order_data?.confirmed || false;
       oldOrder.confirm_count = context?.order_data?.confirm_count || 0;
-    } else if (dbOrder?.product) {
+    } else if (dbOrder?.product && !isNewChat) {
+      // Recuperamos de Supabase solo si NO es una conversación nueva.
+      // Esto evita que un "Quiero 1" de un anuncio nuevo tome un producto viejo.
       oldOrder = normalizeOrderWithItems(dbOrder, fullTraining);
       console.log("♻️ Pedido recuperado desde Supabase:", oldOrder.product, oldOrder.city, oldOrder.quantity);
     } else {
@@ -1430,32 +1431,78 @@ export default async function handler(req: any, res: any) {
       if (isNewChat) console.log("🔄 Nueva conversación");
     }
 
-    const previousStep = clean(context?.step || dbOrder?.status || "");
+    const previousStep = clean(context?.step || (!isNewChat ? dbOrder?.status : "") || "");
     const previousTipoCobertura = clean(context?.tipo_cobertura || getTipoCobertura(oldOrder?.city || ""));
 
     // =======================================================
-    // 🔥 DETECCIÓN DE TORNADO
+    // 🔥 DETECCIÓN DE PRODUCTO SIN ROMPER "QUIERO 1"
     // =======================================================
     let product = "";
-    const isTornadoMessage = normalize(texto).includes("tornado") || 
-                             normalize(texto).includes("destapa") ||
-                             normalize(texto).includes("quiero 1") ||
-                             normalize(texto).includes("quiero1");
-    
-    if (mediaUrl && mediaType === "image" && (texto.toLowerCase().includes("tornado") || texto.toLowerCase().includes("destapa") || texto === "Quiero 1" || texto === "")) {
+    const normalizedText = normalize(texto);
+    const activeProduct = safeProductName(
+      oldOrder?.product || context?.current_product || context?.last_user_product || lastUserProduct || ""
+    );
+
+    // "Quiero 1" es genérico. NUNCA debe forzar Tornado.
+    // Primero usa el producto activo del anuncio/contexto/pedido.
+    const isGenericBuyQuantity = /^(quiero|llevo|dame|compro|comprar|mandame)\s*\d{1,3}$/.test(normalizedText);
+
+    const hasTornadoKeyword =
+      /\b(tornado|wild\s*tornado|destapa|cañeria|cañerías|caneria|canerias|tuberia|desagüe|desague)\b/.test(normalizedText);
+
+    if (isGenericBuyQuantity && activeProduct) {
+      product = activeProduct;
+      console.log("🎯 Producto activo por CTA genérico:", product);
+    } else if (hasTornadoKeyword) {
       product = getTornadoProductName();
-      console.log("🔥 TORNADO por imagen");
-    } else if (isTornadoMessage) {
-      product = getTornadoProductName();
-      console.log("🔥 TORNADO por texto");
-    } else {
+      console.log("🔥 TORNADO por palabra clave");
+    } else if (mediaUrl && mediaType === "image" && !activeProduct) {
+      // Solo analizamos imagen cuando NO hay producto activo.
+      // Así evitamos que una imagen vieja o confusa cambie el producto.
+      const media = await fetchMediaAsBase64(mediaUrl);
+      if (media) {
+        const img = await analyzeImageWithGemini({
+          apiKey,
+          model,
+          imageBase64: media.data,
+          mime: mimeHint || media.mime,
+          caption: texto,
+          productList: fullTraining,
+          expectedReceiverName,
+        });
+
+        const imageProduct = safeProductName(img.matchedProduct || img.productName);
+        if (img.kind === "product" && imageProduct) {
+          product = imageProduct;
+          console.log("🖼️ Producto detectado por imagen:", product);
+        }
+      }
+    }
+
+    if (!product) {
       product = detectProductRespectingActive(
-        texto, fullTraining, oldOrder?.product || lastUserProduct,
-        getLastAssistantMessage(history || []), lastUserProduct
+        texto,
+        fullTraining,
+        activeProduct || "",
+        getLastAssistantMessage(history || []),
+        lastUserProduct
       );
     }
-    
+
     if (product && !isInvalidProductCandidate(product)) lastUserProduct = product;
+
+    if (isGenericBuyQuantity && !product && !activeProduct) {
+      return res.json({
+        response: `Perfecto 😊 ¿Cuál producto querés llevar?\n\nEscribime el nombre del producto o enviame la imagen del anuncio para agendarte correctamente.`,
+        context: {
+          ...(context || {}),
+          step: "selling",
+          order_data: oldOrder,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
 
     // =======================================================
     // 🔥 RESPUESTA DE CIUDAD - PRIMERO, PARA EVITAR BUCLE
