@@ -424,8 +424,16 @@ function isBuyIntent(text: string) {
 
 function isInformationRequest(text: string): boolean {
   const n = normalize(text);
+  
+  // ❌ NO detectar palabras de compra/confirmación como información
+  if (/\b(si|sí|quiero|compro|reservo|confirmo|dale|ok|listo)\b/.test(n)) return false;
+  if (/^\d{1,3}$/.test(n)) return false;
+  if (/^\d{1,3}\s*(unidad|unidades|u)$/.test(n)) return false;
+  if (/\b(quiero|comprar|llevo|dame|mandame)\s+\d+\b/.test(n)) return false;
+  
   const infoWords = /\b(informaci[oó]n|info|más info|mas info|quiero saber|consultar|dudas?|más datos|mas datos|detalles|más detalles|mas detalles|explicame|qué es|que es|cómo funciona|como funciona)\b/i;
   const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes|tornado|destapa)\b/i;
+  
   if (productWords.test(n)) return false;
   return infoWords.test(n);
 }
@@ -1196,7 +1204,7 @@ async function safeUpsertOrder(
 
     const { data: existing, error: findErr } = await supabase
       .from("orders")
-      select("*")
+      .select("*")
       .eq("user_id", userId)
       .eq("from_number", from)
       .in("status", [
@@ -1668,7 +1676,7 @@ function isOldConversation(history: any[]): boolean {
 // 🚀 HANDLER PRINCIPAL
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL v6.0 - CON ENTRENAMIENTO COMPLETO EN GEMINI");
+  console.log("🔥 VERSION FINAL v6.0 - CORREGIDA SIN BUCLE");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1854,9 +1862,11 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 💰 PRECIO/INFO - solo si hay producto en contexto
+    // 💰 PRECIO/INFO - solo si hay producto en contexto y NO es confirmación
     // =======================================================
-    if (isPriceIntent(texto) && (product || activeProduct || oldOrder?.product)) {
+    const isConfirmWord = /\b(si|sí|quiero|compro|reservo|confirmo|dale|ok|listo)\b/i.test(normalizedText);
+    
+    if (isPriceIntent(texto) && (product || activeProduct || oldOrder?.product) && !isConfirmWord) {
       const priceProduct = product || activeProduct || oldOrder?.product || "";
       if (priceProduct) {
         return res.json({
@@ -1874,29 +1884,11 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    if (isInformationRequest(texto) && (product || activeProduct || oldOrder?.product)) {
-      const infoProduct = product || activeProduct || oldOrder?.product || "";
-      if (infoProduct) {
-        return res.json({
-          response: buildInformationResponse(infoProduct, fullTraining),
-          context: {
-            ...(context || {}),
-            current_product: infoProduct,
-            last_user_product: infoProduct,
-            step: "selling",
-            order_data: oldOrder,
-            updated_at: new Date().toISOString(),
-          },
-          is_payment_proof: false,
-        });
-      }
-    }
-
     // =======================================================
     // 📍 Si solo mandó ciudad sin producto
     // =======================================================
     const extractedCity = extractCityFromText(texto);
-    if (extractedCity && !oldOrder?.product && !product) {
+    if (extractedCity && !oldOrder?.product && !product && !isConfirmWord) {
       return res.json({
         response: buildCoverageOnlyResponse(extractedCity),
         context: { ...(context || {}), step: "selling", updated_at: new Date().toISOString() },
@@ -1905,7 +1897,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🛒 Cliente quiere X unidades
+    // 🛒 Cliente quiere X unidades (compra directa)
     // =======================================================
     if (isQuantityIntentWithNumber) {
       const finalProduct = product || activeProduct || recentAdProduct || lastUserProduct || oldOrder?.product || "";
@@ -1959,7 +1951,7 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 📍 Respuesta de ciudad
+    // 📍 Respuesta de ciudad (cuando el bot preguntó ciudad)
     // =======================================================
     const isCityReply = !!extractedCity && (previousStep === "collecting_city" || (oldOrder?.product && !oldOrder?.city));
     if (isCityReply && oldOrder?.product) {
@@ -1981,15 +1973,16 @@ export default async function handler(req: any, res: any) {
         total_amount: total,
       };
 
-      await safeUpsertOrder(user_id, fromNumber, orderData, false, "collecting_name");
+      await safeUpsertOrder(user_id, fromNumber, orderData, false, "collecting_quantity");
 
+      // Preguntar cantidad después de la ciudad
       return res.json({
-        response: buildSafeOrderSummaryResponse(orderData, getTipoCobertura(extractedCity), fullTraining),
+        response: buildQuantityAfterCityResponse(orderData.product, extractedCity, orderData.shoe_size),
         context: {
           ...(context || {}),
           current_product: orderData.product,
           last_user_product: orderData.product,
-          step: "collecting_name",
+          step: "collecting_quantity",
           tipo_cobertura: getTipoCobertura(extractedCity),
           order_data: orderData,
           pending_quantity: null,
@@ -2000,9 +1993,9 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 📦 Producto mencionado sin compra directa
+    // 📦 Producto mencionado sin compra directa - mostrar info y preguntar ciudad
     // =======================================================
-    if (product && !oldOrder?.city && !isBuyIntentWithNumber) {
+    if (product && !oldOrder?.city && !isBuyIntentWithNumber && !isConfirmWord) {
       const unit = getAuthoritativeUnitPrice(product, fullTraining);
       if (!unit || unit <= 0) {
         return res.json({
@@ -2019,14 +2012,22 @@ export default async function handler(req: any, res: any) {
         });
       }
 
+      // Crear orden con producto pero sin ciudad aún
+      const newOrder = {
+        ...emptyOrder(),
+        product: product,
+        total_amount: unit,
+      };
+      await safeUpsertOrder(user_id, fromNumber, newOrder, false, "collecting_city");
+
       return res.json({
-        response: buildInformationResponse(product, fullTraining),
+        response: buildCityQuestionResponse(product),
         context: {
           ...(context || {}),
           current_product: product,
           last_user_product: product,
-          step: "selling",
-          order_data: { ...oldOrder, product, total_amount: unit },
+          step: "collecting_city",
+          order_data: newOrder,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
@@ -2062,15 +2063,41 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🧾 Datos del cliente
+    // ✅ Confirmación "si" después de que el bot preguntó "¿Querés que te reserve?"
+    // =======================================================
+    if (isConfirmWord && oldOrder?.product && oldOrder?.city && !oldOrder?.quantity) {
+      // El cliente dijo "si" - asumir cantidad 1
+      const quantity = 1;
+      const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
+
+      if (!total || total <= 0) {
+        return res.json({
+          response: buildMissingPriceResponse(oldOrder.product),
+          context: { ...(context || {}), step: "selling", order_data: oldOrder, updated_at: new Date().toISOString() },
+          is_payment_proof: false,
+        });
+      }
+
+      const orderData = { ...oldOrder, quantity, total_amount: total };
+      await safeUpsertOrder(user_id, fromNumber, orderData, false, "collecting_name");
+
+      return res.json({
+        response: buildSafeOrderSummaryResponse(orderData, getTipoCobertura(orderData.city), fullTraining),
+        context: { ...(context || {}), step: "collecting_name", order_data: orderData, updated_at: new Date().toISOString() },
+        is_payment_proof: false,
+      });
+    }
+
+    // =======================================================
+    // 🧾 Datos del cliente (nombre, dirección, teléfono)
     // =======================================================
     let extracted: any = { name: "", phone: "", address: "", city: "", quantity: 0, shoe_size: 0 };
-    if (!isBuyIntentWithNumber && !isPriceIntent(texto) && !isCatalogQuery(texto)) {
+    if (!isBuyIntentWithNumber && !isPriceIntent(texto) && !isCatalogQuery(texto) && !isConfirmWord) {
       extracted = extractData(texto, previousStep, false, false);
     }
 
-    if ((extracted.name || extracted.phone || extracted.address || extracted.city) && oldOrder?.product) {
-      const quantity = safeQuantity(oldOrder?.quantity || context?.pending_quantity || 1) || 1;
+    if ((extracted.name || extracted.phone || extracted.address || extracted.city) && oldOrder?.product && oldOrder?.quantity > 0) {
+      const quantity = safeQuantity(oldOrder?.quantity || 1) || 1;
       const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
 
       if (!total || total <= 0) {
@@ -2117,9 +2144,9 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // ✅ Confirmación manual
+    // ✅ Confirmación manual explícita
     // =======================================================
-    if (isConfirmIntent(texto) && oldOrder?.product) {
+    if (isConfirmIntent(texto) && oldOrder?.product && oldOrder?.quantity > 0 && oldOrder?.city) {
       const quantity = safeQuantity(oldOrder?.quantity || 1) || 1;
       const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
       const orderData = { ...oldOrder, quantity, total_amount: total || 0 };
@@ -2145,7 +2172,7 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 🤖 FALLBACK Gemini con TODO el entrenamiento
     // =======================================================
-    const systemPrompt = fullTraining; // ← PASAMOS TODO EL ENTRENAMIENTO A GEMINI
+    const systemPrompt = fullTraining;
 
     const contents = (history || [])
       .slice(-6)
