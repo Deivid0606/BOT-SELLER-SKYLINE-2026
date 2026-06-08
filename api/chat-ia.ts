@@ -665,7 +665,14 @@ function botWasAskingCity(history: any[]): boolean {
     lastAssistantMessage.includes("para que ciudad") ||
     lastAssistantMessage.includes("ciudad queres") ||
     lastAssistantMessage.includes("ciudad queres el envio") ||
-    lastAssistantMessage.includes("para qué ciudad sería el envío")
+    lastAssistantMessage.includes("para qué ciudad sería el envío") ||
+    lastAssistantMessage.includes("para qué ciudad sería") ||
+    lastAssistantMessage.includes("ciudad sería el envío") ||
+    lastAssistantMessage.includes("te confirmo el método de entrega") ||
+    (lastAssistantMessage.includes("envío") && lastAssistantMessage.includes("ciudad")) ||
+    lastAssistantMessage.includes("ciudad para el") ||
+    lastAssistantMessage.includes("cuál es tu ciudad") ||
+    lastAssistantMessage.includes("en qué ciudad")
   );
 }
 
@@ -1730,7 +1737,7 @@ function isOldConversation(history: any[]): boolean {
 // 🚀 HANDLER PRINCIPAL
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL v9.0 - FLUJO CORRECTO: PRODUCTO → CIUDAD → CANTIDAD → DATOS → CONFIRMACION");
+  console.log("🔥 VERSION FINAL v10.0 - MEJOR DETECCION DE PREGUNTA DE CIUDAD");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -2032,7 +2039,8 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 📍 Respuesta de ciudad (cuando el bot preguntó ciudad)
     // =======================================================
-    const isCityReply = !!extractedCity && (previousStep === "collecting_city" || (oldOrder?.product && !oldOrder?.city));
+    const isCityReply = !!extractedCity && (previousStep === "collecting_city" || (oldOrder?.product && !oldOrder?.city) || botWasAskingCity(history || []));
+    
     if (isCityReply && oldOrder?.product) {
       const quantity = safeQuantity(context?.pending_quantity || oldOrder?.quantity || 1) || 1;
       const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
