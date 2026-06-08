@@ -672,7 +672,8 @@ function botWasAskingCity(history: any[]): boolean {
     (lastAssistantMessage.includes("envío") && lastAssistantMessage.includes("ciudad")) ||
     lastAssistantMessage.includes("ciudad para el") ||
     lastAssistantMessage.includes("cuál es tu ciudad") ||
-    lastAssistantMessage.includes("en qué ciudad")
+    lastAssistantMessage.includes("en qué ciudad") ||
+    lastAssistantMessage.includes("para qué ciudad sería")
   );
 }
 
@@ -1734,10 +1735,10 @@ function isOldConversation(history: any[]): boolean {
 }
 
 // =======================================================
-// 🚀 HANDLER PRINCIPAL
+// 🚀 HANDLER PRINCIPAL - VERSION FINAL CON ACUMULACIÓN PROGRESIVA
 // =======================================================
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL v10.0 - MEJOR DETECCION DE PREGUNTA DE CIUDAD");
+  console.log("🔥 VERSION FINAL v11.0 - ACUMULA DATOS PROGRESIVAMENTE (cualquier orden)");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -2169,53 +2170,68 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🧾 Datos del cliente (nombre, dirección, teléfono)
+    // 🧾 Datos del cliente - ACUMULACIÓN PROGRESIVA (cualquier orden)
     // =======================================================
     let extracted: any = { name: "", phone: "", address: "", city: "", quantity: 0, shoe_size: 0 };
     if (detectedQuantity === 0 && !isPriceIntent(texto) && !isCatalogQuery(texto) && !isConfirmWord) {
       extracted = extractData(texto, previousStep, false, false);
     }
 
+    // ✅ ACUMULAR DATOS - actualizar oldOrder con lo que el cliente envió (en cualquier orden)
     if ((extracted.name || extracted.phone || extracted.address) && oldOrder?.product && oldOrder?.quantity > 0 && oldOrder?.city) {
-      const quantity = safeQuantity(oldOrder?.quantity || 1) || 1;
-      const total = getSafeTotal(oldOrder.product, quantity, fullTraining);
-
-      if (!total || total <= 0) {
-        return res.json({
-          response: buildMissingPriceResponse(oldOrder.product),
-          context: { ...(context || {}), step: "selling", order_data: oldOrder, updated_at: new Date().toISOString() },
-          is_payment_proof: false,
-        });
-      }
-
-      const orderData = {
+      
+      // Actualizar solo los campos que el cliente envió en este mensaje
+      const updatedOrder = {
         ...oldOrder,
-        quantity,
-        total_amount: total,
         customer_name: extracted.name || oldOrder.customer_name || "",
         phone: extracted.phone || oldOrder.phone || fromNumber || "",
         address: extracted.address || oldOrder.address || "",
       };
-
-      if (isOrderCompleteForConfirmation(orderData, fullTraining)) {
-        orderData.confirmed = true;
-        await safeUpsertOrder(user_id, fromNumber, orderData, true, "confirmed");
-
+      
+      // Guardar los datos acumulados
+      await safeUpsertOrder(user_id, fromNumber, updatedOrder, false);
+      
+      // Verificar si ya tenemos todos los datos para confirmar
+      if (updatedOrder.customer_name && updatedOrder.customer_name.length > 3 &&
+          updatedOrder.address && updatedOrder.address.length > 5 &&
+          updatedOrder.phone && updatedOrder.phone.length > 8) {
+        
+        // ✅ TODOS LOS DATOS COMPLETOS - CONFIRMAR PEDIDO
+        updatedOrder.confirmed = true;
+        const total = getSafeTotal(updatedOrder.product, updatedOrder.quantity, fullTraining);
+        updatedOrder.total_amount = total || 0;
+        
+        await safeUpsertOrder(user_id, fromNumber, updatedOrder, true, "confirmed");
+        
         return res.json({
-          response: buildSafeAutoConfirmResponse(orderData, fullTraining),
-          context: { ...(context || {}), step: "confirmed", order_data: orderData, updated_at: new Date().toISOString() },
+          response: buildSafeAutoConfirmResponse(updatedOrder, fullTraining),
+          context: { ...(context || {}), step: "confirmed", order_data: updatedOrder, updated_at: new Date().toISOString() },
           is_payment_proof: false,
         });
       }
-
-      await safeUpsertOrder(user_id, fromNumber, orderData, false);
-
+      
+      // ❌ FALTAN DATOS - pedir lo que falta específicamente
+      let mensajeFaltante = "";
+      if (!updatedOrder.customer_name) mensajeFaltante = "✅ nombre y apellido";
+      else if (!updatedOrder.address) mensajeFaltante = "✅ dirección exacta o ubicación por Google Maps";
+      else if (!updatedOrder.phone) mensajeFaltante = "✅ número de celular";
+      
+      // Mostrar lo que ya tenemos y lo que falta
+      const tenemos = [];
+      if (updatedOrder.customer_name) tenemos.push(`✅ Nombre: ${updatedOrder.customer_name}`);
+      if (updatedOrder.address) tenemos.push(`✅ Dirección: ${updatedOrder.address}`);
+      if (updatedOrder.phone) tenemos.push(`✅ Teléfono: ${updatedOrder.phone}`);
+      
+      const mensaje = tenemos.length > 0 
+        ? `✅ Ya tengo registrado:\n${tenemos.join("\n")}\n\n📝 Solo me falta: ${mensajeFaltante}\n\n📲 Enviámelo y confirmamos tu pedido ✨`
+        : `📎 Para agendar tu entrega necesito:\n\n✅ nombre y apellido\n✅ dirección exacta o ubicación por Google Maps\n✅ número de celular\n\n📲 Envialo TODO JUNTO o de a uno, voy registrando 😊`;
+      
       return res.json({
-        response: buildDataRequestByMissing(orderData),
+        response: mensaje,
         context: {
           ...(context || {}),
-          step: nextStep(orderData, getTipoCobertura(orderData.city), false),
-          order_data: orderData,
+          step: "collecting_name",
+          order_data: updatedOrder,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
