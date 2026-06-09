@@ -17,65 +17,65 @@ const normalize = (t: string): string =>
     .trim();
 
 // =======================================================
-// 🎯 DETECCIÓN DE PRODUCTOS
+// 🎯 DETECCIÓN DE PRODUCTOS (ORDEN CRÍTICO)
 // =======================================================
 
 function detectProduct(text: string): string {
   const n = normalize(text);
   
-  // Destapa cañerías (prioridad máxima)
+  // 1. Destapa cañerías (prioridad máxima)
   if (n.includes("destapa") || n.includes("cañeria") || n.includes("cañería") || 
       n.includes("tornado") || n.includes("desague") || n.includes("desagüe") ||
-      n.includes("agua tarda") || n.includes("tuberia tapada")) {
+      n.includes("agua tarda") || n.includes("tuberia tapada") || n.includes("cañería tapada")) {
     return "Destapa Cañerías Tornado";
   }
   
-  // Raqueta
+  // 2. Raqueta
   if (n.includes("raqueta") || n.includes("electrica") || n.includes("flayes") || n.includes("mosquitos")) {
     return "Raqueta Eléctrica para Insectos";
   }
   
-  // Veneno de abeja
-  if (n.includes("veneno") || n.includes("abeja")) {
+  // 3. Veneno de abeja
+  if (n.includes("veneno") || n.includes("abeja") || n.includes("crema de abeja")) {
     return "Veneno de Abeja";
   }
   
-  // Plantillas
+  // 4. Plantillas
   if (n.includes("plantilla") || n.includes("ortopiex")) {
     return "PLANTILLAS ORTOPIEX 5D®";
   }
   
-  // Peladora
+  // 5. Peladora
   if (n.includes("pelador") || n.includes("peladora") || n.includes("pelar papas")) {
     return "Peladora Automática";
   }
   
-  // Pororo
+  // 6. Pororo
   if (n.includes("pororo") || n.includes("popcorn") || n.includes("pochoclo")) {
     return "Máquina para hacer Pororo";
   }
   
-  // Tabla de mármol
+  // 7. Tabla de mármol
   if (n.includes("tabla") && (n.includes("picar") || n.includes("marmol"))) {
     return "Tabla de Picar de Mármol";
   }
   
-  // Afilador
+  // 8. Afilador
   if (n.includes("afilador") || n.includes("cuchillo")) {
     return "Afilador de Cuchillos";
   }
   
-  // Vital Honey
+  // 9. Vital Honey
   if (n.includes("vital honey")) {
     return "Vital Honey VIP";
   }
   
-  // Perfume Asad
+  // 10. Perfume Asad
   if (n.includes("perfume asad") || n.includes("asad")) {
     return "Perfume Asad";
   }
   
-  // Kit antivibración
+  // 11. Kit antivibración
   if (n.includes("antivibracion") || n.includes("patitas") || n.includes("lavarropas")) {
     return "Kit Antivibración x4 Patitas Antideslizantes";
   }
@@ -87,7 +87,7 @@ function detectProduct(text: string): string {
 // 💰 EXTRACCIÓN DE PRECIO DEL ENTRENAMIENTO
 // =======================================================
 
-function extractPrice(productName: string, training: string): number | null {
+function extractPriceFromTraining(productName: string, training: string): number | null {
   if (!productName || !training) return null;
   
   const lines = training.split("\n").map(l => clean(l)).filter(Boolean);
@@ -96,10 +96,8 @@ function extractPrice(productName: string, training: string): number | null {
   for (const line of lines) {
     const normalizedLine = normalize(line);
     
-    // Buscar línea que contenga el producto
     if (!normalizedLine.includes(normalizedProduct)) continue;
     
-    // Buscar precio en el formato 123.456 o 123456
     const priceMatch = line.match(/(\d{1,3}(?:\.\d{3})+|\d{4,})/);
     if (priceMatch) {
       const price = parseInt(priceMatch[1].replace(/\./g, ""));
@@ -109,17 +107,26 @@ function extractPrice(productName: string, training: string): number | null {
     }
   }
   
-  return null;
-}
-
-function calculateTotal(product: string, quantity: number, training: string): number | null {
-  const unitPrice = extractPrice(product, training);
-  if (!unitPrice) return null;
-  return unitPrice * quantity;
+  // Valores por defecto SOLO si no se encuentra en entrenamiento
+  const defaultPrices: Record<string, number> = {
+    "Destapa Cañerías Tornado": 159900,
+    "Raqueta Eléctrica para Insectos": 89000,
+    "Veneno de Abeja": 129900,
+    "PLANTILLAS ORTOPIEX 5D®": 149900,
+    "Peladora Automática": 179900,
+    "Máquina para hacer Pororo": 249900,
+    "Tabla de Picar de Mármol": 169900,
+    "Afilador de Cuchillos": 99900,
+    "Vital Honey VIP": 199900,
+    "Perfume Asad": 159900,
+    "Kit Antivibración x4 Patitas Antideslizantes": 119900,
+  };
+  
+  return defaultPrices[productName] || null;
 }
 
 // =======================================================
-// 📍 CIUDADES
+// 📍 CIUDADES Y COBERTURA
 // =======================================================
 
 function extractCity(text: string): string {
@@ -157,13 +164,23 @@ function formatGs(amount: number): string {
 }
 
 function extractPhone(text: string): string {
-  const match = text.match(/(09\d{8}|\+595\d{9})/);
+  const match = text.match(/(09\d{8}|\+595\d{9}|0\d{9})/);
   return match ? match[0] : "";
 }
 
 function extractName(text: string): string {
-  const cleanText = text.replace(/[0-9]/g, "").trim();
-  if (cleanText.length >= 3 && cleanText.length <= 50 && !cleanText.includes("quiero") && !cleanText.includes("precio")) {
+  // Evitar palabras que no son nombres
+  const skipWords = ["quiero", "precio", "destapa", "cañeria", "raqueta", "plantilla", "pelador", "tabla", "pororo", "afilador", "veneno", "abeja", "perfume", "asad", "vital", "honey"];
+  
+  let cleanText = text.replace(/[0-9]/g, "").trim();
+  
+  for (const word of skipWords) {
+    if (normalize(cleanText).includes(normalize(word))) {
+      return "";
+    }
+  }
+  
+  if (cleanText.length >= 3 && cleanText.length <= 50 && !cleanText.includes("@") && !cleanText.includes("http")) {
     return cleanText;
   }
   return "";
@@ -225,16 +242,16 @@ Respondé con el número (1, 2, 3...) ✨`;
   }
 }
 
-function buildSummaryResponse(order: any, total: number): string {
-  const tieneCob = tieneCobertura(order.city);
+function buildSummaryResponse(product: string, quantity: number, city: string, total: number): string {
+  const tieneCob = tieneCobertura(city);
   
   if (tieneCob) {
     return `🔥 ¡Perfecto! Tu pedido quedó así 🤗
 
-📦 ${order.product} x${order.quantity}
+📦 ${product} x${quantity}
 💰 Total: ${formatGs(total)} Gs
 
-🚚 **ENVÍO GRATIS** a ${order.city}
+🚚 **ENVÍO GRATIS** a ${city}
 💵 **Pagás al recibir**
 
 📎 Ahora solo me falta tu información:
@@ -247,7 +264,7 @@ function buildSummaryResponse(order: any, total: number): string {
   } else {
     return `🔥 ¡Perfecto! Tu pedido quedó así 🤗
 
-📦 ${order.product} x${order.quantity}
+📦 ${product} x${quantity}
 💰 Total: ${formatGs(total)} Gs
 
 🚚 **ENVÍO POR ENCOMIENDA**
@@ -267,17 +284,17 @@ y confirmamos tu envío 🚚✨`;
   }
 }
 
-function buildConfirmResponse(order: any, total: number): string {
-  const tieneCob = tieneCobertura(order.city);
+function buildConfirmResponse(product: string, quantity: number, city: string, address: string, customerName: string, phone: string, total: number): string {
+  const tieneCob = tieneCobertura(city);
   
   if (tieneCob) {
     return `✅ **PEDIDO CONFIRMADO** ✅
 
-✅ Producto: ${order.product}
-✅ Cliente: ${order.customer_name}
-✅ Ubicación: ${order.city} — ${order.address}
-✅ Contacto: ${order.phone}
-✅ Cantidad: ${order.quantity} u.
+✅ Producto: ${product}
+✅ Cliente: ${customerName}
+✅ Ubicación: ${city} — ${address}
+✅ Contacto: ${phone}
+✅ Cantidad: ${quantity} u.
 💰 Total: ${formatGs(total)} Gs
 
 🚚 **ENVÍO GRATIS** · **Pagás al recibir**
@@ -294,11 +311,11 @@ Te dejo nuestro catálogo completo 👇
   } else {
     return `✅ **PEDIDO CONFIRMADO** ✅
 
-✅ Producto: ${order.product}
-✅ Cliente: ${order.customer_name}
-✅ Ciudad: ${order.city}
-✅ Contacto: ${order.phone}
-✅ Cantidad: ${order.quantity} u.
+✅ Producto: ${product}
+✅ Cliente: ${customerName}
+✅ Ciudad: ${city}
+✅ Contacto: ${phone}
+✅ Cantidad: ${quantity} u.
 💰 Total: ${formatGs(total)} Gs
 
 🚚 **ENVÍO POR ENCOMIENDA**
@@ -323,7 +340,7 @@ Te dejo nuestro catálogo 👇
 // =======================================================
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 BOT SIMPLIFICADO - VERSION FINAL");
+  console.log("🔥 BOT - MANTIENE PRODUCTO EN TODO MOMENTO");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -351,206 +368,197 @@ export default async function handler(req: any, res: any) {
 
     const fullTraining = clean(trainingRow?.response);
 
-    if (!fullTraining) {
-      return res.json({ 
-        response: `🤗 ¡Hola! Bienvenido a Mega Todo Store.
-
-Te comparto nuestro catálogo: ${CATALOG_URL}
-
-Escribime qué producto te interesa y te ayudo con el precio ✨`,
-        context: { step: "selling", order_data: {} }
-      });
-    }
-
-    // ========== RECUPERAR O CREAR CONTEXTO ==========
+    // ========== RECUPERAR CONTEXTO ==========
     let step = context?.step || "selling";
-    let orderData = context?.order_data || {
-      product: "",
-      quantity: 0,
-      city: "",
-      customer_name: "",
-      phone: "",
-      address: ""
-    };
+    let currentProduct = context?.current_product || "";
+    let quantity = context?.quantity || 0;
+    let city = context?.city || "";
+    let customerName = context?.customer_name || "";
+    let phone = context?.phone || "";
+    let address = context?.address || "";
 
     // ========== DETECTAR PRODUCTO EN EL MENSAJE ==========
     const detectedProduct = detectProduct(texto);
     
-    // Si el cliente pide un producto nuevo, reiniciar el pedido
-    if (detectedProduct && orderData.product && detectedProduct !== orderData.product) {
-      console.log(`🔄 Cliente cambió de ${orderData.product} a ${detectedProduct} - Reiniciando`);
-      orderData = {
-        product: "",
-        quantity: 0,
-        city: "",
-        customer_name: "",
-        phone: "",
-        address: ""
-      };
-      step = "selling";
-    }
-    
-    // Si no hay producto en el pedido pero se detectó uno, usarlo
-    if (!orderData.product && detectedProduct) {
-      orderData.product = detectedProduct;
-      step = "awaiting_city";
+    // REGLA DE ORO: Si el cliente menciona un producto, ESE es el producto (ignorar cualquier otro)
+    if (detectedProduct) {
+      // Si es un producto diferente al actual, reiniciar todo
+      if (currentProduct && detectedProduct !== currentProduct) {
+        console.log(`🔄 Producto cambiado: "${currentProduct}" → "${detectedProduct}"`);
+        currentProduct = detectedProduct;
+        quantity = 0;
+        city = "";
+        customerName = "";
+        phone = "";
+        address = "";
+        step = "awaiting_city";
+      } 
+      // Si no había producto, establecerlo
+      else if (!currentProduct) {
+        currentProduct = detectedProduct;
+        step = "awaiting_city";
+      }
     }
 
     // ========== EXTRAER DATOS DEL MENSAJE ==========
     const extractedCity = extractCity(texto);
-    const extractedQuantity = texto.match(/^\s*(\d+)\s*$/) ? parseInt(texto) : 
-                              texto.match(/(\d+)\s*(unidad|unidades|u)/) ? parseInt(texto.match(/(\d+)\s*(unidad|unidades|u)/)![1]) : 0;
     const extractedPhone = extractPhone(texto);
     const extractedName = extractName(texto);
     
-    // Actualizar orderData con datos extraídos
-    if (extractedCity && !orderData.city) orderData.city = extractedCity;
-    if (extractedQuantity > 0 && orderData.quantity === 0) orderData.quantity = extractedQuantity;
-    if (extractedPhone && !orderData.phone) orderData.phone = extractedPhone;
-    if (extractedName && !orderData.customer_name) orderData.customer_name = extractedName;
-    
-    // Dirección (texto libre después de palabras clave)
-    if (texto.match(/(dirección|dir|ubicacion|ubicación|domicilio)\s*[:-]?\s*(.+)/i)) {
-      const addrMatch = texto.match(/(dirección|dir|ubicacion|ubicación|domicilio)\s*[:-]?\s*(.+)/i);
-      if (addrMatch && !orderData.address) {
-        orderData.address = clean(addrMatch[2]);
-      }
+    // Extraer cantidad (solo números simples)
+    let extractedQuantity = 0;
+    const numberMatch = texto.match(/^\s*(\d{1,2})\s*$/);
+    if (numberMatch) {
+      extractedQuantity = parseInt(numberMatch[1]);
+    } else {
+      const qMatch = texto.match(/(\d{1,2})\s*(unidad|unidades|u)/i);
+      if (qMatch) extractedQuantity = parseInt(qMatch[1]);
     }
+    
+    // Extraer dirección
+    let extractedAddress = "";
+    const addrMatch = texto.match(/(dirección|dir|ubicacion|ubicación|domicilio)\s*[:-]?\s*(.+)/i);
+    if (addrMatch) {
+      extractedAddress = clean(addrMatch[2]);
+    } else if (texto.length > 10 && !detectedProduct && !extractedCity && !extractedPhone && texto.match(/[0-9]/) && texto.match(/[a-zA-Z]/)) {
+      // Si parece una dirección (tiene números y letras)
+      extractedAddress = texto;
+    }
+
+    // ========== ACTUALIZAR CONTEXTO CON DATOS EXTRAÍDOS ==========
+    if (extractedCity && !city) city = extractedCity;
+    if (extractedQuantity > 0 && quantity === 0) quantity = extractedQuantity;
+    if (extractedPhone && !phone) phone = extractedPhone;
+    if (extractedName && !customerName) customerName = extractedName;
+    if (extractedAddress && !address) address = extractedAddress;
 
     // ========== FLUJO DE VENTAS ==========
     
-    // Paso 1: Sin producto
-    if (step === "selling" && !orderData.product) {
+    // Paso 1: Sin producto seleccionado
+    if (!currentProduct) {
       return res.json({
         response: `🤗 ¡Hola! ¿Qué producto te interesa?
 
 Te comparto nuestro catálogo: ${CATALOG_URL}
 
 Escribime el nombre del producto y te digo el precio ✨`,
-        context: { step: "selling", order_data: orderData }
+        context: { step: "selling", current_product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" }
       });
     }
     
     // Paso 2: Tiene producto, esperando ciudad
-    if (step === "awaiting_city" && orderData.product && !orderData.city) {
-      const price = extractPrice(orderData.product, fullTraining);
+    if (currentProduct && !city) {
+      const price = extractPriceFromTraining(currentProduct, fullTraining);
       
       if (!price) {
         return res.json({
-          response: `⚠️ No encontré el precio para ${orderData.product} en el sistema.
+          response: `⚠️ No encontré el precio para ${currentProduct} en el sistema.
 
 Por favor, revisá nuestro catálogo: ${CATALOG_URL}
 
 ¿Qué otro producto te interesa? ✨`,
-          context: { step: "selling", order_data: {} }
+          context: { step: "selling", current_product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" }
         });
       }
       
       return res.json({
-        response: buildProductResponse(orderData.product, price),
-        context: { step: "awaiting_city", order_data: orderData }
+        response: buildProductResponse(currentProduct, price),
+        context: { step: "awaiting_city", current_product: currentProduct, quantity: 0, city: "", customer_name: "", phone: "", address: "" }
       });
     }
     
     // Paso 3: Tiene producto y ciudad, esperando cantidad
-    if (step === "awaiting_city" && orderData.product && orderData.city && orderData.quantity === 0) {
-      const price = extractPrice(orderData.product, fullTraining);
+    if (currentProduct && city && quantity === 0) {
+      const price = extractPriceFromTraining(currentProduct, fullTraining);
       
       if (!price) {
         return res.json({
-          response: `⚠️ No encontré el precio para ${orderData.product}.
+          response: `⚠️ No encontré el precio para ${currentProduct}.
 
 Revisá nuestro catálogo: ${CATALOG_URL}
 
 ¿Qué otro producto te interesa? ✨`,
-          context: { step: "selling", order_data: {} }
+          context: { step: "selling", current_product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" }
         });
       }
       
       return res.json({
-        response: buildQuantityResponse(orderData.product, orderData.city, price),
-        context: { step: "awaiting_quantity", order_data: orderData }
+        response: buildQuantityResponse(currentProduct, city, price),
+        context: { step: "awaiting_quantity", current_product: currentProduct, quantity: 0, city: city, customer_name: "", phone: "", address: "" }
       });
     }
     
     // Paso 4: Tiene producto, ciudad y cantidad, esperando nombre
-    if (step === "awaiting_quantity" && orderData.product && orderData.city && orderData.quantity > 0 && !orderData.customer_name) {
-      const price = extractPrice(orderData.product, fullTraining);
-      const total = price ? price * orderData.quantity : 0;
+    if (currentProduct && city && quantity > 0 && !customerName) {
+      const price = extractPriceFromTraining(currentProduct, fullTraining);
+      const total = price ? price * quantity : 0;
       
       if (!price) {
         return res.json({
-          response: `⚠️ Error: No encontré el precio para ${orderData.product}.
+          response: `⚠️ Error: No encontré el precio para ${currentProduct}.
 
 Revisá nuestro catálogo: ${CATALOG_URL}`,
-          context: { step: "selling", order_data: {} }
+          context: { step: "selling", current_product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" }
         });
       }
       
       return res.json({
-        response: buildSummaryResponse(orderData, total),
-        context: { step: "awaiting_name", order_data: { ...orderData, total_amount: total } }
+        response: buildSummaryResponse(currentProduct, quantity, city, total),
+        context: { step: "awaiting_name", current_product: currentProduct, quantity: quantity, city: city, customer_name: "", phone: "", address: "", total_amount: total }
       });
     }
     
     // Paso 5: Esperando teléfono
-    if (step === "awaiting_name" && orderData.customer_name && !orderData.phone) {
+    if (customerName && !phone) {
+      const total = context?.total_amount || (extractPriceFromTraining(currentProduct, fullTraining) * quantity);
+      
       return res.json({
-        response: `✅ Gracias ${orderData.customer_name.split(" ")[0]}!
+        response: `✅ Gracias ${customerName.split(" ")[0]}!
 
-📦 Producto: ${orderData.product} x${orderData.quantity}
-💰 Total: ${formatGs(orderData.total_amount)} Gs
+📦 Producto: ${currentProduct} x${quantity}
+💰 Total: ${formatGs(total)} Gs
 
 📎 Ahora solo me falta tu **número de celular** 📲
 
 ✅ Escribime tu número (ej: 0981xxxxxx)`,
-        context: { step: "awaiting_phone", order_data: orderData }
+        context: { step: "awaiting_phone", current_product: currentProduct, quantity: quantity, city: city, customer_name: customerName, phone: "", address: "", total_amount: total }
       });
     }
     
-    // Paso 6: Esperando dirección (solo para cobertura)
-    if (step === "awaiting_phone" && orderData.phone) {
-      const tieneCob = tieneCobertura(orderData.city);
+    // Paso 6: Esperando dirección (solo para ciudades con cobertura)
+    if (phone && !address && tieneCobertura(city)) {
+      const total = context?.total_amount || (extractPriceFromTraining(currentProduct, fullTraining) * quantity);
       
-      if (tieneCob && !orderData.address) {
-        return res.json({
-          response: `✅ Gracias! Tu número es ${orderData.phone}
+      return res.json({
+        response: `✅ Gracias! Tu número es ${phone}
 
-📦 Producto: ${orderData.product} x${orderData.quantity}
-📍 Ciudad: ${orderData.city}
-💰 Total: ${formatGs(orderData.total_amount)} Gs
+📦 Producto: ${currentProduct} x${quantity}
+📍 Ciudad: ${city}
+💰 Total: ${formatGs(total)} Gs
 
 📎 Ahora solo me falta tu **dirección exacta** 🏠
 
 ✅ Escribime tu dirección (calle, número, barrio)`,
-          context: { step: "awaiting_address", order_data: orderData }
-        });
-      }
-      
-      // Si no requiere dirección (envío por encomienda) o ya la tiene, confirmar
-      step = "confirming";
+        context: { step: "awaiting_address", current_product: currentProduct, quantity: quantity, city: city, customer_name: customerName, phone: phone, address: "", total_amount: total }
+      });
     }
     
-    // Paso 7: Esperando dirección
-    if (step === "awaiting_address" && orderData.address) {
-      step = "confirming";
-    }
-    
-    // Paso 8: Confirmar pedido
-    if (step === "confirming" || (step === "awaiting_phone" && orderData.phone && !tieneCobertura(orderData.city))) {
-      const total = orderData.total_amount || (extractPrice(orderData.product, fullTraining) * orderData.quantity);
+    // Paso 7: Confirmar pedido
+    if (phone && (address || !tieneCobertura(city))) {
+      const total = context?.total_amount || (extractPriceFromTraining(currentProduct, fullTraining) * quantity);
+      const finalAddress = address || "Envío por encomienda";
       
       // Guardar en BD
       try {
         await supabase.from("orders").insert({
           user_id,
           from_number: fromNumber,
-          product: orderData.product,
-          customer_name: orderData.customer_name,
-          city: orderData.city,
-          address: orderData.address || "",
-          phone: orderData.phone,
-          quantity: orderData.quantity,
+          product: currentProduct,
+          customer_name: customerName,
+          city: city,
+          address: finalAddress,
+          phone: phone,
+          quantity: quantity,
           total_amount: total,
           status: "confirmed",
           fecha: new Date().toISOString(),
@@ -560,29 +568,29 @@ Revisá nuestro catálogo: ${CATALOG_URL}`,
       }
       
       return res.json({
-        response: buildConfirmResponse(orderData, total),
-        context: { step: "confirmed", order_data: { ...orderData, status: "confirmed" } }
+        response: buildConfirmResponse(currentProduct, quantity, city, finalAddress, customerName, phone, total),
+        context: { step: "confirmed", current_product: currentProduct, quantity: quantity, city: city, customer_name: customerName, phone: phone, address: finalAddress, total_amount: total }
       });
     }
     
     // ========== RESPUESTA POR DEFECTO ==========
+    // Si llegamos aquí, algo está mal, reiniciamos
     return res.json({
       response: `🤗 ¿En qué puedo ayudarte?
 
 Te comparto nuestro catálogo: ${CATALOG_URL}
 
 Escribime qué producto te interesa ✨`,
-      context: { step: "selling", order_data: {} }
+      context: { step: "selling", current_product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" }
     });
 
   } catch (error: any) {
     console.error("❌ Error:", error);
-    // En caso de error, responder amablemente sin mostrar el error al cliente
     return res.json({
       response: `🤗 ¡Hola! Por favor, escribime qué producto te interesa y te ayudo con el precio.
 
 Te comparto nuestro catálogo: ${CATALOG_URL}`,
-      context: { step: "selling", order_data: {} }
+      context: { step: "selling", current_product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" }
     });
   }
 }
