@@ -126,13 +126,11 @@ function isCatalogQuery(text: string): boolean {
 
 function isNewConversation(text: string, history: any[]): boolean {
   const n = normalize(text);
-  // 🆕 Mejorado: detectar cuando el cliente pide un producto específico
   const hasProductMention = /\b(me interesa|quiero|comprar|necesito|busco|el destapa|la raqueta|el veneno|las plantillas)\b/i.test(n);
   const newConversationMarkers = /\b(creo que guardo|mensaje antiguo|chat viejo|conversación anterior|pedido anterior|viejo mensaje|lo tengo guardado|tengo un mensaje|mensaje guardado|chat pasado|nuevo pedido|empezar de nuevo|borrar pedido|reiniciar)\b/i;
   const noHistory = !history || history.length === 0;
   const mentionsOldMessage = newConversationMarkers.test(n);
   
-  // Si el cliente menciona un producto, considerar como nueva conversación para ese producto
   if (hasProductMention && !noHistory) {
     console.log("🆕 Cliente mencionó producto - tratando como nueva conversación");
     return true;
@@ -387,26 +385,54 @@ function getProductPrice(product: string, quantity: number, training: string): n
 }
 
 // =======================================================
-// 🎯 DETECCIÓN DE PRODUCTO - MEJORADA
+// 🎯 DETECCIÓN DE PRODUCTO - VERSIÓN ULTRA MEJORADA
 // =======================================================
 
-// 🆕 Función mejorada para detectar "destapa cañería" y otros productos
+// 🆕 Función PRIORITARIA para detectar "destapa cañería" ANTES que cualquier otra cosa
+function isDestapaCañeriasRequest(text: string): boolean {
+  const n = normalize(text);
+  
+  // Patrones específicos para destapa cañerías
+  const patterns = [
+    "destapa cañeria",
+    "destapa cañería", 
+    "destapa caneria",
+    "destapa canería",
+    "wild tornado",
+    "tornado destapa",
+    "desague",
+    "desagüe",
+    "cañeria tapada",
+    "cañería tapada",
+    "agua tarda",
+    "tuberia tapada",
+    "tubería tapada",
+    "me interesa el destapa",
+    "el destapa cañería",
+    "destapa canerias",
+    "destapa cañerias",
+    "cañeria",
+    "cañería",
+    "tapa cañerias",
+    "tapa cañerías"
+  ];
+  
+  for (const pattern of patterns) {
+    if (n.includes(pattern)) {
+      console.log(`🎯 DESTAPA CAÑERÍAS detectado por patrón: "${pattern}"`);
+      return true;
+    }
+  }
+  
+  return false;
+}
+
 function canonicalProductFromText(text: string, training?: string): string {
   const n = normalize(text);
   
-  // 🆕 DETECCIÓN EXPLÍCITA para destapa cañerías (PROBLEMA 2)
-  const destapaPatterns = [
-    "destapa cañeria", "destapa cañería", "destapa caneria", "destapa canería",
-    "wild tornado", "tornado destapa", "desague", "desagüe",
-    "cañeria tapada", "cañería tapada", "agua tarda", "tuberia tapada", "tubería tapada",
-    "me interesa el destapa", "el destapa cañería", "destapa canerias", "destapa cañerias"
-  ];
-  
-  for (const pattern of destapaPatterns) {
-    if (n.includes(pattern)) {
-      console.log(`🎯 Detectado DESTAPA CAÑERÍAS por patrón: "${pattern}"`);
-      return getDestapaCañeriasProductName();
-    }
+  // 🔥 PRIORIDAD MÁXIMA: Detectar destapa cañerías primero
+  if (isDestapaCañeriasRequest(text)) {
+    return getDestapaCañeriasProductName();
   }
   
   // Raqueta
@@ -459,8 +485,8 @@ function canonicalProductFromText(text: string, training?: string): string {
     return getAntiVibrationProductName();
   }
   
-  // Tabla de picar
-  if (/\b(tabla\s+de\s+picar|tabla\s+de\s+marmol|tabla\s+picar)\b/.test(n)) {
+  // Tabla de picar (solo si NO es destapa cañerías)
+  if (/\b(tabla\s+de\s+picar|tabla\s+de\s+marmol|tabla\s+picar)\b/.test(n) && !isDestapaCañeriasRequest(text)) {
     return "Tabla de Picar de Mármol";
   }
   
@@ -476,7 +502,12 @@ function detectProductRaw(
 ) {
   const msg = normalize(text);
   
-  // 🆕 Primero intentar con canonicalProductFromText
+  // 🔥 PRIMERO: Verificar si es destapa cañerías
+  if (isDestapaCañeriasRequest(text)) {
+    return getDestapaCañeriasProductName();
+  }
+  
+  // Segundo: canonicalProductFromText
   const canonical = canonicalProductFromText(text);
   if (canonical) return canonical;
   
@@ -566,23 +597,20 @@ function sameProduct(a: string, b: string): boolean {
   const nb = normalize(b);
   if (!na || !nb) return false;
   
-  // Comparación exacta
   if (na === nb) return true;
   
-  // 🆕 Casos especiales para destapa cañerías
+  // Caso especial para destapa cañerías
   const isDestapa = (s: string) => 
     s.includes("destapa") || s.includes("cañeria") || s.includes("tornado") || s.includes("desagüe");
   
   if (isDestapa(na) && isDestapa(nb)) return true;
   
-  // Caso especial para tabla de mármol
   const isTabla = (s: string) => s.includes("tabla") && (s.includes("picar") || s.includes("marmol"));
   if (isTabla(na) && isTabla(nb)) return true;
   
   return na.includes(nb) || nb.includes(na);
 }
 
-// 🆕 Función mejorada que respeta el producto activo PERO permite cambios
 function detectProductRespectingActive(
   text: string,
   training: string,
@@ -592,28 +620,27 @@ function detectProductRespectingActive(
 ): string {
   const msg = normalize(text);
   
-  // 🆕 Si el cliente menciona EXPLÍCITAMENTE un producto diferente, cambiarlo
-  const explicitProductMention = /\b(me interesa|quiero|comprar|necesito|busco|me gustaría)\s+(el\s+)?(destapa|cañeria|tornado|desagüe|raqueta|veneno|plantilla|pelador|afilador|tabla|pororo|nebulizador)\b/i.test(msg);
+  // 🔥 REGLA DE ORO: Si el cliente pide destapa cañerías, eso es lo que importa
+  if (isDestapaCañeriasRequest(text)) {
+    console.log(`🔥 CLIENTE PIDIÓ DESTAPA CAÑERÍAS - Ignorando producto activo: "${activeProduct}"`);
+    return getDestapaCañeriasProductName();
+  }
   
-  // Detectar producto en el mensaje
   const detectedProduct = canonicalProductFromText(text);
   
-  // 🔥 REGLA CLAVE PARA PROBLEMA 2: Si hay un producto mencionado y es DIFERENTE al activo
   if (detectedProduct && activeProduct && !sameProduct(detectedProduct, activeProduct)) {
     console.log(`🔄 CLIENTE CAMBIÓ DE PRODUCTO: "${activeProduct}" → "${detectedProduct}"`);
     return detectedProduct;
   }
   
-  // Si el cliente menciona un producto explícitamente
   if (detectedProduct) {
-    console.log(`🎯 Producto detectado directamente: "${detectedProduct}"`);
+    console.log(`🎯 Producto detectado: "${detectedProduct}"`);
     return detectedProduct;
   }
   
-  // Verificar si es una solicitud explícita de nuevo producto
   const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas|destapa|cañeria|tornado|desagüe)\b/i.test(msg);
   
-  if (activeProduct && !explicitNewProductRequest && !explicitProductMention) {
+  if (activeProduct && !explicitNewProductRequest) {
     console.log(`🔄 Manteniendo producto activo: "${activeProduct}"`);
     return activeProduct;
   }
@@ -1090,10 +1117,6 @@ function buildOrderSummaryResponse(order: any, tipoCobertura: string) {
   return buildCartSummaryResponse(order, tipoCobertura);
 }
 
-// =======================================================
-// 🆕 RESPUESTA DE PRODUCTO CON PRECIOS DEL ENTRENAMIENTO
-// =======================================================
-
 function buildProductResponse(product: string, training: string): string {
   const unitPrice = getProductPrice(product, 1, training);
   
@@ -1211,12 +1234,7 @@ function handleProductSelection(product: string, training: string, shoeSize?: an
   };
 }
 
-// =======================================================
-// 🆕 nextStep() - MODIFICADO para evitar confirmaciones múltiples (PROBLEMA 1)
-// =======================================================
-
 function nextStep(order: any, tipoCobertura?: string, currentStatus?: string) {
-  // 🆕 Si ya está confirmado, NO volver a confirmar
   if (currentStatus === "confirmed") return "already_confirmed";
   
   const items = getCartItems(order);
@@ -1253,7 +1271,6 @@ async function safeUpsertOrder(
     if (!order?.product && !orderItems.length) return null;
     if (!from) return null;
 
-    // 🆕 Excluir pedidos ya confirmados de la búsqueda (PROBLEMA 1)
     const { data: existing, error: findErr } = await supabase
       .from("orders")
       .select("*")
@@ -1273,7 +1290,6 @@ async function safeUpsertOrder(
       return null;
     }
 
-    // 🆕 Si ya existe y está confirmado, no actualizar
     if (existing?.status === "confirmed") {
       console.log("✅ Pedido ya confirmado, no se actualiza");
       return existing.id;
@@ -1547,6 +1563,49 @@ export default async function handler(req: any, res: any) {
     if (!fromNumber) return res.status(400).json({ error: "Falta from_number" });
     if (!texto && !mediaUrl) return res.status(400).json({ error: "Faltan message o media" });
 
+    // 🔥 VERIFICACIÓN URGENTE: Si el cliente pide "destapa cañería", RESPONDER ESO
+    if (isDestapaCañeriasRequest(texto)) {
+      console.log("🚨 CLIENTE PIDIÓ DESTAPA CAÑERÍAS - Respondeiendo inmediatamente");
+      
+      const destapaProduct = getDestapaCañeriasProductName();
+      const unitPrice = getProductPrice(destapaProduct, 1, fullTraining);
+      
+      return res.json({
+        response: `🤗 ¡Qué buena elección! ${destapaProduct} es uno de nuestros favoritos ⭐
+
+💰 Precio especial: ${formatGs(unitPrice || 159900)} Gs
+
+⚠️ STOCK LIMITADO - Solo quedan unidades para envíos de HOY.
+
+📍 ¿A qué ciudad te gustaría recibirlo? 😊
+
+Te explico cómo funciona según tu ubicación:
+
+🟢 **Ciudades con cobertura** → Envío GRATIS · Pagás al recibir
+🔴 **Otras ciudades** → Envío por encomienda · Pago anticipado
+
+Escribime tu ciudad y te confirmo cómo llega tu pedido 🚚✨`,
+        context: {
+          current_product: destapaProduct,
+          last_user_product: destapaProduct,
+          step: "collecting_city",
+          tipo_cobertura: null,
+          order_data: {
+            product: destapaProduct,
+            quantity: 0,
+            city: "",
+            customer_name: "",
+            phone: "",
+            address: "",
+            items: [],
+            total_amount: 0,
+          },
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
     const { data: iaConfig } = await supabase
       .from("chat_ia_gemini")
       .select("*")
@@ -1620,7 +1679,6 @@ export default async function handler(req: any, res: any) {
     const previousTipoCobertura = clean(context?.tipo_cobertura);
     const previousStatus = context?.order_data?.status || oldOrder?.status || "";
 
-    // 🆕 DETECCIÓN DE CONFLICTO DE PRODUCTO (PROBLEMA 2)
     const productInMessage = canonicalProductFromText(texto);
     const storedProduct = context?.current_product || context?.order_data?.product || oldOrder?.product || "";
     
@@ -1630,7 +1688,6 @@ export default async function handler(req: any, res: any) {
       console.log(`   Cliente pide: "${productInMessage}"`);
       console.log(`   → REINICIANDO conversación para este producto`);
       
-      // Resetear completamente el pedido
       const resetOrder = {
         product: productInMessage,
         quantity: 0,
@@ -1643,7 +1700,6 @@ export default async function handler(req: any, res: any) {
         total_amount: 0,
       };
       
-      // Responder con el producto correcto
       return res.json({
         response: buildProductResponse(productInMessage, fullTraining),
         context: {
@@ -1772,7 +1828,6 @@ Hacemos envíos a todo el país 🚚
     
     let extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
-    // Verificar cambio de producto (PROBLEMA 2)
     if (product && oldOrder?.product && !sameProduct(product, oldOrder.product) && !wantsAddMore) {
       console.log(`🔄 Cliente cambió de "${oldOrder.product}" a "${product}" - Reiniciando pedido`);
       
@@ -1806,7 +1861,6 @@ Hacemos envíos a todo el país 🚚
       });
     }
 
-    // Nuevo producto seleccionado
     if (product && !wantsAddMore && !isQuantityReply && !isPureShoeSizeReply && !isCityReply) {
       const isNewProductSelection = !oldOrder?.product || !sameProduct(product, oldOrder.product);
       
@@ -1832,7 +1886,6 @@ Hacemos envíos a todo el país 🚚
       }
     }
 
-    // Respuesta de ciudad
     if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && product) {
       const city = extracted.city || extractCityFromText(texto);
       
@@ -1868,7 +1921,6 @@ Hacemos envíos a todo el país 🚚
       }
     }
 
-    // Respuesta de cantidad
     if ((isQuantityReply || (previousStep === "collecting_quantity" && extracted.quantity > 0)) && product) {
       let orderData = {
         product: product,
@@ -2090,7 +2142,7 @@ Si no hay producto claro, pedí amablemente que te diga qué producto le interes
           });
         }
       } else {
-        texto = texto || "Te mandé un audio pero no pudiste descargarlo.";
+        texto = texto || "Te mandé un audio pero no pudiste descargarla.";
       }
     }
 
@@ -2098,7 +2150,6 @@ Si no hay producto claro, pedí amablemente que te diga qué producto le interes
 
     extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
-    // Construir orderData final
     let orderData = {
       product: product || oldOrder?.product || "",
       quantity: extracted.quantity || oldOrder?.quantity || 0,
@@ -2111,7 +2162,6 @@ Si no hay producto claro, pedí amablemente que te diga qué producto le interes
       total_amount: oldOrder?.total_amount || 0,
     };
 
-    // Verificar que tenemos ciudad antes de calcular total si hay cantidad
     if (orderData.product && orderData.quantity > 0 && (!orderData.city || orderData.city === "")) {
       return res.json({
         response: `📍 ¡Genial! ¿A qué ciudad lo enviamos? 😊
@@ -2136,7 +2186,6 @@ Escribime tu ciudad y te confirmo cómo llega tu pedido 🚚✨`,
       });
     }
 
-    // Calcular total si hay producto y cantidad
     if (orderData.product && orderData.quantity > 0) {
       const calculated = calculateTotal(orderData.product, orderData.quantity, fullTraining);
       if (calculated !== null) {
@@ -2148,7 +2197,6 @@ Escribime tu ciudad y te confirmo cómo llega tu pedido 🚚✨`,
     const currentStatus = previousStatus || "";
     let step = nextStep(orderData, finalTipoCobertura, currentStatus);
 
-    // 🆕 Si ya está confirmado, responder sin volver a confirmar (PROBLEMA 1)
     if (step === "already_confirmed" || currentStatus === "confirmed") {
       return res.json({
         response: `✅ Tu pedido ya está confirmado, ${orderData.customer_name?.split(" ")[0] || "cliente"} 😊
@@ -2175,7 +2223,6 @@ El delivery se comunicará contigo. Si necesitas modificar algo, decime nomás �
       });
     }
 
-    // Si el cliente ya envió todos los datos, confirmar UNA SOLA VEZ
     if (step === "confirm_order" && currentStatus !== "confirmed") {
       await safeUpsertOrder(user_id, fromNumber, orderData, true);
       
@@ -2250,7 +2297,6 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
       });
     }
 
-    // Si estamos en medio del flujo, guardar y continuar con Gemini
     await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
     let cleanHistory = Array.isArray(history) ? history : [];
