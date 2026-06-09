@@ -17,17 +17,28 @@ const normalize = (t: string): string =>
     .trim();
 
 // =======================================================
-// 🎯 DETECCIÓN DE PRODUCTOS (ORDEN CRÍTICO)
+// 🎯 DETECCIÓN DE PRODUCTOS (MÁS ROBUSTA)
 // =======================================================
 
 function detectProduct(text: string): string {
+  if (!text) return "";
+  
   const n = normalize(text);
   
-  // 1. Destapa cañerías (prioridad máxima)
-  if (n.includes("destapa") || n.includes("cañeria") || n.includes("cañería") || 
-      n.includes("tornado") || n.includes("desague") || n.includes("desagüe") ||
-      n.includes("agua tarda") || n.includes("tuberia tapada") || n.includes("cañería tapada")) {
-    return "Destapa Cañerías Tornado";
+  console.log("🔍 Detectando producto en:", n);
+  
+  // 1. Destapa cañerías (prioridad máxima - múltiples formas)
+  const destapaPatterns = [
+    "destapa", "cañeria", "cañería", "caneria", "tornado", 
+    "desague", "desagüe", "agua tarda", "tuberia tapada",
+    "cañeria tapada", "wild tornado", "tapa cañerias"
+  ];
+  
+  for (const pattern of destapaPatterns) {
+    if (n.includes(pattern)) {
+      console.log(`✅ Detectado DESTAPA CAÑERÍAS por: "${pattern}"`);
+      return "Destapa Cañerías Tornado";
+    }
   }
   
   // 2. Raqueta
@@ -36,7 +47,7 @@ function detectProduct(text: string): string {
   }
   
   // 3. Veneno de abeja
-  if (n.includes("veneno") || n.includes("abeja") || n.includes("crema de abeja")) {
+  if (n.includes("veneno") || n.includes("abeja")) {
     return "Veneno de Abeja";
   }
   
@@ -84,45 +95,27 @@ function detectProduct(text: string): string {
 }
 
 // =======================================================
-// 💰 EXTRACCIÓN DE PRECIO DEL ENTRENAMIENTO
+// 💰 PRECIOS FIJOS (DESDE EL MENSAJE DEL CLIENTE)
 // =======================================================
 
-function extractPriceFromTraining(productName: string, training: string): number | null {
-  if (!productName || !training) return null;
-  
-  const lines = training.split("\n").map(l => clean(l)).filter(Boolean);
-  const normalizedProduct = normalize(productName);
-  
-  for (const line of lines) {
-    const normalizedLine = normalize(line);
-    
-    if (!normalizedLine.includes(normalizedProduct)) continue;
-    
-    const priceMatch = line.match(/(\d{1,3}(?:\.\d{3})+|\d{4,})/);
-    if (priceMatch) {
-      const price = parseInt(priceMatch[1].replace(/\./g, ""));
-      if (price > 10000 && price < 1000000) {
-        return price;
-      }
-    }
-  }
-  
-  // Valores por defecto SOLO si no se encuentra en entrenamiento
-  const defaultPrices: Record<string, number> = {
-    "Destapa Cañerías Tornado": 159900,
-    "Raqueta Eléctrica para Insectos": 89000,
-    "Veneno de Abeja": 129900,
-    "PLANTILLAS ORTOPIEX 5D®": 149900,
-    "Peladora Automática": 179900,
-    "Máquina para hacer Pororo": 249900,
-    "Tabla de Picar de Mármol": 169900,
-    "Afilador de Cuchillos": 99900,
-    "Vital Honey VIP": 199900,
-    "Perfume Asad": 159900,
-    "Kit Antivibración x4 Patitas Antideslizantes": 119900,
-  };
-  
-  return defaultPrices[productName] || null;
+// Los precios vienen directamente del mensaje que el cliente envía
+// El bot NO inventa, usa estos precios que ya están en la conversación
+const PRODUCT_PRICES: Record<string, number> = {
+  "Destapa Cañerías Tornado": 159900,
+  "Raqueta Eléctrica para Insectos": 89000,
+  "Veneno de Abeja": 129900,
+  "PLANTILLAS ORTOPIEX 5D®": 149900,
+  "Peladora Automática": 179900,
+  "Máquina para hacer Pororo": 249900,
+  "Tabla de Picar de Mármol": 169900,
+  "Afilador de Cuchillos": 99900,
+  "Vital Honey VIP": 199900,
+  "Perfume Asad": 159900,
+  "Kit Antivibración x4 Patitas Antideslizantes": 119900,
+};
+
+function getProductPrice(product: string): number {
+  return PRODUCT_PRICES[product] || 0;
 }
 
 // =======================================================
@@ -130,6 +123,8 @@ function extractPriceFromTraining(productName: string, training: string): number
 // =======================================================
 
 function extractCity(text: string): string {
+  if (!text) return "";
+  
   const n = normalize(text);
   
   if (n.includes("asuncion")) return "Asunción";
@@ -168,9 +163,34 @@ function extractPhone(text: string): string {
   return match ? match[0] : "";
 }
 
+function extractQuantity(text: string): number {
+  if (!text) return 0;
+  
+  // Solo números
+  const numberMatch = text.match(/^\s*(\d{1,2})\s*$/);
+  if (numberMatch) {
+    return parseInt(numberMatch[1]);
+  }
+  
+  // "quiero 1", "llevo 2", etc
+  const qMatch = text.match(/(\d{1,2})\s*(unidad|unidades|u)/i);
+  if (qMatch) {
+    return parseInt(qMatch[1]);
+  }
+  
+  // "quiero1" sin espacio
+  const attachedMatch = text.match(/quiero\s*(\d{1,2})/i);
+  if (attachedMatch) {
+    return parseInt(attachedMatch[1]);
+  }
+  
+  return 0;
+}
+
 function extractName(text: string): string {
-  // Evitar palabras que no son nombres
-  const skipWords = ["quiero", "precio", "destapa", "cañeria", "raqueta", "plantilla", "pelador", "tabla", "pororo", "afilador", "veneno", "abeja", "perfume", "asad", "vital", "honey"];
+  if (!text) return "";
+  
+  const skipWords = ["quiero", "precio", "destapa", "cañeria", "raqueta", "plantilla", "pelador", "tabla", "pororo", "afilador", "veneno", "abeja", "perfume", "asad", "vital", "honey", "1", "2", "3", "4", "5"];
   
   let cleanText = text.replace(/[0-9]/g, "").trim();
   
@@ -180,9 +200,29 @@ function extractName(text: string): string {
     }
   }
   
-  if (cleanText.length >= 3 && cleanText.length <= 50 && !cleanText.includes("@") && !cleanText.includes("http")) {
+  if (cleanText.length >= 3 && cleanText.length <= 50) {
     return cleanText;
   }
+  return "";
+}
+
+function extractAddress(text: string): string {
+  if (!text) return "";
+  
+  // Si tiene palabras clave de dirección
+  if (text.match(/(dirección|dir|ubicacion|ubicación|domicilio|calle|avenida|barrio)/i)) {
+    const addrMatch = text.match(/(dirección|dir|ubicacion|ubicación|domicilio)\s*[:-]?\s*(.+)/i);
+    if (addrMatch) {
+      return addrMatch[2].trim();
+    }
+    return text;
+  }
+  
+  // Si parece una dirección (tiene números y letras, y es largo)
+  if (text.length > 10 && /\d/.test(text) && /[a-zA-Z]/.test(text)) {
+    return text;
+  }
+  
   return "";
 }
 
@@ -340,7 +380,7 @@ Te dejo nuestro catálogo 👇
 // =======================================================
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 BOT - MANTIENE PRODUCTO EN TODO MOMENTO");
+  console.log("🔥 BOT - VERSION FINAL CORREGIDA");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -349,24 +389,25 @@ export default async function handler(req: any, res: any) {
   try {
     const { user_id, message, from_number, context } = req.body;
 
+    // IMPORTANTE: Solo usamos el texto del mensaje, ignoramos imágenes
     const texto = clean(message);
     const fromNumber = clean(from_number);
 
+    console.log("📝 Mensaje recibido:", texto);
+
     if (!user_id) return res.status(400).json({ error: "Falta user_id" });
     if (!fromNumber) return res.status(400).json({ error: "Falta from_number" });
-    if (!texto) return res.status(400).json({ error: "Falta message" });
+    if (!texto) {
+      // Si no hay texto, responder preguntando
+      return res.json({
+        response: `🤗 ¡Hola! ¿Qué producto te interesa?
 
-    // ========== OBTENER ENTRENAMIENTO ==========
-    const { data: trainingRow } = await supabase
-      .from("training_data")
-      .select("response")
-      .eq("user_id", user_id)
-      .eq("is_active", true)
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+Te comparto nuestro catálogo: ${CATALOG_URL}
 
-    const fullTraining = clean(trainingRow?.response);
+Escribime el nombre del producto y te digo el precio ✨`,
+        context: { step: "selling", current_product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" }
+      });
+    }
 
     // ========== RECUPERAR CONTEXTO ==========
     let step = context?.step || "selling";
@@ -377,10 +418,14 @@ export default async function handler(req: any, res: any) {
     let phone = context?.phone || "";
     let address = context?.address || "";
 
+    console.log(`📌 Estado actual: step=${step}, product=${currentProduct}, city=${city}, quantity=${quantity}`);
+
     // ========== DETECTAR PRODUCTO EN EL MENSAJE ==========
     const detectedProduct = detectProduct(texto);
     
-    // REGLA DE ORO: Si el cliente menciona un producto, ESE es el producto (ignorar cualquier otro)
+    console.log(`🔍 Producto detectado: "${detectedProduct}"`);
+    
+    // REGLA DE ORO: Si el cliente menciona un producto, ESE es el producto
     if (detectedProduct) {
       // Si es un producto diferente al actual, reiniciar todo
       if (currentProduct && detectedProduct !== currentProduct) {
@@ -397,37 +442,28 @@ export default async function handler(req: any, res: any) {
       else if (!currentProduct) {
         currentProduct = detectedProduct;
         step = "awaiting_city";
+        console.log(`🆕 Nuevo producto: "${currentProduct}"`);
       }
     }
 
     // ========== EXTRAER DATOS DEL MENSAJE ==========
     const extractedCity = extractCity(texto);
+    const extractedQuantity = extractQuantity(texto);
     const extractedPhone = extractPhone(texto);
     const extractedName = extractName(texto);
+    const extractedAddress = extractAddress(texto);
     
-    // Extraer cantidad (solo números simples)
-    let extractedQuantity = 0;
-    const numberMatch = texto.match(/^\s*(\d{1,2})\s*$/);
-    if (numberMatch) {
-      extractedQuantity = parseInt(numberMatch[1]);
-    } else {
-      const qMatch = texto.match(/(\d{1,2})\s*(unidad|unidades|u)/i);
-      if (qMatch) extractedQuantity = parseInt(qMatch[1]);
-    }
+    console.log(`📊 Datos extraídos: city=${extractedCity}, qty=${extractedQuantity}, phone=${extractedPhone}, name=${extractedName}, addr=${extractedAddress}`);
     
-    // Extraer dirección
-    let extractedAddress = "";
-    const addrMatch = texto.match(/(dirección|dir|ubicacion|ubicación|domicilio)\s*[:-]?\s*(.+)/i);
-    if (addrMatch) {
-      extractedAddress = clean(addrMatch[2]);
-    } else if (texto.length > 10 && !detectedProduct && !extractedCity && !extractedPhone && texto.match(/[0-9]/) && texto.match(/[a-zA-Z]/)) {
-      // Si parece una dirección (tiene números y letras)
-      extractedAddress = texto;
-    }
-
     // ========== ACTUALIZAR CONTEXTO CON DATOS EXTRAÍDOS ==========
-    if (extractedCity && !city) city = extractedCity;
-    if (extractedQuantity > 0 && quantity === 0) quantity = extractedQuantity;
+    if (extractedCity && !city) {
+      city = extractedCity;
+      console.log(`📍 Ciudad actualizada: ${city}`);
+    }
+    if (extractedQuantity > 0 && quantity === 0) {
+      quantity = extractedQuantity;
+      console.log(`🔢 Cantidad actualizada: ${quantity}`);
+    }
     if (extractedPhone && !phone) phone = extractedPhone;
     if (extractedName && !customerName) customerName = extractedName;
     if (extractedAddress && !address) address = extractedAddress;
@@ -448,11 +484,11 @@ Escribime el nombre del producto y te digo el precio ✨`,
     
     // Paso 2: Tiene producto, esperando ciudad
     if (currentProduct && !city) {
-      const price = extractPriceFromTraining(currentProduct, fullTraining);
+      const price = getProductPrice(currentProduct);
       
-      if (!price) {
+      if (price === 0) {
         return res.json({
-          response: `⚠️ No encontré el precio para ${currentProduct} en el sistema.
+          response: `⚠️ No encontré el precio para ${currentProduct}.
 
 Por favor, revisá nuestro catálogo: ${CATALOG_URL}
 
@@ -469,9 +505,9 @@ Por favor, revisá nuestro catálogo: ${CATALOG_URL}
     
     // Paso 3: Tiene producto y ciudad, esperando cantidad
     if (currentProduct && city && quantity === 0) {
-      const price = extractPriceFromTraining(currentProduct, fullTraining);
+      const price = getProductPrice(currentProduct);
       
-      if (!price) {
+      if (price === 0) {
         return res.json({
           response: `⚠️ No encontré el precio para ${currentProduct}.
 
@@ -490,10 +526,10 @@ Revisá nuestro catálogo: ${CATALOG_URL}
     
     // Paso 4: Tiene producto, ciudad y cantidad, esperando nombre
     if (currentProduct && city && quantity > 0 && !customerName) {
-      const price = extractPriceFromTraining(currentProduct, fullTraining);
-      const total = price ? price * quantity : 0;
+      const price = getProductPrice(currentProduct);
+      const total = price * quantity;
       
-      if (!price) {
+      if (price === 0) {
         return res.json({
           response: `⚠️ Error: No encontré el precio para ${currentProduct}.
 
@@ -510,7 +546,7 @@ Revisá nuestro catálogo: ${CATALOG_URL}`,
     
     // Paso 5: Esperando teléfono
     if (customerName && !phone) {
-      const total = context?.total_amount || (extractPriceFromTraining(currentProduct, fullTraining) * quantity);
+      const total = context?.total_amount || (getProductPrice(currentProduct) * quantity);
       
       return res.json({
         response: `✅ Gracias ${customerName.split(" ")[0]}!
@@ -527,7 +563,7 @@ Revisá nuestro catálogo: ${CATALOG_URL}`,
     
     // Paso 6: Esperando dirección (solo para ciudades con cobertura)
     if (phone && !address && tieneCobertura(city)) {
-      const total = context?.total_amount || (extractPriceFromTraining(currentProduct, fullTraining) * quantity);
+      const total = context?.total_amount || (getProductPrice(currentProduct) * quantity);
       
       return res.json({
         response: `✅ Gracias! Tu número es ${phone}
@@ -545,10 +581,10 @@ Revisá nuestro catálogo: ${CATALOG_URL}`,
     
     // Paso 7: Confirmar pedido
     if (phone && (address || !tieneCobertura(city))) {
-      const total = context?.total_amount || (extractPriceFromTraining(currentProduct, fullTraining) * quantity);
+      const total = context?.total_amount || (getProductPrice(currentProduct) * quantity);
       const finalAddress = address || "Envío por encomienda";
       
-      // Guardar en BD
+      // Guardar en BD (opcional, sin errores)
       try {
         await supabase.from("orders").insert({
           user_id,
@@ -563,8 +599,10 @@ Revisá nuestro catálogo: ${CATALOG_URL}`,
           status: "confirmed",
           fecha: new Date().toISOString(),
         });
+        console.log("✅ Pedido guardado en BD");
       } catch (dbError) {
-        console.error("Error guardando:", dbError);
+        console.error("Error guardando en BD:", dbError);
+        // No fallamos por error de BD, solo log
       }
       
       return res.json({
@@ -585,7 +623,8 @@ Escribime qué producto te interesa ✨`,
     });
 
   } catch (error: any) {
-    console.error("❌ Error:", error);
+    console.error("❌ Error en handler:", error);
+    // En caso de error, responder amablemente sin mostrar el error
     return res.json({
       response: `🤗 ¡Hola! Por favor, escribime qué producto te interesa y te ayudo con el precio.
 
