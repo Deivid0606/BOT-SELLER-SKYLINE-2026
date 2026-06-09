@@ -19,9 +19,10 @@ const normalize = (t: string): string =>
 // =======================================================
 // 🧠 GUARDRAILS DETERMINÍSTICOS
 // =======================================================
+
 function hasExplicitProductMention(text: string): boolean {
   const n = normalize(text);
-  const buyIndicators = /\b(quiero|comprar|llevo|dame|mandame|reservar|apartar|la\s+raqueta|el\s+veneno|las\s+plantillas|la\s+peladora|el\s+afilador|el\s+kit|la\s+máquina|el\s+nebulizador|la\s+tabla|el\s+destapa|la\s+cañeria)\b/i;
+  const buyIndicators = /\b(quiero|comprar|llevo|dame|mandame|reservar|apartar|me\s+interesa|necesito|busco|me\s+gustaría|el\s+destapa|la\s+raqueta|el\s+veneno|las\s+plantillas|la\s+peladora|el\s+afilador|el\s+kit|la\s+máquina|el\s+nebulizador|la\s+tabla|el\s+destapa|la\s+cañeria)\b/i;
   const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas|destapa|cañeria|tornado|desagüe|cañería)\b/.test(n);
   return buyIndicators.test(n) || productNames;
 }
@@ -125,9 +126,18 @@ function isCatalogQuery(text: string): boolean {
 
 function isNewConversation(text: string, history: any[]): boolean {
   const n = normalize(text);
+  // 🆕 Mejorado: detectar cuando el cliente pide un producto específico
+  const hasProductMention = /\b(me interesa|quiero|comprar|necesito|busco|el destapa|la raqueta|el veneno|las plantillas)\b/i.test(n);
   const newConversationMarkers = /\b(creo que guardo|mensaje antiguo|chat viejo|conversación anterior|pedido anterior|viejo mensaje|lo tengo guardado|tengo un mensaje|mensaje guardado|chat pasado|nuevo pedido|empezar de nuevo|borrar pedido|reiniciar)\b/i;
   const noHistory = !history || history.length === 0;
   const mentionsOldMessage = newConversationMarkers.test(n);
+  
+  // Si el cliente menciona un producto, considerar como nueva conversación para ese producto
+  if (hasProductMention && !noHistory) {
+    console.log("🆕 Cliente mencionó producto - tratando como nueva conversación");
+    return true;
+  }
+  
   return noHistory || mentionsOldMessage;
 }
 
@@ -135,7 +145,7 @@ function isProductInquiry(text: string): boolean {
   const n = normalize(text);
   const inquiryWords = /\b(qu[eé] es|cómo funciona|para qu[eé] sirve|características|beneficios|tiene|informaci[oó]n|info|cu[aá]nto cuesta|precio|valor|costo|dime|contame|explicame)\b/i;
   const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla|raqueta|destapa|cañeria|tornado)\b/i;
-  const buyWords = /\b(quiero|comprar|llevo|dame|mandame|agregame|reservar|apartar)\b/i;
+  const buyWords = /\b(quiero|comprar|llevo|dame|mandame|agregame|reservar|apartar|me interesa)\b/i;
   return inquiryWords.test(n) && productWords.test(n) && !buyWords.test(n);
 }
 
@@ -152,7 +162,7 @@ function isProductName(text: string): boolean {
     "perfume asad", "asad",
     "almohadillas antivibracion", "soporte para lavarropas", "lavarropas", "kit x4 patitas", "patitas antideslizantes",
     "raqueta electrica", "raqueta para insectos", "flayes pro", "raqueta flayes",
-    "destapa cañerias", "destapa cañerias tornado", "tornado destapa cañerias", "desagüe"
+    "destapa cañerias", "destapa cañerias tornado", "tornado destapa cañerias", "desagüe", "wild tornado"
   ];
   const normalizedText = n;
   return productNames.some(p => normalizedText.includes(p) || p.includes(normalizedText));
@@ -298,7 +308,7 @@ function getDestapaCañeriasProductName(): string {
 }
 
 // =======================================================
-// 🧮 CÁLCULO DE TOTALES - VERSIÓN MEJORADA
+// 🧮 CÁLCULO DE TOTALES
 // =======================================================
 
 function parseGsAmount(text: string): number {
@@ -377,8 +387,85 @@ function getProductPrice(product: string, quantity: number, training: string): n
 }
 
 // =======================================================
-// 🎯 DETECCIÓN DE PRODUCTO
+// 🎯 DETECCIÓN DE PRODUCTO - MEJORADA
 // =======================================================
+
+// 🆕 Función mejorada para detectar "destapa cañería" y otros productos
+function canonicalProductFromText(text: string, training?: string): string {
+  const n = normalize(text);
+  
+  // 🆕 DETECCIÓN EXPLÍCITA para destapa cañerías (PROBLEMA 2)
+  const destapaPatterns = [
+    "destapa cañeria", "destapa cañería", "destapa caneria", "destapa canería",
+    "wild tornado", "tornado destapa", "desague", "desagüe",
+    "cañeria tapada", "cañería tapada", "agua tarda", "tuberia tapada", "tubería tapada",
+    "me interesa el destapa", "el destapa cañería", "destapa canerias", "destapa cañerias"
+  ];
+  
+  for (const pattern of destapaPatterns) {
+    if (n.includes(pattern)) {
+      console.log(`🎯 Detectado DESTAPA CAÑERÍAS por patrón: "${pattern}"`);
+      return getDestapaCañeriasProductName();
+    }
+  }
+  
+  // Raqueta
+  if (/\b(raqueta|electrica|flayes|mosquitos|moscas|insectos)\b/.test(n)) {
+    return "Raqueta Eléctrica para Insectos";
+  }
+  
+  // Veneno de abeja
+  if (/\b(veneno|abeja|crema\s+de\s+abeja)\b/.test(n)) {
+    return "Veneno de Abeja";
+  }
+  
+  // Plantillas
+  if (/\b(plantilla|plantillas|ortopiex|ortoflex)\b/.test(n)) {
+    return getDefaultShoeProductName();
+  }
+  
+  // Pelador
+  if (/\b(pelador|peladora|pelar\s+papas)\b/.test(n)) {
+    return "Peladora Automática";
+  }
+  
+  // Pororo
+  if (/\b(pororo|popcorn|pochoclo|palomitas)\b/.test(n)) {
+    return "Máquina para hacer Pororo";
+  }
+  
+  // Nebulizador
+  if (/\b(nebulizador)\b/.test(n)) {
+    return "Nebulizador portátil";
+  }
+  
+  // Afilador
+  if (/\b(afilador|cuchillo|cuchillos|sharpener)\b/.test(n)) {
+    return "Afilador de Cuchillos";
+  }
+  
+  // Vital Honey
+  if (/\b(vital\s+honey)\b/.test(n)) {
+    return "Vital Honey VIP";
+  }
+  
+  // Perfume Asad
+  if (/\b(perfume\s+asad|asad)\b/.test(n)) {
+    return "Perfume Asad";
+  }
+  
+  // Kit antivibración
+  if (/\b(kit\s+antivibracion|patitas\s+antideslizantes|soporte\s+para\s+lavarropas)\b/.test(n)) {
+    return getAntiVibrationProductName();
+  }
+  
+  // Tabla de picar
+  if (/\b(tabla\s+de\s+picar|tabla\s+de\s+marmol|tabla\s+picar)\b/.test(n)) {
+    return "Tabla de Picar de Mármol";
+  }
+  
+  return "";
+}
 
 function detectProductRaw(
   text: string,
@@ -389,9 +476,14 @@ function detectProductRaw(
 ) {
   const msg = normalize(text);
   
+  // 🆕 Primero intentar con canonicalProductFromText
+  const canonical = canonicalProductFromText(text);
+  if (canonical) return canonical;
+  
+  // Detección por palabras clave
   if (msg.includes("destapa") || msg.includes("cañeria") || msg.includes("tornado") ||
       msg.includes("desagüe") || msg.includes("tuberia") || msg.includes("agua tarda") ||
-      msg.includes("cañería") || msg.includes("tapa cañerias")) {
+      msg.includes("cañería") || msg.includes("tapa cañerias") || msg.includes("wild tornado")) {
     return getDestapaCañeriasProductName();
   }
   
@@ -469,6 +561,28 @@ function detectProductRaw(
   return bestMatch || "";
 }
 
+function sameProduct(a: string, b: string): boolean {
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (!na || !nb) return false;
+  
+  // Comparación exacta
+  if (na === nb) return true;
+  
+  // 🆕 Casos especiales para destapa cañerías
+  const isDestapa = (s: string) => 
+    s.includes("destapa") || s.includes("cañeria") || s.includes("tornado") || s.includes("desagüe");
+  
+  if (isDestapa(na) && isDestapa(nb)) return true;
+  
+  // Caso especial para tabla de mármol
+  const isTabla = (s: string) => s.includes("tabla") && (s.includes("picar") || s.includes("marmol"));
+  if (isTabla(na) && isTabla(nb)) return true;
+  
+  return na.includes(nb) || nb.includes(na);
+}
+
+// 🆕 Función mejorada que respeta el producto activo PERO permite cambios
 function detectProductRespectingActive(
   text: string,
   training: string,
@@ -478,25 +592,30 @@ function detectProductRespectingActive(
 ): string {
   const msg = normalize(text);
   
-  if (isPriceIntent(text) || isProductInquiry(text)) {
-    console.log(`ℹ️ Consulta de precio/info - manteniendo producto activo: ${activeProduct}`);
-    return activeProduct || "";
+  // 🆕 Si el cliente menciona EXPLÍCITAMENTE un producto diferente, cambiarlo
+  const explicitProductMention = /\b(me interesa|quiero|comprar|necesito|busco|me gustaría)\s+(el\s+)?(destapa|cañeria|tornado|desagüe|raqueta|veneno|plantilla|pelador|afilador|tabla|pororo|nebulizador)\b/i.test(msg);
+  
+  // Detectar producto en el mensaje
+  const detectedProduct = canonicalProductFromText(text);
+  
+  // 🔥 REGLA CLAVE PARA PROBLEMA 2: Si hay un producto mencionado y es DIFERENTE al activo
+  if (detectedProduct && activeProduct && !sameProduct(detectedProduct, activeProduct)) {
+    console.log(`🔄 CLIENTE CAMBIÓ DE PRODUCTO: "${activeProduct}" → "${detectedProduct}"`);
+    return detectedProduct;
   }
   
+  // Si el cliente menciona un producto explícitamente
+  if (detectedProduct) {
+    console.log(`🎯 Producto detectado directamente: "${detectedProduct}"`);
+    return detectedProduct;
+  }
+  
+  // Verificar si es una solicitud explícita de nuevo producto
   const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas|destapa|cañeria|tornado|desagüe)\b/i.test(msg);
   
-  if (activeProduct && !explicitNewProductRequest) {
+  if (activeProduct && !explicitNewProductRequest && !explicitProductMention) {
     console.log(`🔄 Manteniendo producto activo: "${activeProduct}"`);
     return activeProduct;
-  }
-  
-  if (explicitNewProductRequest) {
-    console.log(`🔄 Cliente pidió EXPLÍCITAMENTE otro producto. Detectando...`);
-    const newProduct = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
-    if (newProduct && !isInvalidProductCandidate(newProduct)) {
-      console.log(`✅ Nuevo producto detectado: "${newProduct}"`);
-      return newProduct;
-    }
   }
   
   const detected = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
@@ -505,64 +624,6 @@ function detectProductRespectingActive(
   }
   
   return activeProduct || "";
-}
-
-function canonicalProductFromText(text: string, training?: string): string {
-  const n = normalize(text);
-
-  if (/\b(destapa|cañeria|tornado|desagüe|cañería\s+tapada|agua\s+tarda)\b/.test(n)) return getDestapaCañeriasProductName();
-  if (/\b(raqueta|electrica|flayes|mosquitos|moscas|insectos)\b/.test(n)) return "Raqueta Eléctrica para Insectos";
-  if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja)\b/.test(n)) return "Veneno de Abeja";
-  if (/\b(pelador|peladora|pelar\s+papas|pelador\s+de\s+papas|peladora\s+automatica)\b/.test(n)) return "Peladora Automática";
-  if (/\b(soporte\s+para\s+lavarropas|lavarropas|almohadillas\s+antivibracion|almohadillas\s+antivibraci[oó]n|patitas\s+antideslizantes|kit\s+x4\s+patitas|kit\s+antivibracion)\b/.test(n)) return getAntiVibrationProductName();
-  if (/\b(plantilla|plantillas|ortopiex|ortoflex)\b/.test(n)) return getDefaultShoeProductName();
-  if (/\b(afilador|afilador\s+de\s+cuchillos|cuchillos)\b/.test(n)) return "Afilador de Cuchillos";
-  if (/\b(vital\s+honey|vital\s+honey\s+vip)\b/.test(n)) return "Vital Honey VIP";
-  if (/\b(perfume\s+asad|asad)\b/.test(n)) return "Perfume Asad";
-
-  return "";
-}
-
-function uniqueProducts(products: string[]): string[] {
-  const out: string[] = [];
-  for (const p of products.map(clean).filter(Boolean)) {
-    if (isInvalidCartProduct(p)) continue;
-    if (!out.some((x) => sameProduct(x, p))) out.push(p);
-  }
-  return out;
-}
-
-function detectMultipleProducts(text: string, training: string): string[] {
-  const raw = clean(text);
-  const n = normalize(raw);
-  const found: string[] = [];
-
-  const fullMatch = canonicalProductFromText(raw);
-  if (fullMatch) found.push(fullMatch);
-
-  const segments = n
-    .split(/\b(?:tambien|también|ademas|además|agrega|agregame|sumame|suma|sumá|inclui|incluí|añadi|añadí|mas|más)\b/g)
-    .map((x) => x.trim())
-    .filter(Boolean);
-
-  for (const segment of segments) {
-    const protectedProduct = canonicalProductFromText(segment);
-    if (protectedProduct) found.push(protectedProduct);
-
-    const catalogProduct = detectProductRaw(segment, training, "");
-    if (catalogProduct && !isInvalidProductCandidate(catalogProduct)) {
-      found.push(catalogProduct);
-    }
-  }
-
-  return uniqueProducts(found);
-}
-
-function sameProduct(a: string, b: string): boolean {
-  const na = normalize(a);
-  const nb = normalize(b);
-  if (!na || !nb) return false;
-  return na === nb || na.includes(nb) || nb.includes(na);
 }
 
 function isPriceIntent(text: string) {
@@ -1030,7 +1091,7 @@ function buildOrderSummaryResponse(order: any, tipoCobertura: string) {
 }
 
 // =======================================================
-// 🆕 RESPUESTA DE PRODUCTO CON PRECIOS DEL ENTRENAMIENTO (CÁLIDA)
+// 🆕 RESPUESTA DE PRODUCTO CON PRECIOS DEL ENTRENAMIENTO
 // =======================================================
 
 function buildProductResponse(product: string, training: string): string {
@@ -1068,10 +1129,6 @@ Escribime tu ciudad y te confirmo cómo llega tu pedido 🚚✨`;
   
   return response;
 }
-
-// =======================================================
-// 🆕 RESPUESTA DESPUÉS DE CIUDAD (CON VERIFICACIÓN CLARA)
-// =======================================================
 
 function buildQuantityAfterCityResponse(product: string, city: string, training: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
@@ -1132,10 +1189,6 @@ Respondé con el número (1, 2, 3...) y te preparo el total ✨`;
   }
 }
 
-// =======================================================
-// 🆕 HANDLE PRODUCT SELECTION - SIEMPRE pregunta ciudad
-// =======================================================
-
 function handleProductSelection(product: string, training: string, shoeSize?: any) {
   const newOrder = {
     product: product,
@@ -1159,10 +1212,13 @@ function handleProductSelection(product: string, training: string, shoeSize?: an
 }
 
 // =======================================================
-// 🆕 nextStep() - CIUDAD primero, NUNCA asume
+// 🆕 nextStep() - MODIFICADO para evitar confirmaciones múltiples (PROBLEMA 1)
 // =======================================================
 
-function nextStep(order: any, tipoCobertura?: string) {
+function nextStep(order: any, tipoCobertura?: string, currentStatus?: string) {
+  // 🆕 Si ya está confirmado, NO volver a confirmar
+  if (currentStatus === "confirmed") return "already_confirmed";
+  
   const items = getCartItems(order);
   
   if (!order.product && !items.length) return "selling";
@@ -1197,6 +1253,7 @@ async function safeUpsertOrder(
     if (!order?.product && !orderItems.length) return null;
     if (!from) return null;
 
+    // 🆕 Excluir pedidos ya confirmados de la búsqueda (PROBLEMA 1)
     const { data: existing, error: findErr } = await supabase
       .from("orders")
       .select("*")
@@ -1216,8 +1273,14 @@ async function safeUpsertOrder(
       return null;
     }
 
+    // 🆕 Si ya existe y está confirmado, no actualizar
+    if (existing?.status === "confirmed") {
+      console.log("✅ Pedido ya confirmado, no se actualiza");
+      return existing.id;
+    }
+
     const tipoCobertura = getTipoCobertura(order.city);
-    const step = nextStep(order, tipoCobertura);
+    const step = nextStep(order, tipoCobertura, existing?.status);
 
     const finalStatus =
       forcedStatus ||
@@ -1225,6 +1288,8 @@ async function safeUpsertOrder(
         ? "confirmed"
         : step === "confirm_order"
         ? "confirm_pending"
+        : step === "already_confirmed"
+        ? "confirmed"
         : step);
 
     const payload: any = {
@@ -1455,10 +1520,14 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
   return clean(txt);
 }
 
+// =======================================================
+// 🚀 HANDLER PRINCIPAL
+// =======================================================
+
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
-  console.log("🔥 LOS PRECIOS VIENEN EXCLUSIVAMENTE DEL ENTRENAMIENTO");
-  console.log("🔥 NUNCA SE ASUME CIUDAD - SIEMPRE SE PREGUNTA");
+  console.log("🔥 VERSION FINAL - CON SOLUCIONES PARA AMBOS PROBLEMAS");
+  console.log("🔥 PROBLEMA 1: Evita confirmaciones múltiples");
+  console.log("🔥 PROBLEMA 2: Detecta correctamente 'destapa cañería' y nuevos productos");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1549,6 +1618,46 @@ export default async function handler(req: any, res: any) {
 
     const previousStep = clean(context?.step);
     const previousTipoCobertura = clean(context?.tipo_cobertura);
+    const previousStatus = context?.order_data?.status || oldOrder?.status || "";
+
+    // 🆕 DETECCIÓN DE CONFLICTO DE PRODUCTO (PROBLEMA 2)
+    const productInMessage = canonicalProductFromText(texto);
+    const storedProduct = context?.current_product || context?.order_data?.product || oldOrder?.product || "";
+    
+    if (productInMessage && storedProduct && !sameProduct(productInMessage, storedProduct) && !isNewChat) {
+      console.log(`🚨 CONFLICTO DE PRODUCTO DETECTADO!`);
+      console.log(`   Guardado: "${storedProduct}"`);
+      console.log(`   Cliente pide: "${productInMessage}"`);
+      console.log(`   → REINICIANDO conversación para este producto`);
+      
+      // Resetear completamente el pedido
+      const resetOrder = {
+        product: productInMessage,
+        quantity: 0,
+        shoe_size: "",
+        city: "",
+        customer_name: "",
+        phone: "",
+        address: "",
+        items: [],
+        total_amount: 0,
+      };
+      
+      // Responder con el producto correcto
+      return res.json({
+        response: buildProductResponse(productInMessage, fullTraining),
+        context: {
+          current_product: productInMessage,
+          last_user_product: productInMessage,
+          step: "collecting_city",
+          tipo_cobertura: null,
+          order_data: resetOrder,
+          reset_reason: "cliente pidió producto diferente",
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
 
     if (isOriginQuestion(texto)) {
       return res.json({
@@ -1663,9 +1772,7 @@ Hacemos envíos a todo el país 🚚
     
     let extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
-    // =======================================================
-    // 🆕 VERIFICAR SI EL CLIENTE CAMBIÓ DE PRODUCTO
-    // =======================================================
+    // Verificar cambio de producto (PROBLEMA 2)
     if (product && oldOrder?.product && !sameProduct(product, oldOrder.product) && !wantsAddMore) {
       console.log(`🔄 Cliente cambió de "${oldOrder.product}" a "${product}" - Reiniciando pedido`);
       
@@ -1699,9 +1806,7 @@ Hacemos envíos a todo el país 🚚
       });
     }
 
-    // =======================================================
-    // 🆕 NUEVO PRODUCTO SELECCIONADO → PREGUNTAR CIUDAD
-    // =======================================================
+    // Nuevo producto seleccionado
     if (product && !wantsAddMore && !isQuantityReply && !isPureShoeSizeReply && !isCityReply) {
       const isNewProductSelection = !oldOrder?.product || !sameProduct(product, oldOrder.product);
       
@@ -1727,9 +1832,7 @@ Hacemos envíos a todo el país 🚚
       }
     }
 
-    // =======================================================
-    // 🆕 RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD
-    // =======================================================
+    // Respuesta de ciudad
     if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && product) {
       const city = extracted.city || extractCityFromText(texto);
       
@@ -1765,9 +1868,7 @@ Hacemos envíos a todo el país 🚚
       }
     }
 
-    // =======================================================
-    // 🆕 RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y PEDIR DATOS
-    // =======================================================
+    // Respuesta de cantidad
     if ((isQuantityReply || (previousStep === "collecting_quantity" && extracted.quantity > 0)) && product) {
       let orderData = {
         product: product,
@@ -1785,7 +1886,6 @@ Hacemos envíos a todo el país 🚚
         orderData.quantity = parseInt(texto);
       }
       
-      // Verificar que tenemos ciudad antes de continuar
       if (!orderData.city || orderData.city === "") {
         return res.json({
           response: `📍 ¡Genial! ¿A qué ciudad lo enviamos? 😊
@@ -1825,7 +1925,7 @@ Escribime tu ciudad y te confirmo cómo llega tu pedido 🚚✨`,
           ...(context || {}),
           current_product: product,
           last_user_product: product,
-          step: nextStep(orderData, getTipoCobertura(orderData.city)),
+          step: nextStep(orderData, getTipoCobertura(orderData.city), previousStatus),
           tipo_cobertura: getTipoCobertura(orderData.city),
           order_data: orderData,
           last_topic: product,
@@ -2045,10 +2145,38 @@ Escribime tu ciudad y te confirmo cómo llega tu pedido 🚚✨`,
     }
 
     const finalTipoCobertura = getTipoCobertura(orderData.city) || previousTipoCobertura || "";
-    let step = nextStep(orderData, finalTipoCobertura);
+    const currentStatus = previousStatus || "";
+    let step = nextStep(orderData, finalTipoCobertura, currentStatus);
 
-    // Si el cliente ya envió todos los datos, confirmar
-    if (step === "confirm_order") {
+    // 🆕 Si ya está confirmado, responder sin volver a confirmar (PROBLEMA 1)
+    if (step === "already_confirmed" || currentStatus === "confirmed") {
+      return res.json({
+        response: `✅ Tu pedido ya está confirmado, ${orderData.customer_name?.split(" ")[0] || "cliente"} 😊
+
+📦 Producto: ${orderData.product}
+📍 Entrega: ${orderData.city} — ${orderData.address || "pendiente"}
+
+El delivery se comunicará contigo. Si necesitas modificar algo, decime nomás ✨
+
+¿Te interesa algún otro producto de nuestro catálogo? 👇
+
+👉 ${CATALOG_URL}`,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product,
+          last_user_product: orderData.product,
+          step: "confirmed",
+          tipo_cobertura: finalTipoCobertura,
+          order_data: orderData,
+          last_topic: orderData.product,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
+    // Si el cliente ya envió todos los datos, confirmar UNA SOLA VEZ
+    if (step === "confirm_order" && currentStatus !== "confirmed") {
       await safeUpsertOrder(user_id, fromNumber, orderData, true);
       
       const confirmResponse = finalTipoCobertura === "con_cobertura" 
@@ -2114,7 +2242,7 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
           last_user_product: orderData.product,
           step: "confirmed",
           tipo_cobertura: finalTipoCobertura,
-          order_data: orderData,
+          order_data: { ...orderData, status: "confirmed" },
           last_topic: orderData.product,
           updated_at: new Date().toISOString(),
         },
@@ -2198,7 +2326,7 @@ REGLAS:
       last_user_product: lastUserProduct || orderData.product || null,
       step: step,
       tipo_cobertura: finalTipoCobertura || null,
-      order_data: orderData,
+      order_data: { ...orderData, status: step === "confirm_order" ? "confirm_pending" : step },
       last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
       updated_at: new Date().toISOString(),
     };
