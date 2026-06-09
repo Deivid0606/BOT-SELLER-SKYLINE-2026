@@ -8,36 +8,12 @@ const supabase = createClient(
 
 const BAILEYS_URL = process.env.BAILEYS_SERVER_URL;
 
-// Mapeo de templateId a producto
-const TEMPLATE_PRODUCT_MAP = {
-  // Ajusta estos IDs según tus templates en Supabase
-  "destapa_cañerias_id": "Destapa Cañerías Tornado",
-  "raqueta_id": "Raqueta Eléctrica para Insectos",
-  "veneno_abeja_id": "Veneno de Abeja",
-  "plantillas_id": "PLANTILLAS ORTOPIEX 5D®",
-  "peladora_id": "Peladora Automática",
-  // Agrega más según necesites
-};
-
-const PRODUCT_PRICES = {
-  "Destapa Cañerías Tornado": 159900,
-  "Raqueta Eléctrica para Insectos": 89000,
-  "Veneno de Abeja": 129900,
-  "PLANTILLAS ORTOPIEX 5D®": 149900,
-  "Peladora Automática": 179900,
-  "Máquina para hacer Pororo": 249900,
-  "Tabla de Picar de Mármol": 169900,
-  "Afilador de Cuchillos": 99900,
-  "Vital Honey VIP": 199900,
-  "Perfume Asad": 159900,
-  "Kit Antivibración x4 Patitas Antideslizantes": 119900,
-};
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
     const { templateId, recipients, userId } = req.body;
+    // recipients = ["54911...", "54911..."]
 
     if (!templateId || !Array.isArray(recipients) || !userId) {
       return res.status(400).json({ error: 'Missing templateId, recipients[] or userId' });
@@ -52,10 +28,6 @@ export default async function handler(req, res) {
 
     if (tplErr || !tpl) return res.status(404).json({ error: 'Template not found' });
 
-    // Determinar el producto basado en el templateId
-    const productName = TEMPLATE_PRODUCT_MAP[templateId] || extractProductFromContent(tpl.content);
-    const productPrice = PRODUCT_PRICES[productName] || extractPriceFromContent(tpl.content);
-
     const media = tpl.variables?.media || {};
     const imageUrls = media.imageUrls || [];
     const videoUrl = media.videoUrl;
@@ -66,7 +38,7 @@ export default async function handler(req, res) {
     for (const raw of recipients) {
       const to = String(raw).replace(/[^0-9]/g, '');
       try {
-        // Enviar imágenes
+        // Imágenes
         for (const url of imageUrls) {
           await fetch(`${BAILEYS_URL}/send-media`, {
             method: 'POST',
@@ -75,7 +47,6 @@ export default async function handler(req, res) {
           });
           await sleep(500);
         }
-        
         if (videoUrl) {
           await fetch(`${BAILEYS_URL}/send-media`, {
             method: 'POST',
@@ -84,7 +55,6 @@ export default async function handler(req, res) {
           });
           await sleep(500);
         }
-        
         if (gifUrl) {
           await fetch(`${BAILEYS_URL}/send-media`, {
             method: 'POST',
@@ -93,8 +63,6 @@ export default async function handler(req, res) {
           });
           await sleep(500);
         }
-        
-        // Enviar mensaje de texto
         if (tpl.content) {
           await fetch(`${BAILEYS_URL}/send-message`, {
             method: 'POST',
@@ -103,7 +71,6 @@ export default async function handler(req, res) {
           });
         }
 
-        // Guardar mensaje saliente en inbox
         await supabase.from('inbox_messages').insert({
           user_id: userId,
           source: 'outbound',
@@ -116,48 +83,9 @@ export default async function handler(req, res) {
           is_processed: true,
         });
 
-        // 🔥 CRÍTICO: Guardar/actualizar el contexto del usuario
-        // Esto es lo que faltaba: el bot necesita saber qué producto acaba de enviar
-        const { data: existingContext } = await supabase
-          .from('user_contexts')
-          .select('*')
-          .eq('user_id', userId)
-          .eq('from_number', to)
-          .single();
-
-        const contextData = {
-          user_id: userId,
-          from_number: to,
-          step: 'awaiting_quantity',  // 🔥 El bot espera que el cliente responda con cantidad
-          product: productName,
-          quantity: 0,
-          city: '',
-          customer_name: '',
-          phone: '',
-          address: '',
-          total_amount: 0,
-          last_template_sent: productName,
-          last_template_price: productPrice,
-          last_template_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        };
-
-        if (existingContext) {
-          await supabase
-            .from('user_contexts')
-            .update(contextData)
-            .eq('id', existingContext.id);
-        } else {
-          await supabase
-            .from('user_contexts')
-            .insert(contextData);
-        }
-
-        console.log(`✅ Contexto guardado para ${to}: product=${productName}, step=awaiting_quantity`);
-
         results.sent++;
+        // Anti-baneo: pausa entre destinatarios
         await sleep(2000 + Math.random() * 2000);
-        
       } catch (e) {
         results.failed++;
         results.errors.push({ to, error: e.message });
@@ -170,35 +98,10 @@ export default async function handler(req, res) {
       .eq('id', templateId);
 
     return res.status(200).json({ ok: true, ...results });
-    
   } catch (err) {
     console.error('send-template error:', err);
     return res.status(500).json({ error: err.message });
   }
 }
 
-function sleep(ms) { 
-  return new Promise(r => setTimeout(r, ms)); 
-}
-
-function extractProductFromContent(content) {
-  if (!content) return '';
-  const lower = content.toLowerCase();
-  if (lower.includes('destapa') || lower.includes('cañeria')) return 'Destapa Cañerías Tornado';
-  if (lower.includes('raqueta')) return 'Raqueta Eléctrica para Insectos';
-  if (lower.includes('veneno') || lower.includes('abeja')) return 'Veneno de Abeja';
-  if (lower.includes('plantilla')) return 'PLANTILLAS ORTOPIEX 5D®';
-  if (lower.includes('pelador')) return 'Peladora Automática';
-  if (lower.includes('pororo')) return 'Máquina para hacer Pororo';
-  if (lower.includes('tabla')) return 'Tabla de Picar de Mármol';
-  return '';
-}
-
-function extractPriceFromContent(content) {
-  if (!content) return null;
-  const match = content.match(/(\d{1,3}(?:\.\d{3})+|\d{4,})/);
-  if (match) {
-    return parseInt(match[1].replace(/\./g, ''));
-  }
-  return null;
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
