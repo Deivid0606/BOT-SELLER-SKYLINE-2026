@@ -22,7 +22,7 @@ const normalize = (t: string): string =>
 function hasExplicitProductMention(text: string): boolean {
   const n = normalize(text);
   const buyIndicators = /\b(quiero|comprar|llevo|dame|mandame|reservar|apartar|la\s+raqueta|el\s+veneno|las\s+plantillas|la\s+peladora|el\s+afilador|el\s+kit|la\s+máquina|el\s+nebulizador|la\s+tabla)\b/i;
-  const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas)\b/.test(n);
+  const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas|destapa|cañeria|caneria|tornado|limpiador|ollas|carbonilla)\b/.test(n);
   return buyIndicators.test(n) || productNames;
 }
 
@@ -32,7 +32,7 @@ function isLocationOnlyMessage(text: string): boolean {
   if (hasExplicitProductMention(text)) return false;
   const cityMatch = extractCityFromText(n);
   if (!cityMatch) return false;
-  const noProductWords = !/\b(quiero|comprar|raqueta|veneno|plantilla|pelador|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas)\b/i.test(n);
+  const noProductWords = !/\b(quiero|comprar|raqueta|veneno|plantilla|pelador|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas|destapa|limpiador|tornado|ollas)\b/i.test(n);
   return noProductWords;
 }
 
@@ -75,19 +75,19 @@ function buildCoverageOnlyResponse(city: string): string {
     return `✅ Perfecto 😊 ${city} tiene ENVÍO GRATIS contra-entrega 🚚\n\n¿Cuál producto te interesa? ✨`;
   }
   if (tipo === "sin_cobertura") {
-    return `ℹ️ ${city} no entra dentro de nuestra zona de contra-entrega 😊\n\nPero sí hacemos envíos seguros por:\n🚚 TSI / NASA / Occidental / MG Express / Multienvíos\n\n¿Cuál producto te interesa? ✨`;
+    return `ℹ️ ${city} no entra dentro de nuestra zona de contra-entrega 😊\n\nPero sí hacemos envíos seguros por:\n TSI / NASA / Occidental / MG Express / Multienvíos\n\n¿Cuál producto te interesa? `;
   }
   return `Perfecto 😊 ¿Cuál producto te interesa? ✨`;
 }
 
 function buildWaitingPaymentResponse(order: any): string {
-  return `✅ Perfecto ${order.customer_name ? order.customer_name.split(" ")[0] : ""} 😊\n\nYa registré:\n\n📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}\n📍 ${order.city}\n📞 ${order.phone}\n\n📲 Ahora solo falta que envíes el comprobante de transferencia y confirmamos tu envío 🚚✨`;
+  return `✅ Perfecto ${order.customer_name ? order.customer_name.split(" ")[0] : ""} 😊\n\nYa registré:\n\n📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}\n ${order.city}\n📞 ${order.phone}\n\n📲 Ahora solo falta que envíes el comprobante de transferencia y confirmamos tu envío ✨`;
 }
 
 function isInformationRequest(text: string): boolean {
   const n = normalize(text);
   const infoWords = /\b(informaci[oó]n|info|más info|mas info|quiero saber|consultar|dudas?|más datos|mas datos|detalles|más detalles|mas detalles|explicame|qué es|que es|cómo funciona|como funciona)\b/i;
-  const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes)\b/i;
+  const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes|destapa|limpiador|tornado|ollas)\b/i;
   if (productWords.test(n)) return false;
   return infoWords.test(n);
 }
@@ -96,7 +96,7 @@ function isCatalogQuery(text: string): boolean {
   const n = normalize(text);
   const catalogWords = /\b(cat[aá]logo|productos|qu[eé] venden|tienen|stock|catálogo|precios|catalogo)\b/i;
   const greetingWords = /\b(hola|buenas|buen día|saludos)\b/i;
-  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla|raqueta)\b/i;
+  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla|raqueta|destapa|limpiador|tornado|ollas)\b/i;
   return (catalogWords.test(n) || greetingWords.test(n)) && !productWords.test(n);
 }
 
@@ -111,7 +111,7 @@ function isNewConversation(text: string, history: any[]): boolean {
 function isProductInquiry(text: string): boolean {
   const n = normalize(text);
   const inquiryWords = /\b(qu[eé] es|cómo funciona|para qu[eé] sirve|características|beneficios|tiene|informaci[oó]n|info|cu[aá]nto cuesta|precio|valor|costo|dime|contame|explicame)\b/i;
-  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla|raqueta)\b/i;
+  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla|raqueta|destapa|limpiador|tornado|ollas)\b/i;
   const buyWords = /\b(quiero|comprar|llevo|dame|mandame|agregame|reservar|apartar)\b/i;
   return inquiryWords.test(n) && productWords.test(n) && !buyWords.test(n);
 }
@@ -128,7 +128,9 @@ function isProductName(text: string): boolean {
     "vital honey vip", "vital honey",
     "perfume asad", "asad",
     "almohadillas antivibracion", "soporte para lavarropas", "lavarropas", "kit x4 patitas", "patitas antideslizantes",
-    "raqueta electrica", "raqueta para insectos", "flayes pro", "raqueta flayes"
+    "raqueta electrica", "raqueta para insectos", "flayes pro", "raqueta flayes",
+    "destapa cañerias", "destapa cañerías", "wild tornado", "tornado",
+    "limpiador de ollas", "limpia ollas", "carbonilla", "oven cleaner"
   ];
   const normalizedText = n;
   return productNames.some(p => normalizedText.includes(p) || p.includes(normalizedText));
@@ -276,7 +278,7 @@ function getAntiVibrationProductName(): string {
 function buildCityQuestionResponse(product: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
   
-  return `🔥 Perfecto 😊
+  return ` Perfecto 😊
 
 Me confirmaste que querés ${productName}.
 
@@ -344,7 +346,7 @@ function detectProductRespectingActive(
   const isOnlyQuantity = /^\s*\d{1,3}\s*$/.test(text) && !isOnlyShoeVariantText(text);
   
   if (activeProduct && !explicitNewProductRequest) {
-    console.log(`🔄 Manteniendo producto activo: "${activeProduct}" (cliente no pidió cambio explícito)`);
+    console.log(` Manteniendo producto activo: "${activeProduct}" (cliente no pidió cambio explícito)`);
     return activeProduct;
   }
   
@@ -374,7 +376,7 @@ function detectProductRaw(
 ) {
   const msg = normalize(text);
 
-  // 🆕 DESTAPA CAÑERÍAS
+  //  DESTAPA CAÑERÍAS
   if (msg.includes("destapa") || msg.includes("cañeria") || msg.includes("caneria") || 
       msg.includes("tornado") || msg.includes("wild tornado") || msg.includes("desatascador")) {
     return "Destapa Cañerías Tornado";
@@ -715,7 +717,9 @@ function extractData(
     norm.includes("pororo") || norm.includes("maquina") ||
     norm.includes("nebulizador") || norm.includes("tabla") ||
     norm.includes("patitas") || norm.includes("antideslizantes") ||
-    norm.includes("kit") || norm.includes("raqueta");
+    norm.includes("kit") || norm.includes("raqueta") ||
+    norm.includes("destapa") || norm.includes("tornado") ||
+    norm.includes("limpiador") || norm.includes("ollas");
 
   const nameMatch = text.match(/(?:me\s+llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,80})/i)?.[1];
 
@@ -1008,7 +1012,7 @@ function buildCartSummaryResponse(order: any, tipoCobertura: string) {
 
   const lines = items.length
     ? buildItemsLines(items)
-    : `📦 ${formatProductWithShoeSize(order.product, order.shoe_size)}\n🔢 Cantidad: ${order.quantity}`;
+    : ` ${formatProductWithShoeSize(order.product, order.shoe_size)}\n🔢 Cantidad: ${order.quantity}`;
 
   let promoNote = "";
   if (order.quantity === 2) {
@@ -1025,7 +1029,7 @@ ${lines}
 
 🚚 ${tipoEnvio}
 
-📎 Pasame TODO JUNTO en un solo mensaje:
+ Pasame TODO JUNTO en un solo mensaje:
 
 ✅ nombre y apellido
 ✅ dirección exacta o ubicación por Google Maps
@@ -1073,11 +1077,11 @@ Tu pedido queda así:
 
 📲 Si no enviés número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
 
-y agendamos tu entrega ✨`;
+y agendamos tu entrega `;
 }
 
 // =======================================================
-// 🆕 NUEVO nextStep() - CIUDAD primero, luego CANTIDAD
+//  NUEVO nextStep() - CIUDAD primero, luego CANTIDAD
 // =======================================================
 function nextStep(order: any, tipoCobertura?: string) {
   const items = getCartItems(order);
@@ -1105,7 +1109,7 @@ function nextStep(order: any, tipoCobertura?: string) {
 }
 
 // =======================================================
-// 🆕 HANDLE PRODUCT SELECTION - Reinicia pedido y pregunta CIUDAD
+//  HANDLE PRODUCT SELECTION - Reinicia pedido y pregunta CIUDAD
 // =======================================================
 function handleProductSelection(product: string, shoeSize?: any) {
   const newOrder = {
@@ -1475,7 +1479,8 @@ export default async function handler(req: any, res: any) {
 
     const expectedReceiverName = extractBankReceiverFromTraining(fullTraining);
     const apiKey = iaConfig.api_key;
-    const model = iaConfig.model || "gemini-2.5-flash";
+    // ✅ OPTIMIZADO: Usar gemini-2.0-flash (más rápido que 2.5-flash)
+    const model = iaConfig.model || "gemini-2.0-flash";
 
     let lastUserProduct = context?.last_user_product || "";
 
@@ -1541,7 +1546,7 @@ export default async function handler(req: any, res: any) {
       lastUserProduct ||
       null;
     
-    console.log(`🎯 Producto activo actual: "${currentActiveProduct}"`);
+    console.log(` Producto activo actual: "${currentActiveProduct}"`);
     console.log(`📝 Mensaje del cliente: "${texto}"`);
     
     let product = detectProductRespectingActive(
@@ -1774,7 +1779,7 @@ export default async function handler(req: any, res: any) {
 
 Ya estamos verificando el pago ✅
 
-Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu comprobante de encomienda 🚚✨`,
+Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu comprobante de encomienda ✨`,
             is_payment_proof: true,
             context: {
               ...(context || {}),
@@ -1871,7 +1876,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
         if (!isBuyIntent(texto) && !audioHasProduct && !audioHasUsefulData) {
           return res.json({
             response:
-              "🎤 Escuché tu audio 😊 ¿Podrías decirme qué producto te interesa o qué necesitás exactamente?",
+              " Escuché tu audio 😊 ¿Podrías decirme qué producto te interesa o qué necesitás exactamente?",
             context: {
               ...(context || {}),
               step: previousStep || "selling",
@@ -1973,8 +1978,9 @@ REGLAS:
 Catálogo: ${CATALOG_URL}
 Español paraguayo natural, con emojis.`;
 
+    // ✅ OPTIMIZADO: Historial reducido a 6 mensajes para velocidad
     const contents = cleanHistory
-      .slice(-8)
+      .slice(-6)
       .filter((h: any) => clean(h?.content))
       .map((h: any) => ({
         role: h.role === "assistant" ? "model" : "user",
@@ -1983,18 +1989,19 @@ Español paraguayo natural, con emojis.`;
 
     contents.push({ role: "user", parts: [{ text: texto }] });
 
+    // ✅ OPTIMIZADO: maxTokens reducido a 1024 para velocidad
     let response = await callGemini({
       apiKey,
       model,
       system,
       contents,
       temperature: iaConfig.temperature ?? 0.3,
-      maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
+      maxTokens: 1024,
     });
 
     if (!response) {
       response = await callGemini({
-        apiKey, model, system, contents, temperature: 0.3, maxTokens: 3072,
+        apiKey, model, system, contents, temperature: 0.3, maxTokens: 1024,
       });
     }
 
@@ -2005,7 +2012,7 @@ Español paraguayo natural, con emojis.`;
         product = geminiDetectedProduct;
         lastUserProduct = geminiDetectedProduct;
         orderData.product = geminiDetectedProduct;
-        console.log(`🎯 Producto extraído de respuesta Gemini: "${geminiDetectedProduct}"`);
+        console.log(` Producto extraído de respuesta Gemini: "${geminiDetectedProduct}"`);
       }
     }
 
