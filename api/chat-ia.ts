@@ -432,7 +432,7 @@ function detectProductRaw(
     return "Vital Honey VIP";
   }
 
-  if (msg.includes("perfume asad") || msg.includes("asad")) {
+  if (msg.includes("perfume asad")) {
     return "Perfume Asad";
   }
 
@@ -1399,18 +1399,31 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
   return clean(txt);
 }
 
-// 🆕 FUNCIÓN HELPER PARA EXTRAER PRODUCTO DE RESPUESTA GEMINI
+// 🆕 FUNCIÓN HELPER PARA EXTRAER PRODUCTO DE RESPUESTA GEMINI - VERSIÓN CORREGIDA
 function extractProductFromGeminiResponse(response: string, training: string): string {
   const r = normalize(response);
   const lines = training.split("\n").map(l => clean(l)).filter(Boolean);
   let bestProduct = "";
   let bestScore = 0;
   
+  // ✅ Lista negra de palabras que NO deben ser productos
+  const blacklist = [
+    "quiero", "reservame", "enviá", "pasame", "datos", "nombre", "dirección",
+    "celular", "teléfono", "ciudad", "cantidad", "unidades", "perfecto",
+    "excelente", "buenísimo", "gracias", "pedido", "confirmado", "entrega"
+  ];
+  
   for (const line of lines) {
     const name = extractProductNameFromLine(line);
     if (!name || isInvalidProductCandidate(name)) continue;
     const n = normalize(name);
     if (!n || n.length < 4) continue;
+    
+    // ✅ Rechazar si contiene palabras de la lista negra
+    if (blacklist.some(b => n.includes(b))) {
+      console.log(`🚫 Producto rechazado (blacklist): "${name}"`);
+      continue;
+    }
     
     let score = 0;
     if (response.includes(name)) score += 100;
@@ -1427,7 +1440,8 @@ function extractProductFromGeminiResponse(response: string, training: string): s
     }
   }
   
-  return bestScore >= 60 ? bestProduct : "";
+  // ✅ Score mínimo más alto (80 en lugar de 60)
+  return bestScore >= 80 ? bestProduct : "";
 }
 
 export default async function handler(req: any, res: any) {
@@ -1624,7 +1638,7 @@ export default async function handler(req: any, res: any) {
         shoeProductContext ||
         productRequiresSize(String(oldOrder?.product || context?.current_product || product || "")));
 
-    // 🆕 VERIFICAR SI ES RESPUESTA DE CIUDAD - ARREGLADO
+    // 🆕 VERIFICAR SI ES RESPUESTA DE CIUDAD
     const cityFromMsg = extractCityFromText(texto);
     const isCityReply = cityFromMsg && !isOnlyNumber && !isPriceIntent(texto) &&
       (wasAskingCity || previousStep === "collecting_city" || previousStep === "selling");
@@ -1670,11 +1684,11 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && (product || currentActiveProduct)) {
       const city = extracted.city || cityFromMsg;
-      const productToUse = product || currentActiveProduct || lastUserProduct; // 🆕 FALLBACK
+      const productToUse = product || currentActiveProduct || lastUserProduct;
       
       if (city && productToUse) {
         let orderData = {
-          product: productToUse, // 🆕 USAR EL PRODUCTO ACTIVO COMO FALLBACK
+          product: productToUse,
           quantity: 0,
           shoe_size: extracted.shoe_size || "",
           city: city,
@@ -1691,7 +1705,7 @@ export default async function handler(req: any, res: any) {
           response: buildQuantityAfterCityResponse(productToUse, city, extracted.shoe_size),
           context: {
             ...(context || {}),
-            current_product: productToUse, // 🆕 ACTUALIZAR CONTEXTO
+            current_product: productToUse,
             last_user_product: productToUse,
             step: "collecting_quantity",
             tipo_cobertura: getTipoCobertura(city),
@@ -1705,10 +1719,36 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🆕 RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y CONFIRMAR
+    // ✅ VERSIÓN CORREGIDA: RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y CONFIRMAR
     // =======================================================
-    if (isQuantityReply && (product || currentActiveProduct) && extracted.quantity > 0) {
-      const productToUse = product || currentActiveProduct || lastUserProduct;
+    if (isQuantityReply && extracted.quantity > 0) {
+      // ✅ FIX: Priorizar el producto del contexto anterior
+      const productToUse = 
+        oldOrder?.product || 
+        context?.current_product || 
+        context?.order_data?.product ||
+        lastUserProduct ||
+        product || 
+        currentActiveProduct ||
+        "";
+      
+      // ✅ FIX: Validar que el producto sea válido
+      if (!productToUse || isInvalidProductCandidate(productToUse)) {
+        console.error(`❌ Producto inválido en respuesta de cantidad: "${productToUse}"`);
+        return res.json({
+          response: "⚠️ No pude identificar el producto. ¿Podrías decirme qué producto querés pedir?",
+          context: {
+            ...(context || {}),
+            step: "selling",
+            order_data: oldOrder,
+            updated_at: new Date().toISOString(),
+          },
+          is_payment_proof: false,
+        });
+      }
+      
+      console.log(`✅ Producto confirmado para cantidad: "${productToUse}"`);
+      
       let orderData = {
         product: productToUse,
         quantity: extracted.quantity,
@@ -1722,7 +1762,12 @@ export default async function handler(req: any, res: any) {
       };
       
       const total = calculateTotal(productToUse, extracted.quantity, fullTraining);
-      if (total) orderData.total_amount = total;
+      if (total) {
+        orderData.total_amount = total;
+        console.log(`💰 Total calculado: ${total} Gs para ${extracted.quantity} x ${productToUse}`);
+      } else {
+        console.warn(`⚠️ No se pudo calcular el total para ${productToUse}`);
+      }
       
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
       
@@ -2005,7 +2050,7 @@ Español paraguayo natural, con emojis.`;
       });
     }
 
-    // 🆕🆕🆕 EXTRAER PRODUCTO DE LA RESPUESTA DE GEMINI Y ACTUALIZAR CONTEXTO
+    // 🆕 EXTRAER PRODUCTO DE LA RESPUESTA DE GEMINI Y ACTUALIZAR CONTEXTO
     if (response && (!product || isInvalidProductCandidate(product))) {
       const geminiDetectedProduct = extractProductFromGeminiResponse(response, fullTraining);
       if (geminiDetectedProduct) {
