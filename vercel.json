@@ -1,32 +1,36 @@
 {
   "functions": {
-    "api/waha-webhook.js": {
-      "maxDuration": 60
+    "api/chat-ia.ts": {
+      "maxDuration": 60,
+      "memory": 1792
     },
     "api/webhook.js": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "memory": 1024
     },
-    "api/chat-ia.ts": {
-      "maxDuration": 60
-    },
-    "api/waha-qr.js": {
-      "maxDuration": 30
-    },
-    "api/send-whatsapp.js": {
-      "maxDuration": 30
-    },
-    "api/send-template.js": {
-      "maxDuration": 30
+    "api/waha-webhook.js": {
+      "maxDuration": 60,
+      "memory": 1024
     },
     "api/cron-followups.js": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "memory": 512
+    },
+    "api/waha-qr.js": {
+      "maxDuration": 30,
+      "memory": 512
+    },
+    "api/send-whatsapp.js": {
+      "maxDuration": 30,
+      "memory": 512
+    },
+    "api/send-template.js": {
+      "maxDuration": 30,
+      "memory": 512
     }
   },
+  "regions": ["gru1"],
   "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "/api/:path*"
-    },
     {
       "source": "/((?!api/|assets/|.*\\..*).*)",
       "destination": "/index.html"
@@ -38,7 +42,8 @@
       "headers": [
         { "key": "Access-Control-Allow-Origin", "value": "*" },
         { "key": "Access-Control-Allow-Methods", "value": "GET,POST,OPTIONS" },
-        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization, X-Api-Key" }
+        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization, X-Api-Key" },
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate, max-age=0" }
       ]
     },
     {
