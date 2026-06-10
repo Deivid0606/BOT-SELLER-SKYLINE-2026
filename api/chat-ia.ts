@@ -826,6 +826,33 @@ function findRecentUserProductFromHistory(history: any[], training: string): str
   return "";
 }
 
+function extractProductFromAssistantMessage(message: string, training: string): string {
+  const raw = clean(message);
+  if (!raw) return "";
+
+  const lines = raw.split("\n").map((l) => clean(l)).filter(Boolean);
+
+  for (const line of lines) {
+    const productLine =
+      line.match(/(?:^|\s)Producto\s*:\s*(.+)$/i)?.[1] ||
+      line.match(/^📦\s*(?:Producto\s*:\s*)?(.+)$/i)?.[1] ||
+      "";
+
+    const candidate = sanitizeProductCandidate(productLine);
+    if (!candidate) continue;
+
+    const fromCatalog = detectProductFromCatalog(candidate, training);
+    if (fromCatalog && !isInvalidProductCandidate(fromCatalog)) return fromCatalog;
+
+    const canonical = canonicalProductFromText(candidate);
+    if (canonical && !isInvalidProductCandidate(canonical)) return canonical;
+
+    if (isProductName(candidate) && !isInvalidProductCandidate(candidate)) return candidate;
+  }
+
+  return "";
+}
+
 function botWasAskingQuantityFromHistory(lastAssistantMessage?: string): boolean {
   const message = normalize(lastAssistantMessage || "");
   return (
@@ -1992,6 +2019,24 @@ export default async function handler(req: any, res: any) {
     const previousStep = isNewChat ? "" : clean(context?.step);
     const previousTipoCobertura = isNewChat ? "" : clean(context?.tipo_cobertura);
 
+    const lastAssistantProduct = extractProductFromAssistantMessage(getLastAssistantMessage(history || []), fullTraining);
+    const botAskedCityOrQuantity =
+      previousStep === "collecting_city" ||
+      previousStep === "collecting_quantity" ||
+      botWasAskingCity(history || []) ||
+      botWasAskingQuantity(history || []);
+
+    if (lastAssistantProduct && botAskedCityOrQuantity) {
+      console.log(`🔒 Producto tomado de la última pregunta del bot: "${lastAssistantProduct}"`);
+      lastUserProduct = lastAssistantProduct;
+      if (!isNewChat) {
+        oldOrder = {
+          ...(oldOrder || {}),
+          product: lastAssistantProduct,
+        };
+      }
+    }
+
     // ✅ C. Confirmar solo una vez
     if (previousStep === "confirmed") {
       return res.json({
@@ -2035,11 +2080,14 @@ export default async function handler(req: any, res: any) {
     // 2) Si el cliente responde “quiero/sí”, usar el producto real más reciente del historial.
     // 3) Recién después usar contexto guardado.
     // Esto evita que un producto viejo (ej: Veneno) pise uno nuevo enviado por trigger/template (ej: Limpiador o Perfume).
+    const productLockedByLastAssistant = botAskedCityOrQuantity ? sanitizeProductCandidate(lastAssistantProduct) : "";
+
     const currentActiveProduct =
       sanitizeProductCandidate(explicitProductInCurrentMessage) ||
+      productLockedByLastAssistant ||
       (isGenericConfirmationNow ? sanitizeProductCandidate(recentHistoryProduct) : "") ||
-      sanitizeProductCandidate(oldOrder?.product) ||
       sanitizeProductCandidate(context?.current_product) ||
+      sanitizeProductCandidate(oldOrder?.product) ||
       sanitizeProductCandidate(lastUserProduct) ||
       null;
     
@@ -2059,6 +2107,11 @@ export default async function handler(req: any, res: any) {
     );
     
     product = sanitizeProductCandidate(product);
+
+    if (botAskedCityOrQuantity && lastAssistantProduct && !explicitProductInCurrentMessage) {
+      console.log(`🔒 Forzando producto de última pregunta activa: "${lastAssistantProduct}"`);
+      product = sanitizeProductCandidate(lastAssistantProduct);
+    }
 
     // 🔒 Si el mensaje actual es solo “quiero/sí/ok” y el historial reciente trae un producto real
     // distinto al contexto viejo, forzamos ese producto reciente.
@@ -2195,7 +2248,7 @@ export default async function handler(req: any, res: any) {
     let extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
     if (isCityReply) {
-      const lockedProduct = sanitizeProductCandidate(currentActiveProduct) || sanitizeProductCandidate(product);
+      const lockedProduct = sanitizeProductCandidate(lastAssistantProduct) || sanitizeProductCandidate(currentActiveProduct) || sanitizeProductCandidate(product);
       if (lockedProduct) {
         product = lockedProduct;
         lastUserProduct = lockedProduct;
@@ -2268,8 +2321,8 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 🆕 RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD (con ejemplos)
     // =======================================================
-    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && (product || currentActiveProduct)) {
-      product = sanitizeProductCandidate(product) || sanitizeProductCandidate(currentActiveProduct);
+    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && (product || currentActiveProduct || lastAssistantProduct)) {
+      product = sanitizeProductCandidate(lastAssistantProduct) || sanitizeProductCandidate(product) || sanitizeProductCandidate(currentActiveProduct);
       const city = extracted.city || cityFromMessage || extractCityFromText(texto);
       
       if (city) {
@@ -2307,8 +2360,8 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 🆕 RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y CONFIRMAR
     // =======================================================
-    if (isQuantityReply && (product || currentActiveProduct) && extracted.quantity > 0) {
-      product = sanitizeProductCandidate(product) || sanitizeProductCandidate(currentActiveProduct);
+    if (isQuantityReply && (product || currentActiveProduct || lastAssistantProduct) && extracted.quantity > 0) {
+      product = sanitizeProductCandidate(lastAssistantProduct) || sanitizeProductCandidate(product) || sanitizeProductCandidate(currentActiveProduct);
       let orderData = {
         product: product,
         quantity: extracted.quantity,
