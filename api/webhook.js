@@ -1,8 +1,8 @@
-// api/webhook.js — webhook_v19.js (FINAL)
+// api/webhook.js — webhook_v15.js
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
-// + Descarga de audios/imágenes/videos a Supabase Storage
-// + CONFIRMACIÓN ÚNICA Y DETECCIÓN DE INTENCIONES
-// + DETECCIÓN DE PRODUCTOS - DELEGA EN IA PARA RESPUESTA
+// + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
+// + FIX: disparador secundario respeta el contexto del último producto
+// + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -13,27 +13,6 @@ const supabase = createClient(
 
 const VERIFY_TOKEN = "miTokenSeguro2026";
 
-// Sistema de estados por conversación
-const conversationStates = new Map();
-
-function getConversationState(chatId) {
-  if (!conversationStates.has(chatId)) {
-    conversationStates.set(chatId, {
-      orderConfirmed: false,
-      lastConfirmationTime: null,
-      lastMessageTime: null,
-      orderData: null
-    });
-  }
-  return conversationStates.get(chatId);
-}
-
-function updateConversationState(chatId, updates) {
-  const state = getConversationState(chatId);
-  Object.assign(state, updates);
-  conversationStates.set(chatId, state);
-}
-
 const clean = (t) => String(t || "").trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -42,171 +21,6 @@ const normalize = (t) =>
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
-
-// ═══════════════════════════════════════════════════════════
-// FUNCIONES AUXILIARES
-// ═══════════════════════════════════════════════════════════
-
-function extraerNombre(texto) {
-  const msg = texto;
-  const patterns = [
-    /(?:mi nombre es|me llamo|soy|nombre:?)\s*([A-Za-zÀ-ÿ\s]{2,40})(?:\n|\.|,|$)/i,
-    /^([A-Za-zÀ-ÿ\s]{2,40})(?:\n|\.|,|$)/i,
-  ];
-  for (const pattern of patterns) {
-    const match = msg.match(pattern);
-    if (match && match[1] && !match[1].toLowerCase().includes('calle') && !match[1].toLowerCase().includes('dirección')) {
-      const nombre = clean(match[1]);
-      if (nombre.length > 2 && nombre.length < 50) return nombre;
-    }
-  }
-  return null;
-}
-
-function extraerDireccion(texto) {
-  const msg = texto;
-  const patterns = [
-    /(?:dirección|direccion|ubicación|ubicacion|domicilio|calle|av\.?|avenida|casa|barrio)\s*:?\s*([A-Za-z0-9À-ÿ\s.,#\-ñÑ]{10,100})(?:\n|\.|,|$)/i,
-    /([A-Za-z0-9À-ÿ\s.,#\-]{10,80})\s*(?:entre|y|esq\.?|esquina)/i,
-    /(calle|av\.?|avenida|ruta)\s+[A-Za-z0-9À-ÿ\s.,#\-]{5,60}/i,
-  ];
-  for (const pattern of patterns) {
-    const match = msg.match(pattern);
-    if (match && match[1]) {
-      const direccion = clean(match[1]);
-      if (direccion.length > 5 && !direccion.toLowerCase().includes('nombre')) return direccion;
-    }
-  }
-  return null;
-}
-
-function extraerTelefono(texto) {
-  const msg = texto;
-  const patterns = [
-    /(?:teléfono|telefono|celular|whatsapp|contacto|cel|tel)\s*:?\s*(\+?[\d\s\-]{8,20})/i,
-    /(\+?59[5-9]?\d{8,12})/,
-    /(0?9\d{8,9})/,
-    /(\d{8,12})/,
-  ];
-  for (const pattern of patterns) {
-    const match = msg.match(pattern);
-    if (match && match[1]) {
-      let telefono = match[1].replace(/[\s\-]/g, '');
-      if (telefono.length >= 8 && telefono.length <= 15) return telefono;
-    }
-  }
-  return null;
-}
-
-function detectIntent(message, orderConfirmed) {
-  const msg = normalize(message);
-  const confirmKeywords = ['si', 'sí', 'confirmo', 'acepto', 'dale', 'ok', 'bueno'];
-  const rescheduleKeywords = ['mañana', 'otro día', 'cambiar fecha', 'reprogramar', 'más tarde'];
-  const cancelKeywords = ['cancelar', 'no quiero', 'anular', 'cancelación', 'baja'];
-  const locationKeywords = ['no estoy en mi casa', 'no estoy en casa', 'fuera de casa', 'otra dirección'];
-  const thanksKeywords = ['gracias', 'disculpe', 'perdón', 'gracias disculpe'];
-  
-  if (!orderConfirmed && confirmKeywords.some(k => msg.includes(k))) return 'confirm';
-  if (rescheduleKeywords.some(k => msg.includes(k))) return 'reschedule';
-  if (cancelKeywords.some(k => msg.includes(k))) return 'cancel';
-  if (locationKeywords.some(k => msg.includes(k))) return 'location_changed';
-  if (thanksKeywords.some(k => msg.includes(k))) return 'thanks';
-  return 'unknown';
-}
-
-// ═══════════════════════════════════════════════════════════
-// DETECCIÓN DE PRODUCTOS - SOLO DETECTA, NO RESPONDE
-// ═══════════════════════════════════════════════════════════
-
-async function detectProductFromClientMessage(userId, from, clientMessage, lastBotMessage) {
-  const msg = normalize(clientMessage);
-  
-  const buyPatterns = [
-    /quiero\s+(\d+)/i,
-    /quiero\s+(\d+)\s*unidades?/i,
-    /quiero\s+uno/i,
-    /quiero\s+una/i,
-    /quiero$/i,
-    /comprar/i,
-    /pedir/i,
-    /llevo/i,
-    /dame/i,
-    /me\s+interesa/i,
-  ];
-  
-  let quantity = 1;
-  let hasBuyIntent = false;
-  
-  for (const pattern of buyPatterns) {
-    if (pattern.test(msg)) {
-      hasBuyIntent = true;
-      const match = msg.match(pattern);
-      if (match && match[1] && !isNaN(parseInt(match[1]))) {
-        quantity = parseInt(match[1]);
-      }
-      break;
-    }
-  }
-  
-  if (!hasBuyIntent) return { detected: false };
-  
-  console.log(`🛍️ Intención de compra detectada, cantidad: ${quantity}`);
-  
-  if (lastBotMessage) {
-    const botMsg = lastBotMessage;
-    
-    const knownProducts = [
-      { name: "WILD TORNADO DESTAPA CAÑERÍAS", price: 159900 },
-      { name: "DESTAPA CAÑERÍAS", price: 159900 },
-    ];
-    
-    let productName = null;
-    let productPrice = null;
-    
-    for (const product of knownProducts) {
-      if (botMsg.includes(product.name) || botMsg.includes(product.name.toUpperCase())) {
-        productName = product.name;
-        productPrice = product.price;
-        break;
-      }
-    }
-    
-    if (!productName) {
-      const patterns = [
-        /💥\s*([^*\n]{5,80})/i,
-        /([A-Z][A-Z\s]{5,50})(?:está diseñado|es un producto)/i,
-      ];
-      for (const pattern of patterns) {
-        const match = botMsg.match(pattern);
-        if (match && match[1]) {
-          const candidate = clean(match[1]);
-          if (candidate.length > 5 && candidate.length < 100) {
-            productName = candidate;
-            break;
-          }
-        }
-      }
-    }
-    
-    const priceMatch = botMsg.match(/\$?(\d{1,3}(?:\.\d{3})*)\s*(?:GS|Gs|guaranies)/i);
-    if (priceMatch) {
-      productPrice = parseInt(priceMatch[1].replace(/\./g, ''));
-    }
-    
-    if (productName) {
-      console.log(`✅ Producto detectado: "${productName}" | Precio: ${productPrice} | Cantidad: ${quantity}`);
-      return {
-        product: productName,
-        quantity: quantity,
-        price: productPrice || 159900,
-        detected: true,
-        lastBotMessage: botMsg
-      };
-    }
-  }
-  
-  return { detected: false };
-}
 
 function splitMessage(text, max = 3500) {
   const msg = clean(text);
@@ -258,6 +72,7 @@ async function enviarASheet(userId, order, nota = "") {
       total_amount: order.total_amount || "",
       customer_address: clean(order.address),
       note: clean(nota),
+
       nombre_cliente: clean(order.customer_name),
       whatsapp: clean(order.phone || order.from_number),
       ciudad: clean(order.city),
@@ -286,6 +101,12 @@ async function enviarASheet(userId, order, nota = "") {
     console.log("❌ enviarASheet error:", err.message || err);
     return false;
   }
+}
+
+function enviarASheetSinBloquear(userId, order, nota = "") {
+  enviarASheet(userId, order, nota).catch((err) => {
+    console.log("❌ enviarASheetSinBloquear error:", err.message || err);
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -851,6 +672,22 @@ async function evaluarDisparadores({ userId, from, texto }) {
         });
       } catch {}
 
+      try {
+        const contenidosEnviados = [contenidoPrimary, contenidoSecondary].filter(Boolean);
+        for (const contenido of contenidosEnviados) {
+          if (esMensajePedidoConfirmado(contenido)) {
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: contenido,
+              sourceMessageId: null,
+            });
+          }
+        }
+      } catch (e) {
+        console.log("⚠️ post-trigger pedido check error:", e.message);
+      }
+
       await saveContexto(userId, from, { ...ctx, last_trigger: trig.name });
       return true;
     }
@@ -863,7 +700,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// LLAMADA A CHAT-IA (GEMINI)
+// LLAMADA A CHAT-IA (texto + media opcional)
 // ═══════════════════════════════════════════════════════════
 
 async function llamarChatIA({
@@ -916,7 +753,234 @@ function esMensajePedidoConfirmado(texto) {
   const tieneMarcador = /✅\s*PEDIDO CONFIRMADO/i.test(t);
   const tieneProducto = /Producto:\s*\S/i.test(t);
   const tieneTotal = /Total:\s*\S/i.test(t);
-  return tieneMarcador && tieneProducto && tieneTotal;
+  const tieneUbicacion = /Ubicaci[oó]n:\s*\S/i.test(t);
+  return tieneMarcador && tieneProducto && tieneTotal && tieneUbicacion;
+}
+
+function esBloqueDatosBancarios(texto) {
+  if (!texto) return false;
+  const tn = normalize(texto);
+  const señales = [
+    "datos para transferencia",
+    "datos de transferencia",
+    "titular:",
+    "titular ",
+    "banco familiar",
+    "banco continental",
+    "banco itau",
+    "banco gnb",
+    "banco atlas",
+    "banco regional",
+    "banco basa",
+    "ueno bank",
+    "cuenta:",
+    "nro de cuenta",
+    "numero de cuenta",
+    "alias:",
+    "cbu:",
+    "cvu:",
+  ];
+  let hits = 0;
+  for (const s of señales) {
+    if (tn.includes(s)) hits++;
+    if (hits >= 2) return true;
+  }
+  return false;
+}
+
+function limpiarProducto(productoRaw) {
+  if (!productoRaw) return null;
+  let p = clean(productoRaw);
+
+  if (esBloqueDatosBancarios(p)) {
+    const idxAlias = p.search(/alias:\s*\d+/i);
+    if (idxAlias >= 0) {
+      const restoDespuesAlias = p.substring(idxAlias);
+      const idxPlus = restoDespuesAlias.indexOf("+");
+      if (idxPlus >= 0) {
+        p = restoDespuesAlias.substring(idxPlus + 1).trim();
+      } else {
+        return null;
+      }
+    } else {
+      return null;
+    }
+  }
+
+  const items = p.split(/\s*\+\s*/).filter((it) => {
+    const itClean = clean(it);
+    if (!itClean) return false;
+    if (itClean.length > 100) return false;
+    const itn = normalize(itClean);
+    const blacklistItem = [
+      "datos para transferencia",
+      "titular",
+      "banco ",
+      "cuenta:",
+      "alias:",
+      "cbu:",
+      "https://",
+      "http://",
+      "www.",
+    ];
+    return !blacklistItem.some((b) => itn.includes(b));
+  });
+
+  if (items.length === 0) return null;
+  return items.join(" + ");
+}
+
+function parsearPedidoConfirmado(texto) {
+  const get = (regex) => {
+    const m = texto.match(regex);
+    return m ? clean(m[1]) : null;
+  };
+
+  const productoRaw = get(/Producto:\s*([^\n]+)/i);
+  const cliente = get(/Cliente:\s*([^\n]+)/i);
+  const ubicacionRaw = get(/Ubicaci[oó]n:\s*([^\n]+)/i);
+  const contacto = get(/Contacto:\s*([^\n]+)/i);
+  const cantidadRaw = get(/Cantidad:\s*([^\n]+)/i);
+  const calce = get(/Calce:\s*([^\n]+)/i);
+  const totalRaw = get(/Total:\s*([^\n]+)/i);
+
+  const producto = limpiarProducto(productoRaw);
+
+  const esProductoValido = (p) => {
+    if (!p) return false;
+    if (p.length > 200) return false;
+    const blacklist = [
+      "nunca decir",
+      "ir directo",
+      "→",
+      "gracias por tu audio",
+      "entendi que queres",
+      "asuncion, hernandarias",
+      "ypane, villeta",
+      "datos para transferencia",
+      "titular:",
+      "alias:",
+      "cuenta:",
+      "banco familiar",
+      "banco continental",
+    ];
+    const pn = normalize(p);
+    return !blacklist.some((b) => pn.includes(b));
+  };
+
+  const esNombreValido = (n) => {
+    if (!n) return false;
+    if (n.length > 60) return false;
+    const malosInicios = [
+      "yo ",
+      "es ",
+      "dale ",
+      "el de ",
+      "la ",
+      "no ",
+      "si ",
+      "quiero",
+      "queria",
+      "necesito",
+      "me ",
+    ];
+    const nn = normalize(n);
+    return !malosInicios.some((m) => nn.startsWith(m));
+  };
+
+  if (!esProductoValido(producto)) {
+    console.log("🚫 Producto inválido tras limpieza:", productoRaw?.substring(0, 80));
+    return null;
+  }
+
+  let city = null;
+  let address = null;
+  if (ubicacionRaw) {
+    const partes = ubicacionRaw.split(/\s*[—–-]\s*/);
+    city = partes[0] ? clean(partes[0]) : null;
+    address = partes.slice(1).join(" — ").trim() || null;
+  }
+
+  let quantity = 1;
+  if (cantidadRaw) {
+    const m = cantidadRaw.match(/(\d+)/);
+    if (m) quantity = parseInt(m[1], 10);
+  }
+
+  let totalNum = null;
+  if (totalRaw) {
+    const soloDigitos = totalRaw.replace(/[^\d]/g, "");
+    if (soloDigitos) totalNum = parseInt(soloDigitos, 10);
+  }
+
+  let productoFinal = producto;
+  if (calce && producto && !/calce/i.test(producto)) {
+    productoFinal = `${producto} (Calce ${calce})`;
+  }
+
+  return {
+    customer_name: esNombreValido(cliente) ? cliente : null,
+    product: productoFinal,
+    city,
+    address,
+    phone: contacto,
+    quantity,
+    total_amount: totalNum,
+  };
+}
+
+function parsearCarrito(productString) {
+  if (!productString) return [];
+  return productString
+    .split(/\s*\+\s*/)
+    .map((item) => {
+      const m = item.match(/^(.*?)\s*x\s*(\d+)\s*$/i);
+      if (m) {
+        return { name: clean(m[1]), qty: parseInt(m[2], 10) || 1 };
+      }
+      return { name: clean(item), qty: 1 };
+    })
+    .filter((it) => {
+      if (!it.name) return false;
+      const itn = normalize(it.name);
+      const blacklist = ["datos para transferencia", "titular", "banco ", "cuenta:", "alias:"];
+      return !blacklist.some((b) => itn.includes(b));
+    });
+}
+
+function serializarCarrito(items) {
+  return items
+    .filter((it) => it.name && it.qty > 0)
+    .map((it) => `${it.name} x${it.qty}`)
+    .join(" + ");
+}
+
+function buscarItemEnCarrito(carrito, productName) {
+  const target = normalize(productName);
+  return carrito.findIndex((it) => normalize(it.name) === target);
+}
+
+function expandirItemsDelMensaje(productoFinal, quantityFallback) {
+  const items = parsearCarrito(productoFinal);
+  if (items.length === 0) return [];
+  if (items.length === 1 && !/x\s*\d+\s*$/i.test(productoFinal)) {
+    items[0].qty = quantityFallback || items[0].qty || 1;
+  }
+  return items;
+}
+
+async function yaExistePedidoParaMensaje(messageId) {
+  if (!messageId) return false;
+  try {
+    const { data } = await supabase
+      .from("orders")
+      .select("id")
+      .eq("source_message_id", messageId)
+      .maybeSingle();
+    return !!data;
+  } catch {
+    return false;
+  }
 }
 
 async function detectarYGuardarPedidoConfirmado({
@@ -926,8 +990,134 @@ async function detectarYGuardarPedidoConfirmado({
   sourceMessageId,
 }) {
   try {
-    console.log(`📦 Guardando pedido confirmado para ${from}`);
-    console.log(`✅ Pedido confirmado: ${textoMensaje.substring(0, 200)}`);
+    if (sourceMessageId && (await yaExistePedidoParaMensaje(sourceMessageId))) {
+      console.log("⏭️ Ya existe pedido para ese mensaje, skip");
+      return;
+    }
+
+    const datos = parsearPedidoConfirmado(textoMensaje);
+    if (!datos || !datos.product) {
+      console.log("🚫 Texto no parece pedido válido, descartado");
+      return;
+    }
+
+    const itemsNuevos = expandirItemsDelMensaje(datos.product, datos.quantity);
+    if (itemsNuevos.length === 0) {
+      console.log("🚫 No quedaron items válidos tras expandir");
+      return;
+    }
+
+    const hace1hora = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const { data: reciente } = await supabase
+      .from("orders")
+      .select("id, product, total_amount, quantity, status")
+      .eq("user_id", userId)
+      .eq("from_number", from)
+      .eq("status", "confirmado")
+      .gte("created_at", hace1hora)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!reciente) {
+      const cantidadTotal = itemsNuevos.reduce((s, it) => s + it.qty, 0);
+      const insertPayload = {
+        user_id: userId,
+        from_number: from,
+        phone: datos.phone || from,
+        customer_name: datos.customer_name,
+        product: serializarCarrito(itemsNuevos),
+        quantity: cantidadTotal,
+        total_amount: datos.total_amount,
+        address: datos.address,
+        city: datos.city,
+        status: "confirmado",
+        metodo_pago: "efectivo",
+        source_message_id: sourceMessageId || null,
+        detected_by_ai: true,
+        created_at: new Date().toISOString(),
+      };
+
+      const { data: nuevo, error } = await supabase
+        .from("orders")
+        .insert(insertPayload)
+        .select("id")
+        .maybeSingle();
+
+      if (error) {
+        console.error("❌ Error insertando pedido:", error);
+        return;
+      }
+      console.log(`✅ Pedido NUEVO creado: ${nuevo?.id} → ${insertPayload.product}`);
+      await enviarASheet(userId, { ...insertPayload, id: nuevo?.id }, "NUEVO");
+      return;
+    }
+
+    const carrito = parsearCarrito(reciente.product);
+    let totalActual = reciente.total_amount || 0;
+    const cambios = [];
+
+    for (const nuevo of itemsNuevos) {
+      const idx = buscarItemEnCarrito(carrito, nuevo.name);
+      if (idx >= 0) {
+        const itemViejo = carrito[idx];
+        if (itemViejo.qty === nuevo.qty) {
+          cambios.push(`⏭️ ${nuevo.name} x${nuevo.qty} ya estaba (skip)`);
+          continue;
+        }
+        carrito[idx].qty = nuevo.qty;
+        cambios.push(`🔄 ${nuevo.name}: ${itemViejo.qty} → ${nuevo.qty}`);
+      } else {
+        carrito.push({ name: nuevo.name, qty: nuevo.qty });
+        cambios.push(`➕ ${nuevo.name} x${nuevo.qty}`);
+      }
+    }
+
+    if (datos.total_amount && datos.total_amount > totalActual) {
+      totalActual = datos.total_amount;
+    }
+
+    const productoSerializado = serializarCarrito(carrito);
+    const cantidadTotal = carrito.reduce((sum, it) => sum + it.qty, 0);
+
+    const updatePayload = {
+      product: productoSerializado,
+      quantity: cantidadTotal,
+      total_amount: totalActual,
+      updated_at: new Date().toISOString(),
+    };
+    if (datos.address) updatePayload.address = datos.address;
+    if (datos.city) updatePayload.city = datos.city;
+    if (datos.customer_name) updatePayload.customer_name = datos.customer_name;
+
+    const { error: updErr } = await supabase
+      .from("orders")
+      .update(updatePayload)
+      .eq("id", reciente.id);
+
+    if (updErr) {
+      console.error("❌ update pedido:", updErr);
+      return;
+    }
+    console.log(
+      `🛒 Carrito actualizado pedido ${reciente.id} | ${cambios.join(" | ")} | total: ${totalActual} | ${productoSerializado}`
+    );
+    await enviarASheet(
+      userId,
+      {
+        id: reciente.id,
+        user_id: userId,
+        from_number: from,
+        phone: datos.phone || from,
+        customer_name: datos.customer_name,
+        product: productoSerializado,
+        quantity: cantidadTotal,
+        total_amount: totalActual,
+        address: datos.address,
+        city: datos.city,
+      },
+      `ACTUALIZADO: ${cambios.join(" | ")}`
+    );
   } catch (err) {
     console.error("❌ detectarYGuardarPedidoConfirmado error:", err);
   }
@@ -936,14 +1126,54 @@ async function detectarYGuardarPedidoConfirmado({
 async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
   try {
     if (!mediaUrl) return;
-    console.log(`💳 Comprobante recibido: ${mediaUrl}`);
+
+    const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    const { data: pedido } = await supabase
+      .from("orders")
+      .select("id, comprobante_url")
+      .eq("user_id", userId)
+      .eq("from_number", from)
+      .eq("status", "confirmado")
+      .gte("created_at", hace24h)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!pedido) {
+      console.log("ℹ️ Comprobante recibido pero no hay pedido confirmado reciente");
+      return false;
+    }
+
+    if (pedido.comprobante_url) {
+      console.log("ℹ️ El pedido ya tiene comprobante, no sobrescribo");
+      return true;
+    }
+
+    const { error } = await supabase
+      .from("orders")
+      .update({
+        comprobante_url: mediaUrl,
+        metodo_pago: "transferencia",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", pedido.id);
+
+    if (error) {
+      console.error("❌ Error asociando comprobante:", error);
+      return false;
+    }
+
+    console.log(`💳 Comprobante asociado al pedido ${pedido.id}`);
+    return true;
   } catch (err) {
     console.error("❌ asociarComprobanteAlPedido error:", err);
+    return false;
   }
 }
 
 // ═══════════════════════════════════════════════════════════
-// PROCESAR MENSAJE ENTRANTE - FLUJO CORRECTO CON IA
+// PROCESAR MENSAJE ENTRANTE - ✅ AHORA RETORNA LA RESPUESTA
 // ═══════════════════════════════════════════════════════════
 
 export async function procesar(req, message, userId, from) {
@@ -964,16 +1194,33 @@ export async function procesar(req, message, userId, from) {
       mediaId = message.image?.id || null;
       mimeType = message.image?.mime_type || "image/jpeg";
       messageType = "image";
-    } else if (tipoMsg === "audio" || tipoMsg === "voice") {
+    } else if (tipoMsg === "audio") {
       texto = "";
-      mediaId = message.audio?.id || message.voice?.id || null;
-      mimeType = message.audio?.mime_type || message.voice?.mime_type || "audio/ogg";
+      mediaId = message.audio?.id || null;
+      mimeType = message.audio?.mime_type || "audio/ogg";
+      messageType = "audio";
+    } else if (tipoMsg === "voice") {
+      texto = "";
+      mediaId = message.voice?.id || null;
+      mimeType = message.voice?.mime_type || "audio/ogg";
       messageType = "audio";
     } else if (tipoMsg === "video") {
       texto = clean(message.video?.caption || "[video]");
       mediaId = message.video?.id || null;
       mimeType = message.video?.mime_type || "video/mp4";
       messageType = "video";
+    } else if (tipoMsg === "document") {
+      texto = clean(
+        message.document?.caption || message.document?.filename || "[documento]"
+      );
+      mediaId = message.document?.id || null;
+      mimeType = message.document?.mime_type || "application/octet-stream";
+      messageType = "document";
+    } else if (tipoMsg === "sticker") {
+      texto = "[sticker]";
+      mediaId = message.sticker?.id || null;
+      mimeType = message.sticker?.mime_type || "image/webp";
+      messageType = "image";
     } else {
       console.log(`⚠️ Tipo de mensaje no soportado: ${tipoMsg}`);
       return { response: null, error: "Tipo no soportado" };
@@ -984,214 +1231,221 @@ export async function procesar(req, message, userId, from) {
       return { response: null, error: "Duplicado" };
     }
 
+    // Si hay media, descargarla y subirla a Storage ANTES de guardar
     let mediaMime = mimeType;
     if (mediaId) {
       const result = await descargarYSubirMedia({ userId, mediaId, mimeType, from });
       if (result) {
         mediaUrl = result.url;
         mediaMime = result.mime || mimeType;
+      } else {
+        console.log("⚠️ No se pudo subir media, se guarda mensaje sin URL");
       }
     }
 
     console.log("━━━━━━━━━━━━━━━━━━━━━━");
-    console.log(`📩 WhatsApp ${messageType}:`, from, texto);
+    console.log(
+      `📩 WhatsApp ${messageType}:`,
+      from,
+      texto,
+      mediaUrl ? `→ ${mediaUrl.slice(0, 60)}...` : ""
+    );
+
+    const textoParaGuardar =
+      texto ||
+      (messageType === "image"
+        ? "[imagen]"
+        : messageType === "audio"
+        ? "[audio]"
+        : messageType === "video"
+        ? "[video]"
+        : messageType === "document"
+        ? "[documento]"
+        : "");
 
     await saveReceivedMessage({
       userId,
       from,
-      message: texto || `[${messageType}]`,
+      message: textoParaGuardar,
       messageType,
       mediaUrl,
       waMessageId: message.id || null,
     });
 
-    // Solo procesar texto
-    if (messageType !== "text") {
-      return { response: null, handled_by: "non_text" };
-    }
+    // ─── TEXTO: triggers + IA ───
+    if (messageType === "text") {
+      const disparado = await evaluarDisparadores({ userId, from, texto });
+      if (disparado) {
+        console.log("✅ Disparador atendió el mensaje. No se llama a Gemini.");
+        return { response: null, handled_by: "trigger", error: null };
+      }
 
-    const chatState = getConversationState(from);
-    const intent = detectIntent(texto, chatState.orderConfirmed);
-    
-    console.log(`🎯 Intención: ${intent} | Confirmado: ${chatState.orderConfirmed}`);
-
-    // ═══════════════════════════════════════════════════════════════
-    // MANEJO DE INTENCIONES BÁSICAS
-    // ═══════════════════════════════════════════════════════════════
-
-    if (intent === 'reschedule') {
-      const msg = "📅 Entiendo que querés cambiar la fecha de entrega. Decime ¿para cuándo preferís recibir tu pedido?";
-      await enviarMensaje(userId, from, msg);
-      await saveReceivedMessage({ userId, from, message: msg, messageType: "out_text" });
-      return { response: msg, handled_by: "reschedule" };
-    }
-
-    if (intent === 'cancel') {
-      const msg = "❌ ¿Querés cancelar tu pedido? Respondé *CONFIRMAR CANCELACIÓN* para anularlo.";
-      await enviarMensaje(userId, from, msg);
-      await saveReceivedMessage({ userId, from, message: msg, messageType: "out_text" });
-      return { response: msg, handled_by: "cancel" };
-    }
-
-    if (intent === 'location_changed') {
-      const msg = "📍 Entiendo que no estás en tu domicilio. Pasame la nueva dirección.";
-      await enviarMensaje(userId, from, msg);
-      await saveReceivedMessage({ userId, from, message: msg, messageType: "out_text" });
-      return { response: msg, handled_by: "location" };
-    }
-
-    if (intent === 'thanks') {
-      const msg = "¡A vos! Gracias por confiar en Mega Todo Store 💜 ¿Necesitas algo más?";
-      await enviarMensaje(userId, from, msg);
-      await saveReceivedMessage({ userId, from, message: msg, messageType: "out_text" });
-      return { response: msg, handled_by: "thanks" };
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // CONFIRMACIÓN (solo si el pedido NO está confirmado)
-    // ═══════════════════════════════════════════════════════════════
-
-    if (intent === 'confirm' && !chatState.orderConfirmed) {
-      updateConversationState(from, { orderConfirmed: true });
-      const confirmMsg = `✅ **PEDIDO CONFIRMADO** ✅
-
-✅ Producto: ${chatState.orderData?.product || 'Producto'}
-✅ Cliente: ${chatState.orderData?.customer_name || 'Cliente'}
-✅ Cantidad: ${chatState.orderData?.quantity || 1} u.
-💰 Total: ${(chatState.orderData?.total_amount || 0).toLocaleString('es')} Gs
-
-🚚 **ENVÍO GRATIS** · **Pagás al recibir**
-
-📦 Tu pedido queda agendado. El delivery se comunicará contigo.
-
-¡Gracias por elegir Mega Todo Store! 💜✨`;
-      
-      await enviarMensaje(userId, from, confirmMsg);
-      await saveReceivedMessage({ userId, from, message: confirmMsg, messageType: "out_text" });
-      return { response: confirmMsg, handled_by: "confirmation" };
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // SI YA ESTÁ CONFIRMADO
-    // ═══════════════════════════════════════════════════════════════
-
-    if (chatState.orderConfirmed) {
-      const msg = "✅ Tu pedido ya está confirmado. ¿Necesitas modificar algo? Responde: CAMBIAR FECHA, CAMBIAR UBICACIÓN o CANCELAR.";
-      await enviarMensaje(userId, from, msg);
-      await saveReceivedMessage({ userId, from, message: msg, messageType: "out_text" });
-      return { response: msg, handled_by: "already_confirmed" };
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // DETECCIÓN DE PRODUCTO - LLAMA A LA IA
-    // ═══════════════════════════════════════════════════════════════
-
-    const { data: lastOutboundMsg } = await supabase
-      .from("inbox_messages")
-      .select("message")
-      .eq("user_id", userId)
-      .eq("sender_id", from)
-      .eq("source", "whatsapp")
-      .like("message_type", "out_%")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    
-    const productDetection = await detectProductFromClientMessage(
-      userId, from, texto, lastOutboundMsg?.message || ""
-    );
-    
-    if (productDetection.detected) {
-      console.log(`🛍️ Producto detectado: ${productDetection.product} - Delegando a IA`);
-      
-      // Guardar producto detectado en estado
-      updateConversationState(from, { 
-        orderData: {
-          product: productDetection.product,
-          quantity: productDetection.quantity,
-          unit_price: productDetection.price,
-          total_amount: productDetection.price * productDetection.quantity,
-        }
-      });
-      
-      // LLAMAR A LA IA PARA QUE RESPONDA (ella maneja ciudad y zona de cobertura)
       const ctx = await getContexto(userId, from);
       const history = await getHistory(userId, from);
-      
-      // Mensaje enriquecido para la IA con contexto del producto
-      const promptIA = `El cliente acaba de escribir: "${texto}"
-      
-Contexto: El cliente está interesado en comprar el producto "${productDetection.product}" (precio: ${productDetection.price} GS, cantidad: ${productDetection.quantity}).
-
-Respondé como asistente de Mega Todo Store. Saludá al cliente, confirmá el producto y lo que corresponde. Si el cliente no indicó su ciudad, preguntale en qué ciudad se encuentra para determinar el tipo de envío (delivery gratis si es Asunción/Gran Asunción, o encomienda con pago anticipado si es otra ciudad).`;
 
       let data = {};
       try {
-        data = await llamarChatIA({ req, userId, texto: promptIA, from, ctx, history });
+        data = await llamarChatIA({ req, userId, texto, from, ctx, history });
       } catch (err) {
         console.error("❌ chat-ia error:", err);
-        const fallbackMsg = `🛍️ *¡Gracias por tu interés en ${productDetection.product}!*
-
-Para procesar tu pedido, necesito saber:
-
-📍 *¿En qué ciudad te encuentras?*
-
-Ejemplos: Asunción, San Lorenzo, Fernando de la Mora, Ciudad del Este, Encarnación, etc.`;
-        
+        const fallbackMsg = "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente.";
         await enviarMensaje(userId, from, fallbackMsg);
-        await saveReceivedMessage({ userId, from, message: fallbackMsg, messageType: "out_text" });
-        return { response: fallbackMsg, handled_by: "product_detection_fallback" };
+        await saveReceivedMessage({
+          userId,
+          from,
+          message: fallbackMsg,
+          messageType: "out_text",
+        });
+        return { response: fallbackMsg, error: err.message };
+      }
+
+      if (data?.context) await saveContexto(userId, from, data.context);
+
+      if (data?.response) {
+        const sent = await enviarMensaje(userId, from, data.response);
+        if (sent) {
+          await saveReceivedMessage({
+            userId,
+            from,
+            message: data.response,
+            messageType: "out_text",
+          });
+
+          if (esMensajePedidoConfirmado(data.response)) {
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: data.response,
+              sourceMessageId: null,
+            });
+          }
+        }
+        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
+        return { response: data.response, context: data.context, is_payment_proof: data.is_payment_proof };
+      }
+
+      const fallback = "👋 Hola! ¿En qué puedo ayudarte hoy?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
+      await enviarMensaje(userId, from, fallback);
+      await saveReceivedMessage({
+        userId,
+        from,
+        message: fallback,
+        messageType: "out_text",
+      });
+      return { response: fallback, error: null };
+    }
+
+    // ─── IMAGEN: comprobante + IA Vision ───
+    if (messageType === "image" && mediaUrl) {
+      asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch((e) =>
+        console.error("comprobante bg error:", e)
+      );
+
+      const ctx = await getContexto(userId, from);
+      const history = await getHistory(userId, from);
+
+      let data = {};
+      try {
+        data = await llamarChatIA({
+          req,
+          userId,
+          texto: texto || "",
+          from,
+          ctx,
+          history,
+          mediaUrl,
+          mediaType: "image",
+          mimeType: mediaMime,
+        });
+      } catch (err) {
+        console.error("❌ chat-ia (image) error:", err);
+        return { response: null, error: err.message };
+      }
+
+      if (data?.context) await saveContexto(userId, from, data.context);
+
+      if (data?.is_payment_proof) {
+        await asociarComprobanteAlPedido({ userId, from, mediaUrl });
       }
 
       if (data?.response) {
-        await enviarMensaje(userId, from, data.response);
-        await saveReceivedMessage({ userId, from, message: data.response, messageType: "out_text" });
-        if (data?.context) await saveContexto(userId, from, data.context);
-        return { response: data.response, handled_by: "product_detection_ia" };
+        const sent = await enviarMensaje(userId, from, data.response);
+        if (sent) {
+          await saveReceivedMessage({
+            userId,
+            from,
+            message: data.response,
+            messageType: "out_text",
+          });
+
+          if (esMensajePedidoConfirmado(data.response)) {
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: data.response,
+              sourceMessageId: null,
+            });
+          }
+        }
+        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
+        return { response: data.response, context: data.context, is_payment_proof: data.is_payment_proof };
       }
+      return { response: null, error: null };
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // TRIGGERS Y IA NORMAL
-    // ═══════════════════════════════════════════════════════════════
+    // ─── AUDIO: IA transcribe + responde ───
+    if (messageType === "audio" && mediaUrl) {
+      const ctx = await getContexto(userId, from);
+      const history = await getHistory(userId, from);
 
-    const disparado = await evaluarDisparadores({ userId, from, texto });
-    if (disparado) {
-      console.log("✅ Disparador atendió el mensaje");
-      return { response: null, handled_by: "trigger" };
-    }
-
-    const ctx = await getContexto(userId, from);
-    const history = await getHistory(userId, from);
-
-    let data = {};
-    try {
-      data = await llamarChatIA({ req, userId, texto, from, ctx, history });
-    } catch (err) {
-      console.error("❌ chat-ia error:", err);
-      const fallbackMsg = "⚠️ Disculpá, hubo un error. Escribime nuevamente.";
-      await enviarMensaje(userId, from, fallbackMsg);
-      return { response: fallbackMsg, error: err.message };
-    }
-
-    if (data?.context) await saveContexto(userId, from, data.context);
-
-    if (data?.response) {
-      await enviarMensaje(userId, from, data.response);
-      await saveReceivedMessage({ userId, from, message: data.response, messageType: "out_text" });
-      
-      if (esMensajePedidoConfirmado(data.response)) {
-        await detectarYGuardarPedidoConfirmado({ userId, from, textoMensaje: data.response, sourceMessageId: null });
+      let data = {};
+      try {
+        data = await llamarChatIA({
+          req,
+          userId,
+          texto: "",
+          from,
+          ctx,
+          history,
+          mediaUrl,
+          mediaType: "audio",
+          mimeType: mediaMime,
+        });
+      } catch (err) {
+        console.error("❌ chat-ia (audio) error:", err);
+        return { response: null, error: err.message };
       }
-      
-      return { response: data.response, context: data.context };
+
+      if (data?.context) await saveContexto(userId, from, data.context);
+
+      if (data?.response) {
+        const sent = await enviarMensaje(userId, from, data.response);
+        if (sent) {
+          await saveReceivedMessage({
+            userId,
+            from,
+            message: data.response,
+            messageType: "out_text",
+          });
+
+          if (esMensajePedidoConfirmado(data.response)) {
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: data.response,
+              sourceMessageId: null,
+            });
+          }
+        }
+        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
+        return { response: data.response, context: data.context };
+      }
+      return { response: null, error: null };
     }
 
-    const fallback = "👋 Hola! ¿En qué puedo ayudarte?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
-    await enviarMensaje(userId, from, fallback);
-    await saveReceivedMessage({ userId, from, message: fallback, messageType: "out_text" });
-    return { response: fallback };
-
+    // ─── Otros (video/document/sticker): solo guardar ───
+    console.log(`ℹ️ Mensaje ${messageType} guardado, no se procesa con IA`);
+    return { response: null, error: null, handled_by: "no_ia" };
   } catch (err) {
     console.error("❌ procesar error:", err);
     return { response: null, error: err.message };
