@@ -1,8 +1,9 @@
-// api/webhook.js — webhook_v15.js
+// api/webhook.js — webhook_v16.js
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
+// + ✅ CONFIRMACIÓN ÚNICA Y DETECCIÓN DE INTENCIONES
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -13,6 +14,27 @@ const supabase = createClient(
 
 const VERIFY_TOKEN = "miTokenSeguro2026";
 
+// Sistema de estados por conversación para evitar confirmaciones múltiples
+const conversationStates = new Map();
+
+function getConversationState(chatId) {
+  if (!conversationStates.has(chatId)) {
+    conversationStates.set(chatId, {
+      orderConfirmed: false,
+      lastConfirmationTime: null,
+      lastMessageTime: null,
+      orderData: null
+    });
+  }
+  return conversationStates.get(chatId);
+}
+
+function updateConversationState(chatId, updates) {
+  const state = getConversationState(chatId);
+  Object.assign(state, updates);
+  conversationStates.set(chatId, state);
+}
+
 const clean = (t) => String(t || "").trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -21,6 +43,28 @@ const normalize = (t) =>
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+
+function detectIntent(message, orderConfirmed) {
+  const msg = normalize(message);
+  
+  const confirmKeywords = ['si', 'sí', 'confirmo', 'acepto', 'quiero', 'dale', 'ok', 'bueno', 'pedido', 'confirmado', 'aceptar'];
+  const rescheduleKeywords = ['mañana', 'otro día', 'cambiar fecha', 'reprogramar', 'más tarde', 'cambiar horario', 'otro horario', 'pasado mañana'];
+  const cancelKeywords = ['cancelar', 'no quiero', 'anular', 'cancelación', 'baja', 'cancelado'];
+  const locationKeywords = ['no estoy en mi casa', 'no estoy en casa', 'fuera de casa', 'otra dirección', 'cambiar ubicación', 'cambiar dirección'];
+  const thanksKeywords = ['gracias', 'disculpe', 'perdón', 'gracias disculpe', 'ok gracias'];
+  
+  // Solo permitir confirmación si el pedido NO está confirmado
+  if (!orderConfirmed && confirmKeywords.some(k => msg.includes(k))) {
+    return 'confirm';
+  }
+  
+  if (rescheduleKeywords.some(k => msg.includes(k))) return 'reschedule';
+  if (cancelKeywords.some(k => msg.includes(k))) return 'cancel';
+  if (locationKeywords.some(k => msg.includes(k))) return 'location_changed';
+  if (thanksKeywords.some(k => msg.includes(k))) return 'thanks';
+  
+  return 'unknown';
+}
 
 function splitMessage(text, max = 3500) {
   const msg = clean(text);
@@ -1173,7 +1217,7 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// PROCESAR MENSAJE ENTRANTE - ✅ AHORA RETORNA LA RESPUESTA
+// PROCESAR MENSAJE ENTRANTE - CON CONFIRMACIÓN ÚNICA
 // ═══════════════════════════════════════════════════════════
 
 export async function procesar(req, message, userId, from) {
@@ -1272,8 +1316,91 @@ export async function procesar(req, message, userId, from) {
       waMessageId: message.id || null,
     });
 
-    // ─── TEXTO: triggers + IA ───
+    // ─── TEXTO: triggers + IA + CONFIRMACIÓN ÚNICA ───
     if (messageType === "text") {
+      // Obtener estado de conversación
+      const chatState = getConversationState(from);
+      
+      // Detectar intención del mensaje
+      const intent = detectIntent(texto, chatState.orderConfirmed);
+      
+      console.log(`🎯 Intención detectada: ${intent} | Confirmado: ${chatState.orderConfirmed}`);
+      
+      // Manejar según la intención detectada
+      if (intent === 'confirm' && !chatState.orderConfirmed) {
+        // Confirmar UNA SOLA VEZ
+        updateConversationState(from, { 
+          orderConfirmed: true, 
+          lastConfirmationTime: new Date().toISOString() 
+        });
+        
+        const confirmMsg = "✅ **PEDIDO CONFIRMADO** ✅\n\n" +
+          "✅ Producto: asuncion, ASUNCION, Asunción\n" +
+          "✅ Cliente: " + (chatState.orderData?.customer_name || 'Cliente') + "\n" +
+          "✅ Ubicación: Asunción — Ñanduti número 4135 entre Tte Botana y Chiripa Barrio San Pablo Asunción\n" +
+          "✅ Contacto: 0982837439\n" +
+          "✅ Cantidad: 2 u.\n" +
+          "💰 Total: 319.800 Gs\n\n" +
+          "🚚 **ENVÍO GRATIS** · **Pagás al recibir**\n\n" +
+          "📦 Tu pedido queda agendado. El delivery se comunicará contigo al llegar a tu zona.\n\n" +
+          "⏰ Oferta válida hoy\n\n" +
+          "¡Gracias por elegir Mega Todo Store! 💜✨\n\n" +
+          "💵 Podés pagar en EFECTIVO o TRANSFERENCIA al delivery cuando recibas tu producto.\n\n" +
+          "¡Gracias por tu compra! 🛍️✨\n\n" +
+          "Te dejo nuestro catálogo completo 👇\n\n" +
+          "👉 https://cat-logomegatodo-com.vercel.app/\n\n" +
+          "Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜";
+        
+        await enviarMensaje(userId, from, confirmMsg);
+        await saveReceivedMessage({
+          userId, from, message: confirmMsg, messageType: "out_text"
+        });
+        
+        // Guardar pedido confirmado
+        await detectarYGuardarPedidoConfirmado({
+          userId, from, textoMensaje: confirmMsg, sourceMessageId: null
+        });
+        
+        return { response: confirmMsg, handled_by: "confirmation", intent };
+      }
+      
+      if (intent === 'reschedule') {
+        const rescheduleMsg = "📅 Entiendo que querés cambiar la fecha de entrega. Decime ¿para cuándo preferís recibir tu pedido? (Ej: mañana tarde, el sábado, el lunes, etc.)";
+        await enviarMensaje(userId, from, rescheduleMsg);
+        await saveReceivedMessage({ userId, from, message: rescheduleMsg, messageType: "out_text" });
+        return { response: rescheduleMsg, handled_by: "reschedule", intent };
+      }
+      
+      if (intent === 'cancel') {
+        const cancelMsg = "❌ ¿Querés cancelar tu pedido? Respondé *CONFIRMAR CANCELACIÓN* para anularlo definitivamente. Si no es así, ignorá este mensaje.";
+        await enviarMensaje(userId, from, cancelMsg);
+        await saveReceivedMessage({ userId, from, message: cancelMsg, messageType: "out_text" });
+        return { response: cancelMsg, handled_by: "cancel", intent };
+      }
+      
+      if (intent === 'location_changed') {
+        const locationMsg = "📍 Entiendo que no estás en tu domicilio habitual. ¿Querés que enviemos el pedido a otra dirección? Pasame la nueva ubicación completa (calle, número, barrio, referencia).";
+        await enviarMensaje(userId, from, locationMsg);
+        await saveReceivedMessage({ userId, from, message: locationMsg, messageType: "out_text" });
+        return { response: locationMsg, handled_by: "location", intent };
+      }
+      
+      if (intent === 'thanks') {
+        const thanksMsg = "¡A vos! Gracias por confiar en Mega Todo Store 💜 ¿Necesitas algo más? Podés consultar nuestro catálogo: https://cat-logomegatodo-com.vercel.app/";
+        await enviarMensaje(userId, from, thanksMsg);
+        await saveReceivedMessage({ userId, from, message: thanksMsg, messageType: "out_text" });
+        return { response: thanksMsg, handled_by: "thanks", intent };
+      }
+      
+      // Si el pedido ya está confirmado, no permitir confirmar otra vez
+      if (chatState.orderConfirmed && intent === 'unknown') {
+        const alreadyConfirmedMsg = "✅ Tu pedido ya está confirmado. ¿Necesitas modificar algo? Responde: CAMBIAR FECHA, CAMBIAR UBICACIÓN o CANCELAR.";
+        await enviarMensaje(userId, from, alreadyConfirmedMsg);
+        await saveReceivedMessage({ userId, from, message: alreadyConfirmedMsg, messageType: "out_text" });
+        return { response: alreadyConfirmedMsg, handled_by: "already_confirmed" };
+      }
+      
+      // Continuar con triggers y IA normalmente
       const disparado = await evaluarDisparadores({ userId, from, texto });
       if (disparado) {
         console.log("✅ Disparador atendió el mensaje. No se llama a Gemini.");
@@ -1320,7 +1447,6 @@ export async function procesar(req, message, userId, from) {
             });
           }
         }
-        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
         return { response: data.response, context: data.context, is_payment_proof: data.is_payment_proof };
       }
 
@@ -1387,7 +1513,6 @@ export async function procesar(req, message, userId, from) {
             });
           }
         }
-        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
         return { response: data.response, context: data.context, is_payment_proof: data.is_payment_proof };
       }
       return { response: null, error: null };
@@ -1437,7 +1562,6 @@ export async function procesar(req, message, userId, from) {
             });
           }
         }
-        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
         return { response: data.response, context: data.context };
       }
       return { response: null, error: null };
