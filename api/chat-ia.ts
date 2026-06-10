@@ -1,4 +1,4 @@
-// api/chat-ia.ts
+// api/chat-ia.ts — v1005
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(process.env.SUPABASE_URL as string, process.env.SUPABASE_SERVICE_ROLE_KEY as string);
@@ -15,6 +15,15 @@ const normalize = (t: string): string =>
     .replace(/[^\w\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+const CONTEXT_TTL_MS = 24 * 60 * 60 * 1000;
+
+function isOlderThan24Hours(dateValue: any): boolean {
+  if (!dateValue) return false;
+  const t = new Date(dateValue).getTime();
+  if (!Number.isFinite(t)) return false;
+  return Date.now() - t > CONTEXT_TTL_MS;
+}
 
 // =======================================================
 // 🧠 GUARDRAILS DETERMINÍSTICOS
@@ -1442,7 +1451,8 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const isNewChat = isNewConversation(texto, history || []);
+    const contextExpired = isOlderThan24Hours(context?.updated_at);
+    const isNewChat = contextExpired || isNewConversation(texto, history || []);
 
     let oldOrder;
     if (isNewChat) {
@@ -1450,13 +1460,28 @@ export default async function handler(req: any, res: any) {
         product: "", quantity: 0, shoe_size: "", city: "",
         customer_name: "", phone: "", address: "", items: [], total_amount: 0,
       };
-      console.log("🔄 Conversación nueva detectada - Pedido reiniciado");
+      console.log(contextExpired ? "🧹 Contexto viejo +24h - Pedido reiniciado" : "🔄 Conversación nueva detectada - Pedido reiniciado");
     } else {
       oldOrder = normalizeOrderWithItems(context?.order_data || {}, fullTraining);
     }
 
-    const previousStep = clean(context?.step);
-    const previousTipoCobertura = clean(context?.tipo_cobertura);
+    const previousStep = isNewChat ? "" : clean(context?.step);
+    const previousTipoCobertura = isNewChat ? "" : clean(context?.tipo_cobertura);
+
+    if (previousStep === "confirmed") {
+      return res.json({
+        response: "✅ Tu pedido ya fue confirmado 😊\n\nSi querés hacer un nuevo pedido, decime qué producto querés.",
+        context: {
+          ...(context || {}),
+          step: "confirmed",
+          order_data: oldOrder,
+          current_product: oldOrder?.product || context?.current_product || null,
+          last_user_product: oldOrder?.product || context?.last_user_product || null,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
 
     if (isOriginQuestion(texto)) {
       return res.json({
