@@ -182,9 +182,49 @@ function isAntiVibrationKit(text: string): boolean {
   return /\b(almohadillas?\s+antivibracion|almohadillas?\s+antivibraci[oó]n|soporte\s+para\s+lavarropas|soporte\s+antivibracion|patitas?\s+antideslizantes|kit\s+x4\s+patitas|kit\s+antivibracion|lavarropas\s+camina|heladera\s+vibra)\b/.test(n);
 }
 
+function isCityAliasText(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  const cityAliases = [
+    "asuncion", "asunción", "capiata", "capiatá", "capilata", "kapiata",
+    "ciudad del este", "cde", "luque", "ita", "itá", "lambare", "lambaré",
+    "san lorenzo", "sanlo", "san lorenso", "fernando de la mora", "fdm",
+    "fernando mora", "ferneando", "nemby", "ñemby", "ypane", "ypané",
+    "limpio", "villa elisa", "hernandarias", "presidente franco", "pte franco",
+    "aregua", "areguá", "san bernardino", "sanber", "san ber",
+    "pedro juan caballero", "pedro juan", "pjc", "san alberto", "cruce san alberto",
+    "villarrica", "villeta", "ypacarai", "ypacaraí", "mariano roque alonso",
+    "mra", "remansito", "villa hayes", "santa rita", "minga guazu", "minga guazú"
+  ];
+
+  if (cityAliases.some((c) => n === normalize(c))) return true;
+  if (extractCityFromText(n)) return true;
+
+  const hasManyCityAliases =
+    n.includes(",") &&
+    cityAliases.filter((c) => n.includes(normalize(c))).length >= 2;
+
+  return hasManyCityAliases;
+}
+
+function isGenericBuyConfirmation(text: string): boolean {
+  return /^\s*(quiero|si|sí|dale|ok|listo|confirmo|compro|reservo|quiero ese|ese quiero|lo quiero)\s*$/i.test(clean(text));
+}
+
+function sanitizeProductCandidate(product: any): string {
+  const p = clean(product);
+  if (!p) return "";
+  if (isInvalidProductCandidate(p)) return "";
+  if (isCityAliasText(p)) return "";
+  return p;
+}
+
 function isInvalidProductCandidate(name: string): boolean {
   const n = normalize(name);
   if (!n) return true;
+  if (isCityAliasText(name)) return true;
+  if (n.includes(",") && !hasExplicitProductMention(name)) return true;
   if (isOnlyShoeVariantText(name)) return true;
   if (/^(calce|talle|numero|nro|num|número|medida)$/.test(n)) return true;
 
@@ -216,6 +256,8 @@ function isInvalidCartProduct(name: string): boolean {
   const n = normalize(raw);
 
   if (!n) return true;
+  if (isCityAliasText(raw)) return true;
+  if (n.includes(",") && !hasExplicitProductMention(raw)) return true;
   if (isOnlyShoeVariantText(name)) return true;
   if (/^(calce|talle|numero|nro|num|número|medida)$/.test(n)) return true;
   if (n.length < 4) return true;
@@ -434,6 +476,14 @@ function detectProductRaw(
 ) {
   const msg = normalize(text);
 
+  if (isGenericBuyConfirmation(text)) {
+    return sanitizeProductCandidate(lastUserProduct) || "";
+  }
+
+  if (isCityAliasText(text) && !hasExplicitProductMention(text)) {
+    return "";
+  }
+
   if (isAntiVibrationKit(text) || isPackReferenceText(text) ||
       msg.includes("soporte lavarropas") || msg.includes("almohadillas antivibracion") ||
       msg.includes("patitas antideslizantes") || msg.includes("kit x4")) {
@@ -506,6 +556,11 @@ function detectProductRaw(
       bestScore = score;
       best = name;
     }
+  }
+
+  if (best && (isCityAliasText(best) || isInvalidProductCandidate(best))) {
+    console.log("🚫 Producto rechazado porque parece ciudad o texto inválido:", best);
+    return "";
   }
 
   return bestScore >= 5 ? best : "";
@@ -1149,8 +1204,29 @@ function nextStep(order: any, tipoCobertura?: string) {
 // 🆕 HANDLE PRODUCT SELECTION - Reinicia pedido y pregunta CIUDAD
 // =======================================================
 function handleProductSelection(product: string, shoeSize?: any) {
+  const safeProduct = sanitizeProductCandidate(product);
+  if (!safeProduct) {
+    const emptyOrder = {
+      product: "",
+      quantity: 0,
+      shoe_size: "",
+      city: "",
+      customer_name: "",
+      phone: "",
+      address: "",
+      items: [],
+      total_amount: 0,
+    };
+
+    return {
+      response: "😊 Perfecto. ¿Qué producto te interesa?",
+      order: emptyOrder,
+      step: "selling",
+    };
+  }
+
   const newOrder = {
-    product: product,
+    product: safeProduct,
     quantity: 0,
     shoe_size: shoeSize || "",
     city: "",
@@ -1162,7 +1238,7 @@ function handleProductSelection(product: string, shoeSize?: any) {
   };
   
   return {
-    response: buildCityQuestionResponse(product, shoeSize),
+    response: buildCityQuestionResponse(safeProduct, shoeSize),
     order: newOrder,
     step: "collecting_city"
   };
@@ -1517,7 +1593,13 @@ export default async function handler(req: any, res: any) {
     }
 
     const contextExpired = isOlderThan24Hours(context?.updated_at);
-    const isNewChat = contextExpired || isNewConversation(texto, history || []);
+    const hasUsableContext = !!(
+      context?.current_product ||
+      context?.order_data?.product ||
+      context?.step ||
+      context?.last_user_product
+    );
+    const isNewChat = contextExpired || (!hasUsableContext && isNewConversation(texto, history || []));
 
     let oldOrder;
     if (isNewChat) {
@@ -1566,9 +1648,9 @@ export default async function handler(req: any, res: any) {
 
     // 🔥 IMPORTANTE: El producto activo debe venir del contexto, no de detección nueva cuando esperamos ciudad
     const currentActiveProduct = 
-      oldOrder?.product ||
-      context?.current_product ||
-      lastUserProduct ||
+      sanitizeProductCandidate(oldOrder?.product) ||
+      sanitizeProductCandidate(context?.current_product) ||
+      sanitizeProductCandidate(lastUserProduct) ||
       null;
     
     console.log(`🎯 Producto activo actual: "${currentActiveProduct}"`);
@@ -1654,8 +1736,10 @@ export default async function handler(req: any, res: any) {
         shoeProductContext ||
         productRequiresSize(String(oldOrder?.product || context?.current_product || product || "")));
 
-    // Verificar si es respuesta de ciudad
-    const isCityReply = !product && !isOnlyNumber && extractCityFromText(texto) && 
+    // Verificar si es respuesta de ciudad. Si estamos esperando ciudad,
+    // el texto debe tratarse como ciudad y NO como producto.
+    const cityFromMessage = extractCityFromText(texto);
+    const isCityReply = !isOnlyNumber && !!cityFromMessage && 
       (wasAskingCity || previousStep === "collecting_city");
     
     // Verificar si es respuesta de cantidad
@@ -1665,6 +1749,15 @@ export default async function handler(req: any, res: any) {
     const wantsAddMore = isAddMoreIntent(texto);
     
     let extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
+
+    if (isCityReply) {
+      const lockedProduct = sanitizeProductCandidate(currentActiveProduct) || sanitizeProductCandidate(product);
+      if (lockedProduct) {
+        product = lockedProduct;
+        lastUserProduct = lockedProduct;
+        console.log(`📍 Ciudad detectada (${cityFromMessage}) - producto bloqueado: "${product}"`);
+      }
+    }
 
     // =======================================================
     // 🆕 NUEVO PRODUCTO SELECCIONADO → PREGUNTAR CIUDAD
@@ -1731,8 +1824,9 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 🆕 RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD (con ejemplos)
     // =======================================================
-    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && product) {
-      const city = extracted.city || extractCityFromText(texto);
+    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && (product || currentActiveProduct)) {
+      product = sanitizeProductCandidate(product) || sanitizeProductCandidate(currentActiveProduct);
+      const city = extracted.city || cityFromMessage || extractCityFromText(texto);
       
       if (city) {
         let orderData = {
@@ -1769,7 +1863,8 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 🆕 RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y CONFIRMAR
     // =======================================================
-    if (isQuantityReply && product && extracted.quantity > 0) {
+    if (isQuantityReply && (product || currentActiveProduct) && extracted.quantity > 0) {
+      product = sanitizeProductCandidate(product) || sanitizeProductCandidate(currentActiveProduct);
       let orderData = {
         product: product,
         quantity: extracted.quantity,
@@ -1869,7 +1964,7 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
             .join(" ");
 
           const catalogProduct = detectProductRaw(productSignal, fullTraining, "", lastUserProduct);
-          const visualProduct = catalogProduct || analysis.matchedProduct || analysis.productName || "";
+          const visualProduct = sanitizeProductCandidate(catalogProduct || analysis.matchedProduct || analysis.productName || "");
           
           // Si detectamos producto visual, actualizar el producto
           if (visualProduct) {
