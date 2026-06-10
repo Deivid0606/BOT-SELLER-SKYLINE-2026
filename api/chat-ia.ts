@@ -1,4 +1,4 @@
-// api/chat-ia.ts — v1011
+// api/chat-ia.ts — v1012
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(process.env.SUPABASE_URL as string, process.env.SUPABASE_SERVICE_ROLE_KEY as string);
@@ -225,6 +225,28 @@ function sanitizeProductCandidate(product: any): string {
 function isInvalidProductCandidate(name: string): boolean {
   const n = normalize(name);
   if (!n) return true;
+
+  // 🚫 Nunca permitir que ejemplos, reglas o frases del entrenamiento sean tomadas como producto
+  if (
+    n.startsWith("cliente") ||
+    n.startsWith("asistente") ||
+    n.startsWith("respuesta") ||
+    n.startsWith("ejemplo") ||
+    n.startsWith("regla") ||
+    n.startsWith("prohibido") ||
+    n.includes("cliente hola") ||
+    n.includes("hola quiero mas informacion") ||
+    n.includes("hola quiero mas información") ||
+    n.includes("quiero mas informacion") ||
+    n.includes("quiero más informacion") ||
+    n.includes("quiero más información") ||
+    n.includes("objetivo principal") ||
+    n.includes("estado conversacional") ||
+    n.includes("formato final") ||
+    n.includes("repuesta automatica") ||
+    n.includes("respuesta automatica") ||
+    n.includes("respuesta automática")
+  ) return true;
   if (isCityAliasText(name)) return true;
   if (n.includes(",") && !hasExplicitProductMention(name)) return true;
   if (isOnlyShoeVariantText(name)) return true;
@@ -276,6 +298,27 @@ function isInvalidCartProduct(name: string): boolean {
   const n = normalize(raw);
 
   if (!n) return true;
+
+  // 🚫 Nunca guardar ejemplos/reglas como producto en carrito/pedido
+  if (
+    n.startsWith("cliente") ||
+    n.startsWith("asistente") ||
+    n.startsWith("respuesta") ||
+    n.startsWith("ejemplo") ||
+    n.startsWith("regla") ||
+    n.startsWith("prohibido") ||
+    n.includes("cliente hola") ||
+    n.includes("hola quiero mas informacion") ||
+    n.includes("hola quiero mas información") ||
+    n.includes("quiero mas informacion") ||
+    n.includes("quiero más informacion") ||
+    n.includes("quiero más información") ||
+    n.includes("objetivo principal") ||
+    n.includes("estado conversacional") ||
+    n.includes("formato final") ||
+    n.includes("respuesta automatica") ||
+    n.includes("respuesta automática")
+  ) return true;
   if (isCityAliasText(raw)) return true;
   if (n.includes(",") && !hasExplicitProductMention(raw)) return true;
   if (isOnlyShoeVariantText(name)) return true;
@@ -356,6 +399,24 @@ function extractProductNameFromLine(line: string): string {
   if (productMatch) return clean(productMatch[1]);
 
   const nRaw = normalize(raw);
+
+  // 🚫 Ignorar ejemplos, reglas e instrucciones del entrenamiento.
+  if (
+    nRaw.startsWith("cliente") ||
+    nRaw.startsWith("asistente") ||
+    nRaw.startsWith("respuesta") ||
+    nRaw.startsWith("ejemplo") ||
+    nRaw.startsWith("regla") ||
+    nRaw.startsWith("prohibido") ||
+    nRaw.includes("cliente hola") ||
+    nRaw.includes("quiero mas informacion") ||
+    nRaw.includes("quiero más informacion") ||
+    nRaw.includes("quiero más información") ||
+    nRaw.includes("objetivo principal") ||
+    nRaw.includes("estado conversacional") ||
+    nRaw.includes("formato final")
+  ) return "";
+
   if (
     nRaw.includes("pago anticipado") ||
     nRaw.includes("contra entrega") ||
@@ -490,13 +551,28 @@ function detectProductRespectingActive(
     return activeProduct;
   }
   
+  // 🔥 Si el mensaje menciona explícitamente un producto del catálogo, ese producto manda,
+  // aunque haya un producto viejo guardado en contexto.
+  const explicitProductFromMessage =
+    detectProductFromCatalog(text, training) ||
+    canonicalProductFromText(text);
+
+  if (
+    explicitProductFromMessage &&
+    !isInvalidProductCandidate(explicitProductFromMessage) &&
+    (!activeProduct || !sameProduct(explicitProductFromMessage, activeProduct))
+  ) {
+    console.log(`🎯 Producto explícito detectado en el mensaje. Cambio de "${activeProduct}" a "${explicitProductFromMessage}"`);
+    return explicitProductFromMessage;
+  }
+
   if (isPriceIntent(text) || isProductInquiry(text)) {
     console.log(`ℹ️ Consulta de precio/info - manteniendo producto activo: ${activeProduct}`);
     return activeProduct || "";
   }
-  
-  const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas)\b/i.test(msg);
-  
+
+  const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas|limpiador|ollas|carbonilla|oven|cleaner|destapa|cañerias|cañerías|canerias|tornado)\b/i.test(msg);
+
   const isOnlyLocation = isLocationOnlyMessage(text);
   const isOnlyQuantity = /^\s*\d{1,3}\s*$/.test(text) && !isOnlyShoeVariantText(text);
   
@@ -723,6 +799,31 @@ function getLastAssistantMessage(history: any[]) {
     .filter((h: any) => h?.role === "assistant" || h?.role === "model")
     .slice(-1)[0];
   return clean(last?.content);
+}
+
+function findRecentUserProductFromHistory(history: any[], training: string): string {
+  if (!Array.isArray(history)) return "";
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i];
+    if (msg?.role !== "user") continue;
+
+    const userText = clean(msg.content);
+    if (!userText) continue;
+
+    // Evitar que respuestas cortas o ciudades cambien el producto.
+    if (isGenericBuyConfirmation(userText)) continue;
+    if (isLocationOnlyMessage(userText)) continue;
+    if (/^\s*\d{1,3}\s*$/.test(userText)) continue;
+
+    const fromCatalog = detectProductFromCatalog(userText, training);
+    if (fromCatalog && !isInvalidProductCandidate(fromCatalog)) return fromCatalog;
+
+    const canonical = canonicalProductFromText(userText);
+    if (canonical && !isInvalidProductCandidate(canonical)) return canonical;
+  }
+
+  return "";
 }
 
 function botWasAskingQuantityFromHistory(lastAssistantMessage?: string): boolean {
@@ -1783,7 +1884,7 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION v1011 - CATALOGO_PRODUCTOS - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
+  console.log("🔥 VERSION v1012 - CATALOGO_PRODUCTOS - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1833,7 +1934,15 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    let lastUserProduct = context?.last_user_product || "";
+    let lastUserProduct = sanitizeProductCandidate(context?.last_user_product) || "";
+
+    // 🔥 Siempre revisar el historial reciente. Si el cliente mencionó un producto nuevo
+    // después del contexto viejo, debe pisar el producto anterior.
+    const recentHistoryProduct = findRecentUserProductFromHistory(history || [], fullTraining);
+    if (recentHistoryProduct && !sameProduct(recentHistoryProduct, lastUserProduct)) {
+      console.log(`🔄 Producto reciente detectado en historial: "${recentHistoryProduct}" reemplaza "${lastUserProduct}"`);
+      lastUserProduct = recentHistoryProduct;
+    }
 
     if (!lastUserProduct && Array.isArray(history)) {
       for (let i = history.length - 1; i >= 0; i--) {
@@ -1915,7 +2024,18 @@ export default async function handler(req: any, res: any) {
     }
 
     // 🔥 IMPORTANTE: El producto activo debe venir del contexto, no de detección nueva cuando esperamos ciudad
-    const currentActiveProduct = 
+    const explicitProductInCurrentMessage =
+      detectProductFromCatalog(texto, fullTraining) ||
+      canonicalProductFromText(texto);
+
+    const shouldPreferRecentProduct =
+      isGenericBuyConfirmation(texto) &&
+      recentHistoryProduct &&
+      (!previousStep || previousStep === "selling" || previousStep === "mostrando_producto");
+
+    const currentActiveProduct =
+      sanitizeProductCandidate(explicitProductInCurrentMessage) ||
+      (shouldPreferRecentProduct ? sanitizeProductCandidate(recentHistoryProduct) : "") ||
       sanitizeProductCandidate(oldOrder?.product) ||
       sanitizeProductCandidate(context?.current_product) ||
       sanitizeProductCandidate(lastUserProduct) ||
@@ -1936,8 +2056,38 @@ export default async function handler(req: any, res: any) {
       history
     );
     
+    product = sanitizeProductCandidate(product);
     console.log(`✅ Producto final detectado: "${product}"`);
-    
+
+    const cityFromCurrentMessage = extractCityFromText(texto);
+
+    // 🚫 Si el cliente solo dio ciudad o hizo una consulta sin producto real,
+    // no avanzar a cantidad ni confirmar pedido con basura del entrenamiento.
+    if (!product && cityFromCurrentMessage && !currentActiveProduct) {
+      const orderOnlyCity = {
+        ...(oldOrder || {}),
+        product: "",
+        quantity: 0,
+        total_amount: 0,
+        city: cityFromCurrentMessage,
+        items: [],
+      };
+
+      return res.json({
+        response: `Perfecto 😊 Ya tengo tu ciudad: ${cityFromCurrentMessage}.\n\n¿Cuál producto te interesa? ✨`,
+        context: {
+          ...(context || {}),
+          step: "selling",
+          tipo_cobertura: getTipoCobertura(cityFromCurrentMessage) || null,
+          order_data: orderOnlyCity,
+          current_product: null,
+          last_user_product: null,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
+    }
+
     if (product && !isInvalidProductCandidate(product)) {
       lastUserProduct = product;
     }
