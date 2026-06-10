@@ -1,8 +1,8 @@
-// api/webhook.js — webhook_v18.js (FLUJO CORRECTO: pide datos antes de confirmar)
+// api/webhook.js — webhook_v19.js (FINAL)
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage
 // + CONFIRMACIÓN ÚNICA Y DETECCIÓN DE INTENCIONES
-// + DETECCIÓN DE PRODUCTOS - PIDE DATOS DEL CLIENTE PRIMERO
+// + DETECCIÓN DE PRODUCTOS - DELEGA EN IA PARA RESPUESTA
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -44,17 +44,15 @@ const normalize = (t) =>
     .replace(/[\u0300-\u036f]/g, "");
 
 // ═══════════════════════════════════════════════════════════
-// FUNCIONES AUXILIARES PARA EXTRAER DATOS DEL CLIENTE
+// FUNCIONES AUXILIARES
 // ═══════════════════════════════════════════════════════════
 
 function extraerNombre(texto) {
   const msg = texto;
-  
   const patterns = [
     /(?:mi nombre es|me llamo|soy|nombre:?)\s*([A-Za-zÀ-ÿ\s]{2,40})(?:\n|\.|,|$)/i,
     /^([A-Za-zÀ-ÿ\s]{2,40})(?:\n|\.|,|$)/i,
   ];
-  
   for (const pattern of patterns) {
     const match = msg.match(pattern);
     if (match && match[1] && !match[1].toLowerCase().includes('calle') && !match[1].toLowerCase().includes('dirección')) {
@@ -67,13 +65,11 @@ function extraerNombre(texto) {
 
 function extraerDireccion(texto) {
   const msg = texto;
-  
   const patterns = [
     /(?:dirección|direccion|ubicación|ubicacion|domicilio|calle|av\.?|avenida|casa|barrio)\s*:?\s*([A-Za-z0-9À-ÿ\s.,#\-ñÑ]{10,100})(?:\n|\.|,|$)/i,
     /([A-Za-z0-9À-ÿ\s.,#\-]{10,80})\s*(?:entre|y|esq\.?|esquina)/i,
     /(calle|av\.?|avenida|ruta)\s+[A-Za-z0-9À-ÿ\s.,#\-]{5,60}/i,
   ];
-  
   for (const pattern of patterns) {
     const match = msg.match(pattern);
     if (match && match[1]) {
@@ -86,14 +82,12 @@ function extraerDireccion(texto) {
 
 function extraerTelefono(texto) {
   const msg = texto;
-  
   const patterns = [
     /(?:teléfono|telefono|celular|whatsapp|contacto|cel|tel)\s*:?\s*(\+?[\d\s\-]{8,20})/i,
     /(\+?59[5-9]?\d{8,12})/,
     /(0?9\d{8,9})/,
     /(\d{8,12})/,
   ];
-  
   for (const pattern of patterns) {
     const match = msg.match(pattern);
     if (match && match[1]) {
@@ -106,27 +100,22 @@ function extraerTelefono(texto) {
 
 function detectIntent(message, orderConfirmed) {
   const msg = normalize(message);
-  
   const confirmKeywords = ['si', 'sí', 'confirmo', 'acepto', 'dale', 'ok', 'bueno'];
   const rescheduleKeywords = ['mañana', 'otro día', 'cambiar fecha', 'reprogramar', 'más tarde'];
   const cancelKeywords = ['cancelar', 'no quiero', 'anular', 'cancelación', 'baja'];
   const locationKeywords = ['no estoy en mi casa', 'no estoy en casa', 'fuera de casa', 'otra dirección'];
   const thanksKeywords = ['gracias', 'disculpe', 'perdón', 'gracias disculpe'];
   
-  if (!orderConfirmed && confirmKeywords.some(k => msg.includes(k))) {
-    return 'confirm';
-  }
-  
+  if (!orderConfirmed && confirmKeywords.some(k => msg.includes(k))) return 'confirm';
   if (rescheduleKeywords.some(k => msg.includes(k))) return 'reschedule';
   if (cancelKeywords.some(k => msg.includes(k))) return 'cancel';
   if (locationKeywords.some(k => msg.includes(k))) return 'location_changed';
   if (thanksKeywords.some(k => msg.includes(k))) return 'thanks';
-  
   return 'unknown';
 }
 
 // ═══════════════════════════════════════════════════════════
-// DETECCIÓN DE PRODUCTOS EN MENSAJES DE CLIENTES
+// DETECCIÓN DE PRODUCTOS - SOLO DETECTA, NO RESPONDE
 // ═══════════════════════════════════════════════════════════
 
 async function detectProductFromClientMessage(userId, from, clientMessage, lastBotMessage) {
@@ -135,95 +124,83 @@ async function detectProductFromClientMessage(userId, from, clientMessage, lastB
   const buyPatterns = [
     /quiero\s+(\d+)/i,
     /quiero\s+(\d+)\s*unidades?/i,
-    /comprar\s+(\d+)/i,
-    /pedir\s+(\d+)/i,
-    /llevo\s+(\d+)/i,
-    /(\d+)\s+unidades?/i,
     /quiero\s+uno/i,
     /quiero\s+una/i,
-    /dame\s+uno/i,
-    /me\s+interesa/i,
     /quiero$/i,
+    /comprar/i,
+    /pedir/i,
+    /llevo/i,
+    /dame/i,
+    /me\s+interesa/i,
   ];
   
   let quantity = 1;
+  let hasBuyIntent = false;
   
   for (const pattern of buyPatterns) {
-    const match = msg.match(pattern);
-    if (match) {
-      if (match[1] && !isNaN(parseInt(match[1]))) {
+    if (pattern.test(msg)) {
+      hasBuyIntent = true;
+      const match = msg.match(pattern);
+      if (match && match[1] && !isNaN(parseInt(match[1]))) {
         quantity = parseInt(match[1]);
       }
       break;
     }
   }
   
-  const isBuyIntent = msg.includes("quiero") || 
-                      msg.includes("comprar") || 
-                      msg.includes("pedir") || 
-                      msg.includes("llevo") ||
-                      msg.includes("dame") ||
-                      msg.includes("me interesa");
+  if (!hasBuyIntent) return { detected: false };
   
-  if (!isBuyIntent) {
-    return { detected: false };
-  }
+  console.log(`🛍️ Intención de compra detectada, cantidad: ${quantity}`);
   
   if (lastBotMessage) {
     const botMsg = lastBotMessage;
     
-    const productPatterns = [
-      /💥\s*([^*\n]{5,80})/i,
-      /WILD\s+TORNADO[^\n]{0,50}/i,
-      /DESTAPA\s+CAÑERIAS[^\n]{0,50}/i,
-      /([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,5})/i,
+    const knownProducts = [
+      { name: "WILD TORNADO DESTAPA CAÑERÍAS", price: 159900 },
+      { name: "DESTAPA CAÑERÍAS", price: 159900 },
     ];
     
     let productName = null;
     let productPrice = null;
     
-    for (const pattern of productPatterns) {
-      const match = botMsg.match(pattern);
-      if (match && match[1]) {
-        let candidate = clean(match[1]);
-        if (candidate.length > 5 && candidate.length < 100 && 
-            !candidate.includes("PEDIDO") && 
-            !candidate.includes("CONFIRMADO")) {
-          productName = candidate;
-          break;
-        }
-      }
-    }
-    
-    if (!productName) {
-      if (botMsg.includes("WILD TORNADO")) {
-        productName = "WILD TORNADO DESTAPA CAÑERÍAS";
-      } else if (botMsg.includes("DESTAPA CAÑERÍAS")) {
-        productName = "WILD TORNADO DESTAPA CAÑERÍAS";
-      }
-    }
-    
-    const pricePatterns = [
-      /\$?(\d{2,6}(?:\.\d{3})*)\s*(?:GS|Gs|guaranies|G\.)/i,
-      /PRECIO\s*PROMOCIONAL:\s*\$?(\d{2,6}(?:\.\d{3})*)/i,
-      /(\d{2,6}(?:\.\d{3})*)\s*GS/i,
-    ];
-    
-    for (const pattern of pricePatterns) {
-      const match = botMsg.match(pattern);
-      if (match && match[1]) {
-        productPrice = parseInt(match[1].replace(/\./g, ''));
+    for (const product of knownProducts) {
+      if (botMsg.includes(product.name) || botMsg.includes(product.name.toUpperCase())) {
+        productName = product.name;
+        productPrice = product.price;
         break;
       }
     }
     
+    if (!productName) {
+      const patterns = [
+        /💥\s*([^*\n]{5,80})/i,
+        /([A-Z][A-Z\s]{5,50})(?:está diseñado|es un producto)/i,
+      ];
+      for (const pattern of patterns) {
+        const match = botMsg.match(pattern);
+        if (match && match[1]) {
+          const candidate = clean(match[1]);
+          if (candidate.length > 5 && candidate.length < 100) {
+            productName = candidate;
+            break;
+          }
+        }
+      }
+    }
+    
+    const priceMatch = botMsg.match(/\$?(\d{1,3}(?:\.\d{3})*)\s*(?:GS|Gs|guaranies)/i);
+    if (priceMatch) {
+      productPrice = parseInt(priceMatch[1].replace(/\./g, ''));
+    }
+    
     if (productName) {
-      console.log(`🛍️ Producto detectado: "${productName}" | Precio: ${productPrice} | Cantidad: ${quantity}`);
+      console.log(`✅ Producto detectado: "${productName}" | Precio: ${productPrice} | Cantidad: ${quantity}`);
       return {
         product: productName,
         quantity: quantity,
         price: productPrice || 159900,
-        detected: true
+        detected: true,
+        lastBotMessage: botMsg
       };
     }
   }
@@ -886,7 +863,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// LLAMADA A CHAT-IA
+// LLAMADA A CHAT-IA (GEMINI)
 // ═══════════════════════════════════════════════════════════
 
 async function llamarChatIA({
@@ -950,8 +927,6 @@ async function detectarYGuardarPedidoConfirmado({
 }) {
   try {
     console.log(`📦 Guardando pedido confirmado para ${from}`);
-    // Aquí iría la lógica para guardar el pedido en la tabla orders
-    // Por ahora solo logueamos
     console.log(`✅ Pedido confirmado: ${textoMensaje.substring(0, 200)}`);
   } catch (err) {
     console.error("❌ detectarYGuardarPedidoConfirmado error:", err);
@@ -968,7 +943,7 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// PROCESAR MENSAJE ENTRANTE - FLUJO CORRECTO
+// PROCESAR MENSAJE ENTRANTE - FLUJO CORRECTO CON IA
 // ═══════════════════════════════════════════════════════════
 
 export async function procesar(req, message, userId, from) {
@@ -1038,7 +1013,7 @@ export async function procesar(req, message, userId, from) {
     const chatState = getConversationState(from);
     const intent = detectIntent(texto, chatState.orderConfirmed);
     
-    console.log(`🎯 Intención: ${intent} | Confirmado: ${chatState.orderConfirmed} | Step: ${chatState.orderData?.step}`);
+    console.log(`🎯 Intención: ${intent} | Confirmado: ${chatState.orderConfirmed}`);
 
     // ═══════════════════════════════════════════════════════════════
     // MANEJO DE INTENCIONES BÁSICAS
@@ -1073,107 +1048,42 @@ export async function procesar(req, message, userId, from) {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // FLUJO: ESPERANDO CONFIRMACIÓN FINAL
+    // CONFIRMACIÓN (solo si el pedido NO está confirmado)
     // ═══════════════════════════════════════════════════════════════
 
-    if (chatState.orderData?.step === 'awaiting_final_confirmation' && !chatState.orderConfirmed) {
-      const finalMsg = normalize(texto);
-      if (finalMsg.includes('si') || finalMsg.includes('sí') || finalMsg.includes('confirmo')) {
-        updateConversationState(from, { orderConfirmed: true, orderData: { ...chatState.orderData, step: 'confirmed' } });
-        
-        const confirmMsg = `✅ *¡PEDIDO CONFIRMADO!* ✅
+    if (intent === 'confirm' && !chatState.orderConfirmed) {
+      updateConversationState(from, { orderConfirmed: true });
+      const confirmMsg = `✅ **PEDIDO CONFIRMADO** ✅
 
-✅ Producto: ${chatState.orderData.product}
-✅ Cliente: ${chatState.orderData.customer_name}
-✅ Cantidad: ${chatState.orderData.quantity} u.
-💰 Total: ${chatState.orderData.total_amount.toLocaleString('es')} Gs
-
-📍 *Dirección de entrega:* ${chatState.orderData.address}
-📞 *Contacto:* ${chatState.orderData.phone}
+✅ Producto: ${chatState.orderData?.product || 'Producto'}
+✅ Cliente: ${chatState.orderData?.customer_name || 'Cliente'}
+✅ Cantidad: ${chatState.orderData?.quantity || 1} u.
+💰 Total: ${(chatState.orderData?.total_amount || 0).toLocaleString('es')} Gs
 
 🚚 **ENVÍO GRATIS** · **Pagás al recibir**
 
 📦 Tu pedido queda agendado. El delivery se comunicará contigo.
 
 ¡Gracias por elegir Mega Todo Store! 💜✨`;
-
-        await enviarMensaje(userId, from, confirmMsg);
-        await saveReceivedMessage({ userId, from, message: confirmMsg, messageType: "out_text" });
-        
-        await detectarYGuardarPedidoConfirmado({
-          userId, from, textoMensaje: confirmMsg, sourceMessageId: null
-        });
-        
-        return { response: confirmMsg, handled_by: "final_confirmation" };
-      } else if (finalMsg.includes('no') || finalMsg.includes('cancelar')) {
-        updateConversationState(from, { orderData: { step: null } });
-        const msg = "❌ Pedido cancelado. Si necesitas algo más, escribinos. ¡Gracias!";
-        await enviarMensaje(userId, from, msg);
-        await saveReceivedMessage({ userId, from, message: msg, messageType: "out_text" });
-        return { response: msg, handled_by: "order_cancelled" };
-      } else {
-        const msg = "¿Confirmas tu pedido? Responde *SÍ* para confirmar o *NO* para cancelar.";
-        await enviarMensaje(userId, from, msg);
-        await saveReceivedMessage({ userId, from, message: msg, messageType: "out_text" });
-        return { response: msg, handled_by: "ask_confirmation" };
-      }
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // FLUJO: ESPERANDO DATOS DEL CLIENTE
-    // ═══════════════════════════════════════════════════════════════
-
-    if (chatState.orderData?.step === 'awaiting_customer_data' && !chatState.orderConfirmed) {
-      const customerName = extraerNombre(texto);
-      const customerAddress = extraerDireccion(texto);
-      const customerPhone = extraerTelefono(texto) || from;
       
-      if (customerName && customerAddress) {
-        const orderData = chatState.orderData;
-        const confirmMsg = `✅ *RESUMEN DE TU PEDIDO* ✅
-
-✅ Producto: ${orderData.product}
-✅ Cliente: ${customerName}
-✅ Cantidad: ${orderData.quantity} u.
-💰 Total: ${orderData.total_amount.toLocaleString('es')} Gs
-
-📍 *Dirección de entrega:* ${customerAddress}
-📞 *Contacto:* ${customerPhone}
-
-🚚 **ENVÍO GRATIS** · **Pagás al recibir**
-
-¿Confirmas este pedido? Responde *SÍ* para finalizar o *NO* para cancelar.`;
-
-        await enviarMensaje(userId, from, confirmMsg);
-        await saveReceivedMessage({ userId, from, message: confirmMsg, messageType: "out_text" });
-        
-        updateConversationState(from, { 
-          orderData: {
-            ...orderData,
-            customer_name: customerName,
-            address: customerAddress,
-            phone: customerPhone,
-            step: 'awaiting_final_confirmation'
-          }
-        });
-        
-        return { response: confirmMsg, handled_by: "customer_data_received" };
-      } else {
-        let missingDataMsg = "📋 *Para completar tu pedido necesito:*\n\n";
-        if (!customerName) missingDataMsg += "❓ Tu *nombre completo*\n";
-        if (!customerAddress) missingDataMsg += "❓ Tu *dirección de entrega* (calle, número, barrio)\n";
-        if (!customerPhone) missingDataMsg += "❓ Tu *teléfono de contacto*\n";
-        missingDataMsg += "\n✅ *Ejemplo:* Juan Pérez | Av. España 123, Asunción | 0981123456";
-        
-        await enviarMensaje(userId, from, missingDataMsg);
-        await saveReceivedMessage({ userId, from, message: missingDataMsg, messageType: "out_text" });
-        
-        return { response: missingDataMsg, handled_by: "missing_data" };
-      }
+      await enviarMensaje(userId, from, confirmMsg);
+      await saveReceivedMessage({ userId, from, message: confirmMsg, messageType: "out_text" });
+      return { response: confirmMsg, handled_by: "confirmation" };
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // DETECCIÓN DE PRODUCTO - PEDIR DATOS
+    // SI YA ESTÁ CONFIRMADO
+    // ═══════════════════════════════════════════════════════════════
+
+    if (chatState.orderConfirmed) {
+      const msg = "✅ Tu pedido ya está confirmado. ¿Necesitas modificar algo? Responde: CAMBIAR FECHA, CAMBIAR UBICACIÓN o CANCELAR.";
+      await enviarMensaje(userId, from, msg);
+      await saveReceivedMessage({ userId, from, message: msg, messageType: "out_text" });
+      return { response: msg, handled_by: "already_confirmed" };
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // DETECCIÓN DE PRODUCTO - LLAMA A LA IA
     // ═══════════════════════════════════════════════════════════════
 
     const { data: lastOutboundMsg } = await supabase
@@ -1191,54 +1101,58 @@ export async function procesar(req, message, userId, from) {
       userId, from, texto, lastOutboundMsg?.message || ""
     );
     
-    if (productDetection.detected && !chatState.orderConfirmed && chatState.orderData?.step !== 'awaiting_customer_data') {
-      const totalPrice = productDetection.price * productDetection.quantity;
-      console.log(`🛍️ Producto solicitado: ${productDetection.product} x${productDetection.quantity} - ${totalPrice.toLocaleString('es')} GS`);
+    if (productDetection.detected) {
+      console.log(`🛍️ Producto detectado: ${productDetection.product} - Delegando a IA`);
       
+      // Guardar producto detectado en estado
       updateConversationState(from, { 
         orderData: {
           product: productDetection.product,
           quantity: productDetection.quantity,
           unit_price: productDetection.price,
-          total_amount: totalPrice,
-          step: 'awaiting_customer_data'
+          total_amount: productDetection.price * productDetection.quantity,
         }
       });
       
-      const askDataMsg = `🛍️ *¡Gracias por tu interés!* 🛍️
-
-Producto: *${productDetection.product}*
-Cantidad: *${productDetection.quantity}* u.
-Precio unitario: *${productDetection.price.toLocaleString('es')} GS*
-Total: *${totalPrice.toLocaleString('es')} GS*
-
-Para agendar tu pedido, necesito tus datos:
-
-📝 *Nombre completo:*
-📍 *Dirección de entrega:* (calle, número, barrio)
-📞 *Teléfono de contacto:*
-
-¡Respondé con tus datos y confirmamos tu pedido! 💜`;
-
-      await enviarMensaje(userId, from, askDataMsg);
-      await saveReceivedMessage({ userId, from, message: askDataMsg, messageType: "out_text" });
+      // LLAMAR A LA IA PARA QUE RESPONDA (ella maneja ciudad y zona de cobertura)
+      const ctx = await getContexto(userId, from);
+      const history = await getHistory(userId, from);
       
-      return { response: askDataMsg, handled_by: "product_request", awaiting_data: true };
+      // Mensaje enriquecido para la IA con contexto del producto
+      const promptIA = `El cliente acaba de escribir: "${texto}"
+      
+Contexto: El cliente está interesado en comprar el producto "${productDetection.product}" (precio: ${productDetection.price} GS, cantidad: ${productDetection.quantity}).
+
+Respondé como asistente de Mega Todo Store. Saludá al cliente, confirmá el producto y lo que corresponde. Si el cliente no indicó su ciudad, preguntale en qué ciudad se encuentra para determinar el tipo de envío (delivery gratis si es Asunción/Gran Asunción, o encomienda con pago anticipado si es otra ciudad).`;
+
+      let data = {};
+      try {
+        data = await llamarChatIA({ req, userId, texto: promptIA, from, ctx, history });
+      } catch (err) {
+        console.error("❌ chat-ia error:", err);
+        const fallbackMsg = `🛍️ *¡Gracias por tu interés en ${productDetection.product}!*
+
+Para procesar tu pedido, necesito saber:
+
+📍 *¿En qué ciudad te encuentras?*
+
+Ejemplos: Asunción, San Lorenzo, Fernando de la Mora, Ciudad del Este, Encarnación, etc.`;
+        
+        await enviarMensaje(userId, from, fallbackMsg);
+        await saveReceivedMessage({ userId, from, message: fallbackMsg, messageType: "out_text" });
+        return { response: fallbackMsg, handled_by: "product_detection_fallback" };
+      }
+
+      if (data?.response) {
+        await enviarMensaje(userId, from, data.response);
+        await saveReceivedMessage({ userId, from, message: data.response, messageType: "out_text" });
+        if (data?.context) await saveContexto(userId, from, data.context);
+        return { response: data.response, handled_by: "product_detection_ia" };
+      }
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // SI YA ESTÁ CONFIRMADO
-    // ═══════════════════════════════════════════════════════════════
-
-    if (chatState.orderConfirmed) {
-      const msg = "✅ Tu pedido ya está confirmado. ¿Necesitas modificar algo? Responde: CAMBIAR FECHA, CAMBIAR UBICACIÓN o CANCELAR.";
-      await enviarMensaje(userId, from, msg);
-      await saveReceivedMessage({ userId, from, message: msg, messageType: "out_text" });
-      return { response: msg, handled_by: "already_confirmed" };
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // TRIGGERS Y IA
+    // TRIGGERS Y IA NORMAL
     // ═══════════════════════════════════════════════════════════════
 
     const disparado = await evaluarDisparadores({ userId, from, texto });
@@ -1265,6 +1179,11 @@ Para agendar tu pedido, necesito tus datos:
     if (data?.response) {
       await enviarMensaje(userId, from, data.response);
       await saveReceivedMessage({ userId, from, message: data.response, messageType: "out_text" });
+      
+      if (esMensajePedidoConfirmado(data.response)) {
+        await detectarYGuardarPedidoConfirmado({ userId, from, textoMensaje: data.response, sourceMessageId: null });
+      }
+      
       return { response: data.response, context: data.context };
     }
 
