@@ -77,11 +77,29 @@ function extractData(msg: string) {
   const text = clean(msg);
   const norm = normalize(text);
   const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
+  
+  // --- MODIFICACIÓN: MEJORA EN EXTRACCIÓN DE CANTIDAD ---
   let quantity = 0;
+
+  // 1 UNIDAD / 2 UNIDADES / 3 U
   const q1 = norm.match(/\b(\d+)\s*(unidad|unidades|u)\b/);
   if (q1) quantity = Number(q1[1]);
+
+  // SOLO UN NÚMERO: "1", "2", "3"
+  if (!quantity) {
+    const onlyNumber = norm.match(/^\d+$/);
+    if (onlyNumber) {
+      quantity = Number(onlyNumber[0]);
+    }
+  }
+
+  // TEXTO
   if (!quantity && /\buno\b|\buna\b/.test(norm)) quantity = 1;
   if (!quantity && /\bdos\b/.test(norm)) quantity = 2;
+  if (!quantity && /\btres\b/.test(norm)) quantity = 3;
+  if (!quantity && /\bcuatro\b/.test(norm)) quantity = 4;
+  if (!quantity && /\bcinco\b/.test(norm)) quantity = 5;
+  // --- FIN MODIFICACIÓN ---
 
   const cityAliases: Record<string, string> = {
     asuncion: "Asunción",
@@ -136,16 +154,23 @@ function extractData(msg: string) {
   return { quantity, city, name, phone, address: clean(address) };
 }
 
+// --- MODIFICACIÓN: MEJORA EN MERGE DE CANTIDAD ---
 function mergeOrderData(old: any, ext: any, product: string) {
   return {
     product: product || old?.product || "",
-    quantity: ext.quantity || old?.quantity || 1,
+    quantity:
+      ext.quantity > 0
+        ? ext.quantity
+        : old?.quantity > 0
+        ? old.quantity
+        : 1,
     city: ext.city || old?.city || "",
     customer_name: ext.name || old?.customer_name || "",
     phone: ext.phone || old?.phone || "",
     address: ext.address || old?.address || "",
   };
 }
+// --- FIN MODIFICACIÓN ---
 
 function nextStep(o: any) {
   if (!o.product) return "selling";
