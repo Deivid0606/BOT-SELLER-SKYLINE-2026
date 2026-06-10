@@ -8,16 +8,8 @@
       "maxDuration": 60,
       "memory": 1024
     },
-    "api/waha-webhook.js": {
-      "maxDuration": 60,
-      "memory": 1024
-    },
     "api/cron-followups.js": {
       "maxDuration": 60,
-      "memory": 512
-    },
-    "api/waha-qr.js": {
-      "maxDuration": 30,
       "memory": 512
     },
     "api/send-whatsapp.js": {
