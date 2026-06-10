@@ -168,34 +168,90 @@ function mergeOrderData(old: any, ext: any, product: string) {
   };
 }
 
-// ───────── CORRECTOR DE CANTIDAD ─────────
-function fixQuantityInResponse(response: string, expectedQty: number, expectedProduct: string): string {
-  if (expectedQty !== 1) return response;
-  
+// ───────── CORRECTOR DE TOTAL Y CANTIDAD ─────────
+const PRODUCT_PRICES: Record<string, number> = {
+  "Nebulizador Portátil": 169900,
+  "Destapa Cañerías Tornado": 159900,
+  "Veneno de Abeja": 145000,
+  "Crema de Veneno de Abeja": 145000,
+  "Limpiador de Ollas y Carbonilla": 149900,
+  "Peladora Automática": 179900,
+  "Perfume Asad": 169900,
+  "Tabla de Picar de Mármol": 169900,
+  "Raqueta para Insectos": 119900,
+  "Afilador de Cuchillos": 99000,
+  "Plantillas Ortopiex 5D": 159000,
+  "Almohadillas Antivibración": 98000,
+};
+
+function calculateCorrectTotal(productName: string, quantity: number): string {
+  const unitPrice = PRODUCT_PRICES[productName] || 0;
+  const correctTotal = unitPrice * quantity;
+  return correctTotal.toLocaleString('es-ES');
+}
+
+function fixQuantityAndTotal(response: string, expectedQty: number, productName: string): string {
   let fixed = response;
   
-  // Patrones comunes de error
-  const wrongPatterns = [
+  const correctTotal = calculateCorrectTotal(productName, expectedQty);
+  const unitPrice = PRODUCT_PRICES[productName] || 0;
+  const unitPriceFormatted = unitPrice.toLocaleString('es-ES');
+  
+  // Patrones para corregir cantidad
+  const quantityPatterns = [
     { pattern: /Cantidad:\s*11\b/gi, replacement: "Cantidad: 1" },
     { pattern: /cantidad:\s*11\b/gi, replacement: "cantidad: 1" },
-    { pattern: /Cantidad:\s*(\d+)11\b/gi, replacement: "Cantidad: 1" },
-    { pattern: /\b11\s*(unidad|unidades)\b/gi, replacement: "1 unidad" },
-    { pattern: /Total:\s*1\.758\.900\s*Gs/gi, replacement: "Total: 159.900 Gs" },
-    { pattern: /Total:\s*1,758,900\s*Gs/gi, replacement: "Total: 159.900 Gs" },
-    { pattern: /Total:\s*[\d\.]+\s*Gs.*?(?:1\.758\.900|1,758,900)/gi, replacement: "Total: 159.900 Gs" },
+    { pattern: /Cantidad:\s*22\b/gi, replacement: "Cantidad: 2" },
+    { pattern: /cantidad:\s*22\b/gi, replacement: "cantidad: 2" },
+    { pattern: /Cantidad:\s*33\b/gi, replacement: "Cantidad: 3" },
+    { pattern: /cantidad:\s*33\b/gi, replacement: "cantidad: 3" },
+    { pattern: /\b11\s*(unidad|unidades)\b/gi, replacement: `1 ${expectedQty === 1 ? 'unidad' : 'unidad'}` },
+    { pattern: /\b22\s*(unidad|unidades)\b/gi, replacement: "2 unidades" },
+    { pattern: /\b33\s*(unidad|unidades)\b/gi, replacement: "3 unidades" },
   ];
   
-  for (const { pattern, replacement } of wrongPatterns) {
+  for (const { pattern, replacement } of quantityPatterns) {
     if (pattern.test(fixed)) {
       fixed = fixed.replace(pattern, replacement);
-      console.log("🔧 Corregido patrón:", pattern);
+      console.log("🔧 Corregido patrón cantidad:", pattern);
+    }
+  }
+  
+  // Patrones para corregir totales incorrectos (para cantidad 1)
+  const wrongTotals = [
+    /Total:\s*1\.868\.900\s*Gs/gi,
+    /Total:\s*1,868,900\s*Gs/gi,
+    /Total:\s*1\.699\.000\s*Gs/gi,
+    /Total:\s*1,699,000\s*Gs/gi,
+    /Total:\s*339\.800\s*Gs/gi,
+    /Total:\s*339,800\s*Gs/gi,
+    /Total:\s*509\.700\s*Gs/gi,
+    /Total:\s*509,700\s*Gs/gi,
+    /Total:\s*679\.600\s*Gs/gi,
+    /Total:\s*679,600\s*Gs/gi,
+  ];
+  
+  for (const wrongTotal of wrongTotals) {
+    if (wrongTotal.test(fixed)) {
+      fixed = fixed.replace(wrongTotal, `Total: ${correctTotal} Gs`);
+      console.log("🔧 Corregido total incorrecto");
+    }
+  }
+  
+  // Si la cantidad es 1, forzar que el total sea el precio unitario
+  if (expectedQty === 1) {
+    const unitPriceTotalPattern = /Total:\s*[\d\.\,]+\s*Gs/gi;
+    const currentTotalMatch = fixed.match(unitPriceTotalPattern);
+    if (currentTotalMatch && !currentTotalMatch[0].includes(correctTotal)) {
+      fixed = fixed.replace(unitPriceTotalPattern, `Total: ${correctTotal} Gs`);
+      console.log("🔧 Corrección forzada de total para cantidad 1");
     }
   }
   
   // Si aún hay "11" en el contexto de cantidad, forzar corrección
   if (fixed.includes("11") && (fixed.includes("Cantidad") || fixed.includes("cantidad"))) {
-    fixed = fixed.replace(/\b11\b/g, "1");
-    console.log("🔧 Corrección forzada: 11 → 1");
+    fixed = fixed.replace(/\b11\b/g, String(expectedQty));
+    console.log("🔧 Corrección forzada: 11 →", expectedQty);
   }
   
   return fixed;
@@ -608,7 +664,6 @@ export default async function handler(req: any, res: any) {
     const asksPrice = isPriceIntent(texto);
     
     // ─── FUERZA PREGUNTA DE CIUDAD ───
-    // Si el cliente quiere comprar, hay producto, pero NO hay ciudad → pedir ciudad
     let step = nextStep(orderData);
     
     if (wantsToBuy && orderData.product && !orderData.city) {
@@ -616,17 +671,26 @@ export default async function handler(req: any, res: any) {
       console.log("📍 Forzando pregunta de ciudad (cliente quiere comprar sin ciudad)");
     }
     
-    // También forzar si es un nuevo producto y no hay ciudad
     if (orderData.product && !orderData.city && (wantsToBuy || texto.includes("quiero") || texto.includes("compro"))) {
       step = "collecting_city";
       console.log("📍 Forzando pregunta de ciudad (nuevo producto, cliente dijo quiero)");
     }
     
-    // Si el cliente solo dijo "asuncion es" o similar, extraer ciudad
-    if ((texto.includes("asuncion") || texto.includes("asunción")) && !orderData.city) {
-      orderData.city = "Asunción";
-      step = nextStep(orderData);
-      console.log("📍 Ciudad detectada: Asunción");
+    // Detectar ciudad en frases como "asuncion es"
+    const cityDetectionPatterns = [
+      { pattern: /asuncion\s+es/i, city: "Asunción" },
+      { pattern: /san\s+lorenzo\s+es/i, city: "San Lorenzo" },
+      { pattern: /luque\s+es/i, city: "Luque" },
+      { pattern: /capiat[áa]\s+es/i, city: "Capiatá" },
+    ];
+    
+    for (const { pattern, city: detectedCity } of cityDetectionPatterns) {
+      if (pattern.test(texto) && !orderData.city) {
+        orderData.city = detectedCity;
+        step = nextStep(orderData);
+        console.log(`📍 Ciudad detectada automáticamente: ${detectedCity}`);
+        break;
+      }
     }
     
     const hasOrderData =
@@ -649,6 +713,7 @@ export default async function handler(req: any, res: any) {
     console.log("📊 Cantidad extraída y asignada:", orderData.quantity);
     console.log("📍 Paso actual:", step);
     console.log("📍 Ciudad en orderData:", orderData.city);
+    console.log("📍 Producto:", orderData.product);
 
     const system = `
 Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento al pie de la letra: tono, emojis, plantillas, precios, ciudades con cobertura, formato de cierre. NO inventes precios ni datos.
@@ -681,9 +746,9 @@ REGLAS:
 9. Español paraguayo, natural, con emojis.
 10. NUNCA respondas vacío.
 11. Si el mensaje viene de una FOTO o AUDIO transcripto, respondé naturalmente como si el cliente te hubiera escrito eso mismo.
-12. IMPORTANTE: Cuando el cliente dice "1", la cantidad es UNO (1), no once (11). Respetá exactamente el número que aparece en "Cantidad:" del estado actual.
+12. IMPORTANTE: Cuando el cliente dice "1", la cantidad es UNO (1), no once (11). El total debe ser PRECIO × CANTIDAD.
 13. IMPORTANTE: Si el cliente dice "quiero" después de ver un producto y NO ha dicho su ciudad, DEBES preguntar "📍 ¿Para qué ciudad sería el envío?" antes de pedir cualquier otro dato.
-14. IMPORTANTE: Si el cliente dice "asuncion es" o similar, debes confirmar la ciudad y luego seguir con el flujo normal.
+14. IMPORTANTE: Usa precios reales del catálogo. Para Nebulizador Portátil: 169.900 Gs por unidad.
 `.trim();
 
     const contents = (history || [])
@@ -717,9 +782,9 @@ REGLAS:
       });
     }
 
-    // ─── CORRECCIÓN FORZADA DE CANTIDAD ───
-    response = fixQuantityInResponse(response, orderData.quantity, orderData.product);
-    console.log("📝 Respuesta después de corrección:", response.substring(0, 200));
+    // ─── CORRECCIÓN FORZADA DE CANTIDAD Y TOTAL ───
+    response = fixQuantityAndTotal(response, orderData.quantity, orderData.product);
+    console.log("📝 Respuesta después de corrección:", response.substring(0, 300));
 
     const newContext = {
       ...context,
