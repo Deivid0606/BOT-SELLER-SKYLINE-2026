@@ -1,8 +1,9 @@
-// api/webhook.js — webhook_v15.js
+// api/webhook.js — webhook_v16.js
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
+// + ✅ FIX v16: Sincronización de status, timeouts, detección de pedidos mejorada
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -83,11 +84,17 @@ async function enviarASheet(userId, order, nota = "") {
       nota: clean(nota),
     };
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // ✅ TIMEOUT 10s
+
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
+
+    clearTimeout(timeoutId);
 
     const raw = await response.text();
     if (!response.ok) {
@@ -307,6 +314,19 @@ async function getContexto(userId, from) {
 
 async function saveContexto(userId, from, ctx = {}) {
   try {
+    // ✅ FIX: Limitar tamaño de order_data para evitar errores de PostgreSQL
+    let orderData = ctx?.order_data || {};
+    if (orderData && typeof orderData === "object") {
+      const serialized = JSON.stringify(orderData);
+      if (serialized.length > 50000) {
+        console.log("⚠️ order_data muy grande, truncando items");
+        orderData = {
+          ...orderData,
+          items: (orderData.items || []).slice(0, 5),
+        };
+      }
+    }
+
     const payload = {
       user_id: userId,
       from_number: from,
@@ -314,7 +334,7 @@ async function saveContexto(userId, from, ctx = {}) {
       last_trigger: ctx?.last_trigger || null,
       current_product: ctx?.current_product || null,
       step: ctx?.step || null,
-      order_data: ctx?.order_data || {},
+      order_data: orderData,
       updated_at: new Date().toISOString(),
     };
     await supabase.from("chat_context").upsert(payload, {
@@ -333,7 +353,7 @@ async function getHistory(userId, from) {
       .eq("user_id", userId)
       .eq("sender_id", from)
       .order("created_at", { ascending: false })
-      .limit(14);
+      .limit(20); // ✅ Aumentado de 14 a 20 para mejor contexto
     return (data || [])
       .reverse()
       .map((m) => ({
@@ -436,6 +456,7 @@ function extraerMediosDePlantilla(plantilla) {
   return { imagenes, video, gif };
 }
 
+// ✅ FIX: Ahora retorna el contenido enviado para WAHA QR
 async function enviarPlantillaCompleta({ userId, from, templateName, fallbackText }) {
   let plantilla = null;
   if (templateName && templateName !== "Ninguna") {
@@ -454,6 +475,8 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     `📦 Plantilla "${plantilla?.name || templateName}" → ${imagenes.length} img, video: ${!!video}, gif: ${!!gif}`
   );
 
+  let contenidoEnviado = "";
+
   for (let i = 0; i < imagenes.length; i++) {
     const url = imagenes[i];
     const caption = i === 0 && mensajeFinal ? mensajeFinal : "";
@@ -466,6 +489,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
         messageType: "out_image",
         mediaUrl: url,
       });
+      if (caption) contenidoEnviado = caption;
     }
   }
 
@@ -478,6 +502,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
         message: mensajeFinal,
         messageType: "out_text",
       });
+      contenidoEnviado = mensajeFinal;
     }
   }
 
@@ -516,7 +541,8 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     } catch {}
   }
 
-  return plantilla;
+  // ✅ FIX: Retornar contenido enviado
+  return { plantilla, contenidoEnviado };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -575,9 +601,9 @@ async function evaluarDisparadores({ userId, from, texto }) {
 
     if (error) {
       console.log("❌ Error leyendo triggers:", error);
-      return false;
+      return { disparado: false, contenido: "" };
     }
-    if (!triggers || triggers.length === 0) return false;
+    if (!triggers || triggers.length === 0) return { disparado: false, contenido: "" };
 
     const textoNorm = normalize(texto);
     const ctx = await getContexto(userId, from);
@@ -631,18 +657,17 @@ async function evaluarDisparadores({ userId, from, texto }) {
         }
       }
 
-      let plantillaPrimary = null;
       let contenidoPrimary = "";
       let contenidoSecondary = "";
 
       if (matchPrimary) {
-        plantillaPrimary = await enviarPlantillaCompleta({
+        const result = await enviarPlantillaCompleta({
           userId,
           from,
           templateName: trig.template,
           fallbackText: trig.response,
         });
-        contenidoPrimary = clean(plantillaPrimary?.content || trig.response || "");
+        contenidoPrimary = result.contenidoEnviado || clean(trig.response || "");
 
         if (trig.auto_tag) {
           await aplicarAutoTag(userId, from, trig.auto_tag);
@@ -654,13 +679,13 @@ async function evaluarDisparadores({ userId, from, texto }) {
           console.log("⏳ Esperando 5s antes del secundario...");
           await sleep(5000);
         }
-        const plantillaSec = await enviarPlantillaCompleta({
+        const result = await enviarPlantillaCompleta({
           userId,
           from,
           templateName: trig.secondary?.template,
           fallbackText: trig.secondary?.response,
         });
-        contenidoSecondary = clean(plantillaSec?.content || trig.secondary?.response || "");
+        contenidoSecondary = result.contenidoEnviado || clean(trig.secondary?.response || "");
       }
 
       try {
@@ -689,13 +714,16 @@ async function evaluarDisparadores({ userId, from, texto }) {
       }
 
       await saveContexto(userId, from, { ...ctx, last_trigger: trig.name });
-      return true;
+      
+      // ✅ FIX: Retornar contenido enviado para WAHA QR
+      const contenidoTotal = [contenidoPrimary, contenidoSecondary].filter(Boolean).join("\n\n");
+      return { disparado: true, contenido: contenidoTotal };
     }
 
-    return false;
+    return { disparado: false, contenido: "" };
   } catch (err) {
     console.error("❌ evaluarDisparadores error:", err);
-    return false;
+    return { disparado: false, contenido: "" };
   }
 }
 
@@ -719,42 +747,74 @@ async function llamarChatIA({
   if (!host) throw new Error("No se detectó host");
 
   const url = `${protocol}://${host}/api/chat-ia`;
-  const resIA = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      user_id: userId,
-      message: texto,
-      from_number: from,
-      context: ctx || {},
-      history: history || [],
-      media_url: mediaUrl,
-      media_type: mediaType,
-      mime_type: mimeType,
-    }),
-  });
-  const raw = await resIA.text();
-  let data = {};
+  
+  // ✅ FIX: Timeout de 55 segundos (Vercel tiene límite de 60s)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 55000);
+
   try {
-    data = JSON.parse(raw);
-  } catch {
-    throw new Error("chat-ia no devolvió JSON");
+    const resIA = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        message: texto,
+        from_number: from,
+        context: ctx || {},
+        history: history || [],
+        media_url: mediaUrl,
+        media_type: mediaType,
+        mime_type: mimeType,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    const raw = await resIA.text();
+    let data = {};
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw new Error("chat-ia no devolvió JSON");
+    }
+    if (!resIA.ok) throw new Error(data?.error || `chat-ia error ${resIA.status}`);
+    return data;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === "AbortError") {
+      throw new Error("chat-ia timeout (55s)");
+    }
+    throw err;
   }
-  if (!resIA.ok) throw new Error(data?.error || `chat-ia error ${resIA.status}`);
-  return data;
 }
 
 // ═══════════════════════════════════════════════════════════
 // DETECTOR DE PEDIDOS CONFIRMADOS
 // ═══════════════════════════════════════════════════════════
 
+// ✅ FIX: Detecta múltiples formatos de confirmación
 function esMensajePedidoConfirmado(texto) {
   const t = clean(texto);
-  const tieneMarcador = /✅\s*PEDIDO CONFIRMADO/i.test(t);
-  const tieneProducto = /Producto:\s*\S/i.test(t);
-  const tieneTotal = /Total:\s*\S/i.test(t);
-  const tieneUbicacion = /Ubicaci[oó]n:\s*\S/i.test(t);
-  return tieneMarcador && tieneProducto && tieneTotal && tieneUbicacion;
+  
+  // Formato antiguo
+  const tieneMarcadorAntiguo = /✅\s*PEDIDO CONFIRMADO/i.test(t);
+  
+  // Formato nuevo (chat-ia.ts v16)
+  const tieneMarcadorNuevo = /🔥\s*Perfecto/i.test(t) && /Tu pedido queda así/i.test(t);
+  
+  // Formato intermedio
+  const tieneResumen = /📦.*x\d+/i.test(t) && /💰\s*Total:/i.test(t);
+  
+  const tieneProducto = /Producto:\s*\S/i.test(t) || /📦\s+\S/i.test(t);
+  const tieneTotal = /Total:\s*\S/i.test(t) || /💰\s*Total:/i.test(t);
+  const tieneUbicacion = /Ubicaci[oó]n:\s*\S/i.test(t) || /📍\s+\S/i.test(t);
+  
+  // ✅ FIX: Más flexible - acepta cualquier combinación válida
+  return (
+    (tieneMarcadorAntiguo || tieneMarcadorNuevo || tieneResumen) &&
+    (tieneProducto || tieneTotal)
+  );
 }
 
 function esBloqueDatosBancarios(texto) {
@@ -836,13 +896,13 @@ function parsearPedidoConfirmado(texto) {
     return m ? clean(m[1]) : null;
   };
 
-  const productoRaw = get(/Producto:\s*([^\n]+)/i);
-  const cliente = get(/Cliente:\s*([^\n]+)/i);
-  const ubicacionRaw = get(/Ubicaci[oó]n:\s*([^\n]+)/i);
-  const contacto = get(/Contacto:\s*([^\n]+)/i);
-  const cantidadRaw = get(/Cantidad:\s*([^\n]+)/i);
+  const productoRaw = get(/Producto:\s*([^\n]+)/i) || get(/📦\s+([^\n]+)/i);
+  const cliente = get(/Cliente:\s*([^\n]+)/i) || get(/✅\s*Cliente:\s*([^\n]+)/i);
+  const ubicacionRaw = get(/Ubicaci[oó]n:\s*([^\n]+)/i) || get(/📍\s+([^\n]+)/i);
+  const contacto = get(/Contacto:\s*([^\n]+)/i) || get(/✅\s*Contacto:\s*([^\n]+)/i);
+  const cantidadRaw = get(/Cantidad:\s*([^\n]+)/i) || get(/🔢\s*Cantidad:\s*([^\n]+)/i);
   const calce = get(/Calce:\s*([^\n]+)/i);
-  const totalRaw = get(/Total:\s*([^\n]+)/i);
+  const totalRaw = get(/Total:\s*([^\n]+)/i) || get(/💰\s*Total:\s*([^\n]+)/i);
 
   const producto = limpiarProducto(productoRaw);
 
@@ -1008,12 +1068,14 @@ async function detectarYGuardarPedidoConfirmado({
     }
 
     const hace1hora = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    
+    // ✅ FIX: Buscar en múltiples statuses (inglés y español)
     const { data: reciente } = await supabase
       .from("orders")
       .select("id, product, total_amount, quantity, status")
       .eq("user_id", userId)
       .eq("from_number", from)
-      .eq("status", "confirmado")
+      .in("status", ["confirmado", "confirmed", "confirm_pending"])
       .gte("created_at", hace1hora)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -1084,6 +1146,7 @@ async function detectarYGuardarPedidoConfirmado({
       product: productoSerializado,
       quantity: cantidadTotal,
       total_amount: totalActual,
+      status: "confirmado",
       updated_at: new Date().toISOString(),
     };
     if (datos.address) updatePayload.address = datos.address;
@@ -1129,12 +1192,13 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 
     const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
+    // ✅ FIX: Buscar en múltiples statuses
     const { data: pedido } = await supabase
       .from("orders")
       .select("id, comprobante_url")
       .eq("user_id", userId)
       .eq("from_number", from)
-      .eq("status", "confirmado")
+      .in("status", ["confirmado", "confirmed", "confirm_pending", "waiting_payment_proof", "payment_verified"])
       .gte("created_at", hace24h)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -1155,6 +1219,7 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
       .update({
         comprobante_url: mediaUrl,
         metodo_pago: "transferencia",
+        status: "payment_verified",
         updated_at: new Date().toISOString(),
       })
       .eq("id", pedido.id);
@@ -1240,6 +1305,18 @@ export async function procesar(req, message, userId, from) {
         mediaMime = result.mime || mimeType;
       } else {
         console.log("⚠️ No se pudo subir media, se guarda mensaje sin URL");
+        // ✅ FIX: Si es imagen y falla la descarga, informar al usuario
+        if (messageType === "image") {
+          const errorMsg = "⚠️ No pude procesar tu imagen. ¿Podrías enviarla nuevamente?";
+          await enviarMensaje(userId, from, errorMsg);
+          await saveReceivedMessage({
+            userId,
+            from,
+            message: errorMsg,
+            messageType: "out_text",
+          });
+          return { response: errorMsg, error: "Media download failed" };
+        }
       }
     }
 
@@ -1274,10 +1351,15 @@ export async function procesar(req, message, userId, from) {
 
     // ─── TEXTO: triggers + IA ───
     if (messageType === "text") {
-      const disparado = await evaluarDisparadores({ userId, from, texto });
-      if (disparado) {
+      const triggerResult = await evaluarDisparadores({ userId, from, texto });
+      if (triggerResult.disparado) {
         console.log("✅ Disparador atendió el mensaje. No se llama a Gemini.");
-        return { response: null, handled_by: "trigger", error: null };
+        // ✅ FIX: Retornar contenido para WAHA QR
+        return { 
+          response: triggerResult.contenido || null, 
+          handled_by: "trigger", 
+          error: null 
+        };
       }
 
       const ctx = await getContexto(userId, from);
@@ -1337,9 +1419,8 @@ export async function procesar(req, message, userId, from) {
 
     // ─── IMAGEN: comprobante + IA Vision ───
     if (messageType === "image" && mediaUrl) {
-      asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch((e) =>
-        console.error("comprobante bg error:", e)
-      );
+      // ✅ FIX: Eliminar la primera llamada fire-and-forget
+      // Solo asociar comprobante si chat-ia lo confirma
 
       const ctx = await getContexto(userId, from);
       const history = await getHistory(userId, from);
@@ -1364,6 +1445,7 @@ export async function procesar(req, message, userId, from) {
 
       if (data?.context) await saveContexto(userId, from, data.context);
 
+      // ✅ FIX: Solo asociar comprobante si chat-ia lo confirma
       if (data?.is_payment_proof) {
         await asociarComprobanteAlPedido({ userId, from, mediaUrl });
       }
