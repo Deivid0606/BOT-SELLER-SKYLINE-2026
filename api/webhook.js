@@ -1,10 +1,7 @@
-// api/webhook.js — webhook_v16.js (CON FLUJO LOCAL + FALLBACK + DESTAPA CAÑERÍAS FIX)
+// api/webhook.js — webhook_v17.js (CON PRECIOS DINÁMICOS)
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
-// + ✅ FLUJO DE VENTAS LOCAL (NO DEPENDE DE CHAT-IA)
-// + ✅ "quiero X" con producto activo va directo a cantidad/resumen
-// + ✅ Extracción de ciudad desde texto
-// + ✅ Fallback cuando chat-ia no responde
-// + ✅ FIX: Destapa Cañerías detectado correctamente (antes se confundía con Veneno de Abeja)
+// + ✅ Precios obtenidos de: trigger/plantilla (primero) o full_training (segundo)
+// + ✅ Sin precios hardcodeados
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -23,6 +20,82 @@ const normalize = (t) =>
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+
+// ═══════════════════════════════════════════════════════════
+// EXTRACCIÓN DE PRECIO DESDE TEXTO
+// ═══════════════════════════════════════════════════════════
+
+function extraerPrecioDesdeTexto(texto = "") {
+  if (!texto) return null;
+  
+  // Patrones comunes de precio en los mensajes
+  const patterns = [
+    /PRECIO(?:\s+PROMOCIONAL)?:\s*([\d.,]+)\s*GS/i,
+    /Precio:\s*([\d.,]+)\s*GS/i,
+    /💰\s*([\d.,]+)\s*GS/i,
+    /([\d.,]+)\s*GS/i,
+    /Gs\.\s*([\d.,]+)/i,
+    /₲\s*([\d.,]+)/i,
+  ];
+  
+  for (const pattern of patterns) {
+    const match = texto.match(pattern);
+    if (match) {
+      // Limpiar el número (quitar puntos y comas)
+      const precioStr = match[1].replace(/\./g, '').replace(/,/g, '');
+      const precio = parseInt(precioStr, 10);
+      if (!isNaN(precio) && precio > 0) {
+        console.log(`💰 Precio detectado en texto: ${precio} GS`);
+        return precio;
+      }
+    }
+  }
+  return null;
+}
+
+async function obtenerPrecioProducto(userId, productName, textoReferencia = "") {
+  // 1. Intentar extraer del texto de referencia (trigger/plantilla)
+  if (textoReferencia) {
+    const precio = extraerPrecioDesdeTexto(textoReferencia);
+    if (precio) return precio;
+  }
+  
+  // 2. Buscar en full_training
+  try {
+    const { data: config } = await supabase
+      .from("whatsapp_config")
+      .select("full_training")
+      .eq("user_id", userId)
+      .maybeSingle();
+    
+    const fullTraining = config?.full_training;
+    if (fullTraining?.products && Array.isArray(fullTraining.products)) {
+      const productNorm = normalize(productName);
+      for (const product of fullTraining.products) {
+        const nameNorm = normalize(product.name);
+        if (nameNorm.includes(productNorm) || productNorm.includes(nameNorm)) {
+          if (product.price) {
+            console.log(`💰 Precio desde full_training: ${product.price} GS para ${product.name}`);
+            return product.price;
+          }
+        }
+        // Buscar por keywords
+        if (product.keywords && Array.isArray(product.keywords)) {
+          for (const kw of product.keywords) {
+            if (productNorm.includes(normalize(kw))) {
+              if (product.price) return product.price;
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.log("⚠️ Error buscando precio en full_training:", err.message);
+  }
+  
+  console.log(`⚠️ No se encontró precio para: ${productName}`);
+  return null;
+}
 
 // ═══════════════════════════════════════════════════════════
 // CIUDADES PARAGUAY Y EXTRACCIÓN
@@ -70,7 +143,7 @@ function getTipoCobertura(city) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// DETECTOR DE PRODUCTOS DESDE TEXTO (CORREGIDO)
+// DETECTOR DE PRODUCTOS DESDE TEXTO
 // ═══════════════════════════════════════════════════════════
 
 function detectarProductoDesdeTexto(texto = "") {
@@ -132,11 +205,18 @@ function buildQuantityAfterCityResponse(product, city) {
   return `📍 Ciudad: ${city}\n\n${coberturaText}\n\n🔢 ¿Cuántas unidades querés llevar?\n\n📝 Ejemplo: "Quiero 2" o "2 unidades"`;
 }
 
-function buildOrderSummary(order, totalAmount) {
+function buildOrderSummary(order, totalAmount, precioUnitario) {
   const items = order.items || [{ name: order.product, qty: order.quantity || 1 }];
   const itemsList = items.map((i) => `• ${i.name} x${i.qty}`).join("\n");
   
-  return `✅ *PEDIDO CONFIRMADO*\n\n📦 *Producto:*\n${itemsList}\n\n👤 *Cliente:* ${order.customer_name || "—"}\n📍 *Ubicación:* ${order.city || "—"} ${order.address ? `— ${order.address}` : ""}\n📞 *Contacto:* ${order.phone || "—"}\n🔢 *Cantidad total:* ${items.reduce((s, i) => s + i.qty, 0)}\n💰 *Total:* ${totalAmount.toLocaleString()} Gs\n\n✅ ¿Todo correcto? Envíanos el comprobante de pago para confirmar tu pedido.`;
+  let totalText = "";
+  if (totalAmount && totalAmount > 0) {
+    totalText = `💰 *Total:* ${totalAmount.toLocaleString()} Gs`;
+  } else if (precioUnitario) {
+    totalText = `💰 *Precio unitario:* ${precioUnitario.toLocaleString()} Gs`;
+  }
+  
+  return `✅ *PEDIDO CONFIRMADO*\n\n📦 *Producto:*\n${itemsList}\n\n👤 *Cliente:* ${order.customer_name || "—"}\n📍 *Ubicación:* ${order.city || "—"} ${order.address ? `— ${order.address}` : ""}\n📞 *Contacto:* ${order.phone || "—"}\n🔢 *Cantidad total:* ${items.reduce((s, i) => s + i.qty, 0)}\n${totalText}\n\n✅ ¿Todo correcto? Envíanos el comprobante de pago para confirmar tu pedido.`;
 }
 
 function splitMessage(text, max = 3500) {
@@ -651,7 +731,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     } catch {}
   }
 
-  return plantilla;
+  return { plantilla, mensajeFinal };
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -769,15 +849,20 @@ async function evaluarDisparadores({ userId, from, texto }) {
       let plantillaPrimary = null;
       let contenidoPrimary = "";
       let contenidoSecondary = "";
+      let precioDetectado = null;
 
       if (matchPrimary) {
-        plantillaPrimary = await enviarPlantillaCompleta({
+        const result = await enviarPlantillaCompleta({
           userId,
           from,
           templateName: trig.template,
           fallbackText: trig.response,
         });
-        contenidoPrimary = clean(plantillaPrimary?.content || trig.response || "");
+        plantillaPrimary = result.plantilla;
+        contenidoPrimary = clean(result.mensajeFinal || trig.response || "");
+        
+        // Extraer precio del contenido enviado
+        precioDetectado = extraerPrecioDesdeTexto(contenidoPrimary);
 
         if (trig.auto_tag) {
           await aplicarAutoTag(userId, from, trig.auto_tag);
@@ -789,13 +874,18 @@ async function evaluarDisparadores({ userId, from, texto }) {
           console.log("⏳ Esperando 5s antes del secundario...");
           await sleep(5000);
         }
-        const plantillaSec = await enviarPlantillaCompleta({
+        const result = await enviarPlantillaCompleta({
           userId,
           from,
           templateName: trig.secondary?.template,
           fallbackText: trig.secondary?.response,
         });
-        contenidoSecondary = clean(plantillaSec?.content || trig.secondary?.response || "");
+        contenidoSecondary = clean(result.mensajeFinal || trig.secondary?.response || "");
+        
+        // Si no se detectó precio antes, intentar del secundario
+        if (!precioDetectado) {
+          precioDetectado = extraerPrecioDesdeTexto(contenidoSecondary);
+        }
       }
 
       try {
@@ -848,8 +938,9 @@ async function evaluarDisparadores({ userId, from, texto }) {
           address: "",
           items: [],
           total_amount: 0,
+          precio_unitario: precioDetectado, // Guardar el precio detectado
         };
-        console.log(`🛍️ Producto detectado en trigger: "${productoDetectado}" → contexto actualizado`);
+        console.log(`🛍️ Producto detectado en trigger: "${productoDetectado}" → contexto actualizado, precio: ${precioDetectado || "no detectado"}`);
       }
 
       await saveContexto(userId, from, nuevoCtx);
@@ -883,6 +974,7 @@ async function llamarChatIAConFallback({
     const currentProduct = ctx?.current_product || null;
     const previousStep = ctx?.step || null;
     const oldOrder = ctx?.order_data || {};
+    const precioUnitarioGuardado = oldOrder?.precio_unitario || null;
     
     // A. "quiero X" con producto activo
     const qFromBuy = texto.match(/^\s*(quiero|llevo|dame|mandame|compro)\s+(\d{1,3})\s*$/i);
@@ -905,21 +997,20 @@ async function llamarChatIAConFallback({
         return { response, handled_by: "local_flow" };
       }
       
-      // Precio por defecto según producto
-      let precioUnitario = 50000;
-      if (currentProduct.includes("Destapa")) precioUnitario = 159900;
-      if (currentProduct.includes("Limpiador")) precioUnitario = 45000;
-      if (currentProduct.includes("Perfume")) precioUnitario = 120000;
-      if (currentProduct.includes("Veneno")) precioUnitario = 80000;
+      // Obtener precio
+      let precioUnitario = precioUnitarioGuardado;
+      if (!precioUnitario) {
+        precioUnitario = await obtenerPrecioProducto(userId, currentProduct, "");
+      }
       
-      const totalAmount = precioUnitario * cantidad;
-      const response = buildOrderSummary({ ...order, city: order.city, quantity: cantidad }, totalAmount);
+      const totalAmount = precioUnitario ? precioUnitario * cantidad : null;
+      const response = buildOrderSummary({ ...order, city: order.city, quantity: cantidad }, totalAmount, precioUnitario);
       await enviarMensaje(userId, from, response);
       await saveReceivedMessage({ userId, from, message: response, messageType: "out_text" });
       await saveContexto(userId, from, {
         ...ctx,
         step: "awaiting_payment",
-        order_data: { ...order, quantity: cantidad, items: [{ name: currentProduct, qty: cantidad }] },
+        order_data: { ...order, quantity: cantidad, items: [{ name: currentProduct, qty: cantidad }], precio_unitario: precioUnitario },
         updated_at: new Date().toISOString(),
       });
       return { response, handled_by: "local_flow" };
@@ -956,20 +1047,20 @@ async function llamarChatIAConFallback({
       if (cantidadMatch) {
         const cantidad = parseInt(cantidadMatch[1], 10);
         
-        let precioUnitario = 50000;
-        if (currentProduct.includes("Destapa")) precioUnitario = 159900;
-        if (currentProduct.includes("Limpiador")) precioUnitario = 45000;
-        if (currentProduct.includes("Perfume")) precioUnitario = 120000;
-        if (currentProduct.includes("Veneno")) precioUnitario = 80000;
+        // Obtener precio
+        let precioUnitario = precioUnitarioGuardado;
+        if (!precioUnitario) {
+          precioUnitario = await obtenerPrecioProducto(userId, currentProduct, "");
+        }
         
-        const totalAmount = precioUnitario * cantidad;
-        const response = buildOrderSummary({ ...oldOrder, quantity: cantidad, items: [{ name: currentProduct, qty: cantidad }] }, totalAmount);
+        const totalAmount = precioUnitario ? precioUnitario * cantidad : null;
+        const response = buildOrderSummary({ ...oldOrder, quantity: cantidad, items: [{ name: currentProduct, qty: cantidad }] }, totalAmount, precioUnitario);
         await enviarMensaje(userId, from, response);
         await saveReceivedMessage({ userId, from, message: response, messageType: "out_text" });
         await saveContexto(userId, from, {
           ...ctx,
           step: "awaiting_payment",
-          order_data: { ...oldOrder, quantity: cantidad, items: [{ name: currentProduct, qty: cantidad }] },
+          order_data: { ...oldOrder, quantity: cantidad, items: [{ name: currentProduct, qty: cantidad }], precio_unitario: precioUnitario },
           updated_at: new Date().toISOString(),
         });
         return { response, handled_by: "local_flow" };
@@ -1041,7 +1132,7 @@ async function llamarChatIAConFallback({
     console.error("❌ chat-ia error:", err.message);
     
     // Fallback genérico
-    const fallback = "👋 ¡Hola! ¿En qué producto estás interesado?\n\n📋 *Productos disponibles:*\n• Destapa Cañerías Tornado (159.900 Gs)\n• Limpiador de Ollas y Carbonilla\n• Perfume Asad\n• Crema de Veneno de Abeja\n• Peladora Automática\n• Tabla de Picar de Mármol\n\n💬 Escribime el nombre del producto que te interesa.";
+    const fallback = "👋 ¡Hola! ¿En qué producto estás interesado?\n\n💬 Escribime el nombre del producto que te interesa y te ayudo con tu pedido.";
     await enviarMensaje(userId, from, fallback);
     await saveReceivedMessage({ userId, from, message: fallback, messageType: "out_text" });
     return { response: fallback, handled_by: "fallback" };
@@ -1056,9 +1147,7 @@ function esMensajePedidoConfirmado(texto) {
   const t = clean(texto);
   const tieneMarcador = /✅\s*PEDIDO CONFIRMADO/i.test(t);
   const tieneProducto = /Producto:\s*\S/i.test(t);
-  const tieneTotal = /Total:\s*\S/i.test(t);
-  const tieneUbicacion = /Ubicaci[oó]n:\s*\S/i.test(t);
-  return tieneMarcador && tieneProducto && tieneTotal && tieneUbicacion;
+  return tieneMarcador && tieneProducto;
 }
 
 function esBloqueDatosBancarios(texto) {
