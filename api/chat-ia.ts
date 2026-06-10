@@ -1,4 +1,4 @@
-// api/chat-ia.ts — v1005
+// api/chat-ia.ts — v1006
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(process.env.SUPABASE_URL as string, process.env.SUPABASE_SERVICE_ROLE_KEY as string);
@@ -338,7 +338,7 @@ Respondé con el número (1, 2, 3...)`;
 }
 
 // =======================================================
-// 🎯 DETECCIÓN DE PRODUCTO RESPETANDO ACTIVO
+// 🎯 DETECCIÓN DE PRODUCTO RESPETANDO ACTIVO (MODIFICADO)
 // =======================================================
 
 function detectProductRespectingActive(
@@ -346,16 +346,32 @@ function detectProductRespectingActive(
   training: string,
   activeProduct: string | null,
   lastAssistantMessage?: string,
-  lastUserProduct?: string
+  lastUserProduct?: string,
+  previousStep?: string,
+  history?: any[]
 ): string {
   const msg = normalize(text);
   
-  // 🔥 REGLA CLAVE: Si el bot estaba preguntando cantidad y el cliente responde solo número
-  const clienteRespondioSoloCantidad = /^\s*\d{1,3}\s*$/.test(text);
-  const estabaPidiendoCantidad = botWasAskingQuantityFromHistory(lastAssistantMessage);
+  // 🔥 REGLA CLAVE 1: Si el bot estaba preguntando cantidad y el cliente responde solo número
+  const clienteRespondioSoloNumero = /^\s*\d{1,3}\s*$/.test(text);
+  const estabaPidiendoCantidad = 
+    previousStep === "collecting_quantity" ||
+    previousStep === "esperando_cantidad" ||
+    botWasAskingQuantityFromHistory(lastAssistantMessage) ||
+    botWasAskingQuantityFromHistory(getLastAssistantMessage(history || []));
   
-  if (estabaPidiendoCantidad && clienteRespondioSoloCantidad) {
+  if (estabaPidiendoCantidad && clienteRespondioSoloNumero) {
     console.log(`🔒 Cliente respondió solo número mientras pedía cantidad - Manteniendo producto: "${activeProduct}"`);
+    return activeProduct || "";
+  }
+  
+  // 🔥 REGLA CLAVE 2: Si estamos en modo esperando cantidad, NO detectar nuevo producto
+  const isWaitingForQuantity = 
+    previousStep === "collecting_quantity" ||
+    previousStep === "esperando_cantidad";
+  
+  if (isWaitingForQuantity) {
+    console.log(`🔒 En modo esperando cantidad - NO detectar nuevo producto, manteniendo: "${activeProduct}"`);
     return activeProduct || "";
   }
   
@@ -369,7 +385,7 @@ function detectProductRespectingActive(
   const isOnlyLocation = isLocationOnlyMessage(text);
   const isOnlyQuantity = /^\s*\d{1,3}\s*$/.test(text) && !isOnlyShoeVariantText(text);
   
-  if (activeProduct && !explicitNewProductRequest && !isOnlyQuantity) {
+  if (activeProduct && !explicitNewProductRequest && !isOnlyQuantity && !isOnlyLocation) {
     console.log(`🔄 Manteniendo producto activo: "${activeProduct}" (cliente no pidió cambio explícito)`);
     return activeProduct;
   }
@@ -1531,12 +1547,15 @@ export default async function handler(req: any, res: any) {
     console.log(`🎯 Producto activo actual: "${currentActiveProduct}"`);
     console.log(`📝 Mensaje del cliente: "${texto}"`);
     
+    // 🔥 NUEVO: Detección de producto respetando el contexto (usando previousStep)
     let product = detectProductRespectingActive(
       texto,
       fullTraining,
       currentActiveProduct,
       getLastAssistantMessage(history || []),
-      lastUserProduct
+      lastUserProduct,
+      previousStep,
+      history
     );
     
     console.log(`✅ Producto final detectado: "${product}"`);
@@ -1700,6 +1719,7 @@ export default async function handler(req: any, res: any) {
         total_amount: 0,
       };
       
+      // 🔥 El total se calcula con el producto actual (context.current_product)
       const total = calculateTotal(product, extracted.quantity, fullTraining);
       if (total) orderData.total_amount = total;
       
@@ -1800,7 +1820,7 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
 
 ${promoLine}
 
-📍 ¿Para qué ciudad sería el envío?`,
+📍 Decime por favor a qué ciudad sería el envío, así verifico la cobertura y te confirmo la entrega 🚚✨`,
               context: {
                 ...(context || {}),
                 current_product: visualProduct,
@@ -1876,9 +1896,12 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
 
     extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
-    // Construir orderData final
+    // 🔥 IMPORTANTE: El producto para orderData debe ser el producto activo (context.current_product), no el detectado nuevo
+    const finalProduct = product || oldOrder?.product || context?.current_product || "";
+    
+    // Construir orderData final usando el producto correcto
     let orderData = {
-      product: product || oldOrder?.product || "",
+      product: finalProduct,
       quantity: extracted.quantity || oldOrder?.quantity || 0,
       shoe_size: extracted.shoe_size || oldOrder?.shoe_size || "",
       city: extracted.city || oldOrder?.city || "",
@@ -1889,9 +1912,9 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
       total_amount: oldOrder?.total_amount || 0,
     };
 
-    // Calcular total si hay producto y cantidad
-    if (orderData.product && orderData.quantity > 0) {
-      const calculated = calculateTotal(orderData.product, orderData.quantity, fullTraining);
+    // 🔥 Calcular total solo si tenemos producto y cantidad, usando el producto correcto
+    if (finalProduct && orderData.quantity > 0) {
+      const calculated = calculateTotal(finalProduct, orderData.quantity, fullTraining);
       if (calculated) orderData.total_amount = calculated;
     }
 
@@ -1906,12 +1929,12 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
         response: buildOrderSummaryResponse(orderData, finalTipoCobertura),
         context: {
           ...(context || {}),
-          current_product: orderData.product,
-          last_user_product: orderData.product,
+          current_product: finalProduct,
+          last_user_product: finalProduct,
           step: "confirmed",
           tipo_cobertura: finalTipoCobertura,
           order_data: orderData,
-          last_topic: orderData.product,
+          last_topic: finalProduct,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
@@ -1930,7 +1953,7 @@ Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el en
 REGLA FUNDAMENTAL: Los precios los sacás SIEMPRE del entrenamiento. NUNCA inventes ni asumas precios.
 
 FLUJO DE VENTAS (RESPETAR ESTRICTAMENTE):
-1. Cliente dice producto → preguntar CIUDAD (ej: "Excelente elección! 😊 Decime por favor a qué ciudad sería el envío...")
+1. Cliente dice producto → preguntar CIUDAD (ej: "Excelente elección! 😊 Decime por favor a qué ciudad sería el envío, así verifico la cobertura y te confirmo la entrega 🚚✨")
 2. Cliente responde ciudad → preguntar CANTIDAD con ejemplos (ej: "¡Buenísimo! 😊 Hacemos entregas en [ciudad] con envío GRATIS... ¿Cuántas unidades te gustaría pedir?")
 3. Cliente responde cantidad → mostrar resumen y pedir datos de envío
 
@@ -1948,7 +1971,7 @@ Cantidad: ${orderData.quantity || "pendiente"}
 Paso actual: ${step}
 
 REGLAS:
-- Si paso es collecting_city → preguntar CIUDAD con mensaje amable
+- Si paso es collecting_city → preguntar CIUDAD con mensaje amable: "📍 Decime por favor a qué ciudad sería el envío, así verifico la cobertura y te confirmo la entrega 🚚✨"
 - Si paso es collecting_quantity → preguntar CANTIDAD con ejemplos
 - Si paso es collecting_name → pedir nombre
 - Si paso es collecting_phone → pedir teléfono
@@ -1984,12 +2007,12 @@ Español paraguayo natural, con emojis.`;
 
     const newContext = {
       ...(context || {}),
-      current_product: orderData.product || context?.current_product || null,
-      last_user_product: lastUserProduct || orderData.product || null,
+      current_product: finalProduct || context?.current_product || null,
+      last_user_product: lastUserProduct || finalProduct || null,
       step: step,
       tipo_cobertura: finalTipoCobertura || null,
       order_data: orderData,
-      last_topic: orderData.product || context?.last_topic || "ENTRENAMIENTO",
+      last_topic: finalProduct || context?.last_topic || "ENTRENAMIENTO",
       updated_at: new Date().toISOString(),
     };
 
