@@ -1,4 +1,4 @@
-// api/chat-ia.ts — v1006
+// api/chat-ia.ts — v1007
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(process.env.SUPABASE_URL as string, process.env.SUPABASE_SERVICE_ROLE_KEY as string);
@@ -132,7 +132,7 @@ function isProductName(text: string): boolean {
     "plantillas ortopiex", "ortopiex", "plantillas", "ortoflex", "5d",
     "peladora automatica", "pelador automatico", "pelador", "peladora",
     "maquina para hacer pororo", "maquina pororo", "pororo", "popcorn", "pochoclo", "palomitas",
-    "nebulizador", "nebulizador portatil", "tabla de picar", "tabla de marmol",
+    "nebulizador", "nebulizador portatil", "tabla de picar", "tabla de marmol", "tabla de mármol", "tabla de picar de mármol",
     "afilador de cuchillos", "afilador", "cuchillos", "sharpener",
     "vital honey vip", "vital honey",
     "perfume asad", "asad",
@@ -338,7 +338,7 @@ Respondé con el número (1, 2, 3...)`;
 }
 
 // =======================================================
-// 🎯 DETECCIÓN DE PRODUCTO RESPETANDO ACTIVO (MODIFICADO)
+// 🎯 DETECCIÓN DE PRODUCTO RESPETANDO ACTIVO
 // =======================================================
 
 function detectProductRespectingActive(
@@ -373,6 +373,15 @@ function detectProductRespectingActive(
   if (isWaitingForQuantity) {
     console.log(`🔒 En modo esperando cantidad - NO detectar nuevo producto, manteniendo: "${activeProduct}"`);
     return activeProduct || "";
+  }
+  
+  // 🔥 REGLA CLAVE 3: Si estamos esperando ciudad y el cliente responde una ciudad válida, mantener producto
+  const isWaitingForCity = previousStep === "collecting_city";
+  const clienteRespondeCiudad = extractCityFromText(text);
+  
+  if (isWaitingForCity && clienteRespondeCiudad && activeProduct) {
+    console.log(`🔒 Cliente respondió ciudad mientras esperaba ciudad - Manteniendo producto: "${activeProduct}"`);
+    return activeProduct;
   }
   
   if (isPriceIntent(text) || isProductInquiry(text)) {
@@ -447,7 +456,8 @@ function detectProductRaw(
     return "Nebulizador portátil";
   }
 
-  if ((msg.includes("tabla") && msg.includes("picar")) || msg.includes("tabla de marmol")) {
+  if ((msg.includes("tabla") && (msg.includes("picar") || msg.includes("marmol") || msg.includes("mármol"))) ||
+      msg.includes("tabla de picar") || msg.includes("tabla de marmol")) {
     return "Tabla de Picar de Mármol";
   }
 
@@ -502,6 +512,7 @@ function canonicalProductFromText(text: string): string {
   if (/\b(afilador|afilador\s+de\s+cuchillos|cuchillos)\b/.test(n)) return "Afilador de Cuchillos";
   if (/\b(vital\s+honey|vital\s+honey\s+vip)\b/.test(n)) return "Vital Honey VIP";
   if (/\b(perfume\s+asad|asad)\b/.test(n)) return "Perfume Asad";
+  if (/\b(tabla\s+de\s+picar|tabla\s+de\s+marmol|tabla\s+de\s+mármol)\b/.test(n)) return "Tabla de Picar de Mármol";
 
   return "";
 }
@@ -1340,6 +1351,8 @@ Si ves una imagen con texto "PROMO 2 UNIDADES 129.900Gs" y un producto físico �
 
 Si ves un pelador de papas, pelador automático, peladora de verduras → productName = "Peladora Automática".
 
+Si ves una TABLA DE MÁRMOL o TABLA DE PICAR DE MÁRMOL → productName = "Tabla de Picar de Mármol", productPrice = "169.000" si ves el precio.
+
 Si el producto no está en catálogo, igual identificá el productName genérico visual.
 
 matchedProduct solo va si encontrás coincidencia clara con el catálogo.
@@ -1484,7 +1497,7 @@ export default async function handler(req: any, res: any) {
           if (norm.includes("pelador")) { lastUserProduct = "Peladora Automática"; break; }
           if (norm.includes("pororo") || norm.includes("popcorn") || norm.includes("pochoclo")) { lastUserProduct = "Máquina para hacer Pororo"; break; }
           if (norm.includes("nebulizador")) { lastUserProduct = "Nebulizador portátil"; break; }
-          if (norm.includes("tabla") && (norm.includes("picar") || norm.includes("marmol"))) { lastUserProduct = "Tabla de Picar de Mármol"; break; }
+          if ((norm.includes("tabla") && (norm.includes("picar") || norm.includes("marmol") || norm.includes("mármol")))) { lastUserProduct = "Tabla de Picar de Mármol"; break; }
           if (isAntiVibrationKit(userText)) { lastUserProduct = getAntiVibrationProductName(); break; }
         }
       }
@@ -1538,6 +1551,7 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    // 🔥 IMPORTANTE: El producto activo debe venir del contexto, no de detección nueva cuando esperamos ciudad
     const currentActiveProduct = 
       oldOrder?.product ||
       context?.current_product ||
@@ -1546,6 +1560,7 @@ export default async function handler(req: any, res: any) {
     
     console.log(`🎯 Producto activo actual: "${currentActiveProduct}"`);
     console.log(`📝 Mensaje del cliente: "${texto}"`);
+    console.log(`📌 Paso anterior: "${previousStep}"`);
     
     // 🔥 NUEVO: Detección de producto respetando el contexto (usando previousStep)
     let product = detectProductRespectingActive(
@@ -1607,6 +1622,7 @@ export default async function handler(req: any, res: any) {
     const wasAskingShoeSize = botWasAskingShoeSize(history || []);
 
     const isOnlyNumber = /^\s*\d{1,3}\s*$/.test(texto);
+    const isSoloQuiero = /^\s*quiero\s*$/i.test(texto);
 
     const shoeSizeFromText = extractShoeSizeFromText(texto);
     const shoeProductContext = isShoeProductText(
