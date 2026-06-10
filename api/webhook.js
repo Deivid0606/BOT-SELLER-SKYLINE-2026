@@ -2,6 +2,8 @@
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + ✅ Precios obtenidos de: trigger/plantilla (primero) o full_training (segundo)
 // + ✅ Sin precios hardcodeados
+// + ✅ Detección correcta de "Destapa Cañerías" (prioridad alta)
+// + ✅ Flujo de ventas local completo
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -28,7 +30,6 @@ const normalize = (t) =>
 function extraerPrecioDesdeTexto(texto = "") {
   if (!texto) return null;
   
-  // Patrones comunes de precio en los mensajes
   const patterns = [
     /PRECIO(?:\s+PROMOCIONAL)?:\s*([\d.,]+)\s*GS/i,
     /Precio:\s*([\d.,]+)\s*GS/i,
@@ -41,7 +42,6 @@ function extraerPrecioDesdeTexto(texto = "") {
   for (const pattern of patterns) {
     const match = texto.match(pattern);
     if (match) {
-      // Limpiar el número (quitar puntos y comas)
       const precioStr = match[1].replace(/\./g, '').replace(/,/g, '');
       const precio = parseInt(precioStr, 10);
       if (!isNaN(precio) && precio > 0) {
@@ -54,13 +54,11 @@ function extraerPrecioDesdeTexto(texto = "") {
 }
 
 async function obtenerPrecioProducto(userId, productName, textoReferencia = "") {
-  // 1. Intentar extraer del texto de referencia (trigger/plantilla)
   if (textoReferencia) {
     const precio = extraerPrecioDesdeTexto(textoReferencia);
     if (precio) return precio;
   }
   
-  // 2. Buscar en full_training
   try {
     const { data: config } = await supabase
       .from("whatsapp_config")
@@ -79,7 +77,6 @@ async function obtenerPrecioProducto(userId, productName, textoReferencia = "") 
             return product.price;
           }
         }
-        // Buscar por keywords
         if (product.keywords && Array.isArray(product.keywords)) {
           for (const kw of product.keywords) {
             if (productNorm.includes(normalize(kw))) {
@@ -143,7 +140,7 @@ function getTipoCobertura(city) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// DETECTOR DE PRODUCTOS DESDE TEXTO
+// DETECTOR DE PRODUCTOS DESDE TEXTO (CORREGIDO)
 // ═══════════════════════════════════════════════════════════
 
 function detectarProductoDesdeTexto(texto = "") {
@@ -156,27 +153,22 @@ function detectarProductoDesdeTexto(texto = "") {
     return "Destapa Cañerías Tornado";
   }
   
-  // Limpiador de Ollas
   if (t.includes("limpiador") || t.includes("carbonilla") || t.includes("oven cleaner")) {
     return "Limpiador de Ollas y Carbonilla";
   }
 
-  // Perfume Asad
   if (t.includes("perfume asad") || t.includes(" asad") || t === "asad") {
     return "Perfume Asad";
   }
 
-  // Crema de Veneno de Abeja (solo si no es destapa)
   if ((t.includes("veneno") || t.includes("abeja")) && !t.includes("destapa")) {
     return "Crema de Veneno de Abeja";
   }
 
-  // Peladora Automática
   if (t.includes("peladora") || t.includes("pela papas")) {
     return "Peladora Automática";
   }
 
-  // Tabla de Picar de Mármol
   if (t.includes("tabla") && (t.includes("picar") || t.includes("marmol"))) {
     return "Tabla de Picar de Mármol";
   }
@@ -861,7 +853,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         plantillaPrimary = result.plantilla;
         contenidoPrimary = clean(result.mensajeFinal || trig.response || "");
         
-        // Extraer precio del contenido enviado
         precioDetectado = extraerPrecioDesdeTexto(contenidoPrimary);
 
         if (trig.auto_tag) {
@@ -882,7 +873,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
         });
         contenidoSecondary = clean(result.mensajeFinal || trig.secondary?.response || "");
         
-        // Si no se detectó precio antes, intentar del secundario
         if (!precioDetectado) {
           precioDetectado = extraerPrecioDesdeTexto(contenidoSecondary);
         }
@@ -938,7 +928,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
           address: "",
           items: [],
           total_amount: 0,
-          precio_unitario: precioDetectado, // Guardar el precio detectado
+          precio_unitario: precioDetectado,
         };
         console.log(`🛍️ Producto detectado en trigger: "${productoDetectado}" → contexto actualizado, precio: ${precioDetectado || "no detectado"}`);
       }
@@ -997,7 +987,6 @@ async function llamarChatIAConFallback({
         return { response, handled_by: "local_flow" };
       }
       
-      // Obtener precio
       let precioUnitario = precioUnitarioGuardado;
       if (!precioUnitario) {
         precioUnitario = await obtenerPrecioProducto(userId, currentProduct, "");
@@ -1047,7 +1036,6 @@ async function llamarChatIAConFallback({
       if (cantidadMatch) {
         const cantidad = parseInt(cantidadMatch[1], 10);
         
-        // Obtener precio
         let precioUnitario = precioUnitarioGuardado;
         if (!precioUnitario) {
           precioUnitario = await obtenerPrecioProducto(userId, currentProduct, "");
@@ -1131,7 +1119,6 @@ async function llamarChatIAConFallback({
   } catch (err) {
     console.error("❌ chat-ia error:", err.message);
     
-    // Fallback genérico
     const fallback = "👋 ¡Hola! ¿En qué producto estás interesado?\n\n💬 Escribime el nombre del producto que te interesa y te ayudo con tu pedido.";
     await enviarMensaje(userId, from, fallback);
     await saveReceivedMessage({ userId, from, message: fallback, messageType: "out_text" });
@@ -1573,7 +1560,6 @@ export async function procesar(req, message, userId, from) {
       waMessageId: message.id || null,
     });
 
-    // TEXTO: triggers + flujo local + IA
     if (messageType === "text") {
       const disparado = await evaluarDisparadores({ userId, from, texto });
       if (disparado) {
@@ -1604,7 +1590,6 @@ export async function procesar(req, message, userId, from) {
       return { response: data?.response || null, handled_by: data?.handled_by };
     }
 
-    // IMAGEN
     if ((messageType === "image" || messageType === "document") && mediaUrl) {
       asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch(e => console.error(e));
 
@@ -1624,7 +1609,6 @@ export async function procesar(req, message, userId, from) {
       return { response: data?.response || null };
     }
 
-    // AUDIO
     if (messageType === "audio" && mediaUrl) {
       let ctx = await getContexto(userId, from);
       const estabaVencido = isContextoVencido(ctx);
