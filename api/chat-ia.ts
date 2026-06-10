@@ -22,7 +22,7 @@ const normalize = (t: string): string =>
 function hasExplicitProductMention(text: string): boolean {
   const n = normalize(text);
   const buyIndicators = /\b(quiero|comprar|llevo|dame|mandame|reservar|apartar|la\s+raqueta|el\s+veneno|las\s+plantillas|la\s+peladora|el\s+afilador|el\s+kit|la\s+máquina|el\s+nebulizador|la\s+tabla)\b/i;
-  const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas)\b/.test(n);
+  const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas|destapa|cañerias|cañerías|limpiador|ollas)\b/.test(n);
   return buyIndicators.test(n) || productNames;
 }
 
@@ -32,7 +32,7 @@ function isLocationOnlyMessage(text: string): boolean {
   if (hasExplicitProductMention(text)) return false;
   const cityMatch = extractCityFromText(n);
   if (!cityMatch) return false;
-  const noProductWords = !/\b(quiero|comprar|raqueta|veneno|plantilla|pelador|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas)\b/i.test(n);
+  const noProductWords = !/\b(quiero|comprar|raqueta|veneno|plantilla|pelador|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas|destapa|cañerias|limpiador)\b/i.test(n);
   return noProductWords;
 }
 
@@ -87,7 +87,7 @@ function buildWaitingPaymentResponse(order: any): string {
 function isInformationRequest(text: string): boolean {
   const n = normalize(text);
   const infoWords = /\b(informaci[oó]n|info|más info|mas info|quiero saber|consultar|dudas?|más datos|mas datos|detalles|más detalles|mas detalles|explicame|qué es|que es|cómo funciona|como funciona)\b/i;
-  const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes)\b/i;
+  const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes|destapa|cañerias|limpiador|ollas)\b/i;
   if (productWords.test(n)) return false;
   return infoWords.test(n);
 }
@@ -96,7 +96,7 @@ function isCatalogQuery(text: string): boolean {
   const n = normalize(text);
   const catalogWords = /\b(cat[aá]logo|productos|qu[eé] venden|tienen|stock|catálogo|precios|catalogo)\b/i;
   const greetingWords = /\b(hola|buenas|buen día|saludos)\b/i;
-  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla|raqueta)\b/i;
+  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla|raqueta|destapa|cañerias|limpiador|ollas)\b/i;
   return (catalogWords.test(n) || greetingWords.test(n)) && !productWords.test(n);
 }
 
@@ -111,7 +111,7 @@ function isNewConversation(text: string, history: any[]): boolean {
 function isProductInquiry(text: string): boolean {
   const n = normalize(text);
   const inquiryWords = /\b(qu[eé] es|cómo funciona|para qu[eé] sirve|características|beneficios|tiene|informaci[oó]n|info|cu[aá]nto cuesta|precio|valor|costo|dime|contame|explicame)\b/i;
-  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla|raqueta)\b/i;
+  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla|raqueta|destapa|cañerias|limpiador|ollas)\b/i;
   const buyWords = /\b(quiero|comprar|llevo|dame|mandame|agregame|reservar|apartar)\b/i;
   return inquiryWords.test(n) && productWords.test(n) && !buyWords.test(n);
 }
@@ -128,7 +128,8 @@ function isProductName(text: string): boolean {
     "vital honey vip", "vital honey",
     "perfume asad", "asad",
     "almohadillas antivibracion", "soporte para lavarropas", "lavarropas", "kit x4 patitas", "patitas antideslizantes",
-    "raqueta electrica", "raqueta para insectos", "flayes pro", "raqueta flayes"
+    "raqueta electrica", "raqueta para insectos", "flayes pro", "raqueta flayes",
+    "destapa cañerias", "destapa cañerías", "limpiador de ollas"
   ];
   const normalizedText = n;
   return productNames.some(p => normalizedText.includes(p) || p.includes(normalizedText));
@@ -321,7 +322,7 @@ Respondé con el número (1, 2, 3...)`;
 }
 
 // =======================================================
-// 🎯 DETECCIÓN DE PRODUCTO RESPETANDO ACTIVO
+// 🎯 DETECCIÓN DE PRODUCTO RESPETANDO ACTIVO - FIX 1
 // =======================================================
 
 function detectProductRespectingActive(
@@ -333,35 +334,30 @@ function detectProductRespectingActive(
 ): string {
   const msg = normalize(text);
   
+  // FIX 1: Si el mensaje es solo ciudad o solo número, NUNCA detectar producto nuevo
+  if (isLocationOnlyMessage(text) || /^\s*\d{1,3}\s*$/.test(text)) {
+    console.log(`🔒 Mensaje es solo ciudad/cantidad - manteniendo producto: ${activeProduct}`);
+    return activeProduct || "";
+  }
+  
   if (isPriceIntent(text) || isProductInquiry(text)) {
     console.log(`ℹ️ Consulta de precio/info - manteniendo producto activo: ${activeProduct}`);
     return activeProduct || "";
   }
   
-  const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas)\b/i.test(msg);
+  const detected = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
   
-  const isOnlyLocation = isLocationOnlyMessage(text);
-  const isOnlyQuantity = /^\s*\d{1,3}\s*$/.test(text) && !isOnlyShoeVariantText(text);
-  
-  if (activeProduct && !explicitNewProductRequest) {
-    console.log(`🔄 Manteniendo producto activo: "${activeProduct}" (cliente no pidió cambio explícito)`);
+  if (detected && !isInvalidProductCandidate(detected)) {
+    // Si es un producto diferente al activo, usarlo
+    if (!activeProduct || !sameProduct(detected, activeProduct)) {
+      console.log(`🔄 Producto detectado (diferente al activo): "${detected}" (activo: "${activeProduct}")`);
+      return detected;
+    }
+    console.log(`✅ Producto detectado coincide con activo: "${detected}"`);
     return activeProduct;
   }
   
-  if (explicitNewProductRequest) {
-    console.log(`🔄 Cliente pidió EXPLÍCITAMENTE otro producto. Detectando...`);
-    const newProduct = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
-    if (newProduct && !isInvalidProductCandidate(newProduct)) {
-      console.log(`✅ Nuevo producto detectado: "${newProduct}"`);
-      return newProduct;
-    }
-  }
-  
-  const detected = detectProductRaw(text, training, lastAssistantMessage, lastUserProduct);
-  if (detected && !isInvalidProductCandidate(detected)) {
-    return detected;
-  }
-  
+  console.log(`⚠️ No se detectó producto nuevo - retornando activo: "${activeProduct}"`);
   return activeProduct || "";
 }
 
@@ -373,6 +369,15 @@ function detectProductRaw(
   lastUserProduct?: string
 ) {
   const msg = normalize(text);
+
+  // Nuevos productos
+  if (msg.includes("destapa") || msg.includes("cañeria") || msg.includes("cañería")) {
+    return "Destapa Cañerías";
+  }
+  
+  if (msg.includes("limpiador") && (msg.includes("olla") || msg.includes("ollas"))) {
+    return "Limpiador de Ollas";
+  }
 
   if (isAntiVibrationKit(text) || isPackReferenceText(text) ||
       msg.includes("soporte lavarropas") || msg.includes("almohadillas antivibracion") ||
@@ -452,6 +457,8 @@ function detectProductRaw(
 function canonicalProductFromText(text: string): string {
   const n = normalize(text);
 
+  if (/\b(destapa|cañeria|cañería)\b/.test(n)) return "Destapa Cañerías";
+  if (/\b(limpiador\s+de\s+ollas|limpiador\s+ollas)\b/.test(n)) return "Limpiador de Ollas";
   if (/\b(raqueta|electrica|flayes|mosquitos|moscas|insectos)\b/.test(n)) return "Raqueta Eléctrica para Insectos";
   if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja)\b/.test(n)) return "Veneno de Abeja";
   if (/\b(pelador|peladora|pelar\s+papas|pelador\s+de\s+papas|peladora\s+automatica)\b/.test(n)) return "Peladora Automática";
@@ -686,7 +693,9 @@ function extractData(
     norm.includes("pororo") || norm.includes("maquina") ||
     norm.includes("nebulizador") || norm.includes("tabla") ||
     norm.includes("patitas") || norm.includes("antideslizantes") ||
-    norm.includes("kit") || norm.includes("raqueta");
+    norm.includes("kit") || norm.includes("raqueta") ||
+    norm.includes("destapa") || norm.includes("cañeria") ||
+    norm.includes("limpiador") || norm.includes("ollas");
 
   const nameMatch = text.match(/(?:me\s+llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,80})/i)?.[1];
 
@@ -1430,6 +1439,8 @@ export default async function handler(req: any, res: any) {
             break;
           }
           const norm = normalize(userText);
+          if (norm.includes("destapa") || norm.includes("cañeria")) { lastUserProduct = "Destapa Cañerías"; break; }
+          if (norm.includes("limpiador") && norm.includes("olla")) { lastUserProduct = "Limpiador de Ollas"; break; }
           if (norm.includes("raqueta")) { lastUserProduct = "Raqueta Eléctrica para Insectos"; break; }
           if (norm.includes("veneno") || norm.includes("abeja")) { lastUserProduct = "Veneno de Abeja"; break; }
           if (norm.includes("plantilla") || norm.includes("ortopiex")) { lastUserProduct = getDefaultShoeProductName(); break; }
@@ -1473,9 +1484,14 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    // =======================================================
+    // FIX 2: Limpiar producto activo entre sesiones
+    // =======================================================
     const currentActiveProduct = 
       oldOrder?.product ||
-      context?.current_product ||
+      (context?.current_product && lastUserProduct && sameProduct(context.current_product, lastUserProduct)
+        ? context.current_product
+        : null) ||
       lastUserProduct ||
       null;
     
@@ -1598,14 +1614,15 @@ export default async function handler(req: any, res: any) {
     }
 
     // =======================================================
-    // 🆕 RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD (con ejemplos)
+    // FIX 3: RESPUESTA DE CIUDAD con producto correcto
     // =======================================================
-    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && product) {
+    const productForCity = product || currentActiveProduct || "";
+    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && productForCity) {
       const city = extracted.city || extractCityFromText(texto);
       
       if (city) {
         let orderData = {
-          product: product,
+          product: productForCity,
           quantity: 0,
           shoe_size: extracted.shoe_size || "",
           city: city,
@@ -1619,15 +1636,15 @@ export default async function handler(req: any, res: any) {
         await safeUpsertOrder(user_id, fromNumber, orderData, false);
         
         return res.json({
-          response: buildQuantityAfterCityResponse(product, city, extracted.shoe_size),
+          response: buildQuantityAfterCityResponse(productForCity, city, extracted.shoe_size),
           context: {
             ...(context || {}),
-            current_product: product,
-            last_user_product: product,
+            current_product: productForCity,
+            last_user_product: productForCity,
             step: "collecting_quantity",
             tipo_cobertura: getTipoCobertura(city),
             order_data: orderData,
-            last_topic: product,
+            last_topic: productForCity,
             updated_at: new Date().toISOString(),
           },
           is_payment_proof: false,
@@ -1638,9 +1655,9 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 🆕 RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y CONFIRMAR
     // =======================================================
-    if (isQuantityReply && product && extracted.quantity > 0) {
+    if (isQuantityReply && productForCity && extracted.quantity > 0) {
       let orderData = {
-        product: product,
+        product: productForCity,
         quantity: extracted.quantity,
         shoe_size: extracted.shoe_size || "",
         city: oldOrder?.city || context?.order_data?.city || "",
@@ -1651,7 +1668,7 @@ export default async function handler(req: any, res: any) {
         total_amount: 0,
       };
       
-      const total = calculateTotal(product, extracted.quantity, fullTraining);
+      const total = calculateTotal(productForCity, extracted.quantity, fullTraining);
       if (total) orderData.total_amount = total;
       
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
@@ -1660,12 +1677,12 @@ export default async function handler(req: any, res: any) {
         response: buildOrderSummaryResponse(orderData, getTipoCobertura(orderData.city)),
         context: {
           ...(context || {}),
-          current_product: product,
-          last_user_product: product,
+          current_product: productForCity,
+          last_user_product: productForCity,
           step: nextStep(orderData, getTipoCobertura(orderData.city)),
           tipo_cobertura: getTipoCobertura(orderData.city),
           order_data: orderData,
-          last_topic: product,
+          last_topic: productForCity,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
@@ -1829,7 +1846,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
 
     // Construir orderData final
     let orderData = {
-      product: product || oldOrder?.product || "",
+      product: productForCity || oldOrder?.product || "",
       quantity: extracted.quantity || oldOrder?.quantity || 0,
       shoe_size: extracted.shoe_size || oldOrder?.shoe_size || "",
       city: extracted.city || oldOrder?.city || "",
