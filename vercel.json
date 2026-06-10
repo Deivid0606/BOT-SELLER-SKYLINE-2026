@@ -1,23 +1,23 @@
 {
   "functions": {
     "api/chat-ia.ts": {
-      "maxDuration": 60,
-      "memory": 1792
+      "maxDuration": 10,
+      "memory": 1024
     },
     "api/webhook.js": {
-      "maxDuration": 60,
+      "maxDuration": 10,
       "memory": 1024
     },
     "api/cron-followups.js": {
-      "maxDuration": 60,
+      "maxDuration": 10,
       "memory": 512
     },
     "api/send-whatsapp.js": {
-      "maxDuration": 30,
+      "maxDuration": 10,
       "memory": 512
     },
     "api/send-template.js": {
-      "maxDuration": 30,
+      "maxDuration": 10,
       "memory": 512
     }
   },
