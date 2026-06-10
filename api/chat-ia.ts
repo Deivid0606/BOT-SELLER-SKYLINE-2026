@@ -1,4 +1,4 @@
-// api/chat-ia.ts — v1007
+// api/chat-ia.ts — v1008
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(process.env.SUPABASE_URL as string, process.env.SUPABASE_SERVICE_ROLE_KEY as string);
@@ -65,6 +65,7 @@ function extractCityFromText(text: string): string {
     cde: "Ciudad del Este", "ciudad del este": "Ciudad del Este", luque: "Luque",
     ita: "Itá", lambare: "Lambaré", "san lorenzo": "San Lorenzo", sanlo: "San Lorenzo",
     "san lorenso": "San Lorenzo", fdm: "Fernando de la Mora", "fernando de la mora": "Fernando de la Mora",
+    "fernando mora": "Fernando de la Mora", "ferneando": "Fernando de la Mora",
     nemby: "Ñemby", ñemby: "Ñemby", ypane: "Ypané", limpio: "Limpio",
     "villa elisa": "Villa Elisa", hernandarias: "Hernandarias", "presidente franco": "Presidente Franco",
     "pte franco": "Presidente Franco", aregua: "Areguá", areguá: "Areguá",
@@ -128,7 +129,7 @@ function isProductInquiry(text: string): boolean {
 function isProductName(text: string): boolean {
   const n = normalize(text);
   const productNames = [
-    "veneno de abeja", "crema de abeja", "abeja",
+    "veneno de abeja", "crema de abeja", "abeja", "veneno",
     "plantillas ortopiex", "ortopiex", "plantillas", "ortoflex", "5d",
     "peladora automatica", "pelador automatico", "pelador", "peladora",
     "maquina para hacer pororo", "maquina pororo", "pororo", "popcorn", "pochoclo", "palomitas",
@@ -352,7 +353,15 @@ function detectProductRespectingActive(
 ): string {
   const msg = normalize(text);
   
-  // 🔥 REGLA CLAVE 1: Si el bot estaba preguntando cantidad y el cliente responde solo número
+  // 🔥 REGLA CLAVE: Si el cliente dice "quiero" o "si" y ya tenemos un producto activo, mantenerlo
+  const esConfirmacionCompra = /^\s*(quiero|si|sí|dale|ok|listo|confirmo|compro|reservo|quiero ese|ese quiero)\s*$/i.test(text);
+  
+  if (esConfirmacionCompra && activeProduct) {
+    console.log(`🔒 Cliente confirmó compra con "${text}" - Manteniendo producto activo: "${activeProduct}"`);
+    return activeProduct;
+  }
+  
+  // 🔥 REGLA CLAVE 2: Si el bot estaba preguntando cantidad y el cliente responde solo número
   const clienteRespondioSoloNumero = /^\s*\d{1,3}\s*$/.test(text);
   const estabaPidiendoCantidad = 
     previousStep === "collecting_quantity" ||
@@ -365,7 +374,7 @@ function detectProductRespectingActive(
     return activeProduct || "";
   }
   
-  // 🔥 REGLA CLAVE 2: Si estamos en modo esperando cantidad, NO detectar nuevo producto
+  // 🔥 REGLA CLAVE 3: Si estamos en modo esperando cantidad, NO detectar nuevo producto
   const isWaitingForQuantity = 
     previousStep === "collecting_quantity" ||
     previousStep === "esperando_cantidad";
@@ -375,7 +384,7 @@ function detectProductRespectingActive(
     return activeProduct || "";
   }
   
-  // 🔥 REGLA CLAVE 3: Si estamos esperando ciudad y el cliente responde una ciudad válida, mantener producto
+  // 🔥 REGLA CLAVE 4: Si estamos esperando ciudad y el cliente responde una ciudad válida, mantener producto
   const isWaitingForCity = previousStep === "collecting_city";
   const clienteRespondeCiudad = extractCityFromText(text);
   
@@ -436,8 +445,9 @@ function detectProductRaw(
     return "Raqueta Eléctrica para Insectos";
   }
 
-  if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja")) {
-    return "Veneno de Abeja";
+  if (msg.includes("veneno") || msg.includes("abeja") || msg.includes("crema de abeja") ||
+      msg.includes("veneno de abeja")) {
+    return "Crema de Veneno de Abeja";
   }
 
   if (msg.includes("plantilla") || msg.includes("ortopiex") || msg.includes("ortoflex") || msg.includes("5d")) {
@@ -505,7 +515,7 @@ function canonicalProductFromText(text: string): string {
   const n = normalize(text);
 
   if (/\b(raqueta|electrica|flayes|mosquitos|moscas|insectos)\b/.test(n)) return "Raqueta Eléctrica para Insectos";
-  if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja)\b/.test(n)) return "Veneno de Abeja";
+  if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja|veneno)\b/.test(n)) return "Crema de Veneno de Abeja";
   if (/\b(pelador|peladora|pelar\s+papas|pelador\s+de\s+papas|peladora\s+automatica)\b/.test(n)) return "Peladora Automática";
   if (/\b(soporte\s+para\s+lavarropas|lavarropas|almohadillas\s+antivibracion|almohadillas\s+antivibraci[oó]n|patitas\s+antideslizantes|kit\s+x4\s+patitas|kit\s+antivibracion)\b/.test(n)) return getAntiVibrationProductName();
   if (/\b(plantilla|plantillas|ortopiex|ortoflex)\b/.test(n)) return getDefaultShoeProductName();
@@ -707,6 +717,7 @@ function extractData(
     cde: "Ciudad del Este", "ciudad del este": "Ciudad del Este", luque: "Luque",
     ita: "Itá", lambare: "Lambaré", "san lorenzo": "San Lorenzo", sanlo: "San Lorenzo",
     "san lorenso": "San Lorenzo", fdm: "Fernando de la Mora", "fernando de la mora": "Fernando de la Mora",
+    "fernando mora": "Fernando de la Mora", "ferneando": "Fernando de la Mora",
     nemby: "Ñemby", ñemby: "Ñemby", ypane: "Ypané", limpio: "Limpio",
     "villa elisa": "Villa Elisa", hernandarias: "Hernandarias", "presidente franco": "Presidente Franco",
     "pte franco": "Presidente Franco", aregua: "Areguá", areguá: "Areguá",
@@ -1351,6 +1362,8 @@ Si ves una imagen con texto "PROMO 2 UNIDADES 129.900Gs" y un producto físico �
 
 Si ves un pelador de papas, pelador automático, peladora de verduras → productName = "Peladora Automática".
 
+Si ves una CREMA DE VENENO DE ABEJA, envase dorado o amarillo con texto "VENENO DE ABEJA" → productName = "Crema de Veneno de Abeja", productPrice = "145.000".
+
 Si ves una TABLA DE MÁRMOL o TABLA DE PICAR DE MÁRMOL → productName = "Tabla de Picar de Mármol", productPrice = "169.000" si ves el precio.
 
 Si el producto no está en catálogo, igual identificá el productName genérico visual.
@@ -1492,7 +1505,7 @@ export default async function handler(req: any, res: any) {
           }
           const norm = normalize(userText);
           if (norm.includes("raqueta")) { lastUserProduct = "Raqueta Eléctrica para Insectos"; break; }
-          if (norm.includes("veneno") || norm.includes("abeja")) { lastUserProduct = "Veneno de Abeja"; break; }
+          if (norm.includes("veneno") || norm.includes("abeja")) { lastUserProduct = "Crema de Veneno de Abeja"; break; }
           if (norm.includes("plantilla") || norm.includes("ortopiex")) { lastUserProduct = getDefaultShoeProductName(); break; }
           if (norm.includes("pelador")) { lastUserProduct = "Peladora Automática"; break; }
           if (norm.includes("pororo") || norm.includes("popcorn") || norm.includes("pochoclo")) { lastUserProduct = "Máquina para hacer Pororo"; break; }
@@ -1656,7 +1669,7 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 🆕 NUEVO PRODUCTO SELECCIONADO → PREGUNTAR CIUDAD
     // =======================================================
-    if (product && !wantsAddMore && !isQuantityReply && !isPureShoeSizeReply && !isCityReply) {
+    if (product && !wantsAddMore && !isQuantityReply && !isPureShoeSizeReply && !isCityReply && !isSoloQuiero) {
       const productChanged = !oldOrder?.product || !sameProduct(product, oldOrder.product);
       
       if (productChanged) {
@@ -1679,6 +1692,40 @@ export default async function handler(req: any, res: any) {
           is_payment_proof: false,
         });
       }
+    }
+
+    // =======================================================
+    // 🆕 SI EL CLIENTE DICE "quiero" Y YA TENEMOS PRODUCTO → PREGUNTAR CIUDAD
+    // =======================================================
+    if (isSoloQuiero && product) {
+      const orderData = {
+        product: product,
+        quantity: 0,
+        shoe_size: extracted.shoe_size || "",
+        city: "",
+        customer_name: "",
+        phone: "",
+        address: "",
+        items: [],
+        total_amount: 0,
+      };
+      
+      await safeUpsertOrder(user_id, fromNumber, orderData, false);
+      
+      return res.json({
+        response: buildCityQuestionResponse(product, extracted.shoe_size),
+        context: {
+          ...(context || {}),
+          current_product: product,
+          last_user_product: product,
+          step: "collecting_city",
+          tipo_cobertura: null,
+          order_data: orderData,
+          last_topic: product,
+          updated_at: new Date().toISOString(),
+        },
+        is_payment_proof: false,
+      });
     }
 
     // =======================================================
@@ -1735,7 +1782,7 @@ export default async function handler(req: any, res: any) {
         total_amount: 0,
       };
       
-      // 🔥 El total se calcula con el producto actual (context.current_product)
+      // 🔥 El total se calcula con el producto actual
       const total = calculateTotal(product, extracted.quantity, fullTraining);
       if (total) orderData.total_amount = total;
       
@@ -1823,13 +1870,33 @@ Una vez verificado, dentro de las próximas 24 horas te estaremos enviando tu co
 
           const catalogProduct = detectProductRaw(productSignal, fullTraining, "", lastUserProduct);
           const visualProduct = catalogProduct || analysis.matchedProduct || analysis.productName || "";
-          product = visualProduct || product;
+          
+          // Si detectamos producto visual, actualizar el producto
+          if (visualProduct) {
+            product = visualProduct;
+            lastUserProduct = visualProduct;
+          }
+          
           const hasVisiblePrice = !!analysis.productPrice;
 
-          if (!catalogProduct && visualProduct && hasVisiblePrice) {
+          if (visualProduct && hasVisiblePrice) {
             const promoLine = analysis.promoText
               ? `🔥 ${analysis.promoText} → ${analysis.productPrice} Gs`
               : `💰 Precio: ${analysis.productPrice} Gs`;
+
+            const orderData = {
+              product: visualProduct,
+              quantity: 0,
+              shoe_size: "",
+              city: "",
+              customer_name: "",
+              phone: "",
+              address: "",
+              items: [],
+              total_amount: 0,
+            };
+
+            await safeUpsertOrder(user_id, fromNumber, orderData, false);
 
             return res.json({
               response: `Sí 😊 es ${visualProduct}.
@@ -1843,7 +1910,7 @@ ${promoLine}
                 last_user_product: visualProduct,
                 step: "collecting_city",
                 tipo_cobertura: previousTipoCobertura || null,
-                order_data: { ...(oldOrder || {}), product: visualProduct },
+                order_data: orderData,
                 last_topic: visualProduct,
                 updated_at: new Date().toISOString(),
               },
@@ -1912,7 +1979,7 @@ Si no hay precio visible ni producto seguro, pedí el nombre del producto.`;
 
     extracted = extractData(texto, previousStep, isQuantityReply, isPureShoeSizeReply);
 
-    // 🔥 IMPORTANTE: El producto para orderData debe ser el producto activo (context.current_product), no el detectado nuevo
+    // 🔥 IMPORTANTE: El producto para orderData debe ser el producto activo del contexto
     const finalProduct = product || oldOrder?.product || context?.current_product || "";
     
     // Construir orderData final usando el producto correcto
@@ -1970,7 +2037,7 @@ REGLA FUNDAMENTAL: Los precios los sacás SIEMPRE del entrenamiento. NUNCA inven
 
 FLUJO DE VENTAS (RESPETAR ESTRICTAMENTE):
 1. Cliente dice producto → preguntar CIUDAD (ej: "Excelente elección! 😊 Decime por favor a qué ciudad sería el envío, así verifico la cobertura y te confirmo la entrega 🚚✨")
-2. Cliente responde ciudad → preguntar CANTIDAD con ejemplos (ej: "¡Buenísimo! 😊 Hacemos entregas en [ciudad] con envío GRATIS... ¿Cuántas unidades te gustaría pedir?")
+2. Cliente responde ciudad → preguntar CANTIDAD con ejemplos
 3. Cliente responde cantidad → mostrar resumen y pedir datos de envío
 
 ═══════════════════════════════════
