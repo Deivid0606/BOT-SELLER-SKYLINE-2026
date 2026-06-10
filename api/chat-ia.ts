@@ -285,13 +285,11 @@ function getAntiVibrationProductName(): string {
 function buildCityQuestionResponse(product: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
   
-  return `🔥 Perfecto 😊
+  return `🔥 Excelente elección! 😊
 
-Me confirmaste que querés ${productName}.
+📍 Decime por favor a qué ciudad sería el envío, así verifico la cobertura y te confirmo la entrega 🚚✨
 
-📍 ¿Para qué CIUDAD querés el envío?
-
-(Ejemplo: Asunción, Capiatá, Luque, San Lorenzo, Fernando de la Mora...)`;
+📦 Producto: ${productName}`;
 }
 
 function buildQuantityAfterCityResponse(product: string, city: string, shoeSize?: any): string {
@@ -301,11 +299,16 @@ function buildQuantityAfterCityResponse(product: string, city: string, shoeSize?
     normalize(product).includes("kit antivibracion") ||
     normalize(product).includes("patitas antideslizantes")
   ) {
-    return `✅ Perfecto, enviamos a ${city} 😊
+    return `¡Buenísimo! 😊
+
+📍 Hacemos entregas en ${city} con envío GRATIS contra entrega 🚚✨
 
 📦 ${productName}
+💰 179.900 Gs
 
-¿Cuántos KITS querés? (Cada kit incluye 4 patitas)
+Pagás recién cuando recibís el producto.
+
+👉 ¿Cuántos KITS te gustaría pedir? (Cada kit incluye 4 patitas)
 
 Ejemplos:
 • 1 kit
@@ -315,11 +318,16 @@ Ejemplos:
 Respondé con el número (1, 2, 3...)`;
   }
   
-  return `✅ Perfecto, enviamos a ${city} 😊
+  return `¡Buenísimo! 😊
+
+📍 Hacemos entregas en ${city} con envío GRATIS contra entrega 🚚✨
 
 📦 ${productName}
+💰 179.900 Gs
 
-¿Cuántas UNIDADES querés?
+Pagás recién cuando recibís el producto.
+
+👉 ¿Cuántas unidades te gustaría pedir?
 
 Ejemplos:
 • 1 unidad
@@ -342,6 +350,15 @@ function detectProductRespectingActive(
 ): string {
   const msg = normalize(text);
   
+  // 🔥 REGLA CLAVE: Si el bot estaba preguntando cantidad y el cliente responde solo número
+  const clienteRespondioSoloCantidad = /^\s*\d{1,3}\s*$/.test(text);
+  const estabaPidiendoCantidad = botWasAskingQuantityFromHistory(lastAssistantMessage);
+  
+  if (estabaPidiendoCantidad && clienteRespondioSoloCantidad) {
+    console.log(`🔒 Cliente respondió solo número mientras pedía cantidad - Manteniendo producto: "${activeProduct}"`);
+    return activeProduct || "";
+  }
+  
   if (isPriceIntent(text) || isProductInquiry(text)) {
     console.log(`ℹ️ Consulta de precio/info - manteniendo producto activo: ${activeProduct}`);
     return activeProduct || "";
@@ -352,7 +369,7 @@ function detectProductRespectingActive(
   const isOnlyLocation = isLocationOnlyMessage(text);
   const isOnlyQuantity = /^\s*\d{1,3}\s*$/.test(text) && !isOnlyShoeVariantText(text);
   
-  if (activeProduct && !explicitNewProductRequest) {
+  if (activeProduct && !explicitNewProductRequest && !isOnlyQuantity) {
     console.log(`🔄 Manteniendo producto activo: "${activeProduct}" (cliente no pidió cambio explícito)`);
     return activeProduct;
   }
@@ -546,17 +563,22 @@ function getLastAssistantMessage(history: any[]) {
   return clean(last?.content);
 }
 
-function botWasAskingQuantity(history: any[]) {
-  const lastAssistantMessage = normalize(getLastAssistantMessage(history));
+function botWasAskingQuantityFromHistory(lastAssistantMessage?: string): boolean {
+  const message = normalize(lastAssistantMessage || "");
   return (
-    lastAssistantMessage.includes("cuantas unidades") ||
-    lastAssistantMessage.includes("cuantos unidades") ||
-    lastAssistantMessage.includes("cantidad") ||
-    lastAssistantMessage.includes("cuantas queres") ||
-    lastAssistantMessage.includes("cuantas te gustaria") ||
-    lastAssistantMessage.includes("cuántas unidades") ||
-    lastAssistantMessage.includes("Respondé con el número")
+    message.includes("cuantas unidades") ||
+    message.includes("cuantos unidades") ||
+    message.includes("cantidad") ||
+    message.includes("cuantas queres") ||
+    message.includes("cuantas te gustaria") ||
+    message.includes("cuántas unidades") ||
+    message.includes("Respondé con el número") ||
+    message.includes("cuántas unidades te gustaría")
   );
+}
+
+function botWasAskingQuantity(history: any[]) {
+  return botWasAskingQuantityFromHistory(getLastAssistantMessage(history));
 }
 
 function botWasAskingCity(history: any[]): boolean {
@@ -565,7 +587,8 @@ function botWasAskingCity(history: any[]): boolean {
     lastAssistantMessage.includes("qué ciudad") ||
     lastAssistantMessage.includes("para qué ciudad") ||
     lastAssistantMessage.includes("ciudad querés") ||
-    lastAssistantMessage.includes("ciudad para el envío")
+    lastAssistantMessage.includes("ciudad para el envío") ||
+    lastAssistantMessage.includes("Decime por favor a qué ciudad")
   );
 }
 
@@ -1051,7 +1074,7 @@ Tu pedido queda así:
 ✅ dirección exacta o ubicación por Google Maps
 ✅ número de celular
 
-📲 Si no enviés número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
+📲 Si no enviás número, utilizaremos automáticamente el mismo número desde el que estás escribiendo 😊
 
 y agendamos tu entrega ✨`;
 }
@@ -1468,9 +1491,10 @@ export default async function handler(req: any, res: any) {
     const previousStep = isNewChat ? "" : clean(context?.step);
     const previousTipoCobertura = isNewChat ? "" : clean(context?.tipo_cobertura);
 
+    // ✅ C. Confirmar solo una vez
     if (previousStep === "confirmed") {
       return res.json({
-        response: "✅ Tu pedido ya fue confirmado 😊\n\nSi querés hacer un nuevo pedido, decime qué producto querés.",
+        response: "✅ Tu pedido ya fue confirmado 😊\n\nSi querés hacer otro pedido, decime qué producto querés.",
         context: {
           ...(context || {}),
           step: "confirmed",
@@ -1906,8 +1930,8 @@ Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el en
 REGLA FUNDAMENTAL: Los precios los sacás SIEMPRE del entrenamiento. NUNCA inventes ni asumas precios.
 
 FLUJO DE VENTAS (RESPETAR ESTRICTAMENTE):
-1. Cliente dice producto → preguntar CIUDAD (ej: "¿Para qué ciudad querés el envío?")
-2. Cliente responde ciudad → preguntar CANTIDAD con ejemplos (ej: "¿Cuántas unidades querés? Ej: 1 unidad, 2 unidades...")
+1. Cliente dice producto → preguntar CIUDAD (ej: "Excelente elección! 😊 Decime por favor a qué ciudad sería el envío...")
+2. Cliente responde ciudad → preguntar CANTIDAD con ejemplos (ej: "¡Buenísimo! 😊 Hacemos entregas en [ciudad] con envío GRATIS... ¿Cuántas unidades te gustaría pedir?")
 3. Cliente responde cantidad → mostrar resumen y pedir datos de envío
 
 ═══════════════════════════════════
@@ -1924,7 +1948,7 @@ Cantidad: ${orderData.quantity || "pendiente"}
 Paso actual: ${step}
 
 REGLAS:
-- Si paso es collecting_city → preguntar CIUDAD
+- Si paso es collecting_city → preguntar CIUDAD con mensaje amable
 - Si paso es collecting_quantity → preguntar CANTIDAD con ejemplos
 - Si paso es collecting_name → pedir nombre
 - Si paso es collecting_phone → pedir teléfono
