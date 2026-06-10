@@ -1884,7 +1884,7 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION v1012 - CATALOGO_PRODUCTOS - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
+  console.log("🔥 VERSION v1013 - PRODUCTO NUEVO PRIORIDAD + CONTEXTO SEGURO");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -2028,14 +2028,16 @@ export default async function handler(req: any, res: any) {
       detectProductFromCatalog(texto, fullTraining) ||
       canonicalProductFromText(texto);
 
-    const shouldPreferRecentProduct =
-      isGenericBuyConfirmation(texto) &&
-      recentHistoryProduct &&
-      (!previousStep || previousStep === "selling" || previousStep === "mostrando_producto");
+    const isGenericConfirmationNow = isGenericBuyConfirmation(texto);
 
+    // 🔥 PRIORIDAD ABSOLUTA:
+    // 1) Producto mencionado en ESTE mensaje.
+    // 2) Si el cliente responde “quiero/sí”, usar el producto real más reciente del historial.
+    // 3) Recién después usar contexto guardado.
+    // Esto evita que un producto viejo (ej: Veneno) pise uno nuevo enviado por trigger/template (ej: Limpiador o Perfume).
     const currentActiveProduct =
       sanitizeProductCandidate(explicitProductInCurrentMessage) ||
-      (shouldPreferRecentProduct ? sanitizeProductCandidate(recentHistoryProduct) : "") ||
+      (isGenericConfirmationNow ? sanitizeProductCandidate(recentHistoryProduct) : "") ||
       sanitizeProductCandidate(oldOrder?.product) ||
       sanitizeProductCandidate(context?.current_product) ||
       sanitizeProductCandidate(lastUserProduct) ||
@@ -2057,6 +2059,30 @@ export default async function handler(req: any, res: any) {
     );
     
     product = sanitizeProductCandidate(product);
+
+    // 🔒 Si el mensaje actual es solo “quiero/sí/ok” y el historial reciente trae un producto real
+    // distinto al contexto viejo, forzamos ese producto reciente.
+    if (
+      isGenericConfirmationNow &&
+      recentHistoryProduct &&
+      sanitizeProductCandidate(recentHistoryProduct) &&
+      (!product || !sameProduct(product, recentHistoryProduct))
+    ) {
+      console.log(`🔄 Confirmación genérica: usando producto reciente del historial: "${recentHistoryProduct}" en vez de "${product}"`);
+      product = sanitizeProductCandidate(recentHistoryProduct);
+      oldOrder = {
+        product,
+        quantity: 0,
+        shoe_size: "",
+        city: "",
+        customer_name: "",
+        phone: "",
+        address: "",
+        items: [],
+        total_amount: 0,
+      };
+    }
+
     console.log(`✅ Producto final detectado: "${product}"`);
 
     const cityFromCurrentMessage = extractCityFromText(texto);
