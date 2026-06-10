@@ -338,7 +338,7 @@ function detectProductRespectingActive(
     return activeProduct || "";
   }
   
-  const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas)\b/i.test(msg);
+  const explicitNewProductRequest = /\b(quiero|comprar|llevo|dame|mandame|mejor|otro|cambiame|en lugar de|en vez de)\s+(la\s+)?(raqueta|veneno|abeja|plantilla|peladora|afilador|kit|máquina|nebulizador|tabla|pororo|vital|perfume|soporte|lavarropas|almohadilla|patitas|destapa|limpiador|tornado|ollas|carbonilla)\b/i.test(msg);
   
   const isOnlyLocation = isLocationOnlyMessage(text);
   const isOnlyQuantity = /^\s*\d{1,3}\s*$/.test(text) && !isOnlyShoeVariantText(text);
@@ -373,6 +373,19 @@ function detectProductRaw(
   lastUserProduct?: string
 ) {
   const msg = normalize(text);
+
+  // 🆕 DESTAPA CAÑERÍAS
+  if (msg.includes("destapa") || msg.includes("cañeria") || msg.includes("caneria") || 
+      msg.includes("tornado") || msg.includes("wild tornado") || msg.includes("desatascador")) {
+    return "Destapa Cañerías Tornado";
+  }
+
+  // 🆕 LIMPIADOR DE OLLAS
+  if (msg.includes("limpiador de ollas") || msg.includes("limpia ollas") || 
+      msg.includes("carbonilla") || msg.includes("oven cleaner") || 
+      msg.includes("hollin") || msg.includes("grasa quemada")) {
+    return "Limpiador de Ollas y Carbonilla";
+  }
 
   if (isAntiVibrationKit(text) || isPackReferenceText(text) ||
       msg.includes("soporte lavarropas") || msg.includes("almohadillas antivibracion") ||
@@ -451,6 +464,12 @@ function detectProductRaw(
 
 function canonicalProductFromText(text: string): string {
   const n = normalize(text);
+
+  // 🆕 AGREGAR ESTOS:
+  if (/\b(destapa|cañeria|caneria|tornado|wild\s*tornado|desatascador)\b/.test(n)) 
+    return "Destapa Cañerías Tornado";
+  if (/\b(limpiador\s+de\s+ollas|limpia\s+ollas|carbonilla|oven\s+cleaner|hollin)\b/.test(n)) 
+    return "Limpiador de Ollas y Carbonilla";
 
   if (/\b(raqueta|electrica|flayes|mosquitos|moscas|insectos)\b/.test(n)) return "Raqueta Eléctrica para Insectos";
   if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja)\b/.test(n)) return "Veneno de Abeja";
@@ -614,6 +633,12 @@ function extractData(
 
   let quantity = 0;
 
+  // 🆕 NO RESETEAR SI EL MENSAJE ES EXPLÍCITAMENTE "quiero X" o "X unidades"
+  const explicitQuantity = 
+    norm.match(/^(quiero|llevo|compro|dame|mandame)\s+(\d{1,3})$/i) ||
+    norm.match(/^(\d{1,3})\s*(unidad|unidades|u)$/i) ||
+    (norm.match(/^\s*\d{1,3}\s*$/) && (currentStep === "collecting_quantity" || currentStep === "esperando_cantidad"));
+
   if (
     !isShoeSizeMessage &&
     !waitingForShoeSize &&
@@ -626,7 +651,11 @@ function extractData(
     }
   }
 
-  if (!forceQuantityMode && currentStep !== "collecting_quantity" && currentStep !== "esperando_cantidad") {
+  // 🆕 NO RESETEAR SI HAY CANTIDAD EXPLÍCITA
+  if (!forceQuantityMode && 
+      currentStep !== "collecting_quantity" && 
+      currentStep !== "esperando_cantidad" &&
+      !explicitQuantity) {
     quantity = 0;
   }
 
@@ -1366,6 +1395,37 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
   return clean(txt);
 }
 
+// 🆕 FUNCIÓN HELPER PARA EXTRAER PRODUCTO DE RESPUESTA GEMINI
+function extractProductFromGeminiResponse(response: string, training: string): string {
+  const r = normalize(response);
+  const lines = training.split("\n").map(l => clean(l)).filter(Boolean);
+  let bestProduct = "";
+  let bestScore = 0;
+  
+  for (const line of lines) {
+    const name = extractProductNameFromLine(line);
+    if (!name || isInvalidProductCandidate(name)) continue;
+    const n = normalize(name);
+    if (!n || n.length < 4) continue;
+    
+    let score = 0;
+    if (response.includes(name)) score += 100;
+    else if (r.includes(n)) score += 60;
+    
+    const words = n.split(" ").filter(w => w.length >= 4);
+    for (const w of words) {
+      if (r.includes(w)) score += 10;
+    }
+    
+    if (score > bestScore) {
+      bestScore = score;
+      bestProduct = name;
+    }
+  }
+  
+  return bestScore >= 60 ? bestProduct : "";
+}
+
 export default async function handler(req: any, res: any) {
   console.log("🔥 VERSION FINAL - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
 
@@ -1438,6 +1498,8 @@ export default async function handler(req: any, res: any) {
           if (norm.includes("nebulizador")) { lastUserProduct = "Nebulizador portátil"; break; }
           if (norm.includes("tabla") && (norm.includes("picar") || norm.includes("marmol"))) { lastUserProduct = "Tabla de Picar de Mármol"; break; }
           if (isAntiVibrationKit(userText)) { lastUserProduct = getAntiVibrationProductName(); break; }
+          if (norm.includes("destapa") || norm.includes("cañeria") || norm.includes("tornado")) { lastUserProduct = "Destapa Cañerías Tornado"; break; }
+          if (norm.includes("limpiador de ollas") || norm.includes("carbonilla")) { lastUserProduct = "Limpiador de Ollas y Carbonilla"; break; }
         }
       }
     }
@@ -1557,9 +1619,10 @@ export default async function handler(req: any, res: any) {
         shoeProductContext ||
         productRequiresSize(String(oldOrder?.product || context?.current_product || product || "")));
 
-    // Verificar si es respuesta de ciudad
-    const isCityReply = !product && !isOnlyNumber && extractCityFromText(texto) && 
-      (wasAskingCity || previousStep === "collecting_city");
+    // 🆕 VERIFICAR SI ES RESPUESTA DE CIUDAD - ARREGLADO
+    const cityFromMsg = extractCityFromText(texto);
+    const isCityReply = cityFromMsg && !isOnlyNumber && !isPriceIntent(texto) &&
+      (wasAskingCity || previousStep === "collecting_city" || previousStep === "selling");
     
     // Verificar si es respuesta de cantidad
     const isQuantityReply = isOnlyNumber && !isPureShoeSizeReply && !isPriceIntent(texto) &&
@@ -1600,12 +1663,13 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 🆕 RESPUESTA DE CIUDAD → PREGUNTAR CANTIDAD (con ejemplos)
     // =======================================================
-    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && product) {
-      const city = extracted.city || extractCityFromText(texto);
+    if ((isCityReply || (previousStep === "collecting_city" && extracted.city)) && (product || currentActiveProduct)) {
+      const city = extracted.city || cityFromMsg;
+      const productToUse = product || currentActiveProduct || lastUserProduct; // 🆕 FALLBACK
       
-      if (city) {
+      if (city && productToUse) {
         let orderData = {
-          product: product,
+          product: productToUse, // 🆕 USAR EL PRODUCTO ACTIVO COMO FALLBACK
           quantity: 0,
           shoe_size: extracted.shoe_size || "",
           city: city,
@@ -1619,15 +1683,15 @@ export default async function handler(req: any, res: any) {
         await safeUpsertOrder(user_id, fromNumber, orderData, false);
         
         return res.json({
-          response: buildQuantityAfterCityResponse(product, city, extracted.shoe_size),
+          response: buildQuantityAfterCityResponse(productToUse, city, extracted.shoe_size),
           context: {
             ...(context || {}),
-            current_product: product,
-            last_user_product: product,
+            current_product: productToUse, // 🆕 ACTUALIZAR CONTEXTO
+            last_user_product: productToUse,
             step: "collecting_quantity",
             tipo_cobertura: getTipoCobertura(city),
             order_data: orderData,
-            last_topic: product,
+            last_topic: productToUse,
             updated_at: new Date().toISOString(),
           },
           is_payment_proof: false,
@@ -1638,9 +1702,10 @@ export default async function handler(req: any, res: any) {
     // =======================================================
     // 🆕 RESPUESTA DE CANTIDAD → CALCULAR TOTAL Y CONFIRMAR
     // =======================================================
-    if (isQuantityReply && product && extracted.quantity > 0) {
+    if (isQuantityReply && (product || currentActiveProduct) && extracted.quantity > 0) {
+      const productToUse = product || currentActiveProduct || lastUserProduct;
       let orderData = {
-        product: product,
+        product: productToUse,
         quantity: extracted.quantity,
         shoe_size: extracted.shoe_size || "",
         city: oldOrder?.city || context?.order_data?.city || "",
@@ -1651,7 +1716,7 @@ export default async function handler(req: any, res: any) {
         total_amount: 0,
       };
       
-      const total = calculateTotal(product, extracted.quantity, fullTraining);
+      const total = calculateTotal(productToUse, extracted.quantity, fullTraining);
       if (total) orderData.total_amount = total;
       
       await safeUpsertOrder(user_id, fromNumber, orderData, false);
@@ -1660,12 +1725,12 @@ export default async function handler(req: any, res: any) {
         response: buildOrderSummaryResponse(orderData, getTipoCobertura(orderData.city)),
         context: {
           ...(context || {}),
-          current_product: product,
-          last_user_product: product,
+          current_product: productToUse,
+          last_user_product: productToUse,
           step: nextStep(orderData, getTipoCobertura(orderData.city)),
           tipo_cobertura: getTipoCobertura(orderData.city),
           order_data: orderData,
-          last_topic: product,
+          last_topic: productToUse,
           updated_at: new Date().toISOString(),
         },
         is_payment_proof: false,
@@ -1933,10 +1998,21 @@ Español paraguayo natural, con emojis.`;
       });
     }
 
+    // 🆕🆕🆕 EXTRAER PRODUCTO DE LA RESPUESTA DE GEMINI Y ACTUALIZAR CONTEXTO
+    if (response && (!product || isInvalidProductCandidate(product))) {
+      const geminiDetectedProduct = extractProductFromGeminiResponse(response, fullTraining);
+      if (geminiDetectedProduct) {
+        product = geminiDetectedProduct;
+        lastUserProduct = geminiDetectedProduct;
+        orderData.product = geminiDetectedProduct;
+        console.log(`🎯 Producto extraído de respuesta Gemini: "${geminiDetectedProduct}"`);
+      }
+    }
+
     const newContext = {
       ...(context || {}),
-      current_product: orderData.product || context?.current_product || null,
-      last_user_product: lastUserProduct || orderData.product || null,
+      current_product: orderData.product || product || context?.current_product || null,
+      last_user_product: lastUserProduct || orderData.product || product || null,
       step: step,
       tipo_cobertura: finalTipoCobertura || null,
       order_data: orderData,
