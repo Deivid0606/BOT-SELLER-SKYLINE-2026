@@ -1,162 +1,157 @@
-import { useState, useEffect } from 'react'
 import { motion } from "framer-motion";
-import { Plus, Trash2, BookOpen, Loader2, GraduationCap } from "lucide-react";
-import { supabase } from '@/integrations/supabase/client'
-import { useAuth } from '@/contexts/AuthContext'
+import { GraduationCap, Plus, Trash2, BookOpen, Loader2 } from "lucide-react";
+import { useState, useEffect } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface TrainingItem {
-  id: string
-  intent: string
-  examples: string[]
-  response: string
-  is_active: boolean
-  created_at: string
+  id: string;
+  intent: string;
+  examples: string[];
+  response: string;
+  is_active: boolean;
+  created_at: string;
 }
 
-export default function Entrenamiento() {
-  const { user } = useAuth()
-  const [trainingData, setTrainingData] = useState<TrainingItem[]>([])
-  const [intent, setIntent] = useState('')
-  const [examples, setExamples] = useState('')
-  const [response, setResponse] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
+export default function TrainingPage() {
+  const { user } = useAuth();
+  const [trainingData, setTrainingData] = useState<TrainingItem[]>([]);
+  const [intent, setIntent] = useState("");
+  const [examples, setExamples] = useState("");
+  const [response, setResponse] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
-  // Cargar datos existentes
   const loadTrainingData = async () => {
-    if (!user) return
+    if (!user) return;
     
-    setLoading(true)
+    setLoading(true);
     const { data, error } = await supabase
-      .from('training_data')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
+      .from("training_data")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
 
     if (error) {
-      console.error('Error cargando:', error)
+      console.error("Error cargando:", error);
     } else {
-      setTrainingData(data || [])
+      setTrainingData(data || []);
     }
-    setLoading(false)
-  }
+    setLoading(false);
+  };
 
   useEffect(() => {
     if (user) {
-      loadTrainingData()
+      loadTrainingData();
     }
-  }, [user])
+  }, [user]);
 
   const handleSave = async () => {
     if (!user) {
-      alert('Debes iniciar sesión')
-      return
+      alert("Debes iniciar sesión");
+      return;
     }
     
     if (!intent.trim()) {
-      alert('Por favor completa el Tema / Categoría')
-      return
+      alert("Por favor completa el Tema / Categoría");
+      return;
     }
     if (!response.trim()) {
-      alert('Por favor completa la información de entrenamiento')
-      return
+      alert("Por favor completa la información de entrenamiento");
+      return;
     }
 
-    // Convertir ejemplos a array
     const examplesArray = examples
       .split('\n')
       .filter(ex => ex.trim())
-      .map(ex => ex.trim())
+      .map(ex => ex.trim());
 
-    setSaving(true)
+    setSaving(true);
 
     if (editingId) {
-      // Actualizar existente
       const { error } = await supabase
-        .from('training_data')
+        .from("training_data")
         .update({
           intent: intent.trim(),
           examples: examplesArray,
           response: response.trim(),
           updated_at: new Date().toISOString()
         })
-        .eq('id', editingId)
-        .eq('user_id', user.id)
+        .eq("id", editingId)
+        .eq("user_id", user.id);
 
       if (error) {
-        console.error('Error al actualizar:', error)
-        alert('Error al actualizar: ' + error.message)
+        console.error("Error al actualizar:", error);
+        alert("Error al actualizar: " + error.message);
       } else {
-        alert('✅ Datos actualizados correctamente')
-        resetForm()
-        loadTrainingData()
+        alert("✅ Datos actualizados correctamente");
+        resetForm();
+        loadTrainingData();
       }
     } else {
-      // Crear nuevo
       const { error } = await supabase
-        .from('training_data')
+        .from("training_data")
         .insert({
           user_id: user.id,
           intent: intent.trim(),
           examples: examplesArray,
           response: response.trim(),
           is_active: true
-        })
+        });
 
       if (error) {
-        console.error('Error al guardar:', error)
-        alert('Error al guardar: ' + error.message)
+        console.error("Error al guardar:", error);
+        alert("Error al guardar: " + error.message);
       } else {
-        alert('✅ Datos guardados correctamente')
-        resetForm()
-        loadTrainingData()
+        alert("✅ Datos guardados correctamente");
+        resetForm();
+        loadTrainingData();
       }
     }
-    setSaving(false)
-  }
+    setSaving(false);
+  };
 
   const handleEdit = (item: TrainingItem) => {
-    setIntent(item.intent)
-    setResponse(item.response)
-    setExamples(item.examples.join('\n'))
-    setEditingId(item.id)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
+    setIntent(item.intent);
+    setResponse(item.response);
+    setExamples(item.examples.join('\n'));
+    setEditingId(item.id);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('¿Eliminar este dato de entrenamiento?')) return
+    if (!confirm("¿Eliminar este dato de entrenamiento?")) return;
 
-    setLoading(true)
+    setLoading(true);
     const { error } = await supabase
-      .from('training_data')
+      .from("training_data")
       .delete()
-      .eq('id', id)
-      .eq('user_id', user?.id)
+      .eq("id", id)
+      .eq("user_id", user?.id);
 
     if (error) {
-      console.error('Error al eliminar:', error)
-      alert('Error al eliminar: ' + error.message)
+      console.error("Error al eliminar:", error);
+      alert("Error al eliminar: " + error.message);
     } else {
-      alert('✅ Dato eliminado')
-      loadTrainingData()
+      alert("✅ Dato eliminado");
+      loadTrainingData();
     }
-    setLoading(false)
-  }
+    setLoading(false);
+  };
 
   const resetForm = () => {
-    setIntent('')
-    setExamples('')
-    setResponse('')
-    setEditingId(null)
-  }
+    setIntent("");
+    setExamples("");
+    setResponse("");
+    setEditingId(null);
+  };
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold font-heading text-gradient">Entrenamiento IA</h1>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Formulario */}
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="bg-card border border-border rounded-lg p-5 space-y-4">
           <div>
             <label className="text-xs text-muted-foreground">Tema / Categoría</label>
@@ -212,7 +207,6 @@ export default function Entrenamiento() {
           </div>
         </motion.div>
 
-        {/* Lista de datos */}
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="bg-card border border-border rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-border">
             <h3 className="font-heading font-semibold text-sm">Datos de Entrenamiento</h3>
