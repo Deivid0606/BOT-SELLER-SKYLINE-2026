@@ -603,10 +603,32 @@ export default async function handler(req: any, res: any) {
 
     const extracted = extractData(texto);
     const orderData = mergeOrderData(oldOrder, extracted, product);
-    const step = nextStep(orderData);
-
+    
     const wantsToBuy = isBuyIntent(texto);
     const asksPrice = isPriceIntent(texto);
+    
+    // ─── FUERZA PREGUNTA DE CIUDAD ───
+    // Si el cliente quiere comprar, hay producto, pero NO hay ciudad → pedir ciudad
+    let step = nextStep(orderData);
+    
+    if (wantsToBuy && orderData.product && !orderData.city) {
+      step = "collecting_city";
+      console.log("📍 Forzando pregunta de ciudad (cliente quiere comprar sin ciudad)");
+    }
+    
+    // También forzar si es un nuevo producto y no hay ciudad
+    if (orderData.product && !orderData.city && (wantsToBuy || texto.includes("quiero") || texto.includes("compro"))) {
+      step = "collecting_city";
+      console.log("📍 Forzando pregunta de ciudad (nuevo producto, cliente dijo quiero)");
+    }
+    
+    // Si el cliente solo dijo "asuncion es" o similar, extraer ciudad
+    if ((texto.includes("asuncion") || texto.includes("asunción")) && !orderData.city) {
+      orderData.city = "Asunción";
+      step = nextStep(orderData);
+      console.log("📍 Ciudad detectada: Asunción");
+    }
+    
     const hasOrderData =
       !!extracted.quantity ||
       !!extracted.city ||
@@ -616,7 +638,7 @@ export default async function handler(req: any, res: any) {
 
     const shouldCollect =
       !!orderData.product &&
-      (wantsToBuy || hasOrderData || context?.step?.startsWith("collecting"));
+      (wantsToBuy || hasOrderData || context?.step?.startsWith("collecting") || step === "collecting_city");
 
     const isConfirming = step === "confirm_order" && wantsToBuy;
 
@@ -625,6 +647,8 @@ export default async function handler(req: any, res: any) {
     }
 
     console.log("📊 Cantidad extraída y asignada:", orderData.quantity);
+    console.log("📍 Paso actual:", step);
+    console.log("📍 Ciudad en orderData:", orderData.city);
 
     const system = `
 Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento al pie de la letra: tono, emojis, plantillas, precios, ciudades con cobertura, formato de cierre. NO inventes precios ni datos.
@@ -658,6 +682,8 @@ REGLAS:
 10. NUNCA respondas vacío.
 11. Si el mensaje viene de una FOTO o AUDIO transcripto, respondé naturalmente como si el cliente te hubiera escrito eso mismo.
 12. IMPORTANTE: Cuando el cliente dice "1", la cantidad es UNO (1), no once (11). Respetá exactamente el número que aparece en "Cantidad:" del estado actual.
+13. IMPORTANTE: Si el cliente dice "quiero" después de ver un producto y NO ha dicho su ciudad, DEBES preguntar "📍 ¿Para qué ciudad sería el envío?" antes de pedir cualquier otro dato.
+14. IMPORTANTE: Si el cliente dice "asuncion es" o similar, debes confirmar la ciudad y luego seguir con el flujo normal.
 `.trim();
 
     const contents = (history || [])
