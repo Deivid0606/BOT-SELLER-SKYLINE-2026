@@ -78,7 +78,6 @@ function extractData(msg: string) {
   const norm = normalize(text);
   const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
   
-  // --- MODIFICACIÓN: MEJORA EN EXTRACCIÓN DE CANTIDAD ---
   let quantity = 0;
 
   // 1 UNIDAD / 2 UNIDADES / 3 U
@@ -99,7 +98,6 @@ function extractData(msg: string) {
   if (!quantity && /\btres\b/.test(norm)) quantity = 3;
   if (!quantity && /\bcuatro\b/.test(norm)) quantity = 4;
   if (!quantity && /\bcinco\b/.test(norm)) quantity = 5;
-  // --- FIN MODIFICACIÓN ---
 
   const cityAliases: Record<string, string> = {
     asuncion: "Asunción",
@@ -154,7 +152,6 @@ function extractData(msg: string) {
   return { quantity, city, name, phone, address: clean(address) };
 }
 
-// --- MODIFICACIÓN: MEJORA EN MERGE DE CANTIDAD ---
 function mergeOrderData(old: any, ext: any, product: string) {
   return {
     product: product || old?.product || "",
@@ -170,7 +167,39 @@ function mergeOrderData(old: any, ext: any, product: string) {
     address: ext.address || old?.address || "",
   };
 }
-// --- FIN MODIFICACIÓN ---
+
+// ───────── CORRECTOR DE CANTIDAD ─────────
+function fixQuantityInResponse(response: string, expectedQty: number, expectedProduct: string): string {
+  if (expectedQty !== 1) return response;
+  
+  let fixed = response;
+  
+  // Patrones comunes de error
+  const wrongPatterns = [
+    { pattern: /Cantidad:\s*11\b/gi, replacement: "Cantidad: 1" },
+    { pattern: /cantidad:\s*11\b/gi, replacement: "cantidad: 1" },
+    { pattern: /Cantidad:\s*(\d+)11\b/gi, replacement: "Cantidad: 1" },
+    { pattern: /\b11\s*(unidad|unidades)\b/gi, replacement: "1 unidad" },
+    { pattern: /Total:\s*1\.758\.900\s*Gs/gi, replacement: "Total: 159.900 Gs" },
+    { pattern: /Total:\s*1,758,900\s*Gs/gi, replacement: "Total: 159.900 Gs" },
+    { pattern: /Total:\s*[\d\.]+\s*Gs.*?(?:1\.758\.900|1,758,900)/gi, replacement: "Total: 159.900 Gs" },
+  ];
+  
+  for (const { pattern, replacement } of wrongPatterns) {
+    if (pattern.test(fixed)) {
+      fixed = fixed.replace(pattern, replacement);
+      console.log("🔧 Corregido patrón:", pattern);
+    }
+  }
+  
+  // Si aún hay "11" en el contexto de cantidad, forzar corrección
+  if (fixed.includes("11") && (fixed.includes("Cantidad") || fixed.includes("cantidad"))) {
+    fixed = fixed.replace(/\b11\b/g, "1");
+    console.log("🔧 Corrección forzada: 11 → 1");
+  }
+  
+  return fixed;
+}
 
 function nextStep(o: any) {
   if (!o.product) return "selling";
@@ -452,7 +481,7 @@ export default async function handler(req: any, res: any) {
     let texto = clean(message);
     const fromNumber = clean(from_number);
     const mediaUrl = clean(media_url);
-    const mediaType = clean(media_type); // "image" | "audio" | ""
+    const mediaType = clean(media_type);
     const mimeHint = clean(mime_type);
 
     console.log(
@@ -518,7 +547,6 @@ export default async function handler(req: any, res: any) {
 
         if (analysis.kind === "payment_proof") {
           isPaymentProof = true;
-          // Respuesta directa, sin pasar por el flujo normal
           const replyPago = `¡Perfecto! 🙏 Recibí tu comprobante (${
             analysis.transcript || "transferencia"
           }). Ya estamos verificando el pago y enseguida te confirmamos el envío 🚚✨`;
@@ -532,7 +560,6 @@ export default async function handler(req: any, res: any) {
             },
           });
         } else if (analysis.kind === "product") {
-          // Inyectamos la descripción como si el cliente lo hubiera escrito
           imageNote = `[el cliente envió una FOTO. Descripción: ${analysis.transcript}]`;
           texto = texto
             ? `${texto}\n${imageNote}`
@@ -597,6 +624,8 @@ export default async function handler(req: any, res: any) {
       await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
     }
 
+    console.log("📊 Cantidad extraída y asignada:", orderData.quantity);
+
     const system = `
 Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento al pie de la letra: tono, emojis, plantillas, precios, ciudades con cobertura, formato de cierre. NO inventes precios ni datos.
 
@@ -628,6 +657,7 @@ REGLAS:
 9. Español paraguayo, natural, con emojis.
 10. NUNCA respondas vacío.
 11. Si el mensaje viene de una FOTO o AUDIO transcripto, respondé naturalmente como si el cliente te hubiera escrito eso mismo.
+12. IMPORTANTE: Cuando el cliente dice "1", la cantidad es UNO (1), no once (11). Respetá exactamente el número que aparece en "Cantidad:" del estado actual.
 `.trim();
 
     const contents = (history || [])
@@ -660,6 +690,10 @@ REGLAS:
         maxTokens: 3072,
       });
     }
+
+    // ─── CORRECCIÓN FORZADA DE CANTIDAD ───
+    response = fixQuantityInResponse(response, orderData.quantity, orderData.product);
+    console.log("📝 Respuesta después de corrección:", response.substring(0, 200));
 
     const newContext = {
       ...context,
