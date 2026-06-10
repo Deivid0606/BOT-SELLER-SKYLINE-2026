@@ -1,9 +1,9 @@
-// api/webhook.js — webhook_v16.js
+// api/webhook.js — webhook_v17.js (CON DETECCIÓN DE PRODUCTOS)
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
-// + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
 // + ✅ CONFIRMACIÓN ÚNICA Y DETECCIÓN DE INTENCIONES
+// + ✅ DETECCIÓN DE PRODUCTOS (ej: "quiero 1" después de promoción)
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -66,6 +66,136 @@ function detectIntent(message, orderConfirmed) {
   return 'unknown';
 }
 
+// ═══════════════════════════════════════════════════════════
+// DETECCIÓN DE PRODUCTOS EN MENSAJES DE CLIENTES
+// ═══════════════════════════════════════════════════════════
+
+async function detectProductFromClientMessage(userId, from, clientMessage, lastBotMessage) {
+  const msg = normalize(clientMessage);
+  
+  // Patrones de compra
+  const buyPatterns = [
+    /quiero\s+(\d+)/i,
+    /quiero\s+(\d+)\s*unidades?/i,
+    /comprar\s+(\d+)/i,
+    /pedir\s+(\d+)/i,
+    /llevo\s+(\d+)/i,
+    /(\d+)\s+unidades?/i,
+    /(\d+)\s+s/i,
+    /quiero\s+uno/i,
+    /quiero\s+una/i,
+    /dame\s+uno/i,
+    /dame\s+una/i,
+    /me\s+interesa/i,
+    /quiero$/i,
+    /quiero\s+el/i,
+    /quiero\s+la/i,
+  ];
+  
+  let quantity = 1;
+  
+  // Extraer cantidad
+  for (const pattern of buyPatterns) {
+    const match = msg.match(pattern);
+    if (match) {
+      if (match[1] && !isNaN(parseInt(match[1]))) {
+        quantity = parseInt(match[1]);
+      }
+      break;
+    }
+  }
+  
+  // Si el mensaje no parece de compra, salir
+  const isBuyIntent = msg.includes("quiero") || 
+                      msg.includes("comprar") || 
+                      msg.includes("pedir") || 
+                      msg.includes("llevo") ||
+                      msg.includes("dame") ||
+                      msg.includes("me interesa");
+  
+  if (!isBuyIntent) {
+    return { detected: false };
+  }
+  
+  // Buscar en el último mensaje del bot para extraer el producto
+  if (lastBotMessage) {
+    const botMsg = lastBotMessage;
+    
+    // Patrones para extraer nombre del producto
+    const productPatterns = [
+      /💥\s*([^*\n]{5,80})/i,
+      /✅\s*Producto:\s*([^\n]+)/i,
+      /🔹\s*([^\n]{5,80})/i,
+      /\*\*([^*]{5,80})\*\*/i,
+      /([A-Z\s]{5,50})\s+destapa/i,
+      /WILD\s+TORNADO[^\n]{0,50}/i,
+      /DESTAPA\s+CAÑERIAS[^\n]{0,50}/i,
+      /([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,5})/i,
+    ];
+    
+    let productName = null;
+    let productPrice = null;
+    
+    for (const pattern of productPatterns) {
+      const match = botMsg.match(pattern);
+      if (match && match[1]) {
+        let candidate = clean(match[1]);
+        // Filtrar candidatos inválidos
+        if (candidate.length > 5 && candidate.length < 100 && 
+            !candidate.includes("PEDIDO") && 
+            !candidate.includes("CONFIRMADO") &&
+            !candidate.includes("GRACIAS")) {
+          productName = candidate;
+          break;
+        }
+      }
+    }
+    
+    // Si no se encontró por patrones, buscar palabras clave específicas
+    if (!productName) {
+      if (botMsg.includes("WILD TORNADO")) {
+        productName = "WILD TORNADO DESTAPA CAÑERÍAS";
+      } else if (botMsg.includes("DESTAPA CAÑERÍAS")) {
+        productName = "WILD TORNADO DESTAPA CAÑERÍAS";
+      } else if (botMsg.includes("destapa")) {
+        // Intentar extraer línea que contiene "destapa"
+        const destapaMatch = botMsg.match(/[^.\n]{10,100}destapa[^.\n]{10,100}/i);
+        if (destapaMatch) {
+          productName = clean(destapaMatch[0]);
+        }
+      }
+    }
+    
+    // Extraer precio - varios formatos
+    const pricePatterns = [
+      /\$?(\d{2,6}(?:\.\d{3})*)\s*(?:GS|Gs|guaranies|G\.)/i,
+      /PRECIO\s*PROMOCIONAL:\s*\$?(\d{2,6}(?:\.\d{3})*)/i,
+      /(\d{2,6}(?:\.\d{3})*)\s*GS/i,
+    ];
+    
+    for (const pattern of pricePatterns) {
+      const match = botMsg.match(pattern);
+      if (match && match[1]) {
+        productPrice = parseInt(match[1].replace(/\./g, ''));
+        break;
+      }
+    }
+    
+    // Si el cliente dice "quiero 1" o similar y tenemos producto
+    if (productName) {
+      console.log(`🛍️ Producto detectado: "${productName}" | Precio: ${productPrice} | Cantidad: ${quantity}`);
+      return {
+        product: productName,
+        quantity: quantity,
+        price: productPrice || null,
+        detected: true
+      };
+    }
+  }
+  
+  return { detected: false };
+}
+
 function splitMessage(text, max = 3500) {
   const msg = clean(text);
   if (msg.length <= max) return [msg];
@@ -116,7 +246,6 @@ async function enviarASheet(userId, order, nota = "") {
       total_amount: order.total_amount || "",
       customer_address: clean(order.address),
       note: clean(nota),
-
       nombre_cliente: clean(order.customer_name),
       whatsapp: clean(order.phone || order.from_number),
       ciudad: clean(order.city),
@@ -1217,7 +1346,7 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// PROCESAR MENSAJE ENTRANTE - CON CONFIRMACIÓN ÚNICA
+// PROCESAR MENSAJE ENTRANTE - CON CONFIRMACIÓN ÚNICA Y DETECCIÓN DE PRODUCTOS
 // ═══════════════════════════════════════════════════════════
 
 export async function procesar(req, message, userId, from) {
@@ -1316,7 +1445,7 @@ export async function procesar(req, message, userId, from) {
       waMessageId: message.id || null,
     });
 
-    // ─── TEXTO: triggers + IA + CONFIRMACIÓN ÚNICA ───
+    // ─── TEXTO: triggers + IA + CONFIRMACIÓN ÚNICA + DETECCIÓN DE PRODUCTOS ───
     if (messageType === "text") {
       // Obtener estado de conversación
       const chatState = getConversationState(from);
@@ -1398,6 +1527,67 @@ export async function procesar(req, message, userId, from) {
         await enviarMensaje(userId, from, alreadyConfirmedMsg);
         await saveReceivedMessage({ userId, from, message: alreadyConfirmedMsg, messageType: "out_text" });
         return { response: alreadyConfirmedMsg, handled_by: "already_confirmed" };
+      }
+      
+      // ═══════════════════════════════════════════════════════════════
+      // NUEVA: DETECCIÓN DE PRODUCTO DEL ÚLTIMO MENSAJE DEL BOT
+      // ═══════════════════════════════════════════════════════════════
+      
+      // Obtener último mensaje enviado al cliente
+      const { data: lastOutboundMsg } = await supabase
+        .from("inbox_messages")
+        .select("message")
+        .eq("user_id", userId)
+        .eq("sender_id", from)
+        .eq("source", "whatsapp")
+        .like("message_type", "out_%")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      // Detectar si el cliente está pidiendo un producto que le acabamos de enviar
+      const productDetection = await detectProductFromClientMessage(
+        userId, from, texto, lastOutboundMsg?.message || ""
+      );
+      
+      if (productDetection.detected) {
+        const totalPrice = (productDetection.price || 159900) * productDetection.quantity;
+        console.log(`🛍️ Producto detectado: ${productDetection.product} x${productDetection.quantity} - ${totalPrice.toLocaleString('es')} GS`);
+        
+        // Generar mensaje de confirmación con el producto correcto
+        const confirmMsg = `✅ **PEDIDO CONFIRMADO** ✅
+
+✅ Producto: ${productDetection.product}
+✅ Cliente: ${chatState.orderData?.customer_name || 'Cliente'}
+✅ Cantidad: ${productDetection.quantity} u.
+💰 Total: ${totalPrice.toLocaleString('es')} Gs
+
+🚚 **ENVÍO GRATIS** · **Pagás al recibir**
+
+📦 Tu pedido queda agendado. El delivery se comunicará contigo al llegar a tu zona.
+
+¡Gracias por elegir Mega Todo Store! 💜✨
+
+💵 Podés pagar en EFECTIVO o TRANSFERENCIA al delivery.
+
+¿Confirmas este pedido? Responde *SÍ* para confirmar.`;
+
+        await enviarMensaje(userId, from, confirmMsg);
+        await saveReceivedMessage({
+          userId, from, message: confirmMsg, messageType: "out_text"
+        });
+        
+        // Actualizar estado con el producto detectado
+        updateConversationState(from, { 
+          orderData: {
+            ...chatState.orderData,
+            product: productDetection.product,
+            quantity: productDetection.quantity,
+            total_amount: totalPrice
+          }
+        });
+        
+        return { response: confirmMsg, handled_by: "product_detection", product: productDetection };
       }
       
       // Continuar con triggers y IA normalmente
