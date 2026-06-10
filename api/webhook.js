@@ -6,6 +6,7 @@
 // + ✅ Historial limitado a 24 horas
 // + ✅ Contexto vencido se limpia automáticamente
 // + ✅ Status de pedidos: "confirmed"
+// + ✅ FIX: Detección de producto en triggers y actualización de contexto
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -24,6 +25,40 @@ const normalize = (t) =>
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+
+// ═══════════════════════════════════════════════════════════
+// DETECTOR DE PRODUCTOS DESDE TEXTO
+// ═══════════════════════════════════════════════════════════
+
+function detectarProductoDesdeTexto(texto = "") {
+  const t = normalize(texto);
+
+  if (t.includes("limpiador") || t.includes("carbonilla") || t.includes("oven cleaner")) {
+    return "Limpiador de Ollas y Carbonilla";
+  }
+
+  if (t.includes("perfume asad") || t.includes(" asad") || t === "asad") {
+    return "Perfume Asad";
+  }
+
+  if (t.includes("veneno") || t.includes("abeja")) {
+    return "Crema de Veneno de Abeja";
+  }
+
+  if (t.includes("peladora") || t.includes("pela papas")) {
+    return "Peladora Automática";
+  }
+
+  if (t.includes("tabla") && (t.includes("picar") || t.includes("marmol"))) {
+    return "Tabla de Picar de Mármol";
+  }
+
+  if (t.includes("destapa") || t.includes("tornado")) {
+    return "Destapa Cañerías Tornado";
+  }
+
+  return "";
+}
 
 function splitMessage(text, max = 3500) {
   const msg = clean(text);
@@ -318,6 +353,8 @@ async function saveContexto(userId, from, ctx = {}) {
       current_product: ctx?.current_product || null,
       step: ctx?.step || null,
       order_data: ctx?.order_data || {},
+      last_user_product: ctx?.last_user_product || ctx?.current_product || null,
+      tipo_cobertura: ctx?.tipo_cobertura || null,
       updated_at: new Date().toISOString(),
     };
     await supabase.from("chat_context").upsert(payload, {
@@ -714,7 +751,39 @@ async function evaluarDisparadores({ userId, from, texto }) {
         console.log("⚠️ post-trigger pedido check error:", e.message);
       }
 
-      await saveContexto(userId, from, { ...ctx, last_trigger: trig.name });
+      // ═══════════════════════════════════════════════════════════
+      // FIX: Detectar producto y actualizar contexto
+      // ═══════════════════════════════════════════════════════════
+      const productoDetectado =
+        detectarProductoDesdeTexto(texto) ||
+        detectarProductoDesdeTexto(contenidoPrimary) ||
+        detectarProductoDesdeTexto(contenidoSecondary) ||
+        detectarProductoDesdeTexto(trig.name) ||
+        detectarProductoDesdeTexto(trig.template);
+
+      const nuevoCtx = {
+        ...ctx,
+        last_trigger: trig.name,
+      };
+
+      if (productoDetectado) {
+        nuevoCtx.current_product = productoDetectado;
+        nuevoCtx.last_topic = productoDetectado;
+        nuevoCtx.step = "selling";
+        nuevoCtx.order_data = {
+          product: productoDetectado,
+          quantity: 0,
+          city: "",
+          customer_name: "",
+          phone: "",
+          address: "",
+          items: [],
+          total_amount: 0,
+        };
+        console.log(`🛍️ Producto detectado en trigger: "${productoDetectado}" → contexto actualizado`);
+      }
+
+      await saveContexto(userId, from, nuevoCtx);
       return true;
     }
 
