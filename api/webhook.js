@@ -3,7 +3,7 @@
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
-// + ✅ FIX v16: Sincronización de status, timeouts, detección de pedidos mejorada
+// + ✅ OPTIMIZADO PARA VERCEL HOBBY (10s timeout)
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -43,7 +43,7 @@ function splitMessage(text, max = 3500) {
 
 // ═══════════════════════════════════════════════════════════
 // GOOGLE SHEETS
-// ═══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
 
 async function enviarASheet(userId, order, nota = "") {
   try {
@@ -54,7 +54,7 @@ async function enviarASheet(userId, order, nota = "") {
       .maybeSingle();
 
     if (error) {
-      console.log("⚠️ Error leyendo google_sheets_url:", error.message || error);
+      console.log("️ Error leyendo google_sheets_url:", error.message || error);
       return false;
     }
 
@@ -84,8 +84,9 @@ async function enviarASheet(userId, order, nota = "") {
       nota: clean(nota),
     };
 
+    // ✅ TIMEOUT 10s para no bloquear
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000); // ✅ TIMEOUT 10s
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
 
     const response = await fetch(url, {
       method: "POST",
@@ -224,7 +225,7 @@ async function descargarYSubirMedia({ userId, mediaId, mimeType, from }) {
       .maybeSingle();
 
     if (!config?.permanent_token) {
-      console.log("❌ Sin token para descargar media");
+      console.log(" Sin token para descargar media");
       return null;
     }
     const token = config.permanent_token.trim();
@@ -319,7 +320,7 @@ async function saveContexto(userId, from, ctx = {}) {
     if (orderData && typeof orderData === "object") {
       const serialized = JSON.stringify(orderData);
       if (serialized.length > 50000) {
-        console.log("⚠️ order_data muy grande, truncando items");
+        console.log("️ order_data muy grande, truncando items");
         orderData = {
           ...orderData,
           items: (orderData.items || []).slice(0, 5),
@@ -568,7 +569,7 @@ async function aplicarAutoTag(userId, contactId, tagName) {
         { contact_id: contactId, tag_id: tag.id, user_id: userId },
         { onConflict: "contact_id,tag_id,user_id" }
       );
-    console.log(`🏷️ auto_tag aplicado: "${tagName}" → ${contactId}`);
+    console.log(`️ auto_tag aplicado: "${tagName}" → ${contactId}`);
   } catch (e) {
     console.log("⚠️ aplicarAutoTag error:", e.message);
   }
@@ -727,9 +728,9 @@ async function evaluarDisparadores({ userId, from, texto }) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
 // LLAMADA A CHAT-IA (texto + media opcional)
-// ═══════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════
 
 async function llamarChatIA({
   req,
@@ -748,9 +749,9 @@ async function llamarChatIA({
 
   const url = `${protocol}://${host}/api/chat-ia`;
   
-  // ✅ FIX: Timeout de 55 segundos (Vercel tiene límite de 60s)
+  // ✅ FIX: Timeout de 8 segundos (Vercel Hobby tiene límite de 10s)
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 55000);
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
 
   try {
     const resIA = await fetch(url, {
@@ -783,7 +784,7 @@ async function llamarChatIA({
   } catch (err) {
     clearTimeout(timeoutId);
     if (err.name === "AbortError") {
-      throw new Error("chat-ia timeout (55s)");
+      throw new Error("chat-ia timeout (8s)");
     }
     throw err;
   }
@@ -801,7 +802,7 @@ function esMensajePedidoConfirmado(texto) {
   const tieneMarcadorAntiguo = /✅\s*PEDIDO CONFIRMADO/i.test(t);
   
   // Formato nuevo (chat-ia.ts v16)
-  const tieneMarcadorNuevo = /🔥\s*Perfecto/i.test(t) && /Tu pedido queda así/i.test(t);
+  const tieneMarcadorNuevo = /\s*Perfecto/i.test(t) && /Tu pedido queda así/i.test(t);
   
   // Formato intermedio
   const tieneResumen = /📦.*x\d+/i.test(t) && /💰\s*Total:/i.test(t);
@@ -949,7 +950,7 @@ function parsearPedidoConfirmado(texto) {
   };
 
   if (!esProductoValido(producto)) {
-    console.log("🚫 Producto inválido tras limpieza:", productoRaw?.substring(0, 80));
+    console.log(" Producto inválido tras limpieza:", productoRaw?.substring(0, 80));
     return null;
   }
 
@@ -1131,7 +1132,7 @@ async function detectarYGuardarPedidoConfirmado({
         cambios.push(`🔄 ${nuevo.name}: ${itemViejo.qty} → ${nuevo.qty}`);
       } else {
         carrito.push({ name: nuevo.name, qty: nuevo.qty });
-        cambios.push(`➕ ${nuevo.name} x${nuevo.qty}`);
+        cambios.push(` ${nuevo.name} x${nuevo.qty}`);
       }
     }
 
@@ -1322,7 +1323,7 @@ export async function procesar(req, message, userId, from) {
 
     console.log("━━━━━━━━━━━━━━━━━━━━━━");
     console.log(
-      `📩 WhatsApp ${messageType}:`,
+      ` WhatsApp ${messageType}:`,
       from,
       texto,
       mediaUrl ? `→ ${mediaUrl.slice(0, 60)}...` : ""
@@ -1494,7 +1495,7 @@ export async function procesar(req, message, userId, from) {
           mimeType: mediaMime,
         });
       } catch (err) {
-        console.error("❌ chat-ia (audio) error:", err);
+        console.error(" chat-ia (audio) error:", err);
         return { response: null, error: err.message };
       }
 
