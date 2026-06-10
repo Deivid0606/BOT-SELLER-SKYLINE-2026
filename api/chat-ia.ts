@@ -1,4 +1,4 @@
-// api/chat-ia.ts — v1010
+// api/chat-ia.ts — v1011
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(process.env.SUPABASE_URL as string, process.env.SUPABASE_SERVICE_ROLE_KEY as string);
@@ -31,7 +31,7 @@ function isOlderThan24Hours(dateValue: any): boolean {
 function hasExplicitProductMention(text: string): boolean {
   const n = normalize(text);
   const buyIndicators = /\b(quiero|comprar|llevo|dame|mandame|reservar|apartar|la\s+raqueta|el\s+veneno|las\s+plantillas|la\s+peladora|el\s+afilador|el\s+kit|la\s+máquina|el\s+nebulizador|la\s+tabla)\b/i;
-  const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas)\b/.test(n);
+  const productNames = /\b(veneno|abeja|crema|plantilla|plantillas|ortopiex|ortoflex|5d|pelador|peladora|papas|afilador|cuchillo|cuchillos|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|almohadillas|patitas|antideslizantes|maquina|máquina|pororo|popcorn|pochoclo|palomita|palomitas|nebulizador|tabla|picar|marmol|mármol|raqueta|electrica|flayes|mosquitos|moscas|limpiador|ollas|carbonilla|oven|cleaner|destapa|canerias|cañerias|cañerías|tornado)\b/.test(n);
   return buyIndicators.test(n) || productNames;
 }
 
@@ -97,7 +97,7 @@ function buildWaitingPaymentResponse(order: any): string {
 function isInformationRequest(text: string): boolean {
   const n = normalize(text);
   const infoWords = /\b(informaci[oó]n|info|más info|mas info|quiero saber|consultar|dudas?|más datos|mas datos|detalles|más detalles|mas detalles|explicame|qué es|que es|cómo funciona|como funciona)\b/i;
-  const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes)\b/i;
+  const productWords = /\b(veneno|abeja|crema|plantilla|ortopiex|ortoflex|5d|pelador|peladora|afilador|vital|honey|perfume|asad|soporte|lavarropas|almohadilla|cuchillo|raqueta|electrica|flayes|limpiador|ollas|carbonilla|oven|cleaner|destapa|cañerias|cañerías|canerias|tornado)\b/i;
   if (productWords.test(n)) return false;
   return infoWords.test(n);
 }
@@ -106,7 +106,7 @@ function isCatalogQuery(text: string): boolean {
   const n = normalize(text);
   const catalogWords = /\b(cat[aá]logo|productos|qu[eé] venden|tienen|stock|catálogo|precios|catalogo)\b/i;
   const greetingWords = /\b(hola|buenas|buen día|saludos)\b/i;
-  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla|raqueta)\b/i;
+  const productWords = /\b(plantilla|ortopiex|pelador|afilador|veneno|vital|perfume|soporte|pororo|maquina|máquina|nebulizador|tabla|raqueta|limpiador|ollas|carbonilla|oven|cleaner|destapa|cañerias|cañerías|canerias|tornado)\b/i;
   return (catalogWords.test(n) || greetingWords.test(n)) && !productWords.test(n);
 }
 
@@ -121,7 +121,7 @@ function isNewConversation(text: string, history: any[]): boolean {
 function isProductInquiry(text: string): boolean {
   const n = normalize(text);
   const inquiryWords = /\b(qu[eé] es|cómo funciona|para qu[eé] sirve|características|beneficios|tiene|informaci[oó]n|info|cu[aá]nto cuesta|precio|valor|costo|dime|contame|explicame)\b/i;
-  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla|raqueta)\b/i;
+  const productWords = /\b(veneno|abeja|plantilla|ortopiex|pelador|afilador|vital|perfume|soporte|lavarropas|ortoflex|5d|cuchillo|pororo|maquina|máquina|nebulizador|tabla|raqueta|limpiador|ollas|carbonilla|oven|cleaner|destapa|cañerias|cañerías|canerias|tornado)\b/i;
   const buyWords = /\b(quiero|comprar|llevo|dame|mandame|agregame|reservar|apartar)\b/i;
   return inquiryWords.test(n) && productWords.test(n) && !buyWords.test(n);
 }
@@ -130,6 +130,8 @@ function isProductName(text: string): boolean {
   const n = normalize(text);
   const productNames = [
     "veneno de abeja", "crema de abeja", "abeja", "veneno",
+    "limpiador de ollas", "limpiador de ollas y carbonilla", "carbonilla", "oven cleaner", "limpia ollas",
+    "destapa cañerias", "destapa cañerías", "destapa cañeria", "destapa cañería", "destapa tuberias", "tornado",
     "plantillas ortopiex", "ortopiex", "plantillas", "ortoflex", "5d",
     "peladora automatica", "pelador automatico", "pelador", "peladora",
     "maquina para hacer pororo", "maquina pororo", "pororo", "popcorn", "pochoclo", "palomitas",
@@ -236,6 +238,24 @@ function isInvalidProductCandidate(name: string): boolean {
   ];
 
   if (invalidExact.includes(n)) return true;
+  if (
+    n.includes("pago anticipado") ||
+    n.includes("contra entrega") ||
+    n.includes("transferencia") ||
+    n.includes("datos para transferencia") ||
+    n.includes("delivery") ||
+    n.includes("envio") ||
+    n.includes("envío") ||
+    n.includes("stock limitado") ||
+    n.includes("oferta valida") ||
+    n.includes("oferta válida") ||
+    n.includes("promocion") ||
+    n.includes("promoción") ||
+    n.includes("formas de pago") ||
+    n.includes("cobertura") ||
+    n.includes("ciudades") ||
+    n.includes("zonas")
+  ) return true;
   if (n.includes("cliente envia nueva informacion") || n.includes("cuando el cliente") || n.includes("nueva informacion")) return true;
   if (/^\d+\s*(unidad|unidades|u|kit|kits)$/.test(n)) return true;
   if (/^\d+\s*(unidad|unidades).[",].\d+\s*(unidad|unidades)/.test(n)) return true;
@@ -261,6 +281,24 @@ function isInvalidCartProduct(name: string): boolean {
   if (isOnlyShoeVariantText(name)) return true;
   if (/^(calce|talle|numero|nro|num|número|medida)$/.test(n)) return true;
   if (n.length < 4) return true;
+  if (
+    n.includes("pago anticipado") ||
+    n.includes("contra entrega") ||
+    n.includes("transferencia") ||
+    n.includes("datos para transferencia") ||
+    n.includes("delivery") ||
+    n.includes("envio") ||
+    n.includes("envío") ||
+    n.includes("stock limitado") ||
+    n.includes("oferta valida") ||
+    n.includes("oferta válida") ||
+    n.includes("promocion") ||
+    n.includes("promoción") ||
+    n.includes("formas de pago") ||
+    n.includes("cobertura") ||
+    n.includes("ciudades") ||
+    n.includes("zonas")
+  ) return true;
 
   if (/^(cliente|nombre|contacto|telefono|teléfono|ubicacion|ubicación|direccion|dirección)\b/i.test(raw)) return true;
   if (n.includes("cliente envia nueva informacion") || n.includes("cuando el cliente") || n.includes("nueva informacion")) return true;
@@ -308,11 +346,26 @@ function extractBankReceiverFromTraining(training: string): string {
 }
 
 function getPriceLines(training: string): string[] {
-  return training.split("\n").map((l) => clean(l)).filter((l) => l.length > 3);
+  const catalogSection = extractTrainingSection(training, "CATALOGO_PRODUCTOS", "FIN_CATALOGO_PRODUCTOS");
+  return (catalogSection || "").split("\n").map((l) => clean(l)).filter((l) => l.length > 3);
 }
 
 function extractProductNameFromLine(line: string): string {
-  const c = line.replace(/^[-•\s]+/, "").replace(/[💙🦶🎯💰🔥✨⭐✅]/g, "").trim();
+  const raw = clean(line);
+  const productMatch = raw.match(/^PRODUCTO\s*:\s*(.+)$/i);
+  if (productMatch) return clean(productMatch[1]);
+
+  const nRaw = normalize(raw);
+  if (
+    nRaw.includes("pago anticipado") ||
+    nRaw.includes("contra entrega") ||
+    nRaw.includes("transferencia") ||
+    nRaw.includes("delivery") ||
+    nRaw.includes("envio") ||
+    nRaw.includes("envío")
+  ) return "";
+
+  const c = raw.replace(/^[-•\s]+/, "").replace(/[💙🦶🎯💰🔥✨⭐✅]/g, "").trim();
   const parts = c.split(/—|-{2,}|–/);
   return clean(parts[0] || c);
 }
@@ -486,6 +539,19 @@ function detectProductRaw(
     return "";
   }
 
+  const catalogDetected = detectProductFromCatalog(text, training);
+  if (catalogDetected) {
+    return catalogDetected;
+  }
+
+  if (msg.includes("limpiador") || msg.includes("carbonilla") || msg.includes("oven cleaner") || msg.includes("limpia ollas")) {
+    return "Limpiador de Ollas y Carbonilla";
+  }
+
+  if (msg.includes("destapa") || msg.includes("canerias") || msg.includes("cañerias") || msg.includes("cañerías") || msg.includes("tornado")) {
+    return "Destapa Cañerías Tornado";
+  }
+
   if (isAntiVibrationKit(text) || isPackReferenceText(text) ||
       msg.includes("soporte lavarropas") || msg.includes("almohadillas antivibracion") ||
       msg.includes("patitas antideslizantes") || msg.includes("kit x4")) {
@@ -571,6 +637,8 @@ function detectProductRaw(
 function canonicalProductFromText(text: string): string {
   const n = normalize(text);
 
+  if (/\b(limpiador|ollas|carbonilla|oven\s+cleaner|limpia\s+ollas)\b/.test(n)) return "Limpiador de Ollas y Carbonilla";
+  if (/\b(destapa|canerias|cañerias|cañerías|tornado)\b/.test(n)) return "Destapa Cañerías Tornado";
   if (/\b(raqueta|electrica|flayes|mosquitos|moscas|insectos)\b/.test(n)) return "Raqueta Eléctrica para Insectos";
   if (/\b(crema\s+de\s+abeja|creama\s+de\s+abeja|veneno\s+de\s+abeja|veneno)\b/.test(n)) return "Crema de Veneno de Abeja";
   if (/\b(pelador|peladora|pelar\s+papas|pelador\s+de\s+papas|peladora\s+automatica)\b/.test(n)) return "Peladora Automática";
@@ -912,11 +980,186 @@ function parseGsAmount(text: string): number {
   return Number(match[1].replace(/\./g, ""));
 }
 
+
+type CatalogPriceMap = Record<number, number>;
+
+type CatalogProduct = {
+  name: string;
+  aliases: string[];
+  prices: CatalogPriceMap;
+};
+
+function extractTrainingSection(training: string, startMarker: string, endMarker: string): string {
+  const raw = clean(training);
+  if (!raw) return "";
+  const start = raw.toUpperCase().indexOf(startMarker.toUpperCase());
+  if (start < 0) return "";
+  const afterStart = start + startMarker.length;
+  const end = raw.toUpperCase().indexOf(endMarker.toUpperCase(), afterStart);
+  return clean(end >= 0 ? raw.slice(afterStart, end) : raw.slice(afterStart));
+}
+
+function defaultCatalogProducts(): CatalogProduct[] {
+  return [
+    { name: "Crema de Veneno de Abeja", aliases: ["veneno", "veneno de abeja", "crema de abeja", "crema de veneno de abeja", "abeja"], prices: { 1: 145000, 2: 249900 } },
+    { name: "Limpiador de Ollas y Carbonilla", aliases: ["limpiador de ollas", "limpiador de ollas y carbonilla", "carbonilla", "oven cleaner", "limpia ollas", "limpiador"], prices: { 1: 149900, 2: 259900 } },
+    { name: "Destapa Cañerías Tornado", aliases: ["destapa cañerias", "destapa cañerías", "destapa cañeria", "destapa cañería", "destapa tuberias", "destapa tuberías", "tornado"], prices: { 1: 159900 } },
+    { name: "Peladora Automática", aliases: ["peladora", "peladora automatica", "peladora automática", "pela papas", "peladora de papas", "pelador automatico"], prices: { 1: 179900 } },
+    { name: "Perfume Asad", aliases: ["asad", "perfume asad"], prices: { 1: 169900 } },
+    { name: "Tabla de Picar de Mármol", aliases: ["tabla de picar", "tabla marmol", "tabla de marmol", "tabla de mármol", "tabla de picar de marmol", "tabla de picar de mármol"], prices: { 1: 169900 } },
+    { name: "Nebulizador Portátil", aliases: ["nebulizador", "nebulizador portatil", "nebulizador portátil"], prices: { 1: 169900 } },
+    { name: "Raqueta para Insectos", aliases: ["raqueta", "raqueta electrica", "raqueta eléctrica", "mata insectos", "raqueta para insectos", "flayes"], prices: { 1: 119900 } },
+    { name: "Afilador de Cuchillos", aliases: ["afilador", "afilador de cuchillos", "afilador cuchillos", "cuchillos", "sharpener"], prices: { 1: 99000, 2: 129900 } },
+    { name: "Plantillas Ortopiex 5D", aliases: ["plantillas", "plantillas ortopiex", "ortopiex", "ortoflex", "plantillas 5d", "5d"], prices: { 1: 159000 } },
+    { name: "Kit Antivibración x4 Patitas Antideslizantes", aliases: ["almohadillas", "almohadillas antivibracion", "almohadillas antivibración", "antivibracion", "antivibración", "patitas antideslizantes", "soporte para lavarropas", "kit x4 patitas"], prices: { 1: 98000 } },
+  ];
+}
+
+function parseCatalogProducts(training: string): CatalogProduct[] {
+  const section = extractTrainingSection(training, "CATALOGO_PRODUCTOS", "FIN_CATALOGO_PRODUCTOS");
+  const parsed: CatalogProduct[] = [];
+  let current: CatalogProduct | null = null;
+
+  const pushCurrent = () => {
+    if (!current) return;
+    current.name = clean(current.name);
+    current.aliases = Array.from(new Set([current.name, ...current.aliases].map(clean).filter(Boolean)));
+    if (current.name && !isInvalidProductCandidate(current.name) && !isCityAliasText(current.name)) {
+      parsed.push(current);
+    }
+    current = null;
+  };
+
+  if (section) {
+    for (const rawLine of section.split("\n")) {
+      const line = clean(rawLine);
+      if (!line) continue;
+
+      const productMatch = line.match(/^PRODUCTO\s*:\s*(.+)$/i);
+      if (productMatch) {
+        pushCurrent();
+        current = { name: clean(productMatch[1]), aliases: [], prices: {} };
+        continue;
+      }
+
+      if (!current) continue;
+
+      const aliasMatch = line.match(/^ALIAS\s*:\s*(.+)$/i);
+      if (aliasMatch) {
+        current.aliases.push(
+          ...aliasMatch[1]
+            .split(/[,|]/)
+            .map((a) => clean(a))
+            .filter(Boolean)
+        );
+        continue;
+      }
+
+      const priceMatch = line.match(/^PRECIO_(\d+)\s*:\s*([0-9.,]+)/i);
+      if (priceMatch) {
+        const qty = Number(priceMatch[1]);
+        const amount = parseGsAmount(priceMatch[2]);
+        if (qty > 0 && amount > 0) current.prices[qty] = amount;
+      }
+    }
+    pushCurrent();
+  }
+
+  const merged = new Map<string, CatalogProduct>();
+
+  for (const item of defaultCatalogProducts()) {
+    merged.set(normalize(item.name), item);
+  }
+
+  for (const item of parsed) {
+    const key = normalize(item.name);
+    const existing = merged.get(key);
+    merged.set(key, {
+      name: item.name,
+      aliases: Array.from(new Set([...(existing?.aliases || []), ...item.aliases, item.name].map(clean).filter(Boolean))),
+      prices: { ...(existing?.prices || {}), ...item.prices },
+    });
+  }
+
+  return Array.from(merged.values());
+}
+
+function catalogMatchScore(text: string, item: CatalogProduct): number {
+  const msg = normalize(text);
+  if (!msg) return 0;
+
+  let best = 0;
+  const candidates = [item.name, ...item.aliases].map(normalize).filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+
+    if (msg === candidate) best = Math.max(best, 100);
+    else if (msg.includes(candidate)) best = Math.max(best, 80);
+    else if (candidate.includes(msg) && msg.length >= 4) best = Math.max(best, 60);
+
+    const words = candidate.split(" ").filter((w) => w.length >= 4);
+    for (const w of words) {
+      if (msg.includes(w)) best = Math.max(best, 20);
+    }
+  }
+
+  return best;
+}
+
+function findCatalogProduct(text: string, training: string): CatalogProduct | null {
+  const msg = clean(text);
+  if (!msg || (isCityAliasText(msg) && !hasExplicitProductMention(msg))) return null;
+
+  let best: CatalogProduct | null = null;
+  let bestScore = 0;
+
+  for (const item of parseCatalogProducts(training)) {
+    if (isInvalidProductCandidate(item.name) || isCityAliasText(item.name)) continue;
+    const score = catalogMatchScore(msg, item);
+    if (score > bestScore) {
+      best = item;
+      bestScore = score;
+    }
+  }
+
+  return best && bestScore >= 20 ? best : null;
+}
+
+function detectProductFromCatalog(text: string, training: string): string {
+  return findCatalogProduct(text, training)?.name || "";
+}
+
+function getCatalogPrice(product: string, quantity: number, training: string): number | null {
+  if (!product || !quantity || quantity < 1) return null;
+
+  const item =
+    findCatalogProduct(product, training) ||
+    parseCatalogProducts(training).find((p) => sameProduct(p.name, product));
+
+  if (!item) return null;
+
+  const exact = item.prices[quantity];
+  if (exact) return exact;
+
+  const unit = item.prices[1];
+  if (unit) return unit * quantity;
+
+  return null;
+}
+
 function calculateTotal(product: string, quantity: number, training: string): number | null {
   if (!product || !quantity || quantity < 1) return null;
 
+  const catalogTotal = getCatalogPrice(product, quantity, training);
+  if (catalogTotal) return catalogTotal;
+
+  // Fallback seguro: solo usa líneas dentro de CATALOGO_PRODUCTOS si existe.
+  const catalogSection = extractTrainingSection(training, "CATALOGO_PRODUCTOS", "FIN_CATALOGO_PRODUCTOS");
+  if (!catalogSection) return null;
+
   const p = normalize(product);
-  const lines = training.split("\n").map((l) => clean(l)).filter(Boolean);
+  const lines = catalogSection.split("\n").map((l) => clean(l)).filter(Boolean);
 
   let bestMatchScore = 0;
   let bestUnitPrice = 0;
@@ -948,14 +1191,14 @@ function calculateTotal(product: string, quantity: number, training: string): nu
 
       if (
         quantity === 2 &&
-        /(2x|2\s*unidades|promo\s*2|2\s*cajas|2\s*unidad)/i.test(nLine) &&
+        /(precio_2|2x|2\s*unidades|promo\s*2|2\s*cajas|2\s*unidad)/i.test(nLine) &&
         !foundPromo
       ) {
         foundPromo = amount;
         continue;
       }
 
-      if (!foundUnit) {
+      if (/(precio_1|1\s*unidad|unitario)/i.test(nLine) && !foundUnit) {
         foundUnit = amount;
       }
     }
@@ -1540,7 +1783,7 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION v1010 - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
+  console.log("🔥 VERSION v1011 - CATALOGO_PRODUCTOS - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1603,6 +1846,8 @@ export default async function handler(req: any, res: any) {
             break;
           }
           const norm = normalize(userText);
+          if (norm.includes("limpiador") || norm.includes("carbonilla") || norm.includes("oven cleaner") || norm.includes("limpia ollas")) { lastUserProduct = "Limpiador de Ollas y Carbonilla"; break; }
+          if (norm.includes("destapa") || norm.includes("canerias") || norm.includes("cañerias") || norm.includes("cañerías") || norm.includes("tornado")) { lastUserProduct = "Destapa Cañerías Tornado"; break; }
           if (norm.includes("raqueta")) { lastUserProduct = "Raqueta Eléctrica para Insectos"; break; }
           if (norm.includes("veneno") || norm.includes("abeja")) { lastUserProduct = "Crema de Veneno de Abeja"; break; }
           if (norm.includes("plantilla") || norm.includes("ortopiex")) { lastUserProduct = getDefaultShoeProductName(); break; }
@@ -1934,7 +2179,7 @@ export default async function handler(req: any, res: any) {
           imageBase64: fetched.data,
           mime,
           caption: texto,
-          productList: fullTraining,
+          productList: extractTrainingSection(fullTraining, "CATALOGO_PRODUCTOS", "FIN_CATALOGO_PRODUCTOS") || fullTraining,
           expectedReceiverName,
         });
 
