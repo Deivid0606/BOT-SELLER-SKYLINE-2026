@@ -1,9 +1,8 @@
-// api/webhook.js — webhook_v17.js (CON PRECIOS DINÁMICOS)
+// api/webhook.js — webhook_v15.js
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
-// + ✅ Precios obtenidos de: trigger/plantilla (primero) o full_training (segundo)
-// + ✅ Sin precios hardcodeados
-// + ✅ Detección correcta de "Destapa Cañerías" (prioridad alta)
-// + ✅ Flujo de ventas local completo
+// + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
+// + FIX: disparador secundario respeta el contexto del último producto
+// + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -22,194 +21,6 @@ const normalize = (t) =>
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
-
-// ═══════════════════════════════════════════════════════════
-// EXTRACCIÓN DE PRECIO DESDE TEXTO
-// ═══════════════════════════════════════════════════════════
-
-function extraerPrecioDesdeTexto(texto = "") {
-  if (!texto) return null;
-  
-  const patterns = [
-    /PRECIO(?:\s+PROMOCIONAL)?:\s*([\d.,]+)\s*GS/i,
-    /Precio:\s*([\d.,]+)\s*GS/i,
-    /💰\s*([\d.,]+)\s*GS/i,
-    /([\d.,]+)\s*GS/i,
-    /Gs\.\s*([\d.,]+)/i,
-    /₲\s*([\d.,]+)/i,
-  ];
-  
-  for (const pattern of patterns) {
-    const match = texto.match(pattern);
-    if (match) {
-      const precioStr = match[1].replace(/\./g, '').replace(/,/g, '');
-      const precio = parseInt(precioStr, 10);
-      if (!isNaN(precio) && precio > 0) {
-        console.log(`💰 Precio detectado en texto: ${precio} GS`);
-        return precio;
-      }
-    }
-  }
-  return null;
-}
-
-async function obtenerPrecioProducto(userId, productName, textoReferencia = "") {
-  if (textoReferencia) {
-    const precio = extraerPrecioDesdeTexto(textoReferencia);
-    if (precio) return precio;
-  }
-  
-  try {
-    const { data: config } = await supabase
-      .from("whatsapp_config")
-      .select("full_training")
-      .eq("user_id", userId)
-      .maybeSingle();
-    
-    const fullTraining = config?.full_training;
-    if (fullTraining?.products && Array.isArray(fullTraining.products)) {
-      const productNorm = normalize(productName);
-      for (const product of fullTraining.products) {
-        const nameNorm = normalize(product.name);
-        if (nameNorm.includes(productNorm) || productNorm.includes(nameNorm)) {
-          if (product.price) {
-            console.log(`💰 Precio desde full_training: ${product.price} GS para ${product.name}`);
-            return product.price;
-          }
-        }
-        if (product.keywords && Array.isArray(product.keywords)) {
-          for (const kw of product.keywords) {
-            if (productNorm.includes(normalize(kw))) {
-              if (product.price) return product.price;
-            }
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.log("⚠️ Error buscando precio en full_training:", err.message);
-  }
-  
-  console.log(`⚠️ No se encontró precio para: ${productName}`);
-  return null;
-}
-
-// ═══════════════════════════════════════════════════════════
-// CIUDADES PARAGUAY Y EXTRACCIÓN
-// ═══════════════════════════════════════════════════════════
-
-const CIUDADES_PARAGUAY = [
-  "asuncion", "asunción", "san lorenzo", "fernando de la mora", "lambaré",
-  "luque", "capiatá", "limpio", "Ñemby", "villa elisa", "san antonio",
-  "mariano roque alonso", "itaugua", "ypane", "ypacarai", "aregua",
-  "pirayu", "villeta", "ita", "guarambare", "encarnación", "ciudad del este",
-  "hernandarias", "presidente franco", "minga guazú", "pedro juan caballero",
-  "concepción", "coronel oviedo", "caaguazú", "villarrica", "caazapá", "pilar"
-];
-
-function extractCityFromText(texto = "") {
-  const t = normalize(texto);
-  
-  const patterns = [
-    /(?:soy de|vivo en|de|en|desde)\s+([a-záéíóúñ\s]+)/i,
-    /^([a-záéíóúñ\s]{3,30})$/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = t.match(pattern);
-    if (match) {
-      const candidate = normalize(match[1]);
-      for (const ciudad of CIUDADES_PARAGUAY) {
-        if (normalize(ciudad).includes(candidate) || candidate.includes(normalize(ciudad))) {
-          return ciudad;
-        }
-      }
-    }
-  }
-  return null;
-}
-
-function getTipoCobertura(city) {
-  const ciudadesConCobertura = [
-    "asuncion", "asunción", "fernando de la mora", "san lorenzo", 
-    "lambaré", "luque", "capiatá", "limpio", "Ñemby", "villa elisa"
-  ];
-  const cityNorm = normalize(city);
-  const tieneCobertura = ciudadesConCobertura.some(c => normalize(c) === cityNorm);
-  return tieneCobertura ? "envio_propio" : "envio_compartido";
-}
-
-// ═══════════════════════════════════════════════════════════
-// DETECTOR DE PRODUCTOS DESDE TEXTO (CORREGIDO)
-// ═══════════════════════════════════════════════════════════
-
-function detectarProductoDesdeTexto(texto = "") {
-  const t = normalize(texto);
-  
-  // PRIORIDAD ALTA: Destapa Cañerías (detectar primero para no confundir con "veneno")
-  if (t.includes("destapa") || t.includes("cañeria") || t.includes("cañería") || 
-      t.includes("tornado") || (t.includes("wild") && t.includes("tornado")) ||
-      t.includes("desagüe") || t.includes("tuberia") || t.includes("tubería")) {
-    return "Destapa Cañerías Tornado";
-  }
-  
-  if (t.includes("limpiador") || t.includes("carbonilla") || t.includes("oven cleaner")) {
-    return "Limpiador de Ollas y Carbonilla";
-  }
-
-  if (t.includes("perfume asad") || t.includes(" asad") || t === "asad") {
-    return "Perfume Asad";
-  }
-
-  if ((t.includes("veneno") || t.includes("abeja")) && !t.includes("destapa")) {
-    return "Crema de Veneno de Abeja";
-  }
-
-  if (t.includes("peladora") || t.includes("pela papas")) {
-    return "Peladora Automática";
-  }
-
-  if (t.includes("tabla") && (t.includes("picar") || t.includes("marmol"))) {
-    return "Tabla de Picar de Mármol";
-  }
-
-  return "";
-}
-
-// ═══════════════════════════════════════════════════════════
-// BUILDERS DE RESPUESTAS LOCALES
-// ═══════════════════════════════════════════════════════════
-
-function buildCityQuestionResponse(product) {
-  return `✅ Producto: ${product}\n\n📍 ¿A qué ciudad querés recibir tu pedido?\n\n📝 Ejemplos:\n• Asunción\n• San Lorenzo\n• Fernando de la Mora\n• Lambaré`;
-}
-
-function buildQuantityAfterCityResponse(product, city) {
-  const cobertura = getTipoCobertura(city);
-  let coberturaText = "";
-  
-  if (cobertura === "envio_propio") {
-    coberturaText = "✅ ¡Genial! Tenemos delivery propio en tu zona. El costo es de 15.000 Gs.";
-  } else {
-    coberturaText = "📦 Para tu ciudad, coordinamos con servicio de encomienda. El costo de envío se confirma al momento.";
-  }
-  
-  return `📍 Ciudad: ${city}\n\n${coberturaText}\n\n🔢 ¿Cuántas unidades querés llevar?\n\n📝 Ejemplo: "Quiero 2" o "2 unidades"`;
-}
-
-function buildOrderSummary(order, totalAmount, precioUnitario) {
-  const items = order.items || [{ name: order.product, qty: order.quantity || 1 }];
-  const itemsList = items.map((i) => `• ${i.name} x${i.qty}`).join("\n");
-  
-  let totalText = "";
-  if (totalAmount && totalAmount > 0) {
-    totalText = `💰 *Total:* ${totalAmount.toLocaleString()} Gs`;
-  } else if (precioUnitario) {
-    totalText = `💰 *Precio unitario:* ${precioUnitario.toLocaleString()} Gs`;
-  }
-  
-  return `✅ *PEDIDO CONFIRMADO*\n\n📦 *Producto:*\n${itemsList}\n\n👤 *Cliente:* ${order.customer_name || "—"}\n📍 *Ubicación:* ${order.city || "—"} ${order.address ? `— ${order.address}` : ""}\n📞 *Contacto:* ${order.phone || "—"}\n🔢 *Cantidad total:* ${items.reduce((s, i) => s + i.qty, 0)}\n${totalText}\n\n✅ ¿Todo correcto? Envíanos el comprobante de pago para confirmar tu pedido.`;
-}
 
 function splitMessage(text, max = 3500) {
   const msg = clean(text);
@@ -261,6 +72,7 @@ async function enviarASheet(userId, order, nota = "") {
       total_amount: order.total_amount || "",
       customer_address: clean(order.address),
       note: clean(nota),
+
       nombre_cliente: clean(order.customer_name),
       whatsapp: clean(order.phone || order.from_number),
       ciudad: clean(order.city),
@@ -289,6 +101,12 @@ async function enviarASheet(userId, order, nota = "") {
     console.log("❌ enviarASheet error:", err.message || err);
     return false;
   }
+}
+
+function enviarASheetSinBloquear(userId, order, nota = "") {
+  enviarASheet(userId, order, nota).catch((err) => {
+    console.log("❌ enviarASheetSinBloquear error:", err.message || err);
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -497,8 +315,6 @@ async function saveContexto(userId, from, ctx = {}) {
       current_product: ctx?.current_product || null,
       step: ctx?.step || null,
       order_data: ctx?.order_data || {},
-      last_user_product: ctx?.last_user_product || ctx?.current_product || null,
-      tipo_cobertura: ctx?.tipo_cobertura || null,
       updated_at: new Date().toISOString(),
     };
     await supabase.from("chat_context").upsert(payload, {
@@ -509,38 +325,15 @@ async function saveContexto(userId, from, ctx = {}) {
   }
 }
 
-function isContextoVencido(ctx) {
-  if (!ctx?.updated_at) return false;
-  const updatedAt = new Date(ctx.updated_at).getTime();
-  if (!updatedAt) return false;
-  return Date.now() - updatedAt > 24 * 60 * 60 * 1000;
-}
-
-async function limpiarContextoVencido(userId, from, ctx) {
-  if (!isContextoVencido(ctx)) return ctx || {};
-
-  await supabase
-    .from("chat_context")
-    .delete()
-    .eq("user_id", userId)
-    .eq("from_number", from);
-
-  return {};
-}
-
 async function getHistory(userId, from) {
   try {
-    const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-
     const { data } = await supabase
       .from("inbox_messages")
       .select("message, created_at, message_type")
       .eq("user_id", userId)
       .eq("sender_id", from)
-      .gte("created_at", hace24h)
       .order("created_at", { ascending: false })
       .limit(14);
-
     return (data || [])
       .reverse()
       .map((m) => ({
@@ -723,7 +516,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     } catch {}
   }
 
-  return { plantilla, mensajeFinal };
+  return plantilla;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -841,19 +634,15 @@ async function evaluarDisparadores({ userId, from, texto }) {
       let plantillaPrimary = null;
       let contenidoPrimary = "";
       let contenidoSecondary = "";
-      let precioDetectado = null;
 
       if (matchPrimary) {
-        const result = await enviarPlantillaCompleta({
+        plantillaPrimary = await enviarPlantillaCompleta({
           userId,
           from,
           templateName: trig.template,
           fallbackText: trig.response,
         });
-        plantillaPrimary = result.plantilla;
-        contenidoPrimary = clean(result.mensajeFinal || trig.response || "");
-        
-        precioDetectado = extraerPrecioDesdeTexto(contenidoPrimary);
+        contenidoPrimary = clean(plantillaPrimary?.content || trig.response || "");
 
         if (trig.auto_tag) {
           await aplicarAutoTag(userId, from, trig.auto_tag);
@@ -865,17 +654,13 @@ async function evaluarDisparadores({ userId, from, texto }) {
           console.log("⏳ Esperando 5s antes del secundario...");
           await sleep(5000);
         }
-        const result = await enviarPlantillaCompleta({
+        const plantillaSec = await enviarPlantillaCompleta({
           userId,
           from,
           templateName: trig.secondary?.template,
           fallbackText: trig.secondary?.response,
         });
-        contenidoSecondary = clean(result.mensajeFinal || trig.secondary?.response || "");
-        
-        if (!precioDetectado) {
-          precioDetectado = extraerPrecioDesdeTexto(contenidoSecondary);
-        }
+        contenidoSecondary = clean(plantillaSec?.content || trig.secondary?.response || "");
       }
 
       try {
@@ -903,37 +688,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
         console.log("⚠️ post-trigger pedido check error:", e.message);
       }
 
-      const productoDetectado =
-        detectarProductoDesdeTexto(texto) ||
-        detectarProductoDesdeTexto(contenidoPrimary) ||
-        detectarProductoDesdeTexto(contenidoSecondary) ||
-        detectarProductoDesdeTexto(trig.name) ||
-        detectarProductoDesdeTexto(trig.template);
-
-      const nuevoCtx = {
-        ...ctx,
-        last_trigger: trig.name,
-      };
-
-      if (productoDetectado) {
-        nuevoCtx.current_product = productoDetectado;
-        nuevoCtx.last_topic = productoDetectado;
-        nuevoCtx.step = "selling";
-        nuevoCtx.order_data = {
-          product: productoDetectado,
-          quantity: 0,
-          city: "",
-          customer_name: "",
-          phone: "",
-          address: "",
-          items: [],
-          total_amount: 0,
-          precio_unitario: precioDetectado,
-        };
-        console.log(`🛍️ Producto detectado en trigger: "${productoDetectado}" → contexto actualizado, precio: ${precioDetectado || "no detectado"}`);
-      }
-
-      await saveContexto(userId, from, nuevoCtx);
+      await saveContexto(userId, from, { ...ctx, last_trigger: trig.name });
       return true;
     }
 
@@ -945,10 +700,10 @@ async function evaluarDisparadores({ userId, from, texto }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// LLAMADA A CHAT-IA (con fallback local)
+// LLAMADA A CHAT-IA (texto + media opcional)
 // ═══════════════════════════════════════════════════════════
 
-async function llamarChatIAConFallback({
+async function llamarChatIA({
   req,
   userId,
   texto,
@@ -959,171 +714,34 @@ async function llamarChatIAConFallback({
   mediaType = null,
   mimeType = null,
 }) {
-  // PRIMERO: Intentar manejar localmente si es un mensaje de texto con flujo de ventas
-  if (!mediaUrl && texto) {
-    const currentProduct = ctx?.current_product || null;
-    const previousStep = ctx?.step || null;
-    const oldOrder = ctx?.order_data || {};
-    const precioUnitarioGuardado = oldOrder?.precio_unitario || null;
-    
-    // A. "quiero X" con producto activo
-    const qFromBuy = texto.match(/^\s*(quiero|llevo|dame|mandame|compro)\s+(\d{1,3})\s*$/i);
-    
-    if (qFromBuy && currentProduct) {
-      const cantidad = Number(qFromBuy[2]);
-      const order = { ...oldOrder, product: currentProduct, quantity: cantidad };
-      
-      if (!order.city) {
-        const response = buildCityQuestionResponse(currentProduct);
-        await enviarMensaje(userId, from, response);
-        await saveReceivedMessage({ userId, from, message: response, messageType: "out_text" });
-        await saveContexto(userId, from, {
-          ...ctx,
-          step: "collecting_city",
-          current_product: currentProduct,
-          order_data: order,
-          updated_at: new Date().toISOString(),
-        });
-        return { response, handled_by: "local_flow" };
-      }
-      
-      let precioUnitario = precioUnitarioGuardado;
-      if (!precioUnitario) {
-        precioUnitario = await obtenerPrecioProducto(userId, currentProduct, "");
-      }
-      
-      const totalAmount = precioUnitario ? precioUnitario * cantidad : null;
-      const response = buildOrderSummary({ ...order, city: order.city, quantity: cantidad }, totalAmount, precioUnitario);
-      await enviarMensaje(userId, from, response);
-      await saveReceivedMessage({ userId, from, message: response, messageType: "out_text" });
-      await saveContexto(userId, from, {
-        ...ctx,
-        step: "awaiting_payment",
-        order_data: { ...order, quantity: cantidad, items: [{ name: currentProduct, qty: cantidad }], precio_unitario: precioUnitario },
-        updated_at: new Date().toISOString(),
-      });
-      return { response, handled_by: "local_flow" };
-    }
-    
-    // B. Esperando ciudad
-    if (previousStep === "collecting_city" && currentProduct) {
-      const city = extractCityFromText(texto);
-      if (city) {
-        const order = { ...oldOrder, product: currentProduct, city, quantity: oldOrder?.quantity || 0 };
-        const response = buildQuantityAfterCityResponse(currentProduct, city);
-        await enviarMensaje(userId, from, response);
-        await saveReceivedMessage({ userId, from, message: response, messageType: "out_text" });
-        await saveContexto(userId, from, {
-          ...ctx,
-          step: "collecting_quantity",
-          current_product: currentProduct,
-          tipo_cobertura: getTipoCobertura(city),
-          order_data: order,
-          updated_at: new Date().toISOString(),
-        });
-        return { response, handled_by: "local_flow" };
-      } else {
-        const response = "📍 No entendí la ciudad. ¿Podés decirme en qué ciudad querés recibir tu pedido?\n\n📝 Ejemplos: Asunción, San Lorenzo, Fernando de la Mora, Lambaré";
-        await enviarMensaje(userId, from, response);
-        await saveReceivedMessage({ userId, from, message: response, messageType: "out_text" });
-        return { response, handled_by: "local_flow" };
-      }
-    }
-    
-    // C. Esperando cantidad
-    if (previousStep === "collecting_quantity" && currentProduct) {
-      const cantidadMatch = texto.match(/(\d+)/);
-      if (cantidadMatch) {
-        const cantidad = parseInt(cantidadMatch[1], 10);
-        
-        let precioUnitario = precioUnitarioGuardado;
-        if (!precioUnitario) {
-          precioUnitario = await obtenerPrecioProducto(userId, currentProduct, "");
-        }
-        
-        const totalAmount = precioUnitario ? precioUnitario * cantidad : null;
-        const response = buildOrderSummary({ ...oldOrder, quantity: cantidad, items: [{ name: currentProduct, qty: cantidad }] }, totalAmount, precioUnitario);
-        await enviarMensaje(userId, from, response);
-        await saveReceivedMessage({ userId, from, message: response, messageType: "out_text" });
-        await saveContexto(userId, from, {
-          ...ctx,
-          step: "awaiting_payment",
-          order_data: { ...oldOrder, quantity: cantidad, items: [{ name: currentProduct, qty: cantidad }], precio_unitario: precioUnitario },
-          updated_at: new Date().toISOString(),
-        });
-        return { response, handled_by: "local_flow" };
-      } else {
-        const response = "🔢 Por favor, indicame cuántas unidades querés. Ejemplo: 'Quiero 2' o '2 unidades'";
-        await enviarMensaje(userId, from, response);
-        await saveReceivedMessage({ userId, from, message: response, messageType: "out_text" });
-        return { response, handled_by: "local_flow" };
-      }
-    }
-    
-    // D. Detectar producto nuevo
-    if (!currentProduct) {
-      const detectedProduct = detectarProductoDesdeTexto(texto);
-      if (detectedProduct) {
-        const response = buildCityQuestionResponse(detectedProduct);
-        await enviarMensaje(userId, from, response);
-        await saveReceivedMessage({ userId, from, message: response, messageType: "out_text" });
-        await saveContexto(userId, from, {
-          ...ctx,
-          step: "collecting_city",
-          current_product: detectedProduct,
-          order_data: { product: detectedProduct, quantity: 0, city: "", items: [] },
-          updated_at: new Date().toISOString(),
-        });
-        return { response, handled_by: "local_flow" };
-      }
-    }
-  }
-  
-  // Si no se manejó localmente, intentar con chat-ia
+  const host = req.headers.host;
+  const protocol = req.headers["x-forwarded-proto"] || "https";
+  if (!host) throw new Error("No se detectó host");
+
+  const url = `${protocol}://${host}/api/chat-ia`;
+  const resIA = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      user_id: userId,
+      message: texto,
+      from_number: from,
+      context: ctx || {},
+      history: history || [],
+      media_url: mediaUrl,
+      media_type: mediaType,
+      mime_type: mimeType,
+    }),
+  });
+  const raw = await resIA.text();
+  let data = {};
   try {
-    const host = req.headers.host;
-    const protocol = req.headers["x-forwarded-proto"] || "https";
-    if (!host) throw new Error("No se detectó host");
-    
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
-    
-    const url = `${protocol}://${host}/api/chat-ia`;
-    const resIA = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        user_id: userId,
-        message: texto,
-        from_number: from,
-        context: ctx || {},
-        history: history || [],
-        media_url: mediaUrl,
-        media_type: mediaType,
-        mime_type: mimeType,
-      }),
-      signal: controller.signal,
-    });
-    
-    clearTimeout(timeoutId);
-    
-    const raw = await resIA.text();
-    let data = {};
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      throw new Error("chat-ia no devolvió JSON");
-    }
-    if (!resIA.ok) throw new Error(data?.error || `chat-ia error ${resIA.status}`);
-    return data;
-  } catch (err) {
-    console.error("❌ chat-ia error:", err.message);
-    
-    const fallback = "👋 ¡Hola! ¿En qué producto estás interesado?\n\n💬 Escribime el nombre del producto que te interesa y te ayudo con tu pedido.";
-    await enviarMensaje(userId, from, fallback);
-    await saveReceivedMessage({ userId, from, message: fallback, messageType: "out_text" });
-    return { response: fallback, handled_by: "fallback" };
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error("chat-ia no devolvió JSON");
   }
+  if (!resIA.ok) throw new Error(data?.error || `chat-ia error ${resIA.status}`);
+  return data;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1134,15 +752,33 @@ function esMensajePedidoConfirmado(texto) {
   const t = clean(texto);
   const tieneMarcador = /✅\s*PEDIDO CONFIRMADO/i.test(t);
   const tieneProducto = /Producto:\s*\S/i.test(t);
-  return tieneMarcador && tieneProducto;
+  const tieneTotal = /Total:\s*\S/i.test(t);
+  const tieneUbicacion = /Ubicaci[oó]n:\s*\S/i.test(t);
+  return tieneMarcador && tieneProducto && tieneTotal && tieneUbicacion;
 }
 
 function esBloqueDatosBancarios(texto) {
   if (!texto) return false;
   const tn = normalize(texto);
   const señales = [
-    "datos para transferencia", "datos de transferencia", "titular:",
-    "banco familiar", "banco continental", "banco itau", "cuenta:", "alias:"
+    "datos para transferencia",
+    "datos de transferencia",
+    "titular:",
+    "titular ",
+    "banco familiar",
+    "banco continental",
+    "banco itau",
+    "banco gnb",
+    "banco atlas",
+    "banco regional",
+    "banco basa",
+    "ueno bank",
+    "cuenta:",
+    "nro de cuenta",
+    "numero de cuenta",
+    "alias:",
+    "cbu:",
+    "cvu:",
   ];
   let hits = 0;
   for (const s of señales) {
@@ -1177,7 +813,15 @@ function limpiarProducto(productoRaw) {
     if (itClean.length > 100) return false;
     const itn = normalize(itClean);
     const blacklistItem = [
-      "datos para transferencia", "titular", "banco ", "cuenta:", "alias:", "https://"
+      "datos para transferencia",
+      "titular",
+      "banco ",
+      "cuenta:",
+      "alias:",
+      "cbu:",
+      "https://",
+      "http://",
+      "www.",
     ];
     return !blacklistItem.some((b) => itn.includes(b));
   });
@@ -1197,6 +841,7 @@ function parsearPedidoConfirmado(texto) {
   const ubicacionRaw = get(/Ubicaci[oó]n:\s*([^\n]+)/i);
   const contacto = get(/Contacto:\s*([^\n]+)/i);
   const cantidadRaw = get(/Cantidad:\s*([^\n]+)/i);
+  const calce = get(/Calce:\s*([^\n]+)/i);
   const totalRaw = get(/Total:\s*([^\n]+)/i);
 
   const producto = limpiarProducto(productoRaw);
@@ -1204,9 +849,43 @@ function parsearPedidoConfirmado(texto) {
   const esProductoValido = (p) => {
     if (!p) return false;
     if (p.length > 200) return false;
-    const blacklist = ["nunca decir", "datos para transferencia", "alias:", "cuenta:"];
+    const blacklist = [
+      "nunca decir",
+      "ir directo",
+      "→",
+      "gracias por tu audio",
+      "entendi que queres",
+      "asuncion, hernandarias",
+      "ypane, villeta",
+      "datos para transferencia",
+      "titular:",
+      "alias:",
+      "cuenta:",
+      "banco familiar",
+      "banco continental",
+    ];
     const pn = normalize(p);
     return !blacklist.some((b) => pn.includes(b));
+  };
+
+  const esNombreValido = (n) => {
+    if (!n) return false;
+    if (n.length > 60) return false;
+    const malosInicios = [
+      "yo ",
+      "es ",
+      "dale ",
+      "el de ",
+      "la ",
+      "no ",
+      "si ",
+      "quiero",
+      "queria",
+      "necesito",
+      "me ",
+    ];
+    const nn = normalize(n);
+    return !malosInicios.some((m) => nn.startsWith(m));
   };
 
   if (!esProductoValido(producto)) {
@@ -1234,9 +913,14 @@ function parsearPedidoConfirmado(texto) {
     if (soloDigitos) totalNum = parseInt(soloDigitos, 10);
   }
 
+  let productoFinal = producto;
+  if (calce && producto && !/calce/i.test(producto)) {
+    productoFinal = `${producto} (Calce ${calce})`;
+  }
+
   return {
-    customer_name: cliente,
-    product: producto,
+    customer_name: esNombreValido(cliente) ? cliente : null,
+    product: productoFinal,
     city,
     address,
     phone: contacto,
@@ -1329,7 +1013,7 @@ async function detectarYGuardarPedidoConfirmado({
       .select("id, product, total_amount, quantity, status")
       .eq("user_id", userId)
       .eq("from_number", from)
-      .eq("status", "confirmed")
+      .eq("status", "confirmado")
       .gte("created_at", hace1hora)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -1347,7 +1031,7 @@ async function detectarYGuardarPedidoConfirmado({
         total_amount: datos.total_amount,
         address: datos.address,
         city: datos.city,
-        status: "confirmed",
+        status: "confirmado",
         metodo_pago: "efectivo",
         source_message_id: sourceMessageId || null,
         detected_by_ai: true,
@@ -1450,7 +1134,7 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
       .select("id, comprobante_url")
       .eq("user_id", userId)
       .eq("from_number", from)
-      .eq("status", "confirmed")
+      .eq("status", "confirmado")
       .gte("created_at", hace24h)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -1489,7 +1173,7 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// PROCESAR MENSAJE ENTRANTE
+// PROCESAR MENSAJE ENTRANTE - ✅ AHORA RETORNA LA RESPUESTA
 // ═══════════════════════════════════════════════════════════
 
 export async function procesar(req, message, userId, from) {
@@ -1526,10 +1210,17 @@ export async function procesar(req, message, userId, from) {
       mimeType = message.video?.mime_type || "video/mp4";
       messageType = "video";
     } else if (tipoMsg === "document") {
-      texto = clean(message.document?.caption || message.document?.filename || "[documento]");
+      texto = clean(
+        message.document?.caption || message.document?.filename || "[documento]"
+      );
       mediaId = message.document?.id || null;
       mimeType = message.document?.mime_type || "application/octet-stream";
       messageType = "document";
+    } else if (tipoMsg === "sticker") {
+      texto = "[sticker]";
+      mediaId = message.sticker?.id || null;
+      mimeType = message.sticker?.mime_type || "image/webp";
+      messageType = "image";
     } else {
       console.log(`⚠️ Tipo de mensaje no soportado: ${tipoMsg}`);
       return { response: null, error: "Tipo no soportado" };
@@ -1540,91 +1231,221 @@ export async function procesar(req, message, userId, from) {
       return { response: null, error: "Duplicado" };
     }
 
+    // Si hay media, descargarla y subirla a Storage ANTES de guardar
     let mediaMime = mimeType;
     if (mediaId) {
       const result = await descargarYSubirMedia({ userId, mediaId, mimeType, from });
       if (result) {
         mediaUrl = result.url;
         mediaMime = result.mime || mimeType;
+      } else {
+        console.log("⚠️ No se pudo subir media, se guarda mensaje sin URL");
       }
     }
 
-    console.log(`📩 WhatsApp ${messageType}: ${from}`, texto?.slice(0, 80));
+    console.log("━━━━━━━━━━━━━━━━━━━━━━");
+    console.log(
+      `📩 WhatsApp ${messageType}:`,
+      from,
+      texto,
+      mediaUrl ? `→ ${mediaUrl.slice(0, 60)}...` : ""
+    );
+
+    const textoParaGuardar =
+      texto ||
+      (messageType === "image"
+        ? "[imagen]"
+        : messageType === "audio"
+        ? "[audio]"
+        : messageType === "video"
+        ? "[video]"
+        : messageType === "document"
+        ? "[documento]"
+        : "");
 
     await saveReceivedMessage({
       userId,
       from,
-      message: texto || `[${messageType}]`,
+      message: textoParaGuardar,
       messageType,
       mediaUrl,
       waMessageId: message.id || null,
     });
 
+    // ─── TEXTO: triggers + IA ───
     if (messageType === "text") {
       const disparado = await evaluarDisparadores({ userId, from, texto });
       if (disparado) {
-        console.log("✅ Disparador atendió el mensaje.");
+        console.log("✅ Disparador atendió el mensaje. No se llama a Gemini.");
         return { response: null, handled_by: "trigger", error: null };
       }
 
-      let ctx = await getContexto(userId, from);
-      const estabaVencido = isContextoVencido(ctx);
-      if (estabaVencido) ctx = await limpiarContextoVencido(userId, from, ctx);
-      const history = estabaVencido ? [] : await getHistory(userId, from);
+      const ctx = await getContexto(userId, from);
+      const history = await getHistory(userId, from);
 
-      const data = await llamarChatIAConFallback({
-        req, userId, texto, from, ctx, history,
-        mediaUrl: null, mediaType: null, mimeType: null
-      });
-
-      if (data?.context) await saveContexto(userId, from, data.context);
-      
-      if (data?.response && data.handled_by !== "local_flow") {
-        if (esMensajePedidoConfirmado(data.response)) {
-          await detectarYGuardarPedidoConfirmado({
-            userId, from, textoMensaje: data.response, sourceMessageId: null
-          });
-        }
+      let data = {};
+      try {
+        data = await llamarChatIA({ req, userId, texto, from, ctx, history });
+      } catch (err) {
+        console.error("❌ chat-ia error:", err);
+        const fallbackMsg = "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente.";
+        await enviarMensaje(userId, from, fallbackMsg);
+        await saveReceivedMessage({
+          userId,
+          from,
+          message: fallbackMsg,
+          messageType: "out_text",
+        });
+        return { response: fallbackMsg, error: err.message };
       }
-      
-      return { response: data?.response || null, handled_by: data?.handled_by };
-    }
-
-    if ((messageType === "image" || messageType === "document") && mediaUrl) {
-      asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch(e => console.error(e));
-
-      let ctx = await getContexto(userId, from);
-      const estabaVencido = isContextoVencido(ctx);
-      if (estabaVencido) ctx = await limpiarContextoVencido(userId, from, ctx);
-      const history = estabaVencido ? [] : await getHistory(userId, from);
-
-      const data = await llamarChatIAConFallback({
-        req, userId, texto: texto || "", from, ctx, history,
-        mediaUrl, mediaType: "image", mimeType: mediaMime
-      });
 
       if (data?.context) await saveContexto(userId, from, data.context);
-      if (data?.is_payment_proof) await asociarComprobanteAlPedido({ userId, from, mediaUrl });
-      
-      return { response: data?.response || null };
+
+      if (data?.response) {
+        const sent = await enviarMensaje(userId, from, data.response);
+        if (sent) {
+          await saveReceivedMessage({
+            userId,
+            from,
+            message: data.response,
+            messageType: "out_text",
+          });
+
+          if (esMensajePedidoConfirmado(data.response)) {
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: data.response,
+              sourceMessageId: null,
+            });
+          }
+        }
+        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
+        return { response: data.response, context: data.context, is_payment_proof: data.is_payment_proof };
+      }
+
+      const fallback = "👋 Hola! ¿En qué puedo ayudarte hoy?\n\n📋 Catálogo:\nhttps://cat-logomegatodo-com.vercel.app/";
+      await enviarMensaje(userId, from, fallback);
+      await saveReceivedMessage({
+        userId,
+        from,
+        message: fallback,
+        messageType: "out_text",
+      });
+      return { response: fallback, error: null };
     }
 
+    // ─── IMAGEN: comprobante + IA Vision ───
+    if (messageType === "image" && mediaUrl) {
+      asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch((e) =>
+        console.error("comprobante bg error:", e)
+      );
+
+      const ctx = await getContexto(userId, from);
+      const history = await getHistory(userId, from);
+
+      let data = {};
+      try {
+        data = await llamarChatIA({
+          req,
+          userId,
+          texto: texto || "",
+          from,
+          ctx,
+          history,
+          mediaUrl,
+          mediaType: "image",
+          mimeType: mediaMime,
+        });
+      } catch (err) {
+        console.error("❌ chat-ia (image) error:", err);
+        return { response: null, error: err.message };
+      }
+
+      if (data?.context) await saveContexto(userId, from, data.context);
+
+      if (data?.is_payment_proof) {
+        await asociarComprobanteAlPedido({ userId, from, mediaUrl });
+      }
+
+      if (data?.response) {
+        const sent = await enviarMensaje(userId, from, data.response);
+        if (sent) {
+          await saveReceivedMessage({
+            userId,
+            from,
+            message: data.response,
+            messageType: "out_text",
+          });
+
+          if (esMensajePedidoConfirmado(data.response)) {
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: data.response,
+              sourceMessageId: null,
+            });
+          }
+        }
+        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
+        return { response: data.response, context: data.context, is_payment_proof: data.is_payment_proof };
+      }
+      return { response: null, error: null };
+    }
+
+    // ─── AUDIO: IA transcribe + responde ───
     if (messageType === "audio" && mediaUrl) {
-      let ctx = await getContexto(userId, from);
-      const estabaVencido = isContextoVencido(ctx);
-      if (estabaVencido) ctx = await limpiarContextoVencido(userId, from, ctx);
-      const history = estabaVencido ? [] : await getHistory(userId, from);
+      const ctx = await getContexto(userId, from);
+      const history = await getHistory(userId, from);
 
-      const data = await llamarChatIAConFallback({
-        req, userId, texto: "", from, ctx, history,
-        mediaUrl, mediaType: "audio", mimeType: mediaMime
-      });
+      let data = {};
+      try {
+        data = await llamarChatIA({
+          req,
+          userId,
+          texto: "",
+          from,
+          ctx,
+          history,
+          mediaUrl,
+          mediaType: "audio",
+          mimeType: mediaMime,
+        });
+      } catch (err) {
+        console.error("❌ chat-ia (audio) error:", err);
+        return { response: null, error: err.message };
+      }
 
       if (data?.context) await saveContexto(userId, from, data.context);
-      return { response: data?.response || null };
+
+      if (data?.response) {
+        const sent = await enviarMensaje(userId, from, data.response);
+        if (sent) {
+          await saveReceivedMessage({
+            userId,
+            from,
+            message: data.response,
+            messageType: "out_text",
+          });
+
+          if (esMensajePedidoConfirmado(data.response)) {
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: data.response,
+              sourceMessageId: null,
+            });
+          }
+        }
+        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
+        return { response: data.response, context: data.context };
+      }
+      return { response: null, error: null };
     }
 
-    return { response: null, handled_by: "no_ia" };
+    // ─── Otros (video/document/sticker): solo guardar ───
+    console.log(`ℹ️ Mensaje ${messageType} guardado, no se procesa con IA`);
+    return { response: null, error: null, handled_by: "no_ia" };
   } catch (err) {
     console.error("❌ procesar error:", err);
     return { response: null, error: err.message };
