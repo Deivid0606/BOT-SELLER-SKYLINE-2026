@@ -1,4 +1,4 @@
-// api/chat-ia.ts — v1008
+// api/chat-ia.ts — v1010
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(process.env.SUPABASE_URL as string, process.env.SUPABASE_SERVICE_ROLE_KEY as string);
@@ -335,8 +335,10 @@ function buildCityQuestionResponse(product: string, shoeSize?: any): string {
 📦 Producto: ${productName}`;
 }
 
-function buildQuantityAfterCityResponse(product: string, city: string, shoeSize?: any): string {
+function buildQuantityAfterCityResponse(product: string, city: string, training: string, shoeSize?: any): string {
   const productName = formatProductWithShoeSize(product, shoeSize);
+  const priceText = getPriceTextFromTraining(product, training);
+  const priceBlock = priceText ? `💰 ${priceText}` : "💰 Precio a confirmar";
   
   if (
     normalize(product).includes("kit antivibracion") ||
@@ -347,7 +349,7 @@ function buildQuantityAfterCityResponse(product: string, city: string, shoeSize?
 📍 Hacemos entregas en ${city} con envío GRATIS contra entrega 🚚✨
 
 📦 ${productName}
-💰 179.900 Gs
+${priceBlock}
 
 Pagás recién cuando recibís el producto.
 
@@ -366,7 +368,7 @@ Respondé con el número (1, 2, 3...)`;
 📍 Hacemos entregas en ${city} con envío GRATIS contra entrega 🚚✨
 
 📦 ${productName}
-💰 179.900 Gs
+${priceBlock}
 
 Pagás recién cuando recibís el producto.
 
@@ -374,7 +376,7 @@ Pagás recién cuando recibís el producto.
 
 Ejemplos:
 • 1 unidad
-• 2 unidades (consultar si hay promo)
+• 2 unidades (si hay promo disponible)
 • 3 unidades
 
 Respondé con el número (1, 2, 3...)`;
@@ -971,6 +973,27 @@ function calculateTotal(product: string, quantity: number, training: string): nu
   return null;
 }
 
+function getPriceTextFromTraining(product: string, training: string): string {
+  const cleanProduct = sanitizeProductCandidate(product) || clean(product);
+  if (!cleanProduct || !training) return "Precio a confirmar";
+
+  const qty1 = calculateTotal(cleanProduct, 1, training);
+  const qty2 = calculateTotal(cleanProduct, 2, training);
+
+  if (qty1 && qty2 && qty2 !== qty1 * 2) {
+    return `
+• 1 unidad → ${formatGs(qty1)} Gs
+• PROMO 2x → ${formatGs(qty2)} Gs`;
+  }
+
+  if (qty1) {
+    return `
+• 1 unidad → ${formatGs(qty1)} Gs`;
+  }
+
+  return "Precio a confirmar";
+}
+
 type CartItem = { product: string; quantity: number; total: number; shoe_size?: any };
 
 function isAddMoreIntent(text: string): boolean {
@@ -1517,7 +1540,7 @@ async function transcribeAudioWithGemini({ apiKey, model, audioBase64, mime }: a
 }
 
 export default async function handler(req: any, res: any) {
-  console.log("🔥 VERSION FINAL - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
+  console.log("🔥 VERSION v1010 - FLUJO: PRODUCTO → CIUDAD → CANTIDAD → CONFIRMAR");
 
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1844,7 +1867,7 @@ export default async function handler(req: any, res: any) {
         await safeUpsertOrder(user_id, fromNumber, orderData, false);
         
         return res.json({
-          response: buildQuantityAfterCityResponse(product, city, extracted.shoe_size),
+          response: buildQuantityAfterCityResponse(product, city, fullTraining, extracted.shoe_size),
           context: {
             ...(context || {}),
             current_product: product,
