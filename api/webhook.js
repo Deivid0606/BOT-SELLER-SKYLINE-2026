@@ -3,6 +3,9 @@
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
+// + ✅ Historial limitado a 24 horas
+// + ✅ Contexto vencido se limpia automáticamente
+// + ✅ Status de pedidos: "confirmed"
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -325,15 +328,38 @@ async function saveContexto(userId, from, ctx = {}) {
   }
 }
 
+function isContextoVencido(ctx) {
+  if (!ctx?.updated_at) return false;
+  const updatedAt = new Date(ctx.updated_at).getTime();
+  if (!updatedAt) return false;
+  return Date.now() - updatedAt > 24 * 60 * 60 * 1000;
+}
+
+async function limpiarContextoVencido(userId, from, ctx) {
+  if (!isContextoVencido(ctx)) return ctx || {};
+
+  await supabase
+    .from("chat_context")
+    .delete()
+    .eq("user_id", userId)
+    .eq("from_number", from);
+
+  return {};
+}
+
 async function getHistory(userId, from) {
   try {
+    const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
     const { data } = await supabase
       .from("inbox_messages")
       .select("message, created_at, message_type")
       .eq("user_id", userId)
       .eq("sender_id", from)
+      .gte("created_at", hace24h)
       .order("created_at", { ascending: false })
       .limit(14);
+
     return (data || [])
       .reverse()
       .map((m) => ({
@@ -1013,7 +1039,7 @@ async function detectarYGuardarPedidoConfirmado({
       .select("id, product, total_amount, quantity, status")
       .eq("user_id", userId)
       .eq("from_number", from)
-      .eq("status", "confirmado")
+      .eq("status", "confirmed")
       .gte("created_at", hace1hora)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -1031,7 +1057,7 @@ async function detectarYGuardarPedidoConfirmado({
         total_amount: datos.total_amount,
         address: datos.address,
         city: datos.city,
-        status: "confirmado",
+        status: "confirmed",
         metodo_pago: "efectivo",
         source_message_id: sourceMessageId || null,
         detected_by_ai: true,
@@ -1134,7 +1160,7 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
       .select("id, comprobante_url")
       .eq("user_id", userId)
       .eq("from_number", from)
-      .eq("status", "confirmado")
+      .eq("status", "confirmed")
       .gte("created_at", hace24h)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -1280,8 +1306,14 @@ export async function procesar(req, message, userId, from) {
         return { response: null, handled_by: "trigger", error: null };
       }
 
-      const ctx = await getContexto(userId, from);
-      const history = await getHistory(userId, from);
+      let ctx = await getContexto(userId, from);
+      const estabaVencido = isContextoVencido(ctx);
+      
+      if (estabaVencido) {
+        ctx = await limpiarContextoVencido(userId, from, ctx);
+      }
+      
+      const history = estabaVencido ? [] : await getHistory(userId, from);
 
       let data = {};
       try {
@@ -1341,8 +1373,14 @@ export async function procesar(req, message, userId, from) {
         console.error("comprobante bg error:", e)
       );
 
-      const ctx = await getContexto(userId, from);
-      const history = await getHistory(userId, from);
+      let ctx = await getContexto(userId, from);
+      const estabaVencido = isContextoVencido(ctx);
+      
+      if (estabaVencido) {
+        ctx = await limpiarContextoVencido(userId, from, ctx);
+      }
+      
+      const history = estabaVencido ? [] : await getHistory(userId, from);
 
       let data = {};
       try {
@@ -1395,8 +1433,14 @@ export async function procesar(req, message, userId, from) {
 
     // ─── AUDIO: IA transcribe + responde ───
     if (messageType === "audio" && mediaUrl) {
-      const ctx = await getContexto(userId, from);
-      const history = await getHistory(userId, from);
+      let ctx = await getContexto(userId, from);
+      const estabaVencido = isContextoVencido(ctx);
+      
+      if (estabaVencido) {
+        ctx = await limpiarContextoVencido(userId, from, ctx);
+      }
+      
+      const history = estabaVencido ? [] : await getHistory(userId, from);
 
       let data = {};
       try {
