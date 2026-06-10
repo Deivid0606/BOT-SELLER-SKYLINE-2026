@@ -1,19 +1,25 @@
 {
   "functions": {
+    "api/waha-webhook.js": {
+      "maxDuration": 60
+    },
     "api/webhook.js": {
       "maxDuration": 60
     },
     "api/chat-ia.ts": {
       "maxDuration": 60
     },
-    "api/cron-followups.js": {
-      "maxDuration": 60
+    "api/waha-qr.js": {
+      "maxDuration": 30
     },
     "api/send-whatsapp.js": {
       "maxDuration": 30
     },
     "api/send-template.js": {
       "maxDuration": 30
+    },
+    "api/cron-followups.js": {
+      "maxDuration": 60
     }
   },
   "rewrites": [
