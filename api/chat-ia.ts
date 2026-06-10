@@ -168,7 +168,7 @@ function mergeOrderData(old: any, ext: any, product: string) {
   };
 }
 
-// ───────── CORRECTOR DE TOTAL Y CANTIDAD ─────────
+// ───────── PRECIOS DE PRODUCTOS (FUENTE DE VERDAD) ─────────
 const PRODUCT_PRICES: Record<string, number> = {
   "Nebulizador Portátil": 169900,
   "Destapa Cañerías Tornado": 159900,
@@ -184,30 +184,47 @@ const PRODUCT_PRICES: Record<string, number> = {
   "Almohadillas Antivibración": 98000,
 };
 
+// ───────── CORRECTOR DE TOTAL Y CANTIDAD ─────────
 function calculateCorrectTotal(productName: string, quantity: number): string {
-  const unitPrice = PRODUCT_PRICES[productName] || 0;
+  // Buscar el producto en el diccionario (case insensitive)
+  const matchedKey = Object.keys(PRODUCT_PRICES).find(
+    key => key.toLowerCase() === productName.toLowerCase() ||
+           productName.toLowerCase().includes(key.toLowerCase()) ||
+           key.toLowerCase().includes(productName.toLowerCase())
+  );
+  
+  const unitPrice = matchedKey ? PRODUCT_PRICES[matchedKey] : 0;
   const correctTotal = unitPrice * quantity;
   return correctTotal.toLocaleString('es-ES');
+}
+
+function getUnitPrice(productName: string): number {
+  const matchedKey = Object.keys(PRODUCT_PRICES).find(
+    key => key.toLowerCase() === productName.toLowerCase() ||
+           productName.toLowerCase().includes(key.toLowerCase()) ||
+           key.toLowerCase().includes(productName.toLowerCase())
+  );
+  return matchedKey ? PRODUCT_PRICES[matchedKey] : 0;
 }
 
 function fixQuantityAndTotal(response: string, expectedQty: number, productName: string): string {
   let fixed = response;
   
   const correctTotal = calculateCorrectTotal(productName, expectedQty);
-  const unitPrice = PRODUCT_PRICES[productName] || 0;
+  const unitPrice = getUnitPrice(productName);
   const unitPriceFormatted = unitPrice.toLocaleString('es-ES');
   
   // Patrones para corregir cantidad
   const quantityPatterns = [
-    { pattern: /Cantidad:\s*11\b/gi, replacement: "Cantidad: 1" },
-    { pattern: /cantidad:\s*11\b/gi, replacement: "cantidad: 1" },
-    { pattern: /Cantidad:\s*22\b/gi, replacement: "Cantidad: 2" },
-    { pattern: /cantidad:\s*22\b/gi, replacement: "cantidad: 2" },
-    { pattern: /Cantidad:\s*33\b/gi, replacement: "Cantidad: 3" },
-    { pattern: /cantidad:\s*33\b/gi, replacement: "cantidad: 3" },
-    { pattern: /\b11\s*(unidad|unidades)\b/gi, replacement: `1 ${expectedQty === 1 ? 'unidad' : 'unidad'}` },
-    { pattern: /\b22\s*(unidad|unidades)\b/gi, replacement: "2 unidades" },
-    { pattern: /\b33\s*(unidad|unidades)\b/gi, replacement: "3 unidades" },
+    { pattern: /Cantidad:\s*11\b/gi, replacement: `Cantidad: ${expectedQty}` },
+    { pattern: /cantidad:\s*11\b/gi, replacement: `cantidad: ${expectedQty}` },
+    { pattern: /Cantidad:\s*22\b/gi, replacement: `Cantidad: ${expectedQty === 2 ? 2 : expectedQty}` },
+    { pattern: /cantidad:\s*22\b/gi, replacement: `cantidad: ${expectedQty === 2 ? 2 : expectedQty}` },
+    { pattern: /Cantidad:\s*33\b/gi, replacement: `Cantidad: ${expectedQty === 3 ? 3 : expectedQty}` },
+    { pattern: /cantidad:\s*33\b/gi, replacement: `cantidad: ${expectedQty === 3 ? 3 : expectedQty}` },
+    { pattern: /\b11\s*(unidad|unidades)\b/gi, replacement: `${expectedQty} ${expectedQty === 1 ? 'unidad' : 'unidades'}` },
+    { pattern: /\b22\s*(unidad|unidades)\b/gi, replacement: `${expectedQty === 2 ? 2 : expectedQty} ${expectedQty === 2 ? 'unidades' : 'unidad'}` },
+    { pattern: /\b33\s*(unidad|unidades)\b/gi, replacement: `${expectedQty === 3 ? 3 : expectedQty} ${expectedQty === 3 ? 'unidades' : 'unidad'}` },
   ];
   
   for (const { pattern, replacement } of quantityPatterns) {
@@ -217,8 +234,10 @@ function fixQuantityAndTotal(response: string, expectedQty: number, productName:
     }
   }
   
-  // Patrones para corregir totales incorrectos (para cantidad 1)
+  // Patrones para corregir totales incorrectos
   const wrongTotals = [
+    /Total:\s*1\.595\.000\s*Gs/gi,
+    /Total:\s*1,595,000\s*Gs/gi,
     /Total:\s*1\.868\.900\s*Gs/gi,
     /Total:\s*1,868,900\s*Gs/gi,
     /Total:\s*1\.699\.000\s*Gs/gi,
@@ -229,6 +248,8 @@ function fixQuantityAndTotal(response: string, expectedQty: number, productName:
     /Total:\s*509,700\s*Gs/gi,
     /Total:\s*679\.600\s*Gs/gi,
     /Total:\s*679,600\s*Gs/gi,
+    /Total:\s*1\.450\.000\s*Gs/gi,
+    /Total:\s*1,450,000\s*Gs/gi,
   ];
   
   for (const wrongTotal of wrongTotals) {
@@ -238,20 +259,47 @@ function fixQuantityAndTotal(response: string, expectedQty: number, productName:
     }
   }
   
-  // Si la cantidad es 1, forzar que el total sea el precio unitario
-  if (expectedQty === 1) {
-    const unitPriceTotalPattern = /Total:\s*[\d\.\,]+\s*Gs/gi;
-    const currentTotalMatch = fixed.match(unitPriceTotalPattern);
-    if (currentTotalMatch && !currentTotalMatch[0].includes(correctTotal)) {
-      fixed = fixed.replace(unitPriceTotalPattern, `Total: ${correctTotal} Gs`);
-      console.log("🔧 Corrección forzada de total para cantidad 1");
-    }
+  // Corrección forzada de total
+  const totalPattern = /Total:\s*[\d\.\,]+\s*Gs/gi;
+  const currentTotalMatch = fixed.match(totalPattern);
+  if (currentTotalMatch && !currentTotalMatch[0].includes(correctTotal)) {
+    fixed = fixed.replace(totalPattern, `Total: ${correctTotal} Gs`);
+    console.log("🔧 Corrección forzada de total");
   }
   
   // Si aún hay "11" en el contexto de cantidad, forzar corrección
   if (fixed.includes("11") && (fixed.includes("Cantidad") || fixed.includes("cantidad"))) {
     fixed = fixed.replace(/\b11\b/g, String(expectedQty));
     console.log("🔧 Corrección forzada: 11 →", expectedQty);
+  }
+  
+  return fixed;
+}
+
+// ───────── INYECTOR DE TOTAL CORRECTO ─────────
+function injectCorrectTotal(response: string, productName: string, quantity: number): string {
+  const unitPrice = getUnitPrice(productName);
+  if (!unitPrice) return response;
+  
+  const correctTotal = unitPrice * quantity;
+  const formattedTotal = correctTotal.toLocaleString('es-ES');
+  
+  let fixed = response;
+  
+  // Buscar y reemplazar cualquier total incorrecto
+  const totalPattern = /(?:💰\s*)?Total:\s*[\d\.\,]+\s*Gs/gi;
+  if (totalPattern.test(fixed)) {
+    fixed = fixed.replace(totalPattern, `💰 Total: ${formattedTotal} Gs`);
+    console.log("🔧 Total inyectado correctamente:", formattedTotal);
+  }
+  
+  // Si el producto tiene PROMO 2x, manejar ese caso
+  if (quantity === 2 && (productName === "Veneno de Abeja" || productName === "Crema de Veneno de Abeja")) {
+    const promoPrice = 249900;
+    const formattedPromo = promoPrice.toLocaleString('es-ES');
+    if (fixed.includes("PROMO 2x")) {
+      fixed = fixed.replace(/PROMO 2x.*?249\.900\s*Gs/gi, `PROMO 2x → ${formattedPromo} Gs (ahorrás 40.000 Gs)`);
+    }
   }
   
   return fixed;
@@ -676,16 +724,19 @@ export default async function handler(req: any, res: any) {
       console.log("📍 Forzando pregunta de ciudad (nuevo producto, cliente dijo quiero)");
     }
     
-    // Detectar ciudad en frases como "asuncion es"
+    // Detectar ciudad en frases como "asuncion es", "ita", etc.
     const cityDetectionPatterns = [
       { pattern: /asuncion\s+es/i, city: "Asunción" },
       { pattern: /san\s+lorenzo\s+es/i, city: "San Lorenzo" },
       { pattern: /luque\s+es/i, city: "Luque" },
       { pattern: /capiat[áa]\s+es/i, city: "Capiatá" },
+      { pattern: /^ita$/i, city: "Itá" },
+      { pattern: /^asuncion$/i, city: "Asunción" },
+      { pattern: /^luque$/i, city: "Luque" },
     ];
     
     for (const { pattern, city: detectedCity } of cityDetectionPatterns) {
-      if (pattern.test(texto) && !orderData.city) {
+      if (pattern.test(texto.trim()) && !orderData.city) {
         orderData.city = detectedCity;
         step = nextStep(orderData);
         console.log(`📍 Ciudad detectada automáticamente: ${detectedCity}`);
@@ -748,7 +799,7 @@ REGLAS:
 11. Si el mensaje viene de una FOTO o AUDIO transcripto, respondé naturalmente como si el cliente te hubiera escrito eso mismo.
 12. IMPORTANTE: Cuando el cliente dice "1", la cantidad es UNO (1), no once (11). El total debe ser PRECIO × CANTIDAD.
 13. IMPORTANTE: Si el cliente dice "quiero" después de ver un producto y NO ha dicho su ciudad, DEBES preguntar "📍 ¿Para qué ciudad sería el envío?" antes de pedir cualquier otro dato.
-14. IMPORTANTE: Usa precios reales del catálogo. Para Nebulizador Portátil: 169.900 Gs por unidad.
+14. IMPORTANTE: Usa precios reales del catálogo. Para Veneno de Abeja: 145.000 Gs por unidad (promo 2x: 249.900 Gs).
 `.trim();
 
     const contents = (history || [])
@@ -784,6 +835,7 @@ REGLAS:
 
     // ─── CORRECCIÓN FORZADA DE CANTIDAD Y TOTAL ───
     response = fixQuantityAndTotal(response, orderData.quantity, orderData.product);
+    response = injectCorrectTotal(response, orderData.product, orderData.quantity);
     console.log("📝 Respuesta después de corrección:", response.substring(0, 300));
 
     const newContext = {
