@@ -1,9 +1,10 @@
-// api/webhook.js — webhook_v16.js (CON FLUJO LOCAL + FALLBACK)
+// api/webhook.js — webhook_v16.js (CON FLUJO LOCAL + FALLBACK + DESTAPA CAÑERÍAS FIX)
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + ✅ FLUJO DE VENTAS LOCAL (NO DEPENDE DE CHAT-IA)
 // + ✅ "quiero X" con producto activo va directo a cantidad/resumen
 // + ✅ Extracción de ciudad desde texto
 // + ✅ Fallback cuando chat-ia no responde
+// + ✅ FIX: Destapa Cañerías detectado correctamente (antes se confundía con Veneno de Abeja)
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -69,34 +70,42 @@ function getTipoCobertura(city) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// DETECTOR DE PRODUCTOS DESDE TEXTO
+// DETECTOR DE PRODUCTOS DESDE TEXTO (CORREGIDO)
 // ═══════════════════════════════════════════════════════════
 
 function detectarProductoDesdeTexto(texto = "") {
   const t = normalize(texto);
-
+  
+  // PRIORIDAD ALTA: Destapa Cañerías (detectar primero para no confundir con "veneno")
+  if (t.includes("destapa") || t.includes("cañeria") || t.includes("cañería") || 
+      t.includes("tornado") || (t.includes("wild") && t.includes("tornado")) ||
+      t.includes("desagüe") || t.includes("tuberia") || t.includes("tubería")) {
+    return "Destapa Cañerías Tornado";
+  }
+  
+  // Limpiador de Ollas
   if (t.includes("limpiador") || t.includes("carbonilla") || t.includes("oven cleaner")) {
     return "Limpiador de Ollas y Carbonilla";
   }
 
+  // Perfume Asad
   if (t.includes("perfume asad") || t.includes(" asad") || t === "asad") {
     return "Perfume Asad";
   }
 
-  if (t.includes("veneno") || t.includes("abeja")) {
+  // Crema de Veneno de Abeja (solo si no es destapa)
+  if ((t.includes("veneno") || t.includes("abeja")) && !t.includes("destapa")) {
     return "Crema de Veneno de Abeja";
   }
 
+  // Peladora Automática
   if (t.includes("peladora") || t.includes("pela papas")) {
     return "Peladora Automática";
   }
 
+  // Tabla de Picar de Mármol
   if (t.includes("tabla") && (t.includes("picar") || t.includes("marmol"))) {
     return "Tabla de Picar de Mármol";
-  }
-
-  if (t.includes("destapa") || t.includes("tornado")) {
-    return "Destapa Cañerías Tornado";
   }
 
   return "";
@@ -896,7 +905,14 @@ async function llamarChatIAConFallback({
         return { response, handled_by: "local_flow" };
       }
       
-      const totalAmount = 50000 * cantidad;
+      // Precio por defecto según producto
+      let precioUnitario = 50000;
+      if (currentProduct.includes("Destapa")) precioUnitario = 159900;
+      if (currentProduct.includes("Limpiador")) precioUnitario = 45000;
+      if (currentProduct.includes("Perfume")) precioUnitario = 120000;
+      if (currentProduct.includes("Veneno")) precioUnitario = 80000;
+      
+      const totalAmount = precioUnitario * cantidad;
       const response = buildOrderSummary({ ...order, city: order.city, quantity: cantidad }, totalAmount);
       await enviarMensaje(userId, from, response);
       await saveReceivedMessage({ userId, from, message: response, messageType: "out_text" });
@@ -939,7 +955,14 @@ async function llamarChatIAConFallback({
       const cantidadMatch = texto.match(/(\d+)/);
       if (cantidadMatch) {
         const cantidad = parseInt(cantidadMatch[1], 10);
-        const totalAmount = 50000 * cantidad;
+        
+        let precioUnitario = 50000;
+        if (currentProduct.includes("Destapa")) precioUnitario = 159900;
+        if (currentProduct.includes("Limpiador")) precioUnitario = 45000;
+        if (currentProduct.includes("Perfume")) precioUnitario = 120000;
+        if (currentProduct.includes("Veneno")) precioUnitario = 80000;
+        
+        const totalAmount = precioUnitario * cantidad;
         const response = buildOrderSummary({ ...oldOrder, quantity: cantidad, items: [{ name: currentProduct, qty: cantidad }] }, totalAmount);
         await enviarMensaje(userId, from, response);
         await saveReceivedMessage({ userId, from, message: response, messageType: "out_text" });
@@ -1018,7 +1041,7 @@ async function llamarChatIAConFallback({
     console.error("❌ chat-ia error:", err.message);
     
     // Fallback genérico
-    const fallback = "👋 ¡Hola! ¿En qué producto estás interesado?\n\n📋 *Productos disponibles:*\n• Limpiador de Ollas y Carbonilla\n• Perfume Asad\n• Crema de Veneno de Abeja\n• Peladora Automática\n• Tabla de Picar de Mármol\n• Destapa Cañerías Tornado\n\n💬 Escribime el nombre del producto que te interesa.";
+    const fallback = "👋 ¡Hola! ¿En qué producto estás interesado?\n\n📋 *Productos disponibles:*\n• Destapa Cañerías Tornado (159.900 Gs)\n• Limpiador de Ollas y Carbonilla\n• Perfume Asad\n• Crema de Veneno de Abeja\n• Peladora Automática\n• Tabla de Picar de Mármol\n\n💬 Escribime el nombre del producto que te interesa.";
     await enviarMensaje(userId, from, fallback);
     await saveReceivedMessage({ userId, from, message: fallback, messageType: "out_text" });
     return { response: fallback, handled_by: "fallback" };
