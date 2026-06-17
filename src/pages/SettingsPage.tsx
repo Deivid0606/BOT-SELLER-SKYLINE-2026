@@ -47,13 +47,19 @@ export default function SettingsPage() {
     if (!user) return;
 
     // Cargar configuración de WhatsApp
-    supabase
-      .from("whatsapp_config")
-      .select("*")
-      .eq("user_id", user.id)
-      .maybeSingle()
-      .then(({ data, error }) => {
-        if (error) console.error("Error cargando whatsapp_config:", error);
+    const loadWhatsAppConfig = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("whatsapp_config")
+          .select("*")
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        if (error) {
+          console.error("Error cargando whatsapp_config:", error);
+          return;
+        }
+
         if (data) {
           setConfig({
             phone_number_id: data.phone_number_id || "",
@@ -67,33 +73,42 @@ export default function SettingsPage() {
           });
         }
         setLoading(false);
-      });
-
-    // Cargar configuración de IA
-    const loadIAConfig = async () => {
-      const { data, error } = await supabase
-        .from("chat_ia_gemini")
-        .select("*")
-        .eq("user_id", user.id)
-        .maybeSingle();
-
-      if (error) {
-        console.error("Error cargando IA:", error);
-        return;
-      }
-
-      if (data) {
-        setIaConfig({
-          api_key: data.api_key || "",
-          model: data.model || "auto",
-          system_instruction: data.system_instruction || "",
-          is_active: data.is_active ?? false,
-          temperature: data.temperature ?? 0.7,
-          max_tokens: data.max_tokens ?? 2048,
-        });
+      } catch (error) {
+        console.error("Error loading WhatsApp config:", error);
+        setLoading(false);
       }
     };
 
+    // Cargar configuración de IA
+    const loadIAConfig = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("chat_ia_gemini")
+          .select("*")
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        if (error) {
+          console.error("Error cargando IA:", error);
+          return;
+        }
+
+        if (data) {
+          setIaConfig({
+            api_key: data.api_key || "",
+            model: data.model || "auto",
+            system_instruction: data.system_instruction || "",
+            is_active: data.is_active ?? false,
+            temperature: data.temperature ?? 0.7,
+            max_tokens: data.max_tokens ?? 2048,
+          });
+        }
+      } catch (error) {
+        console.error("Error loading IA config:", error);
+      }
+    };
+
+    loadWhatsAppConfig();
     loadIAConfig();
   }, [user]);
 
@@ -255,71 +270,215 @@ export default function SettingsPage() {
   };
 
   const handleSave = async () => {
-    if (!user) return;
-    setSaving(true);
-    const { error } = await supabase
-      .from("whatsapp_config")
-      .update({
-        phone_number_id: config.phone_number_id,
-        business_account_id: config.business_account_id,
-        meta_app_id: config.meta_app_id,
-        permanent_token: config.permanent_token,
-        google_sheets_url: config.google_sheets_url,
-        bot_response_delay_seconds: config.bot_response_delay_seconds,
-      } as any)
-      .eq("user_id", user.id);
-
-    if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    } else {
-      toast({ title: "✅ Guardado", description: "Configuración actualizada correctamente" });
+    if (!user) {
+      toast({ 
+        title: "Error", 
+        description: "No hay usuario autenticado", 
+        variant: "destructive" 
+      });
+      return;
     }
+    
+    setSaving(true);
+    
+    try {
+      // Primero verificamos si existe un registro para este usuario
+      const { data: existingConfig, error: fetchError } = await supabase
+        .from("whatsapp_config")
+        .select("id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (fetchError) {
+        console.error("Error fetching existing config:", fetchError);
+        toast({ 
+          title: "Error", 
+          description: "No se pudo verificar la configuración existente", 
+          variant: "destructive" 
+        });
+        setSaving(false);
+        return;
+      }
+
+      // Preparamos los datos a guardar
+      const configData = {
+        phone_number_id: config.phone_number_id || "",
+        business_account_id: config.business_account_id || "",
+        meta_app_id: config.meta_app_id || "",
+        permanent_token: config.permanent_token || "",
+        google_sheets_url: config.google_sheets_url || "",
+        bot_response_delay_seconds: config.bot_response_delay_seconds || 30,
+        updated_at: new Date().toISOString(),
+      };
+
+      let result;
+      
+      if (existingConfig) {
+        // Si existe, actualizamos
+        result = await supabase
+          .from("whatsapp_config")
+          .update(configData)
+          .eq("user_id", user.id);
+      } else {
+        // Si no existe, insertamos
+        result = await supabase
+          .from("whatsapp_config")
+          .insert({
+            user_id: user.id,
+            ...configData,
+          });
+      }
+
+      const { error } = result;
+
+      if (error) {
+        console.error("Supabase error:", error);
+        toast({ 
+          title: "Error", 
+          description: error.message || "Error al guardar la configuración", 
+          variant: "destructive" 
+        });
+      } else {
+        toast({ 
+          title: "✅ Guardado", 
+          description: "Configuración actualizada correctamente" 
+        });
+        
+        // Recargar la configuración actualizada
+        const { data } = await supabase
+          .from("whatsapp_config")
+          .select("*")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        
+        if (data) {
+          setConfig({
+            phone_number_id: data.phone_number_id || "",
+            business_account_id: data.business_account_id || "",
+            meta_app_id: data.meta_app_id || "",
+            permanent_token: data.permanent_token || "",
+            webhook_url: data.webhook_url || "",
+            webhook_token: data.webhook_token || "",
+            google_sheets_url: (data as any).google_sheets_url || "",
+            bot_response_delay_seconds: (data as any).bot_response_delay_seconds ?? 30,
+          });
+        }
+      }
+    } catch (error: any) {
+      console.error("Unexpected error:", error);
+      toast({ 
+        title: "Error", 
+        description: error.message || "Error inesperado al guardar", 
+        variant: "destructive" 
+      });
+    }
+    
     setSaving(false);
   };
 
   const handleSaveIA = async () => {
-    if (!user) return;
+    if (!user) {
+      toast({ 
+        title: "Error", 
+        description: "No hay usuario autenticado", 
+        variant: "destructive" 
+      });
+      return;
+    }
+    
     setSavingIA(true);
 
-    const modelToSave = iaConfig.model === "auto" ? "gemini-1.0-pro" : iaConfig.model;
-
-    const { error } = await supabase
-      .from("chat_ia_gemini")
-      .upsert(
-        {
-          user_id: user.id,
-          api_key: iaConfig.api_key,
-          model: modelToSave,
-          system_instruction: iaConfig.system_instruction,
-          is_active: iaConfig.is_active,
-          temperature: iaConfig.temperature,
-          max_tokens: iaConfig.max_tokens,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "user_id" }
-      );
-
-    if (error) {
-      console.error("Error guardando IA:", error);
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    } else {
-      toast({ title: "✅ IA Guardada", description: "Configuración de IA actualizada correctamente" });
-      const { data } = await supabase
+    try {
+      // Verificar si existe configuración de IA para este usuario
+      const { data: existingIA, error: fetchError } = await supabase
         .from("chat_ia_gemini")
-        .select("*")
+        .select("id")
         .eq("user_id", user.id)
         .maybeSingle();
-      if (data) {
-        setIaConfig({
-          api_key: data.api_key || "",
-          model: data.model || "auto",
-          system_instruction: data.system_instruction || "",
-          is_active: data.is_active ?? false,
-          temperature: data.temperature ?? 0.7,
-          max_tokens: data.max_tokens ?? 2048,
+
+      if (fetchError) {
+        console.error("Error fetching IA config:", fetchError);
+        toast({ 
+          title: "Error", 
+          description: "No se pudo verificar la configuración de IA existente", 
+          variant: "destructive" 
         });
+        setSavingIA(false);
+        return;
       }
+
+      const modelToSave = iaConfig.model === "auto" ? "gemini-1.0-pro" : iaConfig.model;
+
+      const iaData = {
+        api_key: iaConfig.api_key || "",
+        model: modelToSave,
+        system_instruction: iaConfig.system_instruction || "",
+        is_active: iaConfig.is_active || false,
+        temperature: iaConfig.temperature || 0.7,
+        max_tokens: iaConfig.max_tokens || 2048,
+        updated_at: new Date().toISOString(),
+      };
+
+      let result;
+
+      if (existingIA) {
+        // Actualizar configuración existente
+        result = await supabase
+          .from("chat_ia_gemini")
+          .update(iaData)
+          .eq("user_id", user.id);
+      } else {
+        // Insertar nueva configuración
+        result = await supabase
+          .from("chat_ia_gemini")
+          .insert({
+            user_id: user.id,
+            ...iaData,
+          });
+      }
+
+      const { error } = result;
+
+      if (error) {
+        console.error("Error saving IA config:", error);
+        toast({ 
+          title: "Error", 
+          description: error.message || "Error al guardar la configuración de IA", 
+          variant: "destructive" 
+        });
+      } else {
+        toast({ 
+          title: "✅ IA Guardada", 
+          description: "Configuración de IA actualizada correctamente" 
+        });
+        
+        // Recargar la configuración actualizada
+        const { data } = await supabase
+          .from("chat_ia_gemini")
+          .select("*")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        
+        if (data) {
+          setIaConfig({
+            api_key: data.api_key || "",
+            model: data.model || "auto",
+            system_instruction: data.system_instruction || "",
+            is_active: data.is_active ?? false,
+            temperature: data.temperature ?? 0.7,
+            max_tokens: data.max_tokens ?? 2048,
+          });
+        }
+      }
+    } catch (error: any) {
+      console.error("Unexpected error saving IA:", error);
+      toast({ 
+        title: "Error", 
+        description: error.message || "Error inesperado al guardar IA", 
+        variant: "destructive" 
+      });
     }
+    
     setSavingIA(false);
   };
 
@@ -591,9 +750,24 @@ export default function SettingsPage() {
                 <h3 className="font-heading font-semibold text-sm">Tiempo de respuesta del bot</h3>
               </div>
               <div className="flex items-center gap-4">
-                <input type="range" min={5} max={600} step={5} value={config.bot_response_delay_seconds} onChange={(e) => setConfig({ ...config, bot_response_delay_seconds: Number(e.target.value) })} className="flex-1 accent-primary" />
+                <input 
+                  type="range" 
+                  min={5} 
+                  max={600} 
+                  step={5} 
+                  value={config.bot_response_delay_seconds} 
+                  onChange={(e) => setConfig({ ...config, bot_response_delay_seconds: Number(e.target.value) })} 
+                  className="flex-1 accent-primary" 
+                />
                 <div className="flex items-center gap-2">
-                  <input type="number" min={5} max={600} value={config.bot_response_delay_seconds} onChange={(e) => setConfig({ ...config, bot_response_delay_seconds: Math.max(5, Math.min(600, Number(e.target.value) || 5)) })} className="w-20 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm" />
+                  <input 
+                    type="number" 
+                    min={5} 
+                    max={600} 
+                    value={config.bot_response_delay_seconds} 
+                    onChange={(e) => setConfig({ ...config, bot_response_delay_seconds: Math.max(5, Math.min(600, Number(e.target.value) || 5)) })} 
+                    className="w-20 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm" 
+                  />
                   <span className="text-xs text-muted-foreground">seg</span>
                 </div>
               </div>
@@ -733,7 +907,12 @@ function FieldRow({ label, description, value, onChange, onCopy, copied, type = 
       </div>
       <div className="space-y-2">
         <div className="flex items-center gap-2">
-          <input type={type} value={value} onChange={(e) => onChange(e.target.value)} className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm" />
+          <input 
+            type={type} 
+            value={value} 
+            onChange={(e) => onChange(e.target.value)} 
+            className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm" 
+          />
           <button onClick={onCopy} className="p-2 rounded-lg bg-secondary border border-border">
             {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5 text-muted-foreground" />}
           </button>
