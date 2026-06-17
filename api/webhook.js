@@ -1,8 +1,9 @@
-// api/webhook.js — webhook_v15.js
+// api/webhook.js — CORREGIDO
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
+// + ✅ CORREGIDO: Verificación de token en base de datos (soporte multi-usuario)
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -11,7 +12,8 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const VERIFY_TOKEN = "miTokenSeguro2026";
+// ⚠️ ELIMINADO: const VERIFY_TOKEN = "miTokenSeguro2026";
+// Ahora se busca en la base de datos
 
 const clean = (t) => String(t || "").trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1453,7 +1455,7 @@ export async function procesar(req, message, userId, from) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// HANDLER PRINCIPAL
+// HANDLER PRINCIPAL - ✅ CORREGIDO
 // ═══════════════════════════════════════════════════════════
 
 export default async function handler(req, res) {
@@ -1462,12 +1464,38 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
+  // ✅ CORREGIDO: Verificación GET con búsqueda en base de datos
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
-    if (mode === "subscribe" && token === VERIFY_TOKEN)
-      return res.status(200).send(challenge);
+
+    if (mode === "subscribe" && token) {
+      try {
+        // Buscar el token en la base de datos
+        const { data: config, error } = await supabase
+          .from("whatsapp_config")
+          .select("user_id")
+          .eq("webhook_token", token)
+          .maybeSingle();
+
+        if (error) {
+          console.error("❌ Error buscando token en BD:", error);
+          return res.status(500).send("Error interno");
+        }
+
+        if (config) {
+          console.log(`✅ Webhook verificado para usuario: ${config.user_id}`);
+          return res.status(200).send(challenge);
+        } else {
+          console.log(`❌ Token inválido en verificación: ${token}`);
+          return res.status(403).send("Token inválido");
+        }
+      } catch (err) {
+        console.error("❌ Error en verificación:", err);
+        return res.status(500).send("Error interno");
+      }
+    }
     return res.status(403).send("Token inválido");
   }
 
