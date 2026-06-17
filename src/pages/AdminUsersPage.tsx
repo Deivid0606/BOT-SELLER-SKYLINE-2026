@@ -10,7 +10,6 @@ import {
   ChevronDown,
   ChevronUp,
   Search,
-  Shield,
   ShieldAlert,
   Save,
 } from "lucide-react";
@@ -52,10 +51,21 @@ export default function AdminUsersPage() {
     fetchUsers();
   }, []);
 
+  const toDateInput = (value: string | null) => {
+    if (!value) return "";
+    return value.includes("T") ? value.split("T")[0] : value.substring(0, 10);
+  };
+
+  const toTimestamp = (value: string | null) => {
+    if (!value) return null;
+    if (value.includes("T")) return value;
+    return `${value}T00:00:00`;
+  };
+
   const fetchUsers = async () => {
     setLoading(true);
 
-    const { data: roles, error: rolesError } = await supabase
+    const { data: rolesData, error: rolesError } = await supabase
       .from("user_roles")
       .select("user_id, role, email, full_name, created_at")
       .order("created_at", { ascending: true });
@@ -70,27 +80,49 @@ export default function AdminUsersPage() {
       return;
     }
 
-    const userIds = (roles || []).map((r: any) => r.user_id);
-    const { data: profiles } = await supabase
-      .from("profiles")
-      .select("*")
-      .in("user_id", userIds);
+    const rolesList = rolesData || [];
+    const userIds = rolesList.map((r: any) => r.user_id);
+
+    let profiles: any[] = [];
+
+    if (userIds.length > 0) {
+      const { data: profilesData, error: profilesError } = await supabase
+        .from("profiles")
+        .select("*")
+        .in("user_id", userIds);
+
+      if (profilesError) {
+        toast({
+          title: "Error",
+          description: profilesError.message,
+          variant: "destructive",
+        });
+        setLoading(false);
+        return;
+      }
+
+      profiles = profilesData || [];
+    }
 
     const profileMap: Record<string, any> = {};
-    profiles?.forEach((p: any) => (profileMap[p.user_id] = p));
+    profiles.forEach((p: any) => {
+      profileMap[p.user_id || p.id] = p;
+    });
 
-    const merged: ManagedUser[] = (roles || []).map((r: any) => {
+    const merged: ManagedUser[] = rolesList.map((r: any) => {
       const p = profileMap[r.user_id] || {};
+
       return {
         id: p.id || r.user_id,
         user_id: r.user_id,
-        display_name: r.full_name || p.display_name || null,
+        display_name: r.full_name || p.full_name || p.username || null,
         avatar_url: p.avatar_url || null,
         approved: p.approved ?? false,
-        active: p.active ?? true,
+        active: p.active ?? p.is_active ?? true,
         active_from: p.active_from ?? null,
         active_until: p.active_until ?? null,
-        inactive_message: p.inactive_message ?? null,
+        inactive_message:
+          p.inactive_message || p.blocked_message || p.block_message || null,
         created_at: r.created_at,
         role: r.role,
         email: r.email,
@@ -110,8 +142,16 @@ export default function AdminUsersPage() {
     }));
   };
 
+  const getValue = (user: ManagedUser, field: keyof ManagedUser) => {
+    const edit = getEdit(user.user_id) as any;
+    return edit[field] !== undefined ? edit[field] : user[field];
+  };
+
+  const hasChanges = (userId: string) => Object.keys(getEdit(userId)).length > 0;
+
   const saveUser = async (user: ManagedUser) => {
     setSaving(user.user_id);
+
     const edits = getEdit(user.user_id);
 
     if (Object.keys(edits).length === 0) {
@@ -119,25 +159,56 @@ export default function AdminUsersPage() {
       return;
     }
 
-    const payload: any = {
-      user_id: user.user_id,
+    const payload = {
       approved: edits.approved !== undefined ? edits.approved : user.approved,
       active: edits.active !== undefined ? edits.active : user.active,
-      active_from:
-        edits.active_from !== undefined ? edits.active_from : user.active_from,
-      active_until:
-        edits.active_until !== undefined ? edits.active_until : user.active_until,
+      is_active: edits.active !== undefined ? edits.active : user.active,
+      active_from: toTimestamp(
+        edits.active_from !== undefined ? edits.active_from : user.active_from
+      ),
+      active_until: toTimestamp(
+        edits.active_until !== undefined ? edits.active_until : user.active_until
+      ),
       inactive_message:
         edits.inactive_message !== undefined
           ? edits.inactive_message
           : user.inactive_message,
+      blocked_message:
+        edits.inactive_message !== undefined
+          ? edits.inactive_message
+          : user.inactive_message,
+      block_message:
+        edits.inactive_message !== undefined
+          ? edits.inactive_message
+          : user.inactive_message,
+      updated_at: new Date().toISOString(),
     };
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("profiles")
-      .upsert(payload, { onConflict: "user_id" })
+      .update(payload)
+      .eq("user_id", user.user_id)
       .select()
-      .single();
+      .maybeSingle();
+
+    if (!data && !error) {
+      const insertPayload = {
+        id: user.user_id,
+        user_id: user.user_id,
+        username: user.email,
+        full_name: user.display_name,
+        ...payload,
+      };
+
+      const insertResult = await supabase
+        .from("profiles")
+        .insert(insertPayload)
+        .select()
+        .single();
+
+      data = insertResult.data;
+      error = insertResult.error;
+    }
 
     console.log("[saveUser] result:", { data, error, payload });
 
@@ -151,7 +222,6 @@ export default function AdminUsersPage() {
       return;
     }
 
-    // 🔥 Actualizar estado local INMEDIATAMENTE
     setUsers((prev) =>
       prev.map((u) =>
         u.user_id === user.user_id
@@ -175,7 +245,9 @@ export default function AdminUsersPage() {
 
     toast({
       title: "✅ Guardado",
-      description: `Usuario ${user.display_name || user.email || "sin nombre"} actualizado`,
+      description: `Usuario ${
+        user.display_name || user.email || "sin nombre"
+      } actualizado`,
     });
 
     setSaving(null);
@@ -191,16 +263,10 @@ export default function AdminUsersPage() {
     updateEdit(user.user_id, { active: newVal });
   };
 
-  const getValue = (user: ManagedUser, field: keyof ManagedUser) => {
-    const edit = getEdit(user.user_id) as any;
-    return edit[field] !== undefined ? edit[field] : user[field];
-  };
-
-  const hasChanges = (userId: string) => Object.keys(getEdit(userId)).length > 0;
-
   const filtered = users.filter((u) => {
     if (!search) return true;
     const s = search.toLowerCase();
+
     return (
       (u.display_name || "").toLowerCase().includes(s) ||
       (u.email || "").toLowerCase().includes(s) ||
@@ -233,10 +299,11 @@ export default function AdminUsersPage() {
     <div className="space-y-6 p-6">
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">Gestión de Usuarios</h1>
-        <span className="text-sm text-muted-foreground">{users.length} usuarios</span>
+        <span className="text-sm text-muted-foreground">
+          {users.length} usuarios
+        </span>
       </div>
 
-      {/* Search */}
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
@@ -247,7 +314,6 @@ export default function AdminUsersPage() {
         />
       </div>
 
-      {/* Users list */}
       <div className="space-y-3">
         {filtered.map((user) => {
           const isExpanded = expandedUser === user.user_id;
@@ -255,7 +321,10 @@ export default function AdminUsersPage() {
           const active = getValue(user, "active") as boolean;
           const activeFrom = getValue(user, "active_from") as string | null;
           const activeUntil = getValue(user, "active_until") as string | null;
-          const inactiveMessage = getValue(user, "inactive_message") as string | null;
+          const inactiveMessage = getValue(
+            user,
+            "inactive_message"
+          ) as string | null;
           const changed = hasChanges(user.user_id);
 
           return (
@@ -264,28 +333,28 @@ export default function AdminUsersPage() {
               layout
               className="rounded-xl border border-border bg-card overflow-hidden"
             >
-              {/* Header row */}
               <div
                 className="flex items-center gap-4 p-4 cursor-pointer hover:bg-accent/30 transition"
-                onClick={() => setExpandedUser(isExpanded ? null : user.user_id)}
+                onClick={() =>
+                  setExpandedUser(isExpanded ? null : user.user_id)
+                }
               >
-                {/* Avatar */}
                 <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-semibold">
                   {(user.display_name || user.email || "?")[0].toUpperCase()}
                 </div>
 
-                {/* Info */}
                 <div className="flex-1 min-w-0">
                   <div className="font-medium truncate">
                     {user.display_name || "Sin nombre"}
                   </div>
                   <div className="text-xs text-muted-foreground truncate">
                     {user.email || "—"} · Registrado:{" "}
-                    {format(new Date(user.created_at), "dd MMM yyyy", { locale: es })}
+                    {format(new Date(user.created_at), "dd MMM yyyy", {
+                      locale: es,
+                    })}
                   </div>
                 </div>
 
-                {/* Status badges */}
                 <div className="flex items-center gap-2">
                   {user.role && (
                     <span className="text-[10px] uppercase font-semibold px-2 py-1 rounded bg-muted text-muted-foreground">
@@ -331,7 +400,6 @@ export default function AdminUsersPage() {
                 )}
               </div>
 
-              {/* Expanded panel */}
               <AnimatePresence>
                 {isExpanded && (
                   <motion.div
@@ -341,7 +409,6 @@ export default function AdminUsersPage() {
                     className="overflow-hidden border-t border-border"
                   >
                     <div className="p-4 space-y-4 bg-muted/20">
-                      {/* Aprobar / Rechazar */}
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
                           {approved ? (
@@ -350,7 +417,9 @@ export default function AdminUsersPage() {
                             <UserX className="h-5 w-5 text-yellow-600" />
                           )}
                           <div>
-                            <div className="font-medium text-sm">Aprobar usuario</div>
+                            <div className="font-medium text-sm">
+                              Aprobar usuario
+                            </div>
                             <div className="text-xs text-muted-foreground">
                               {approved
                                 ? "El usuario puede usar el sistema"
@@ -358,6 +427,7 @@ export default function AdminUsersPage() {
                             </div>
                           </div>
                         </div>
+
                         <Button
                           size="sm"
                           variant={approved ? "outline" : "default"}
@@ -379,7 +449,6 @@ export default function AdminUsersPage() {
                         </Button>
                       </div>
 
-                      {/* Encender / Apagar */}
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
                           {active ? (
@@ -388,7 +457,9 @@ export default function AdminUsersPage() {
                             <PowerOff className="h-5 w-5 text-red-600" />
                           )}
                           <div>
-                            <div className="font-medium text-sm">Sistema activo</div>
+                            <div className="font-medium text-sm">
+                              Sistema activo
+                            </div>
                             <div className="text-xs text-muted-foreground">
                               {active
                                 ? "El bot responde mensajes"
@@ -396,29 +467,35 @@ export default function AdminUsersPage() {
                             </div>
                           </div>
                         </div>
+
                         <Switch
                           checked={active}
                           onCheckedChange={() => toggleActive(user)}
                         />
                       </div>
 
-                      {/* Rango de fechas */}
                       <div className="space-y-2">
                         <div className="flex items-center gap-3">
                           <Calendar className="h-5 w-5 text-primary" />
                           <div>
-                            <div className="font-medium text-sm">Período de actividad</div>
+                            <div className="font-medium text-sm">
+                              Período de actividad
+                            </div>
                             <div className="text-xs text-muted-foreground">
-                              Define desde cuándo y hasta cuándo la app estará activa para este usuario
+                              Define desde cuándo y hasta cuándo la app estará
+                              activa para este usuario
                             </div>
                           </div>
                         </div>
+
                         <div className="grid grid-cols-2 gap-3 pl-8">
                           <div>
-                            <label className="text-xs text-muted-foreground">Desde</label>
+                            <label className="text-xs text-muted-foreground">
+                              Desde
+                            </label>
                             <Input
                               type="date"
-                              value={activeFrom || ""}
+                              value={toDateInput(activeFrom)}
                               onChange={(e) =>
                                 updateEdit(user.user_id, {
                                   active_from: e.target.value || null,
@@ -427,11 +504,14 @@ export default function AdminUsersPage() {
                               className="text-sm"
                             />
                           </div>
+
                           <div>
-                            <label className="text-xs text-muted-foreground">Hasta</label>
+                            <label className="text-xs text-muted-foreground">
+                              Hasta
+                            </label>
                             <Input
                               type="date"
-                              value={activeUntil || ""}
+                              value={toDateInput(activeUntil)}
                               onChange={(e) =>
                                 updateEdit(user.user_id, {
                                   active_until: e.target.value || null,
@@ -443,17 +523,20 @@ export default function AdminUsersPage() {
                         </div>
                       </div>
 
-                      {/* Mensaje personalizado */}
                       <div className="space-y-2">
                         <div className="flex items-center gap-3">
                           <MessageSquareWarning className="h-5 w-5 text-primary" />
                           <div>
-                            <div className="font-medium text-sm">Mensaje de bloqueo</div>
+                            <div className="font-medium text-sm">
+                              Mensaje de bloqueo
+                            </div>
                             <div className="text-xs text-muted-foreground">
-                              Mensaje que verá el usuario cuando su cuenta esté inactiva o fuera del período
+                              Mensaje que verá el usuario cuando su cuenta esté
+                              inactiva o fuera del período
                             </div>
                           </div>
                         </div>
+
                         <Textarea
                           value={inactiveMessage || ""}
                           onChange={(e) =>
@@ -467,7 +550,6 @@ export default function AdminUsersPage() {
                         />
                       </div>
 
-                      {/* Save button */}
                       {changed && (
                         <motion.div
                           initial={{ opacity: 0, y: 8 }}
