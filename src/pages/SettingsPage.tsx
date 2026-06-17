@@ -46,70 +46,59 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!user) return;
 
-    // Cargar configuración de WhatsApp
-    const loadWhatsAppConfig = async () => {
+    const loadConfigs = async () => {
+      setLoading(true);
+      
       try {
-        const { data, error } = await supabase
+        // Cargar configuración de WhatsApp
+        const { data: whatsappData, error: whatsappError } = await supabase
           .from("whatsapp_config")
           .select("*")
           .eq("user_id", user.id)
           .maybeSingle();
 
-        if (error) {
-          console.error("Error cargando whatsapp_config:", error);
-          return;
-        }
-
-        if (data) {
+        if (whatsappError) {
+          console.error("Error cargando whatsapp_config:", whatsappError);
+        } else if (whatsappData) {
           setConfig({
-            phone_number_id: data.phone_number_id || "",
-            business_account_id: data.business_account_id || "",
-            meta_app_id: data.meta_app_id || "",
-            permanent_token: data.permanent_token || "",
-            webhook_url: data.webhook_url || "",
-            webhook_token: data.webhook_token || "",
-            google_sheets_url: (data as any).google_sheets_url || "",
-            bot_response_delay_seconds: (data as any).bot_response_delay_seconds ?? 30,
+            phone_number_id: whatsappData.phone_number_id || "",
+            business_account_id: whatsappData.business_account_id || "",
+            meta_app_id: whatsappData.meta_app_id || "",
+            permanent_token: whatsappData.permanent_token || "",
+            webhook_url: whatsappData.webhook_url || "",
+            webhook_token: whatsappData.webhook_token || "",
+            google_sheets_url: (whatsappData as any).google_sheets_url || "",
+            bot_response_delay_seconds: (whatsappData as any).bot_response_delay_seconds ?? 30,
           });
         }
-        setLoading(false);
-      } catch (error) {
-        console.error("Error loading WhatsApp config:", error);
-        setLoading(false);
-      }
-    };
 
-    // Cargar configuración de IA
-    const loadIAConfig = async () => {
-      try {
-        const { data, error } = await supabase
+        // Cargar configuración de IA
+        const { data: iaData, error: iaError } = await supabase
           .from("chat_ia_gemini")
           .select("*")
           .eq("user_id", user.id)
           .maybeSingle();
 
-        if (error) {
-          console.error("Error cargando IA:", error);
-          return;
-        }
-
-        if (data) {
+        if (iaError) {
+          console.error("Error cargando IA:", iaError);
+        } else if (iaData) {
           setIaConfig({
-            api_key: data.api_key || "",
-            model: data.model || "auto",
-            system_instruction: data.system_instruction || "",
-            is_active: data.is_active ?? false,
-            temperature: data.temperature ?? 0.7,
-            max_tokens: data.max_tokens ?? 2048,
+            api_key: iaData.api_key || "",
+            model: iaData.model || "auto",
+            system_instruction: iaData.system_instruction || "",
+            is_active: iaData.is_active ?? false,
+            temperature: iaData.temperature ?? 0.7,
+            max_tokens: iaData.max_tokens ?? 2048,
           });
         }
       } catch (error) {
-        console.error("Error loading IA config:", error);
+        console.error("Error loading configs:", error);
+      } finally {
+        setLoading(false);
       }
     };
 
-    loadWhatsAppConfig();
-    loadIAConfig();
+    loadConfigs();
   }, [user]);
 
   // Verificar estado del QR al montar y cuando cambia la pestaña
@@ -152,7 +141,6 @@ export default function SettingsPage() {
       setQrStatus(data.status);
       setConnectedPhone(data.phone);
       
-      // Si está conectado, detener polling y limpiar QR
       if (data.status === 'connected') {
         setQrImageUrl(null);
         setQrMessage('');
@@ -171,7 +159,6 @@ export default function SettingsPage() {
     setShowManualQrInput(false);
     
     try {
-      // 1. Iniciar sesión
       const startRes = await fetch('/api/waha-qr', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -182,7 +169,6 @@ export default function SettingsPage() {
         throw new Error('Error al iniciar sesión');
       }
       
-      // 2. Esperar un poco y obtener QR
       setTimeout(async () => {
         try {
           const qrRes = await fetch('/api/waha-qr', {
@@ -282,25 +268,7 @@ export default function SettingsPage() {
     setSaving(true);
     
     try {
-      // Primero verificamos si existe un registro para este usuario
-      const { data: existingConfig, error: fetchError } = await supabase
-        .from("whatsapp_config")
-        .select("id")
-        .eq("user_id", user.id)
-        .maybeSingle();
-
-      if (fetchError) {
-        console.error("Error fetching existing config:", fetchError);
-        toast({ 
-          title: "Error", 
-          description: "No se pudo verificar la configuración existente", 
-          variant: "destructive" 
-        });
-        setSaving(false);
-        return;
-      }
-
-      // Preparamos los datos a guardar
+      // Guardar los datos actuales del estado
       const configData = {
         phone_number_id: config.phone_number_id || "",
         business_account_id: config.business_account_id || "",
@@ -311,25 +279,21 @@ export default function SettingsPage() {
         updated_at: new Date().toISOString(),
       };
 
-      let result;
-      
-      if (existingConfig) {
-        // Si existe, actualizamos
-        result = await supabase
-          .from("whatsapp_config")
-          .update(configData)
-          .eq("user_id", user.id);
-      } else {
-        // Si no existe, insertamos
-        result = await supabase
-          .from("whatsapp_config")
-          .insert({
+      console.log("Guardando configuración:", configData);
+
+      // Usar upsert con los datos actuales
+      const { error } = await supabase
+        .from("whatsapp_config")
+        .upsert(
+          {
             user_id: user.id,
             ...configData,
-          });
-      }
-
-      const { error } = result;
+          },
+          { 
+            onConflict: 'user_id',
+            ignoreDuplicates: false 
+          }
+        );
 
       if (error) {
         console.error("Supabase error:", error);
@@ -344,25 +308,8 @@ export default function SettingsPage() {
           description: "Configuración actualizada correctamente" 
         });
         
-        // Recargar la configuración actualizada
-        const { data } = await supabase
-          .from("whatsapp_config")
-          .select("*")
-          .eq("user_id", user.id)
-          .maybeSingle();
-        
-        if (data) {
-          setConfig({
-            phone_number_id: data.phone_number_id || "",
-            business_account_id: data.business_account_id || "",
-            meta_app_id: data.meta_app_id || "",
-            permanent_token: data.permanent_token || "",
-            webhook_url: data.webhook_url || "",
-            webhook_token: data.webhook_token || "",
-            google_sheets_url: (data as any).google_sheets_url || "",
-            bot_response_delay_seconds: (data as any).bot_response_delay_seconds ?? 30,
-          });
-        }
+        // NO recargar los datos para evitar que se borren
+        // Solo mantenemos el estado actual
       }
     } catch (error: any) {
       console.error("Unexpected error:", error);
@@ -389,24 +336,6 @@ export default function SettingsPage() {
     setSavingIA(true);
 
     try {
-      // Verificar si existe configuración de IA para este usuario
-      const { data: existingIA, error: fetchError } = await supabase
-        .from("chat_ia_gemini")
-        .select("id")
-        .eq("user_id", user.id)
-        .maybeSingle();
-
-      if (fetchError) {
-        console.error("Error fetching IA config:", fetchError);
-        toast({ 
-          title: "Error", 
-          description: "No se pudo verificar la configuración de IA existente", 
-          variant: "destructive" 
-        });
-        setSavingIA(false);
-        return;
-      }
-
       const modelToSave = iaConfig.model === "auto" ? "gemini-1.0-pro" : iaConfig.model;
 
       const iaData = {
@@ -419,25 +348,20 @@ export default function SettingsPage() {
         updated_at: new Date().toISOString(),
       };
 
-      let result;
+      console.log("Guardando configuración IA:", iaData);
 
-      if (existingIA) {
-        // Actualizar configuración existente
-        result = await supabase
-          .from("chat_ia_gemini")
-          .update(iaData)
-          .eq("user_id", user.id);
-      } else {
-        // Insertar nueva configuración
-        result = await supabase
-          .from("chat_ia_gemini")
-          .insert({
+      const { error } = await supabase
+        .from("chat_ia_gemini")
+        .upsert(
+          {
             user_id: user.id,
             ...iaData,
-          });
-      }
-
-      const { error } = result;
+          },
+          { 
+            onConflict: 'user_id',
+            ignoreDuplicates: false 
+          }
+        );
 
       if (error) {
         console.error("Error saving IA config:", error);
@@ -452,23 +376,7 @@ export default function SettingsPage() {
           description: "Configuración de IA actualizada correctamente" 
         });
         
-        // Recargar la configuración actualizada
-        const { data } = await supabase
-          .from("chat_ia_gemini")
-          .select("*")
-          .eq("user_id", user.id)
-          .maybeSingle();
-        
-        if (data) {
-          setIaConfig({
-            api_key: data.api_key || "",
-            model: data.model || "auto",
-            system_instruction: data.system_instruction || "",
-            is_active: data.is_active ?? false,
-            temperature: data.temperature ?? 0.7,
-            max_tokens: data.max_tokens ?? 2048,
-          });
-        }
+        // NO recargar los datos para evitar que se borren
       }
     } catch (error: any) {
       console.error("Unexpected error saving IA:", error);
@@ -632,7 +540,6 @@ export default function SettingsPage() {
               </p>
             </div>
 
-            {/* Estado de conexión */}
             <div className="flex items-center justify-center gap-2">
               <div className={`w-2 h-2 rounded-full animate-pulse ${
                 qrStatus === 'connected' ? 'bg-emerald-500' : 
@@ -648,7 +555,6 @@ export default function SettingsPage() {
               </span>
             </div>
 
-            {/* QR Image */}
             {qrImageUrl && (
               <div className="flex flex-col items-center gap-4">
                 <div className="bg-white p-4 rounded-xl shadow-lg">
@@ -664,7 +570,6 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* Input manual para QR */}
             {showManualQrInput && !qrImageUrl && qrStatus !== 'connected' && (
               <div className="space-y-3">
                 <p className="text-sm text-muted-foreground text-center">
@@ -690,14 +595,12 @@ export default function SettingsPage() {
               </div>
             )}
 
-            {/* Mensaje de estado */}
             {qrMessage && !qrImageUrl && qrStatus !== 'connected' && !showManualQrInput && (
               <div className="bg-secondary/30 border border-border rounded-lg p-4 text-center">
                 <p className="text-sm text-muted-foreground">{qrMessage}</p>
               </div>
             )}
 
-            {/* Botones de acción */}
             <div className="flex gap-3 justify-center">
               {(qrStatus === 'disconnected' || qrStatus === 'failed') && (
                 <button
@@ -725,7 +628,6 @@ export default function SettingsPage() {
               )}
             </div>
 
-            {/* Instrucciones */}
             {qrStatus !== 'connected' && (
               <div className="bg-secondary/20 border border-border rounded-lg p-4 space-y-2">
                 <p className="text-xs text-muted-foreground">
