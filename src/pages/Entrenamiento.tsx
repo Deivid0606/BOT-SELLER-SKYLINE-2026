@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { GraduationCap, Plus, Trash2, BookOpen, Loader2 } from "lucide-react";
+import { GraduationCap, Plus, Trash2, BookOpen, Loader2, RefreshCw } from "lucide-react";
 import { useState, useEffect } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -21,12 +21,19 @@ export default function TrainingPage() {
   const [response, setResponse] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const loadTrainingData = async () => {
-    if (!user) return;
+    if (!user) {
+      console.log("⚠️ No hay usuario autenticado");
+      setTrainingData([]);
+      return;
+    }
     
+    console.log(`🔍 Cargando entrenamiento para: ${user.email} (${user.id})`);
     setLoading(true);
+    
     const { data, error } = await supabase
       .from("training_data")
       .select("*")
@@ -34,24 +41,36 @@ export default function TrainingPage() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.error("Error cargando:", error);
+      console.error("❌ Error cargando:", error);
     } else {
+      console.log(`✅ ${data?.length || 0} entrenamientos cargados para ${user.email}`);
       setTrainingData(data || []);
     }
     setLoading(false);
   };
 
+  // ✅ CORREGIDO: Usar user?.id como dependencia
   useEffect(() => {
     if (user) {
       loadTrainingData();
+    } else {
+      setTrainingData([]);
     }
-  }, [user]);
+  }, [user?.id]); // ← Solo cambia cuando el ID cambia
+
+  const refreshData = async () => {
+    setRefreshing(true);
+    await loadTrainingData();
+    setRefreshing(false);
+  };
 
   const handleSave = async () => {
     if (!user) {
       alert("Debes iniciar sesión");
       return;
     }
+    
+    console.log(`📝 Guardando entrenamiento para: ${user.email} (${user.id})`);
     
     if (!intent.trim()) {
       alert("Por favor completa el Tema / Categoría");
@@ -69,46 +88,53 @@ export default function TrainingPage() {
 
     setSaving(true);
 
-    if (editingId) {
-      const { error } = await supabase
-        .from("training_data")
-        .update({
-          intent: intent.trim(),
-          examples: examplesArray,
-          response: response.trim(),
-          updated_at: new Date().toISOString()
-        })
-        .eq("id", editingId)
-        .eq("user_id", user.id);
+    try {
+      if (editingId) {
+        const { error } = await supabase
+          .from("training_data")
+          .update({
+            intent: intent.trim(),
+            examples: examplesArray,
+            response: response.trim(),
+            updated_at: new Date().toISOString()
+          })
+          .eq("id", editingId)
+          .eq("user_id", user.id);
 
-      if (error) {
-        console.error("Error al actualizar:", error);
-        alert("Error al actualizar: " + error.message);
+        if (error) {
+          console.error("❌ Error al actualizar:", error);
+          alert("Error al actualizar: " + error.message);
+        } else {
+          alert("✅ Datos actualizados correctamente");
+          resetForm();
+          await loadTrainingData();
+        }
       } else {
-        alert("✅ Datos actualizados correctamente");
-        resetForm();
-        loadTrainingData();
-      }
-    } else {
-      const { error } = await supabase
-        .from("training_data")
-        .insert({
-          user_id: user.id,
-          intent: intent.trim(),
-          examples: examplesArray,
-          response: response.trim(),
-          is_active: true
-        });
+        const { error } = await supabase
+          .from("training_data")
+          .insert({
+            user_id: user.id,
+            intent: intent.trim(),
+            examples: examplesArray,
+            response: response.trim(),
+            is_active: true
+          });
 
-      if (error) {
-        console.error("Error al guardar:", error);
-        alert("Error al guardar: " + error.message);
-      } else {
-        alert("✅ Datos guardados correctamente");
-        resetForm();
-        loadTrainingData();
+        if (error) {
+          console.error("❌ Error al guardar:", error);
+          alert("Error al guardar: " + error.message);
+        } else {
+          console.log("✅ Datos guardados para usuario:", user.id);
+          alert("✅ Datos guardados correctamente");
+          resetForm();
+          await loadTrainingData();
+        }
       }
+    } catch (err: any) {
+      console.error("❌ Error inesperado:", err);
+      alert("Error inesperado: " + err.message);
     }
+    
     setSaving(false);
   };
 
@@ -135,7 +161,7 @@ export default function TrainingPage() {
       alert("Error al eliminar: " + error.message);
     } else {
       alert("✅ Dato eliminado");
-      loadTrainingData();
+      await loadTrainingData();
     }
     setLoading(false);
   };
@@ -149,7 +175,22 @@ export default function TrainingPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold font-heading text-gradient">Entrenamiento IA</h1>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold font-heading text-gradient">Entrenamiento IA</h1>
+          <p className="text-[10px] text-muted-foreground mt-0.5">
+            Usuario: {user?.email || "No autenticado"} • ID: {user?.id?.substring(0, 8) || "---"}...
+          </p>
+        </div>
+        <button
+          onClick={refreshData}
+          disabled={refreshing}
+          className="flex items-center gap-2 px-3 py-1.5 text-xs bg-secondary/50 border border-border rounded-lg hover:bg-secondary/80 transition-colors disabled:opacity-50"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />
+          {refreshing ? "Cargando..." : "Recargar"}
+        </button>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="bg-card border border-border rounded-lg p-5 space-y-4">
@@ -208,8 +249,11 @@ export default function TrainingPage() {
         </motion.div>
 
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="bg-card border border-border rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-border">
+          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
             <h3 className="font-heading font-semibold text-sm">Datos de Entrenamiento</h3>
+            <span className="text-[10px] text-muted-foreground">
+              {trainingData.length} item{trainingData.length !== 1 ? 's' : ''}
+            </span>
           </div>
           {loading ? (
             <div className="px-4 py-12 text-center">
