@@ -1,8 +1,4 @@
-// api/chat-ia.ts - VERSIÓN CORREGIDA
-// ✅ Respuesta corta para "hola"
-// ✅ Cada usuario tiene su propio entrenamiento
-// ✅ No se envía todo el entrenamiento en el saludo
-
+// api/chat-ia.ts
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -22,171 +18,553 @@ const normalize = (t: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
-// ═══════════════════════════════════════════════════════════
-// EXTRACCIÓN DE PRODUCTOS DEL ENTRENAMIENTO
-// ═══════════════════════════════════════════════════════════
+function getPriceLines(training: string): string[] {
+  return training
+    .split("\n")
+    .map((l) => clean(l))
+    .filter((l) => l.length > 3);
+}
 
-function extractProductList(training: string): string {
-  const lines = training.split("\n");
-  let inProductSection = false;
-  const products: string[] = [];
-  let lastProduct = "";
-  
+function extractProductNameFromLine(line: string): string {
+  const c = line.replace(/^[-•\s]+/, "").replace(/[💙🦶🎯💰🔥✨]/g, "").trim();
+  const parts = c.split(/—|-{2,}|–/);
+  return clean(parts[0] || c);
+}
+
+function detectProduct(text: string, training: string, prev?: string) {
+  const msg = normalize(text);
+  const lines = getPriceLines(training);
+  let best = "";
+  let bestScore = 0;
   for (const line of lines) {
-    const cleanLine = line.trim();
-    
-    if (cleanLine.includes("CATALOGO_PRODUCTOS") || cleanLine.includes("CATÁLOGO DE PRODUCTOS")) {
-      inProductSection = true;
-      continue;
+    const name = extractProductNameFromLine(line);
+    const n = normalize(name);
+    if (!n || n.length < 3) continue;
+    const words = n.split(" ").filter((w) => w.length >= 4);
+    let score = 0;
+    if (msg.includes(n)) score += 20;
+    for (const w of words) if (msg.includes(w)) score += 4;
+    if (score > bestScore) {
+      bestScore = score;
+      best = name;
     }
-    
-    if (cleanLine.includes("FIN_CATALOGO_PRODUCTOS") || cleanLine.includes("FIN_CATÁLOGO")) {
+  }
+  if (bestScore >= 4) return best;
+  return clean(prev || "");
+}
+
+function isPriceIntent(text: string) {
+  const m = normalize(text);
+  return (
+    m.includes("precio") ||
+    m.includes("cuanto") ||
+    m.includes("cuesta") ||
+    m.includes("valor") ||
+    m.includes("costo")
+  );
+}
+
+function isBuyIntent(text: string) {
+  const m = normalize(text);
+  return (
+    /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo)\b/.test(
+      m
+    ) || /\b\d+\s*(unidad|unidades|u)\b/.test(m)
+  );
+}
+
+function extractData(msg: string) {
+  const text = clean(msg);
+  const norm = normalize(text);
+  const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
+  
+  let quantity = 0;
+
+  // 1 UNIDAD / 2 UNIDADES / 3 U
+  const q1 = norm.match(/\b(\d+)\s*(unidad|unidades|u)\b/);
+  if (q1) quantity = Number(q1[1]);
+
+  // SOLO UN NÚMERO: "1", "2", "3"
+  if (!quantity) {
+    const onlyNumber = norm.match(/^\d+$/);
+    if (onlyNumber) {
+      quantity = Number(onlyNumber[0]);
+    }
+  }
+
+  // TEXTO
+  if (!quantity && /\buno\b|\buna\b/.test(norm)) quantity = 1;
+  if (!quantity && /\bdos\b/.test(norm)) quantity = 2;
+  if (!quantity && /\btres\b/.test(norm)) quantity = 3;
+  if (!quantity && /\bcuatro\b/.test(norm)) quantity = 4;
+  if (!quantity && /\bcinco\b/.test(norm)) quantity = 5;
+
+  const cityAliases: Record<string, string> = {
+    asuncion: "Asunción",
+    capiata: "Capiatá",
+    cde: "Ciudad del Este",
+    "ciudad del este": "Ciudad del Este",
+    luque: "Luque",
+    ita: "Itá",
+    lambare: "Lambaré",
+    "san lorenzo": "San Lorenzo",
+    fdm: "Fernando de la Mora",
+    "fernando de la mora": "Fernando de la Mora",
+    nemby: "Ñemby",
+    ypane: "Ypané",
+    limpio: "Limpio",
+    "villa elisa": "Villa Elisa",
+    hernandarias: "Hernandarias",
+    "presidente franco": "Presidente Franco",
+    "pte franco": "Presidente Franco",
+    aregua: "Areguá",
+    "areguá": "Areguá",
+  };
+
+  let city = "";
+  for (const [k, v] of Object.entries(cityAliases)) {
+    if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`, "i").test(norm)) {
+      city = v;
       break;
     }
-    
-    if (inProductSection && cleanLine) {
-      if (cleanLine.startsWith("PRODUCTO:")) {
-        lastProduct = cleanLine.replace(/^PRODUCTO:\s*/, "").trim();
-      }
-      
-      if (lastProduct && (cleanLine.includes("PRECIO_1:") || cleanLine.includes("PRECIO_2:"))) {
-        const priceMatch = cleanLine.match(/\d+/);
-        if (priceMatch) {
-          const price = parseInt(priceMatch[0]).toLocaleString('es-ES');
-          products.push(`• ${lastProduct} — 💰 ${price} Gs`);
-          lastProduct = "";
-        }
-      }
-      
-      if (lastProduct && cleanLine.includes("Gs") && !cleanLine.includes("PRECIO")) {
-        const priceMatch = cleanLine.match(/[\d.,]+/);
-        if (priceMatch) {
-          products.push(`• ${lastProduct} — 💰 ${priceMatch[0]} Gs`);
-          lastProduct = "";
-        }
-      }
-    }
   }
-  
-  // Fallback: buscar productos en todo el texto
-  if (products.length === 0) {
-    for (const line of lines) {
-      const cleanLine = line.trim();
-      if (cleanLine.includes("⭐") || cleanLine.includes("PRODUCTO:")) {
-        const product = cleanLine
-          .replace(/^PRODUCTO:\s*/, "")
-          .replace(/^⭐\s*/, "")
-          .replace(/[💙🦶🎯💰🔥✨]/g, "")
-          .trim();
-        if (product && product.length > 2 && product.length < 50) {
-          products.push(`• ${product}`);
-        }
-      }
-    }
+
+  const address =
+    text.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1] ||
+    "";
+
+  let name = "";
+  const nameMatch =
+    text.match(/(?:soy|me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i)?.[1];
+  if (nameMatch) {
+    name = clean(nameMatch).replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "").trim();
+  } else if (
+    /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,60}$/.test(text) &&
+    !city &&
+    !phone &&
+    !norm.includes("precio") &&
+    !norm.includes("hola") &&
+    !norm.includes("si")
+  ) {
+    name = text;
   }
-  
-  return products.slice(0, 8).join("\n") || "• Consultá nuestro catálogo completo";
+
+  return { quantity, city, name, phone, address: clean(address) };
 }
 
-// ═══════════════════════════════════════════════════════════
-// OBTENER TODOS LOS ENTRENAMIENTOS DEL USUARIO
-// ═══════════════════════════════════════════════════════════
+function mergeOrderData(old: any, ext: any, product: string) {
+  return {
+    product: product || old?.product || "",
+    quantity:
+      ext.quantity > 0
+        ? ext.quantity
+        : old?.quantity > 0
+        ? old.quantity
+        : 1,
+    city: ext.city || old?.city || "",
+    customer_name: ext.name || old?.customer_name || "",
+    phone: ext.phone || old?.phone || "",
+    address: ext.address || old?.address || "",
+  };
+}
 
-async function getAllTrainingData(userId: string) {
+// ───────── PRECIOS DE PRODUCTOS (FUENTE DE VERDAD) ─────────
+const PRODUCT_PRICES: Record<string, number> = {
+  "Nebulizador Portátil": 169900,
+  "Destapa Cañerías Tornado": 159900,
+  "Veneno de Abeja": 145000,
+  "Crema de Veneno de Abeja": 145000,
+  "Limpiador de Ollas y Carbonilla": 149900,
+  "Peladora Automática": 179900,
+  "Perfume Asad": 169900,
+  "Tabla de Picar de Mármol": 169900,
+  "Raqueta para Insectos": 119900,
+  "Afilador de Cuchillos": 99000,
+  "Plantillas Ortopiex 5D": 159000,
+  "Almohadillas Antivibración": 98000,
+};
+
+// ───────── CORRECTOR DE TOTAL Y CANTIDAD ─────────
+function calculateCorrectTotal(productName: string, quantity: number): string {
+  // Buscar el producto en el diccionario (case insensitive)
+  const matchedKey = Object.keys(PRODUCT_PRICES).find(
+    key => key.toLowerCase() === productName.toLowerCase() ||
+           productName.toLowerCase().includes(key.toLowerCase()) ||
+           key.toLowerCase().includes(productName.toLowerCase())
+  );
+  
+  const unitPrice = matchedKey ? PRODUCT_PRICES[matchedKey] : 0;
+  const correctTotal = unitPrice * quantity;
+  return correctTotal.toLocaleString('es-ES');
+}
+
+function getUnitPrice(productName: string): number {
+  const matchedKey = Object.keys(PRODUCT_PRICES).find(
+    key => key.toLowerCase() === productName.toLowerCase() ||
+           productName.toLowerCase().includes(key.toLowerCase()) ||
+           key.toLowerCase().includes(productName.toLowerCase())
+  );
+  return matchedKey ? PRODUCT_PRICES[matchedKey] : 0;
+}
+
+function fixQuantityAndTotal(response: string, expectedQty: number, productName: string): string {
+  let fixed = response;
+  
+  const correctTotal = calculateCorrectTotal(productName, expectedQty);
+  const unitPrice = getUnitPrice(productName);
+  const unitPriceFormatted = unitPrice.toLocaleString('es-ES');
+  
+  // Patrones para corregir cantidad
+  const quantityPatterns = [
+    { pattern: /Cantidad:\s*11\b/gi, replacement: `Cantidad: ${expectedQty}` },
+    { pattern: /cantidad:\s*11\b/gi, replacement: `cantidad: ${expectedQty}` },
+    { pattern: /Cantidad:\s*22\b/gi, replacement: `Cantidad: ${expectedQty === 2 ? 2 : expectedQty}` },
+    { pattern: /cantidad:\s*22\b/gi, replacement: `cantidad: ${expectedQty === 2 ? 2 : expectedQty}` },
+    { pattern: /Cantidad:\s*33\b/gi, replacement: `Cantidad: ${expectedQty === 3 ? 3 : expectedQty}` },
+    { pattern: /cantidad:\s*33\b/gi, replacement: `cantidad: ${expectedQty === 3 ? 3 : expectedQty}` },
+    { pattern: /\b11\s*(unidad|unidades)\b/gi, replacement: `${expectedQty} ${expectedQty === 1 ? 'unidad' : 'unidades'}` },
+    { pattern: /\b22\s*(unidad|unidades)\b/gi, replacement: `${expectedQty === 2 ? 2 : expectedQty} ${expectedQty === 2 ? 'unidades' : 'unidad'}` },
+    { pattern: /\b33\s*(unidad|unidades)\b/gi, replacement: `${expectedQty === 3 ? 3 : expectedQty} ${expectedQty === 3 ? 'unidades' : 'unidad'}` },
+  ];
+  
+  for (const { pattern, replacement } of quantityPatterns) {
+    if (pattern.test(fixed)) {
+      fixed = fixed.replace(pattern, replacement);
+      console.log("🔧 Corregido patrón cantidad:", pattern);
+    }
+  }
+  
+  // Patrones para corregir totales incorrectos
+  const wrongTotals = [
+    /Total:\s*1\.595\.000\s*Gs/gi,
+    /Total:\s*1,595,000\s*Gs/gi,
+    /Total:\s*1\.868\.900\s*Gs/gi,
+    /Total:\s*1,868,900\s*Gs/gi,
+    /Total:\s*1\.699\.000\s*Gs/gi,
+    /Total:\s*1,699,000\s*Gs/gi,
+    /Total:\s*339\.800\s*Gs/gi,
+    /Total:\s*339,800\s*Gs/gi,
+    /Total:\s*509\.700\s*Gs/gi,
+    /Total:\s*509,700\s*Gs/gi,
+    /Total:\s*679\.600\s*Gs/gi,
+    /Total:\s*679,600\s*Gs/gi,
+    /Total:\s*1\.450\.000\s*Gs/gi,
+    /Total:\s*1,450,000\s*Gs/gi,
+  ];
+  
+  for (const wrongTotal of wrongTotals) {
+    if (wrongTotal.test(fixed)) {
+      fixed = fixed.replace(wrongTotal, `Total: ${correctTotal} Gs`);
+      console.log("🔧 Corregido total incorrecto");
+    }
+  }
+  
+  // Corrección forzada de total
+  const totalPattern = /Total:\s*[\d\.\,]+\s*Gs/gi;
+  const currentTotalMatch = fixed.match(totalPattern);
+  if (currentTotalMatch && !currentTotalMatch[0].includes(correctTotal)) {
+    fixed = fixed.replace(totalPattern, `Total: ${correctTotal} Gs`);
+    console.log("🔧 Corrección forzada de total");
+  }
+  
+  // Si aún hay "11" en el contexto de cantidad, forzar corrección
+  if (fixed.includes("11") && (fixed.includes("Cantidad") || fixed.includes("cantidad"))) {
+    fixed = fixed.replace(/\b11\b/g, String(expectedQty));
+    console.log("🔧 Corrección forzada: 11 →", expectedQty);
+  }
+  
+  return fixed;
+}
+
+// ───────── INYECTOR DE TOTAL CORRECTO ─────────
+function injectCorrectTotal(response: string, productName: string, quantity: number): string {
+  const unitPrice = getUnitPrice(productName);
+  if (!unitPrice) return response;
+  
+  const correctTotal = unitPrice * quantity;
+  const formattedTotal = correctTotal.toLocaleString('es-ES');
+  
+  let fixed = response;
+  
+  // Buscar y reemplazar cualquier total incorrecto
+  const totalPattern = /(?:💰\s*)?Total:\s*[\d\.\,]+\s*Gs/gi;
+  if (totalPattern.test(fixed)) {
+    fixed = fixed.replace(totalPattern, `💰 Total: ${formattedTotal} Gs`);
+    console.log("🔧 Total inyectado correctamente:", formattedTotal);
+  }
+  
+  // Si el producto tiene PROMO 2x, manejar ese caso
+  if (quantity === 2 && (productName === "Veneno de Abeja" || productName === "Crema de Veneno de Abeja")) {
+    const promoPrice = 249900;
+    const formattedPromo = promoPrice.toLocaleString('es-ES');
+    if (fixed.includes("PROMO 2x")) {
+      fixed = fixed.replace(/PROMO 2x.*?249\.900\s*Gs/gi, `PROMO 2x → ${formattedPromo} Gs (ahorrás 40.000 Gs)`);
+    }
+  }
+  
+  return fixed;
+}
+
+function nextStep(o: any) {
+  if (!o.product) return "selling";
+  if (!o.city) return "collecting_city";
+  if (!o.customer_name) return "collecting_name";
+  if (!o.phone) return "collecting_phone";
+  if (!o.address) return "collecting_address";
+  return "confirm_order";
+}
+
+async function safeUpsertOrder(
+  userId: string,
+  from: string,
+  order: any,
+  confirm = false
+) {
   try {
-    const { data, error } = await supabase
-      .from("training_data")
-      .select("id, intent, examples, response, is_active")
+    if (!order?.product) return null;
+    if (!from) {
+      console.error("❌ safeUpsertOrder: from_number vacío, abortando");
+      return null;
+    }
+
+    const { data: existing, error: findErr } = await supabase
+      .from("orders")
+      .select("*")
       .eq("user_id", userId)
-      .eq("is_active", true)
-      .order("created_at", { ascending: false });
+      .eq("from_number", from)
+      .in("status", [
+        "draft",
+        "collecting_name",
+        "collecting_city",
+        "collecting_phone",
+        "collecting_address",
+        "confirm_pending",
+      ])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (findErr) {
+      console.error("❌ findOrder:", findErr);
+      return null;
+    }
+
+    const step = nextStep(order);
+    const finalStatus =
+      confirm && step === "confirm_order"
+        ? "confirmed"
+        : step === "confirm_order"
+        ? "confirm_pending"
+        : step;
+
+    const payload: any = {
+      user_id: userId,
+      from_number: from,
+      phone: order.phone || from,
+      product: order.product || null,
+      producto: order.product || null,
+      customer_name: order.customer_name || null,
+      city: order.city || null,
+      ciudad: order.city || null,
+      address: order.address || null,
+      quantity: order.quantity || 1,
+      total_amount: order.total_amount || null,
+      status: finalStatus,
+      fecha: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    if (existing?.id) {
+      const { error } = await supabase
+        .from("orders")
+        .update(payload)
+        .eq("id", existing.id);
+      if (error) console.error("❌ updateOrder:", error);
+      return existing.id;
+    }
+
+    const { data, error } = await supabase
+      .from("orders")
+      .insert(payload)
+      .select("id")
+      .single();
 
     if (error) {
-      console.error("❌ Error obteniendo training_data:", error);
-      return [];
+      console.error("❌ insertOrder:", error);
+      return null;
     }
-
-    console.log(`📚 Entrenamientos cargados: ${data?.length || 0} para usuario ${userId}`);
-    return data || [];
-  } catch (err) {
-    console.error("❌ getAllTrainingData error:", err);
-    return [];
+    return data?.id || null;
+  } catch (e) {
+    console.error("❌ safeUpsertOrder:", e);
+    return null;
   }
 }
 
-// ═══════════════════════════════════════════════════════════
-// BUSCAR COINCIDENCIA EN ENTRENAMIENTOS POR FRASE
-// ═══════════════════════════════════════════════════════════
+// ───────── MEDIA HELPERS ─────────
 
-function findMatchingTraining(trainingItems: any[], message: string) {
-  if (!trainingItems || trainingItems.length === 0) return null;
-  
-  const msg = normalize(message);
-  
-  for (const item of trainingItems) {
-    if (!item.examples || !Array.isArray(item.examples)) continue;
-    
-    for (const example of item.examples) {
-      const ex = normalize(example);
-      if (!ex) continue;
-      
-      if (msg.includes(ex) || ex.includes(msg) || 
-          msg.includes(ex.substring(0, 10)) ||
-          ex.includes(msg.substring(0, 10))) {
-        console.log(`🎯 Match de entrenamiento: "${item.intent}" → "${example}"`);
-        return {
-          intent: item.intent,
-          response: item.response,
-          matched_example: example,
-          all_examples: item.examples
-        };
-      }
+async function fetchMediaAsBase64(
+  url: string
+): Promise<{ data: string; mime: string } | null> {
+  try {
+    const r = await fetch(url);
+    if (!r.ok) {
+      console.error("❌ fetchMedia:", r.status, url.slice(0, 80));
+      return null;
     }
+    const mime = r.headers.get("content-type") || "application/octet-stream";
+    const buf = Buffer.from(await r.arrayBuffer());
+    return { data: buf.toString("base64"), mime: mime.split(";")[0].trim() };
+  } catch (e) {
+    console.error("❌ fetchMediaAsBase64:", e);
+    return null;
   }
-  return null;
 }
 
-// ═══════════════════════════════════════════════════════════
-// CONSTRUIR CONTEXTO DE ENTRENAMIENTO PARA GEMINI
-// ═══════════════════════════════════════════════════════════
+// ───────── GEMINI ─────────
 
-function buildTrainingContext(trainingItems: any[], maxLength: number = 4000) {
-  if (!trainingItems || trainingItems.length === 0) {
+async function callGemini({
+  apiKey,
+  model,
+  system,
+  contents,
+  temperature,
+  maxTokens,
+}: any) {
+  const body: any = {
+    systemInstruction: { parts: [{ text: system }] },
+    contents,
+    generationConfig: {
+      temperature,
+      maxOutputTokens: maxTokens,
+      topP: 0.95,
+      topK: 40,
+    },
+  };
+  if (String(model).includes("2.5")) {
+    body.generationConfig.thinkingConfig = { thinkingBudget: 0 };
+  }
+
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }
+  );
+
+  const data = await r.json();
+  if (!r.ok) {
+    console.error("❌ Gemini:", JSON.stringify(data).slice(0, 800));
     return "";
   }
 
-  let context = "\n\n## 📚 ENTRENAMIENTO DEL NEGOCIO:\n";
-  
-  for (const item of trainingItems) {
-    const shortResponse = item.response.substring(0, 500) + "...";
-    const examplesList = item.examples?.map((ex: string) => `  • "${ex}"`).join("\n") || "(sin frases de ejemplo)";
-    
-    context += `### ${item.intent}\n`;
-    context += `**Respuesta (resumen):** ${shortResponse}\n`;
-    context += `**Frases clave:**\n${examplesList}\n\n`;
-    
-    if (context.length > maxLength) {
-      context += "... (entrenamiento completo disponible si es necesario)\n";
-      break;
-    }
-  }
-
-  return context;
+  const c = data?.candidates?.[0];
+  const text = clean(
+    c?.content?.parts?.map((p: any) => p.text || "").join("") || ""
+  );
+  console.log("🧠 finishReason:", c?.finishReason, "len:", text.length);
+  return text;
 }
 
-// ═══════════════════════════════════════════════════════════
-// EL RESTO DEL CÓDIGO (getPriceLines, extractProductNameFromLine, etc.)
-// ═══════════════════════════════════════════════════════════
+// Llama a Gemini con imagen y le pide JSON: kind + transcript
+async function analyzeImageWithGemini({
+  apiKey,
+  model,
+  imageBase64,
+  mime,
+  caption,
+  productList,
+}: any): Promise<{
+  kind: "payment_proof" | "product" | "other";
+  transcript: string;
+}> {
+  const system = `
+Sos un clasificador. Recibís una IMAGEN enviada por un cliente de WhatsApp a una tienda paraguaya (Mega Todo Store).
+Devolvé EXCLUSIVAMENTE un JSON válido con esta forma:
+{"kind":"payment_proof"|"product"|"other","transcript":"..."}
 
-// [Mantén todas las funciones existentes: getPriceLines, extractProductNameFromLine, 
-// detectProduct, isPriceIntent, isBuyIntent, extractData, mergeOrderData, 
-// PRODUCT_PRICES, calculateCorrectTotal, getUnitPrice, fixQuantityAndTotal, 
-// injectCorrectTotal, nextStep, safeUpsertOrder, fetchMediaAsBase64, 
-// callGemini, analyzeImageWithGemini, transcribeAudioWithGemini]
+Reglas para "kind":
+- "payment_proof" → si la imagen es captura/foto de transferencia bancaria, billetera (Tigo Money, Personal Pay, Ueno, Zimple), depósito, comprobante de pago, ticket bancario.
+- "product" → si la imagen muestra un producto/envase (ej. crema, frasco, suplemento, etc.) o el cliente pregunta sobre él.
+- "other" → cualquier otra cosa.
 
-// ═══════════════════════════════════════════════════════════
-// HANDLER PRINCIPAL
-// ═══════════════════════════════════════════════════════════
+"transcript": describí brevemente en español lo que ves (máx 200 chars). Si es comprobante: monto, banco/billetera, fecha si se ve. Si es producto: qué producto parece y rasgos visibles.
+
+Caption del cliente (puede estar vacío): "${clean(caption) || "(vacío)"}"
+Catálogo de productos (referencia): ${productList.slice(0, 800)}
+
+NO devuelvas texto fuera del JSON.
+`.trim();
+
+  const contents = [
+    {
+      role: "user",
+      parts: [
+        { inlineData: { mimeType: mime, data: imageBase64 } },
+        { text: caption ? `Caption: ${caption}` : "Analizá la imagen." },
+      ],
+    },
+  ];
+
+  const raw = await callGemini({
+    apiKey,
+    model,
+    system,
+    contents,
+    temperature: 0.1,
+    maxTokens: 512,
+  });
+
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error("no json");
+    const parsed = JSON.parse(match[0]);
+    const kind =
+      parsed.kind === "payment_proof" ||
+      parsed.kind === "product" ||
+      parsed.kind === "other"
+        ? parsed.kind
+        : "other";
+    return { kind, transcript: clean(parsed.transcript) };
+  } catch {
+    console.warn("⚠️ analyzeImage no parseó JSON, raw:", raw.slice(0, 200));
+    return { kind: "other", transcript: clean(raw).slice(0, 200) };
+  }
+}
+
+// Transcribe audio con Gemini
+async function transcribeAudioWithGemini({
+  apiKey,
+  model,
+  audioBase64,
+  mime,
+}: any): Promise<string> {
+  const system =
+    "Transcribí el audio al español tal cual lo dijo el hablante. Devolvé SOLO la transcripción en texto plano, sin comillas ni comentarios.";
+
+  const contents = [
+    {
+      role: "user",
+      parts: [
+        { inlineData: { mimeType: mime, data: audioBase64 } },
+        { text: "Transcribí este audio." },
+      ],
+    },
+  ];
+
+  const txt = await callGemini({
+    apiKey,
+    model,
+    system,
+    contents,
+    temperature: 0.1,
+    maxTokens: 1024,
+  });
+  return clean(txt);
+}
+
+// ───────── HANDLER ─────────
 
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST")
@@ -224,7 +602,6 @@ export default async function handler(req: any, res: any) {
     if (!texto && !mediaUrl)
       return res.status(400).json({ error: "Faltan message o media" });
 
-    // ─── 1. OBTENER CONFIGURACIÓN IA ───
     const { data: iaConfig } = await supabase
       .from("chat_ia_gemini")
       .select("*")
@@ -237,70 +614,18 @@ export default async function handler(req: any, res: any) {
         response: "⚠️ La IA no está configurada o desactivada.",
       });
 
-    // ─── 2. OBTENER TODOS LOS ENTRENAMIENTOS DEL USUARIO ───
-    const allTraining = await getAllTrainingData(user_id);
+    const { data: trainingRow } = await supabase
+      .from("training_data")
+      .select("id, intent, response, updated_at")
+      .eq("user_id", user_id)
+      .eq("is_active", true)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    // ─── 3. BUSCAR COINCIDENCIA DIRECTA EN ENTRENAMIENTOS ───
-    let trainingMatch = null;
-    if (texto && allTraining.length > 0) {
-      trainingMatch = findMatchingTraining(allTraining, texto);
-      if (trainingMatch) {
-        console.log(`🎯 Match directo: "${trainingMatch.intent}"`);
-        
-        // ✅ Si es un saludo simple, responder con mensaje corto
-        const msg = normalize(texto);
-        if (msg === "hola" || msg === "buen día" || msg === "buenas" || msg === "holi" || 
-            msg === "buenas tardes" || msg === "buenas noches") {
-          
-          const productList = extractProductList(trainingMatch.response);
-          
-          const shortResponse = `👋 ¡Hola! Bienvenido a Mega Todo Store. 😊
-
-📦 **Productos disponibles:**
-${productList}
-
-💬 Preguntame por cualquier producto y te doy más información.
-
-📍 ¿Qué te gustaría saber? 😊`;
-          
-          return res.json({
-            response: shortResponse,
-            context: {
-              ...(context || {}),
-              last_topic: "saludo",
-              matched_training: true,
-              updated_at: new Date().toISOString(),
-            },
-            matched_training: true,
-            intent: trainingMatch.intent,
-          });
-        }
-        
-        // ✅ Para otros mensajes, devolver versión resumida
-        const shortResponse = trainingMatch.response.length > 500 
-          ? trainingMatch.response.substring(0, 500) + "...\n\n📋 Para más información, preguntame por un producto específico."
-          : trainingMatch.response;
-        
-        return res.json({
-          response: shortResponse,
-          context: {
-            ...(context || {}),
-            last_topic: trainingMatch.intent,
-            matched_training: true,
-            updated_at: new Date().toISOString(),
-          },
-          matched_training: true,
-          intent: trainingMatch.intent,
-        });
-      }
-    }
-
-    // ─── 4. CONSTRUIR CONTEXTO DE ENTRENAMIENTO PARA GEMINI ───
-    const trainingContext = buildTrainingContext(allTraining);
-    
-    const combinedTraining = allTraining
-      .map(t => `${t.intent}\n${t.response}`)
-      .join("\n---\n");
+    const fullTraining = clean(trainingRow?.response);
+    if (!fullTraining)
+      return res.json({ response: "⚠️ No encontré entrenamiento activo." });
 
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
@@ -319,7 +644,7 @@ ${productList}
           imageBase64: fetched.data,
           mime,
           caption: texto,
-          productList: combinedTraining,
+          productList: fullTraining,
         });
 
         console.log("🖼️ Vision:", analysis.kind, "|", analysis.transcript);
@@ -376,7 +701,7 @@ ${productList}
     const oldOrder = context?.order_data || {};
     const product = detectProduct(
       texto,
-      combinedTraining,
+      fullTraining,
       context?.current_product || oldOrder?.product
     );
 
@@ -386,18 +711,20 @@ ${productList}
     const wantsToBuy = isBuyIntent(texto);
     const asksPrice = isPriceIntent(texto);
     
+    // ─── FUERZA PREGUNTA DE CIUDAD ───
     let step = nextStep(orderData);
     
     if (wantsToBuy && orderData.product && !orderData.city) {
       step = "collecting_city";
-      console.log("📍 Forzando pregunta de ciudad");
+      console.log("📍 Forzando pregunta de ciudad (cliente quiere comprar sin ciudad)");
     }
     
     if (orderData.product && !orderData.city && (wantsToBuy || texto.includes("quiero") || texto.includes("compro"))) {
       step = "collecting_city";
-      console.log("📍 Forzando pregunta de ciudad (cliente dijo quiero)");
+      console.log("📍 Forzando pregunta de ciudad (nuevo producto, cliente dijo quiero)");
     }
     
+    // Detectar ciudad en frases como "asuncion es", "ita", etc.
     const cityDetectionPatterns = [
       { pattern: /asuncion\s+es/i, city: "Asunción" },
       { pattern: /san\s+lorenzo\s+es/i, city: "San Lorenzo" },
@@ -434,28 +761,19 @@ ${productList}
       await safeUpsertOrder(user_id, fromNumber, orderData, isConfirming);
     }
 
-    console.log("📊 Cantidad extraída:", orderData.quantity);
+    console.log("📊 Cantidad extraída y asignada:", orderData.quantity);
     console.log("📍 Paso actual:", step);
-    console.log("📍 Ciudad:", orderData.city);
+    console.log("📍 Ciudad en orderData:", orderData.city);
     console.log("📍 Producto:", orderData.product);
 
-    // ─── CONSTRUIR SYSTEM CON TODOS LOS ENTRENAMIENTOS ───
     const system = `
-Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento al pie de la letra.
+Sos el asistente de ventas de Mega Todo Store. Respondé SIEMPRE siguiendo el entrenamiento al pie de la letra: tono, emojis, plantillas, precios, ciudades con cobertura, formato de cierre. NO inventes precios ni datos.
 
 ═══════════════════════════════════
-ENTRENAMIENTOS DEL NEGOCIO (FUENTE DE VERDAD):
+ENTRENAMIENTO OFICIAL (FUENTE DE VERDAD):
 ═══════════════════════════════════
-${trainingContext || "No hay entrenamiento específico."}
+${fullTraining}
 ═══════════════════════════════════
-
-REGLAS IMPORTANTES:
-1. Usá EXACTAMENTE las respuestas del entrenamiento cuando el cliente pregunte sobre esos temas.
-2. NO inventes precios ni datos que no estén en el entrenamiento.
-3. Si el cliente pregunta algo que NO está en el entrenamiento, usá tu conocimiento general.
-4. Usá tono amable, profesional, con emojis, en español paraguayo.
-5. Si es un comprobante de pago, confirmá recepción y que estás procesando el pedido.
-6. Usá el catálogo: ${CATALOG_URL}
 
 ESTADO ACTUAL DEL CLIENTE:
 - Producto: ${orderData.product || "ninguno"}
@@ -467,9 +785,21 @@ ESTADO ACTUAL DEL CLIENTE:
 - Paso: ${step}
 - Intención: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
 
-⚠️ MUY IMPORTANTE:
-- Si el cliente quiere comprar y falta ciudad → preguntá "📍 ¿Para qué ciudad sería el envío?"
-- Si todos los datos están completos → usá la plantilla de confirmación ✅
+REGLAS:
+1. Usá EXACTAMENTE plantillas, emojis y tono del entrenamiento.
+2. Si solo pregunta precio → respondé con el precio + CTA, NO pidas datos todavía.
+3. Si quiere comprar o ya pasó datos → pedí SOLO el dato que falta (siguiente: ${step}).
+4. Si están todos los datos (paso "confirm_order") → confirmá con plantilla ✅ PEDIDO CONFIRMADO.
+5. NO repitas saludo si ya hubo conversación.
+6. NO cambies de producto salvo que el cliente lo pida.
+7. Cerrá SIEMPRE con siguiente paso o CTA.
+8. Catálogo: ${CATALOG_URL}
+9. Español paraguayo, natural, con emojis.
+10. NUNCA respondas vacío.
+11. Si el mensaje viene de una FOTO o AUDIO transcripto, respondé naturalmente como si el cliente te hubiera escrito eso mismo.
+12. IMPORTANTE: Cuando el cliente dice "1", la cantidad es UNO (1), no once (11). El total debe ser PRECIO × CANTIDAD.
+13. IMPORTANTE: Si el cliente dice "quiero" después de ver un producto y NO ha dicho su ciudad, DEBES preguntar "📍 ¿Para qué ciudad sería el envío?" antes de pedir cualquier otro dato.
+14. IMPORTANTE: Usa precios reales del catálogo. Para Veneno de Abeja: 145.000 Gs por unidad (promo 2x: 249.900 Gs).
 `.trim();
 
     const contents = (history || [])
