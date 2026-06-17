@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { Globe, Bot, Users, Key, Copy, Check, MessageSquare, Sheet, Timer, QrCode, Download } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
@@ -33,7 +33,7 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<"whatsapp" | "qr" | "ia" | "chat">("whatsapp");
   const [showApiKey, setShowApiKey] = useState(false);
   
-  // Estado para QR
+  // Estados para QR
   const [qrStatus, setQrStatus] = useState<string>("disconnected");
   const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
   const [qrLoading, setQrLoading] = useState(false);
@@ -42,63 +42,91 @@ export default function SettingsPage() {
   const [pollingInterval, setPollingInterval] = useState<NodeJS.Timeout | null>(null);
   const [showManualQrInput, setShowManualQrInput] = useState(false);
   const [manualQrText, setManualQrText] = useState("");
+  
+  // Ref para evitar cargas duplicadas
+  const isLoadingRef = useRef(false);
+
+  // Función para cargar configuraciones
+  const loadConfigs = async (showLoading = true) => {
+    if (!user || isLoadingRef.current) return;
+    
+    if (showLoading) setLoading(true);
+    isLoadingRef.current = true;
+    
+    try {
+      // Cargar configuración de WhatsApp
+      const { data: whatsappData, error: whatsappError } = await supabase
+        .from("whatsapp_config")
+        .select("*")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (whatsappError) {
+        console.error("Error cargando whatsapp_config:", whatsappError);
+      } else if (whatsappData) {
+        setConfig({
+          phone_number_id: whatsappData.phone_number_id || "",
+          business_account_id: whatsappData.business_account_id || "",
+          meta_app_id: whatsappData.meta_app_id || "",
+          permanent_token: whatsappData.permanent_token || "",
+          webhook_url: whatsappData.webhook_url || "",
+          webhook_token: whatsappData.webhook_token || "",
+          google_sheets_url: (whatsappData as any).google_sheets_url || "",
+          bot_response_delay_seconds: (whatsappData as any).bot_response_delay_seconds ?? 30,
+        });
+      } else {
+        // Si no hay datos, establecer valores por defecto
+        setConfig({
+          phone_number_id: "",
+          business_account_id: "",
+          meta_app_id: "",
+          permanent_token: "",
+          webhook_url: "",
+          webhook_token: "",
+          google_sheets_url: "",
+          bot_response_delay_seconds: 30,
+        });
+      }
+
+      // Cargar configuración de IA
+      const { data: iaData, error: iaError } = await supabase
+        .from("chat_ia_gemini")
+        .select("*")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (iaError) {
+        console.error("Error cargando IA:", iaError);
+      } else if (iaData) {
+        setIaConfig({
+          api_key: iaData.api_key || "",
+          model: iaData.model || "auto",
+          system_instruction: iaData.system_instruction || "",
+          is_active: iaData.is_active ?? false,
+          temperature: iaData.temperature ?? 0.7,
+          max_tokens: iaData.max_tokens ?? 2048,
+        });
+      } else {
+        setIaConfig({
+          api_key: "",
+          model: "auto",
+          system_instruction: "",
+          is_active: false,
+          temperature: 0.7,
+          max_tokens: 2048,
+        });
+      }
+    } catch (error) {
+      console.error("Error loading configs:", error);
+    } finally {
+      if (showLoading) setLoading(false);
+      isLoadingRef.current = false;
+    }
+  };
 
   useEffect(() => {
     if (!user) return;
-
-    const loadConfigs = async () => {
-      setLoading(true);
-      
-      try {
-        // Cargar configuración de WhatsApp
-        const { data: whatsappData, error: whatsappError } = await supabase
-          .from("whatsapp_config")
-          .select("*")
-          .eq("user_id", user.id)
-          .maybeSingle();
-
-        if (whatsappError) {
-          console.error("Error cargando whatsapp_config:", whatsappError);
-        } else if (whatsappData) {
-          setConfig({
-            phone_number_id: whatsappData.phone_number_id || "",
-            business_account_id: whatsappData.business_account_id || "",
-            meta_app_id: whatsappData.meta_app_id || "",
-            permanent_token: whatsappData.permanent_token || "",
-            webhook_url: whatsappData.webhook_url || "",
-            webhook_token: whatsappData.webhook_token || "",
-            google_sheets_url: (whatsappData as any).google_sheets_url || "",
-            bot_response_delay_seconds: (whatsappData as any).bot_response_delay_seconds ?? 30,
-          });
-        }
-
-        // Cargar configuración de IA
-        const { data: iaData, error: iaError } = await supabase
-          .from("chat_ia_gemini")
-          .select("*")
-          .eq("user_id", user.id)
-          .maybeSingle();
-
-        if (iaError) {
-          console.error("Error cargando IA:", iaError);
-        } else if (iaData) {
-          setIaConfig({
-            api_key: iaData.api_key || "",
-            model: iaData.model || "auto",
-            system_instruction: iaData.system_instruction || "",
-            is_active: iaData.is_active ?? false,
-            temperature: iaData.temperature ?? 0.7,
-            max_tokens: iaData.max_tokens ?? 2048,
-          });
-        }
-      } catch (error) {
-        console.error("Error loading configs:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadConfigs();
+    loadConfigs(true);
   }, [user]);
 
   // Verificar estado del QR al montar y cuando cambia la pestaña
@@ -268,7 +296,7 @@ export default function SettingsPage() {
     setSaving(true);
     
     try {
-      // Guardar los datos actuales del estado
+      // Validar que los datos no estén vacíos
       const configData = {
         phone_number_id: config.phone_number_id || "",
         business_account_id: config.business_account_id || "",
@@ -281,25 +309,35 @@ export default function SettingsPage() {
 
       console.log("Guardando configuración:", configData);
 
-      // Usar upsert con los datos actuales
-      const { error } = await supabase
+      // Primero verificar si existe el registro
+      const { data: existingData } = await supabase
         .from("whatsapp_config")
-        .upsert(
-          {
+        .select("user_id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      let result;
+      if (existingData) {
+        // Actualizar
+        result = await supabase
+          .from("whatsapp_config")
+          .update(configData)
+          .eq("user_id", user.id);
+      } else {
+        // Insertar
+        result = await supabase
+          .from("whatsapp_config")
+          .insert({
             user_id: user.id,
             ...configData,
-          },
-          { 
-            onConflict: 'user_id',
-            ignoreDuplicates: false 
-          }
-        );
+          });
+      }
 
-      if (error) {
-        console.error("Supabase error:", error);
+      if (result.error) {
+        console.error("Supabase error:", result.error);
         toast({ 
           title: "Error", 
-          description: error.message || "Error al guardar la configuración", 
+          description: result.error.message || "Error al guardar la configuración", 
           variant: "destructive" 
         });
       } else {
@@ -308,8 +346,8 @@ export default function SettingsPage() {
           description: "Configuración actualizada correctamente" 
         });
         
-        // NO recargar los datos para evitar que se borren
-        // Solo mantenemos el estado actual
+        // Recargar los datos para asegurar sincronización
+        await loadConfigs(false);
       }
     } catch (error: any) {
       console.error("Unexpected error:", error);
@@ -350,24 +388,35 @@ export default function SettingsPage() {
 
       console.log("Guardando configuración IA:", iaData);
 
-      const { error } = await supabase
+      // Primero verificar si existe el registro
+      const { data: existingData } = await supabase
         .from("chat_ia_gemini")
-        .upsert(
-          {
+        .select("user_id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      let result;
+      if (existingData) {
+        // Actualizar
+        result = await supabase
+          .from("chat_ia_gemini")
+          .update(iaData)
+          .eq("user_id", user.id);
+      } else {
+        // Insertar
+        result = await supabase
+          .from("chat_ia_gemini")
+          .insert({
             user_id: user.id,
             ...iaData,
-          },
-          { 
-            onConflict: 'user_id',
-            ignoreDuplicates: false 
-          }
-        );
+          });
+      }
 
-      if (error) {
-        console.error("Error saving IA config:", error);
+      if (result.error) {
+        console.error("Error saving IA config:", result.error);
         toast({ 
           title: "Error", 
-          description: error.message || "Error al guardar la configuración de IA", 
+          description: result.error.message || "Error al guardar la configuración de IA", 
           variant: "destructive" 
         });
       } else {
@@ -376,7 +425,8 @@ export default function SettingsPage() {
           description: "Configuración de IA actualizada correctamente" 
         });
         
-        // NO recargar los datos para evitar que se borren
+        // Recargar los datos para asegurar sincronización
+        await loadConfigs(false);
       }
     } catch (error: any) {
       console.error("Unexpected error saving IA:", error);
