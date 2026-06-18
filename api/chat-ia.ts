@@ -1,8 +1,5 @@
 // api/chat-ia.ts
-// ✅ CORREGIDO: Cada usuario usa SOLO su propio entrenamiento
-// ✅ CORREGIDO: Usa el response como fuente de verdad para productos
-// ✅ CORREGIDO: No depende de intent ni examples para detectar productos
-// ✅ CORREGIDO: Extrae el catálogo directamente del CATALOGO_PRODUCTOS
+// ✅ CORREGIDO: Usa TODOS los entrenamientos del usuario, no solo el último
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -24,279 +21,6 @@ const normalize = (t: string): string =>
     .trim();
 
 // ═══════════════════════════════════════════════════════════
-// 🔥 NUEVO: OBTENER EL RESPONSE DEL USUARIO (IGNORAR INTENT)
-// ═══════════════════════════════════════════════════════════
-
-async function getUserTrainingResponse(userId: string): Promise<string> {
-  try {
-    const { data, error } = await supabase
-      .from("training_data")
-      .select("response")
-      .eq("user_id", userId)
-      .eq("is_active", true)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      console.error("❌ Error obteniendo training_data:", error);
-      return "";
-    }
-
-    if (!data || data.length === 0) {
-      console.log(`⚠️ Usuario ${userId} no tiene entrenamiento`);
-      return "";
-    }
-
-    const fullResponse = data
-      .map((item) => item.response || "")
-      .filter((text) => text.length > 0)
-      .join("\n\n---\n\n");
-
-    console.log(`📚 Response del usuario: ${fullResponse.length} caracteres`);
-    console.log(
-      `📋 Contiene CATALOGO_PRODUCTOS: ${fullResponse.includes(
-        "CATALOGO_PRODUCTOS"
-      )}`
-    );
-
-    return fullResponse;
-  } catch (error) {
-    console.error("❌ Error en getUserTrainingResponse:", error);
-    return "";
-  }
-}
-
-// ═══════════════════════════════════════════════════════════
-// 🔥 NUEVO: EXTRAER CATÁLOGO DEL RESPONSE
-// ═══════════════════════════════════════════════════════════
-
-function extractCatalogFromResponse(
-  responseText: string
-): Array<{ name: string; price: number }> {
-  const products: Array<{ name: string; price: number }> = [];
-
-  if (!responseText) return products;
-
-  // Buscar CATALOGO_PRODUCTOS en el response
-  const catalogMatch = responseText.match(
-    /CATALOGO_PRODUCTOS\s*([\s\S]*?)(?=FIN_CATALOGO_PRODUCTOS|REGLAS_PARA_EL_PARSER|ENTRENAMIENTO_COMPLETO|$)/i
-  );
-
-  if (!catalogMatch) {
-    console.log("⚠️ No se encontró CATALOGO_PRODUCTOS en el response");
-    return products;
-  }
-
-  const catalogText = catalogMatch[1];
-  const lines = catalogText.split("\n");
-
-  let currentProduct: { name: string; price: number } | null = null;
-
-  for (const line of lines) {
-    const cleanLine = line.trim();
-    if (!cleanLine) continue;
-
-    // Buscar "PRODUCTO: Nombre"
-    const productMatch = cleanLine.match(/^PRODUCTO:\s*(.+)/i);
-    if (productMatch) {
-      if (currentProduct && currentProduct.price > 0) {
-        products.push(currentProduct);
-      }
-      currentProduct = {
-        name: productMatch[1].trim(),
-        price: 0,
-      };
-      continue;
-    }
-
-    // Buscar "PRECIO_1: 145000"
-    const priceMatch = cleanLine.match(/^PRECIO_1:\s*([\d.]+)/i);
-    if (priceMatch && currentProduct) {
-      currentProduct.price = parseFloat(priceMatch[1].replace(/\./g, ""));
-      continue;
-    }
-
-    // Buscar formato: "- Producto → 169.900 Gs"
-    const altMatch = cleanLine.match(/^[-•●]\s*(.+?)\s*(?:→|->|:)\s*([\d.]+)/);
-    if (altMatch) {
-      products.push({
-        name: altMatch[1].trim(),
-        price: parseFloat(altMatch[2].replace(/\./g, "")),
-      });
-    }
-  }
-
-  if (currentProduct && currentProduct.price > 0) {
-    products.push(currentProduct);
-  }
-
-  console.log(`📦 Productos extraídos del response: ${products.length}`);
-  return products;
-}
-
-// ═══════════════════════════════════════════════════════════
-// 🔥 NUEVO: OBTENER CATÁLOGO DEL USUARIO
-// ═══════════════════════════════════════════════════════════
-
-function getUserCatalog(
-  trainingItems: any[]
-): Array<{ name: string; price: number }> {
-  let allProducts: Array<{ name: string; price: number }> = [];
-
-  if (!trainingItems || trainingItems.length === 0) {
-    console.log("⚠️ No hay entrenamientos para extraer catálogo");
-    return getFallbackCatalog();
-  }
-
-  for (const item of trainingItems) {
-    if (item.response) {
-      const products = extractCatalogFromResponse(item.response);
-      allProducts = [...allProducts, ...products];
-      console.log(
-        `📦 Del entrenamiento "${item.intent}": ${products.length} productos`
-      );
-    }
-  }
-
-  if (allProducts.length === 0) {
-    console.log(
-      "⚠️ No se encontraron productos en el entrenamiento, usando fallback"
-    );
-    return getFallbackCatalog();
-  }
-
-  const uniqueProducts = new Map<string, number>();
-  for (const product of allProducts) {
-    const key = normalize(product.name);
-    if (!uniqueProducts.has(key)) {
-      uniqueProducts.set(key, product.price);
-    }
-  }
-
-  const result = Array.from(uniqueProducts.entries()).map(([name, price]) => ({
-    name,
-    price,
-  }));
-
-  console.log(`📦 Catálogo final del usuario: ${result.length} productos únicos`);
-  return result;
-}
-
-// ═══════════════════════════════════════════════════════════
-// 🔥 NUEVO: DETECTAR PRODUCTO DEL CATÁLOGO
-// ═══════════════════════════════════════════════════════════
-
-function detectProductFromCatalog(
-  text: string,
-  catalog: Array<{ name: string; price: number }>
-): string {
-  const msg = normalize(text);
-  let bestMatch = "";
-  let bestScore = 0;
-
-  if (catalog.length === 0) return "";
-
-  for (const product of catalog) {
-    const p = normalize(product.name);
-    let score = 0;
-
-    if (msg.includes(p)) {
-      score += 100;
-    }
-
-    const productWords = p.split(" ").filter((w) => w.length >= 3);
-    for (const w of productWords) {
-      if (msg.includes(w)) {
-        score += 25;
-      }
-    }
-
-    const msgWords = msg.split(" ").filter((w) => w.length >= 3);
-    for (const mw of msgWords) {
-      for (const pw of productWords) {
-        if (mw.includes(pw) || pw.includes(mw)) {
-          score += 30;
-          break;
-        }
-      }
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestMatch = product.name;
-    }
-  }
-
-  console.log(`🎯 Producto detectado: "${bestMatch}" (score: ${bestScore})`);
-  return bestScore >= 20 ? bestMatch : "";
-}
-
-// ═══════════════════════════════════════════════════════════
-// 🔥 NUEVO: CATÁLOGO DE RESPALDO
-// ═══════════════════════════════════════════════════════════
-
-function getFallbackCatalog(): Array<{ name: string; price: number }> {
-  return [
-    { name: "Veneno de Abeja", price: 145000 },
-    { name: "Crema de Veneno de Abeja", price: 145000 },
-    { name: "Limpiador de Ollas y Carbonilla", price: 149900 },
-    { name: "Destapa Cañerías Tornado", price: 159900 },
-    { name: "Peladora Automática", price: 159900 },
-    { name: "Perfume Asad", price: 169900 },
-    { name: "Tabla de Picar de Mármol", price: 169900 },
-    { name: "Nebulizador Portátil", price: 129900 },
-    { name: "Raqueta para Insectos", price: 119900 },
-    { name: "Afilador de Cuchillos", price: 99000 },
-    { name: "Plantillas Ortopiex 5D", price: 159000 },
-    { name: "Almohadillas Antivibración x4 unidades", price: 98000 },
-    { name: "Procesadora de Alimentos 2 Litros", price: 169900 },
-  ];
-}
-
-// ═══════════════════════════════════════════════════════════
-// 🔥 NUEVO: EXTRAER FRASES CLAVE DEL RESPONSE
-// ═══════════════════════════════════════════════════════════
-
-function extractPhrasesFromResponse(response: string): string[] {
-  const phrases: string[] = [];
-
-  if (!response) return phrases;
-
-  const aliasMatch = response.match(/ALIAS:\s*([^\n]+)/i);
-  if (aliasMatch) {
-    const aliases = aliasMatch[1].split(",").map((a) => a.trim());
-    phrases.push(...aliases);
-  }
-
-  const commonPhrases = [
-    "precio",
-    "cuánto cuesta",
-    "valor",
-    "costo",
-    "quiero",
-    "comprar",
-    "llevo",
-    "reservar",
-    "catálogo",
-    "productos",
-    "qué venden",
-  ];
-
-  for (const phrase of commonPhrases) {
-    if (response.toLowerCase().includes(phrase)) {
-      phrases.push(phrase);
-    }
-  }
-
-  const productMatch = response.match(/PRODUCTO:\s*([^\n]+)/i);
-  if (productMatch) {
-    phrases.push(productMatch[1].trim());
-  }
-
-  const unique = [...new Set(phrases)];
-  return unique.slice(0, 15);
-}
-
-// ═══════════════════════════════════════════════════════════
 // OBTENER TODOS LOS ENTRENAMIENTOS DEL USUARIO
 // ═══════════════════════════════════════════════════════════
 
@@ -314,9 +38,7 @@ async function getAllTrainingData(userId: string) {
       return [];
     }
 
-    console.log(
-      `📚 Entrenamientos cargados: ${data?.length || 0} para usuario ${userId}`
-    );
+    console.log(`📚 Entrenamientos cargados: ${data?.length || 0} para usuario ${userId}`);
     return data || [];
   } catch (err) {
     console.error("❌ getAllTrainingData error:", err);
@@ -325,50 +47,32 @@ async function getAllTrainingData(userId: string) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🔥 MODIFICADO: BUSCAR COINCIDENCIA EN ENTRENAMIENTOS
+// BUSCAR COINCIDENCIA EN ENTRENAMIENTOS POR FRASE
 // ═══════════════════════════════════════════════════════════
 
 function findMatchingTraining(trainingItems: any[], message: string) {
   if (!trainingItems || trainingItems.length === 0) return null;
-
+  
   const msg = normalize(message);
-
+  
   for (const item of trainingItems) {
-    if (item.examples && Array.isArray(item.examples)) {
-      for (const example of item.examples) {
-        const ex = normalize(example);
-        if (!ex) continue;
-
-        if (
-          msg.includes(ex) ||
-          ex.includes(msg) ||
+    if (!item.examples || !Array.isArray(item.examples)) continue;
+    
+    for (const example of item.examples) {
+      const ex = normalize(example);
+      if (!ex) continue;
+      
+      // Coincidencia exacta o parcial
+      if (msg.includes(ex) || ex.includes(msg) || 
           msg.includes(ex.substring(0, 10)) ||
-          ex.includes(msg.substring(0, 10))
-        ) {
-          console.log(`🎯 Match de entrenamiento: "${item.intent}" → "${example}"`);
-          return {
-            intent: item.intent,
-            response: item.response,
-            matched_example: example,
-            all_examples: item.examples,
-          };
-        }
-      }
-    }
-
-    if (item.response) {
-      const phrases = extractPhrasesFromResponse(item.response);
-      for (const phrase of phrases) {
-        const p = normalize(phrase);
-        if (p && (msg.includes(p) || p.includes(msg))) {
-          console.log(`🎯 Match en response: "${item.intent}" → "${phrase}"`);
-          return {
-            intent: item.intent,
-            response: item.response,
-            matched_example: phrase,
-            all_examples: item.examples || [],
-          };
-        }
+          ex.includes(msg.substring(0, 10))) {
+        console.log(`🎯 Match de entrenamiento: "${item.intent}" → "${example}"`);
+        return {
+          intent: item.intent,
+          response: item.response,
+          matched_example: example,
+          all_examples: item.examples
+        };
       }
     }
   }
@@ -376,7 +80,7 @@ function findMatchingTraining(trainingItems: any[], message: string) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 🔥 MODIFICADO: CONSTRUIR CONTEXTO DE ENTRENAMIENTO
+// CONSTRUIR CONTEXTO DE ENTRENAMIENTO PARA GEMINI
 // ═══════════════════════════════════════════════════════════
 
 function buildTrainingContext(trainingItems: any[]) {
@@ -385,39 +89,25 @@ function buildTrainingContext(trainingItems: any[]) {
   }
 
   let context = "\n\n## 📚 ENTRENAMIENTO DEL NEGOCIO:\n";
-  context +=
-    "Estos son los conocimientos específicos que el dueño ha entrenado:\n\n";
+  context += "Estos son los conocimientos específicos que el dueño ha entrenado:\n\n";
 
   for (const item of trainingItems) {
+    const examplesList = item.examples?.map((ex: string) => `  • "${ex}"`).join("\n") || "";
     context += `### ${item.intent}\n`;
     context += `**Respuesta:** ${item.response}\n`;
-
-    if (item.examples && item.examples.length > 0) {
-      const examplesList = item.examples
-        .map((ex: string) => `  • "${ex}"`)
-        .join("\n");
-      context += `**Frases clave:**\n${examplesList}\n\n`;
-    } else {
-      const phrases = extractPhrasesFromResponse(item.response);
-      if (phrases.length > 0) {
-        context += `**Frases clave (extraídas del entrenamiento):**\n`;
-        for (const phrase of phrases) {
-          context += `  • "${phrase}"\n`;
-        }
-        context += "\n";
-      }
-    }
+    context += `**Frases clave:**\n${examplesList}\n\n`;
   }
 
-  context +=
-    "⚠️ **IMPORTANTE:** Cuando un cliente use una frase similar a las frases clave, " +
-    "DEBES usar la respuesta de entrenamiento correspondiente.\n\n";
+  context += "⚠️ **IMPORTANTE:** Cuando un cliente use una frase similar a las frases clave, " +
+             "DEBES usar la respuesta de entrenamiento correspondiente.\n\n";
 
   return context;
 }
 
 // ═══════════════════════════════════════════════════════════
-// FUNCIONES EXISTENTES (sin cambios)
+// EL RESTO DEL CÓDIGO (getPriceLines, extractProductNameFromLine, 
+// detectProduct, isPriceIntent, isBuyIntent, extractData, 
+// mergeOrderData, PRODUCT_PRICES, calculateCorrectTotal, etc.)
 // ═══════════════════════════════════════════════════════════
 
 function getPriceLines(training: string): string[] {
@@ -428,29 +118,12 @@ function getPriceLines(training: string): string[] {
 }
 
 function extractProductNameFromLine(line: string): string {
-  const c = line
-    .replace(/^[-•\s]+/, "")
-    .replace(/[💙🦶🎯💰🔥✨]/g, "")
-    .trim();
+  const c = line.replace(/^[-•\s]+/, "").replace(/[💙🦶🎯💰🔥✨]/g, "").trim();
   const parts = c.split(/—|-{2,}|–/);
   return clean(parts[0] || c);
 }
 
-// ═══════════════════════════════════════════════════════════
-// 🔥 MODIFICADO: detectProduct usa el catálogo del usuario
-// ═══════════════════════════════════════════════════════════
-
-function detectProduct(
-  text: string,
-  training: string,
-  prev?: string,
-  catalog?: Array<{ name: string; price: number }>
-) {
-  if (catalog && catalog.length > 0) {
-    const result = detectProductFromCatalog(text, catalog);
-    if (result) return result;
-  }
-
+function detectProduct(text: string, training: string, prev?: string) {
   const msg = normalize(text);
   const lines = getPriceLines(training);
   let best = "";
@@ -496,7 +169,7 @@ function extractData(msg: string) {
   const text = clean(msg);
   const norm = normalize(text);
   const phone = text.match(/(?:09\d{8}|\+595\d{9})/)?.[0] || "";
-
+  
   let quantity = 0;
 
   const q1 = norm.match(/\b(\d+)\s*(unidad|unidades|u)\b/);
@@ -534,7 +207,7 @@ function extractData(msg: string) {
     "presidente franco": "Presidente Franco",
     "pte franco": "Presidente Franco",
     aregua: "Areguá",
-    areguá: "Areguá",
+    "areguá": "Areguá",
   };
 
   let city = "";
@@ -546,18 +219,14 @@ function extractData(msg: string) {
   }
 
   const address =
-    text.match(
-      /(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i
-    )?.[1] || "";
+    text.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1] ||
+    "";
 
   let name = "";
-  const nameMatch = text.match(
-    /(?:soy|me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i
-  )?.[1];
+  const nameMatch =
+    text.match(/(?:soy|me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{3,60})/i)?.[1];
   if (nameMatch) {
-    name = clean(nameMatch)
-      .replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "")
-      .trim();
+    name = clean(nameMatch).replace(/de\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/i, "").trim();
   } else if (
     /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,60}$/.test(text) &&
     !city &&
@@ -605,80 +274,59 @@ const PRODUCT_PRICES: Record<string, number> = {
 
 function calculateCorrectTotal(productName: string, quantity: number): string {
   const matchedKey = Object.keys(PRODUCT_PRICES).find(
-    (key) =>
-      key.toLowerCase() === productName.toLowerCase() ||
-      productName.toLowerCase().includes(key.toLowerCase()) ||
-      key.toLowerCase().includes(productName.toLowerCase())
+    key => key.toLowerCase() === productName.toLowerCase() ||
+           productName.toLowerCase().includes(key.toLowerCase()) ||
+           key.toLowerCase().includes(productName.toLowerCase())
   );
   const unitPrice = matchedKey ? PRODUCT_PRICES[matchedKey] : 0;
   const correctTotal = unitPrice * quantity;
-  return correctTotal.toLocaleString("es-ES");
+  return correctTotal.toLocaleString('es-ES');
 }
 
 function getUnitPrice(productName: string): number {
   const matchedKey = Object.keys(PRODUCT_PRICES).find(
-    (key) =>
-      key.toLowerCase() === productName.toLowerCase() ||
-      productName.toLowerCase().includes(key.toLowerCase()) ||
-      key.toLowerCase().includes(productName.toLowerCase())
+    key => key.toLowerCase() === productName.toLowerCase() ||
+           productName.toLowerCase().includes(key.toLowerCase()) ||
+           key.toLowerCase().includes(productName.toLowerCase())
   );
   return matchedKey ? PRODUCT_PRICES[matchedKey] : 0;
 }
 
-function fixQuantityAndTotal(
-  response: string,
-  expectedQty: number,
-  productName: string
-): string {
+function fixQuantityAndTotal(response: string, expectedQty: number, productName: string): string {
   let fixed = response;
   const correctTotal = calculateCorrectTotal(productName, expectedQty);
-
+  
   const quantityPatterns = [
     { pattern: /Cantidad:\s*11\b/gi, replacement: `Cantidad: ${expectedQty}` },
-    {
-      pattern: /cantidad:\s*11\b/gi,
-      replacement: `cantidad: ${expectedQty}`,
-    },
-    {
-      pattern: /\b11\s*(unidad|unidades)\b/gi,
-      replacement: `${expectedQty} ${
-        expectedQty === 1 ? "unidad" : "unidades"
-      }`,
-    },
+    { pattern: /cantidad:\s*11\b/gi, replacement: `cantidad: ${expectedQty}` },
+    { pattern: /\b11\s*(unidad|unidades)\b/gi, replacement: `${expectedQty} ${expectedQty === 1 ? 'unidad' : 'unidades'}` },
   ];
-
+  
   for (const { pattern, replacement } of quantityPatterns) {
     if (pattern.test(fixed)) {
       fixed = fixed.replace(pattern, replacement);
     }
   }
-
+  
   const totalPattern = /Total:\s*[\d\.\,]+\s*Gs/gi;
   const currentTotalMatch = fixed.match(totalPattern);
   if (currentTotalMatch && !currentTotalMatch[0].includes(correctTotal)) {
     fixed = fixed.replace(totalPattern, `💰 Total: ${correctTotal} Gs`);
   }
-
-  if (
-    fixed.includes("11") &&
-    (fixed.includes("Cantidad") || fixed.includes("cantidad"))
-  ) {
+  
+  if (fixed.includes("11") && (fixed.includes("Cantidad") || fixed.includes("cantidad"))) {
     fixed = fixed.replace(/\b11\b/g, String(expectedQty));
   }
-
+  
   return fixed;
 }
 
-function injectCorrectTotal(
-  response: string,
-  productName: string,
-  quantity: number
-): string {
+function injectCorrectTotal(response: string, productName: string, quantity: number): string {
   const unitPrice = getUnitPrice(productName);
   if (!unitPrice) return response;
   const correctTotal = unitPrice * quantity;
-  const formattedTotal = correctTotal.toLocaleString("es-ES");
-
+  const formattedTotal = correctTotal.toLocaleString('es-ES');
+  
   let fixed = response;
   const totalPattern = /(?:💰\s*)?Total:\s*[\d\.\,]+\s*Gs/gi;
   if (totalPattern.test(fixed)) {
@@ -941,7 +589,7 @@ async function transcribeAudioWithGemini({
 }
 
 // ═══════════════════════════════════════════════════════════
-// HANDLER PRINCIPAL — CORREGIDO
+// HANDLER PRINCIPAL
 // ═══════════════════════════════════════════════════════════
 
 export default async function handler(req: any, res: any) {
@@ -996,16 +644,13 @@ export default async function handler(req: any, res: any) {
     // ─── 2. OBTENER TODOS LOS ENTRENAMIENTOS DEL USUARIO ───
     const allTraining = await getAllTrainingData(user_id);
 
-    // ─── 🔥 NUEVO: OBTENER CATÁLOGO DEL USUARIO ───
-    const userCatalog = getUserCatalog(allTraining);
-    console.log(`📦 Catálogo del usuario: ${userCatalog.length} productos`);
-
     // ─── 3. BUSCAR COINCIDENCIA DIRECTA EN ENTRENAMIENTOS ───
     let trainingMatch = null;
     if (texto && allTraining.length > 0) {
       trainingMatch = findMatchingTraining(allTraining, texto);
       if (trainingMatch) {
         console.log(`🎯 Match directo: "${trainingMatch.intent}"`);
+        // Si hay match directo, responder con el entrenamiento sin llamar a Gemini
         return res.json({
           response: trainingMatch.response,
           context: {
@@ -1022,9 +667,10 @@ export default async function handler(req: any, res: any) {
 
     // ─── 4. CONSTRUIR CONTEXTO DE ENTRENAMIENTO PARA GEMINI ───
     const trainingContext = buildTrainingContext(allTraining);
-
+    
+    // También usar el texto combinado de todos los entrenamientos para detección de productos
     const combinedTraining = allTraining
-      .map((t) => `${t.intent}\n${t.response}`)
+      .map(t => `${t.intent}\n${t.response}`)
       .join("\n---\n");
 
     const apiKey = iaConfig.api_key;
@@ -1097,39 +743,32 @@ export default async function handler(req: any, res: any) {
 
     if (!texto) texto = "(mensaje sin texto)";
 
-    // ─── FLUJO DE VENTA NORMAL ───
+    // ─── FLUJO DE VENTA NORMAL (usando entrenamiento combinado) ───
     const oldOrder = context?.order_data || {};
-
-    // ─── 🔥 NUEVO: DETECTAR PRODUCTO USANDO EL CATÁLOGO DEL USUARIO ───
     const product = detectProduct(
       texto,
       combinedTraining,
-      context?.current_product || oldOrder?.product,
-      userCatalog
+      context?.current_product || oldOrder?.product
     );
 
     const extracted = extractData(texto);
     const orderData = mergeOrderData(oldOrder, extracted, product);
-
+    
     const wantsToBuy = isBuyIntent(texto);
     const asksPrice = isPriceIntent(texto);
-
+    
     let step = nextStep(orderData);
-
+    
     if (wantsToBuy && orderData.product && !orderData.city) {
       step = "collecting_city";
       console.log("📍 Forzando pregunta de ciudad");
     }
-
-    if (
-      orderData.product &&
-      !orderData.city &&
-      (wantsToBuy || texto.includes("quiero") || texto.includes("compro"))
-    ) {
+    
+    if (orderData.product && !orderData.city && (wantsToBuy || texto.includes("quiero") || texto.includes("compro"))) {
       step = "collecting_city";
       console.log("📍 Forzando pregunta de ciudad (cliente dijo quiero)");
     }
-
+    
     const cityDetectionPatterns = [
       { pattern: /asuncion\s+es/i, city: "Asunción" },
       { pattern: /san\s+lorenzo\s+es/i, city: "San Lorenzo" },
@@ -1139,7 +778,7 @@ export default async function handler(req: any, res: any) {
       { pattern: /^asuncion$/i, city: "Asunción" },
       { pattern: /^luque$/i, city: "Luque" },
     ];
-
+    
     for (const { pattern, city: detectedCity } of cityDetectionPatterns) {
       if (pattern.test(texto.trim()) && !orderData.city) {
         orderData.city = detectedCity;
@@ -1148,7 +787,7 @@ export default async function handler(req: any, res: any) {
         break;
       }
     }
-
+    
     const hasOrderData =
       !!extracted.quantity ||
       !!extracted.city ||
@@ -1158,10 +797,7 @@ export default async function handler(req: any, res: any) {
 
     const shouldCollect =
       !!orderData.product &&
-      (wantsToBuy ||
-        hasOrderData ||
-        context?.step?.startsWith("collecting") ||
-        step === "collecting_city");
+      (wantsToBuy || hasOrderData || context?.step?.startsWith("collecting") || step === "collecting_city");
 
     const isConfirming = step === "confirm_order" && wantsToBuy;
 
@@ -1200,9 +836,7 @@ ESTADO ACTUAL DEL CLIENTE:
 - Teléfono: ${orderData.phone || "pendiente"}
 - Dirección: ${orderData.address || "pendiente"}
 - Paso: ${step}
-- Intención: ${
-      wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"
-    }
+- Intención: ${wantsToBuy ? "QUIERE COMPRAR" : asksPrice ? "PREGUNTA PRECIO" : "CONSULTA"}
 
 ⚠️ MUY IMPORTANTE:
 - Si el cliente quiere comprar y falta ciudad → preguntá "📍 ¿Para qué ciudad sería el envío?"
@@ -1241,11 +875,7 @@ ESTADO ACTUAL DEL CLIENTE:
     }
 
     // ─── CORRECCIÓN FORZADA DE CANTIDAD Y TOTAL ───
-    response = fixQuantityAndTotal(
-      response,
-      orderData.quantity,
-      orderData.product
-    );
+    response = fixQuantityAndTotal(response, orderData.quantity, orderData.product);
     response = injectCorrectTotal(response, orderData.product, orderData.quantity);
     console.log("📝 Respuesta después de corrección:", response.substring(0, 300));
 
