@@ -108,6 +108,7 @@ function formatMessageDate(date: Date) {
   return format(date, "yyyy-MM-dd");
 }
 
+// Convierte hex → rgba con opacidad para fondos suaves
 function hexToRgba(hex: string, alpha: number) {
   const h = hex.replace("#", "");
   const bigint = parseInt(h.length === 3 ? h.split("").map(c => c + c).join("") : h, 16);
@@ -143,139 +144,10 @@ export default function InboxPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
 
+  // Helper: obtener color de una etiqueta por nombre
   const getTagColor = (name?: string) => {
     if (!name) return "#64748B";
     return allTags.find(t => t.name === name)?.color || "#64748B";
-  };
-
-  // ============================================================
-  // 📅 CARGA DE MENSAJES - ÚLTIMOS 30 DÍAS POR DEFECTO
-  // ============================================================
-  const loadMessages = async (customDate?: Date) => {
-    if (!user) {
-      setDbMessages([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-
-    try {
-      let query = supabase
-        .from("received_messages")
-        .select("*")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false });
-
-      if (customDate) {
-        const startOfDay = new Date(customDate);
-        startOfDay.setHours(0, 0, 0, 0);
-        
-        const endOfDay = new Date(customDate);
-        endOfDay.setHours(23, 59, 59, 999);
-        
-        query = query
-          .gte("created_at", startOfDay.toISOString())
-          .lte("created_at", endOfDay.toISOString());
-      } else {
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        query = query.gte("created_at", thirtyDaysAgo.toISOString());
-      }
-
-      const { data, error } = await query.limit(5000);
-
-      if (error) {
-        console.error("Error cargando mensajes:", error);
-        setDbMessages([]);
-        setLoading(false);
-        return;
-      }
-
-      const ordered = (data || []).sort((a, b) => {
-        const da = new Date(a.created_at || 0).getTime();
-        const db = new Date(b.created_at || 0).getTime();
-        return da - db;
-      });
-
-      setDbMessages(ordered);
-      
-      const count = ordered.length;
-      const period = customDate 
-        ? `del día ${format(customDate, "dd/MM/yyyy")}`
-        : "de los últimos 30 días";
-      
-      console.log(`✅ Cargados ${count} mensajes ${period}`);
-      
-    } catch (err) {
-      console.error("Error cargando mensajes:", err);
-      toast({
-        title: "Error al cargar mensajes",
-        description: "Hubo un problema al cargar los mensajes. Intenta de nuevo.",
-        variant: "destructive",
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // ============================================================
-  // 📚 CARGA TODOS LOS MENSAJES (SIN LÍMITE DE FECHA)
-  // ============================================================
-  const loadAllMessages = async () => {
-    if (!user) {
-      setDbMessages([]);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-
-    const PAGE_SIZE = 1000;
-    let allMessages: DbMessage[] = [];
-    let from = 0;
-    let keepGoing = true;
-
-    try {
-      while (keepGoing) {
-        const { data, error } = await supabase
-          .from("received_messages")
-          .select("*")
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false })
-          .range(from, from + PAGE_SIZE - 1);
-
-        if (error) {
-          console.error("Error cargando mensajes:", error);
-          keepGoing = false;
-          break;
-        }
-
-        const batch = (data || []) as DbMessage[];
-        allMessages = allMessages.concat(batch);
-
-        if (batch.length < PAGE_SIZE) {
-          keepGoing = false;
-        } else {
-          from += PAGE_SIZE;
-        }
-      }
-    } catch (err) {
-      console.error("Error cargando mensajes:", err);
-    }
-
-    const ordered = allMessages.sort((a, b) => {
-      const da = new Date(a.created_at || 0).getTime();
-      const db = new Date(b.created_at || 0).getTime();
-      return da - db;
-    });
-
-    setDbMessages(ordered);
-    setLoading(false);
-    setFilterDate(undefined);
-    
-    toast({
-      title: "📚 Todos los mensajes",
-      description: `Cargados ${ordered.length} mensajes completos.`,
-    });
   };
 
   const loadAllTags = async () => {
@@ -313,89 +185,6 @@ export default function InboxPage() {
     setConvoTagsMap(cmap);
   };
 
-  // ============================================================
-  // 🚀 CARGA INICIAL PARALELA
-  // ============================================================
-  useEffect(() => {
-    const loadInitialData = async () => {
-      if (!user) return;
-      
-      try {
-        await Promise.all([
-          loadMessages(),
-          loadAllTags(),
-          loadAssignments(),
-        ]);
-      } catch (error) {
-        console.error("Error en carga inicial:", error);
-      }
-    };
-
-    loadInitialData();
-  }, [user]);
-
-  // ============================================================
-  // 🔄 REALTIME OPTIMIZADO - SOLO AGREGA NUEVOS MENSAJES
-  // ============================================================
-  useEffect(() => {
-    if (!user) return;
-
-    const channel = supabase
-      .channel("received_messages_realtime_inbox_pro")
-      .on("postgres_changes",
-        { 
-          event: "INSERT", 
-          schema: "public", 
-          table: "received_messages",
-          filter: `user_id=eq.${user.id}`
-        },
-        (payload) => {
-          const newMsg = payload.new as DbMessage;
-          setDbMessages(prev => {
-            if (prev.some(m => m.id === newMsg.id)) return prev;
-            
-            // Verificar si el mensaje está dentro del rango actual
-            const msgDate = new Date(newMsg.created_at || 0);
-            
-            if (filterDate) {
-              const filterDateStart = new Date(filterDate);
-              filterDateStart.setHours(0, 0, 0, 0);
-              const filterDateEnd = new Date(filterDate);
-              filterDateEnd.setHours(23, 59, 59, 999);
-              
-              if (msgDate < filterDateStart || msgDate > filterDateEnd) {
-                return prev;
-              }
-            } else {
-              const thirtyDaysAgo = new Date();
-              thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-              if (msgDate < thirtyDaysAgo) return prev;
-            }
-            
-            const updated = [...prev, newMsg];
-            return updated.sort((a, b) => {
-              const da = new Date(a.created_at || 0).getTime();
-              const db = new Date(b.created_at || 0).getTime();
-              return da - db;
-            });
-          });
-          
-          if (selectedChatNumber === newMsg.from_number && !isOutgoingType(newMsg.message_type)) {
-            supabase
-              .from("received_messages")
-              .update({ is_processed: true })
-              .eq("id", newMsg.id);
-          }
-        }
-      )
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
-  }, [user, filterDate, selectedChatNumber]);
-
-  // ============================================================
-  // 🎯 LOAD TEMPLATES
-  // ============================================================
   useEffect(() => {
     const loadTemplates = async () => {
       if (!user) return;
@@ -413,6 +202,8 @@ export default function InboxPage() {
       setAvailableTemplates((data || []) as FullTemplate[]);
     };
     loadTemplates();
+    loadAllTags();
+    loadAssignments();
   }, [user]);
 
   useEffect(() => {
@@ -463,6 +254,76 @@ export default function InboxPage() {
     setMessageInput(prev => prev + emoji);
     setShowEmojis(false);
   };
+
+  // ============================================================
+  // 🔧 FUNCIÓN CORREGIDA - TRAE EL 100% DE LOS MENSAJES SIN LÍMITE
+  // Pagina en bloques con .range() hasta que ya no queden más filas,
+  // sin depender de .limit() ni del Max Rows configurado en Supabase.
+  // ============================================================
+  const loadMessages = async () => {
+    if (!user) {
+      setDbMessages([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+
+    const PAGE_SIZE = 1000;
+    let allMessages: DbMessage[] = [];
+    let from = 0;
+    let keepGoing = true;
+
+    try {
+      while (keepGoing) {
+        const { data, error } = await supabase
+          .from("received_messages")
+          .select("*")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
+
+        if (error) {
+          console.error("Error cargando mensajes:", error);
+          keepGoing = false;
+          break;
+        }
+
+        const batch = (data || []) as DbMessage[];
+        allMessages = allMessages.concat(batch);
+
+        // Si el bloque devuelto es más chico que PAGE_SIZE, ya no hay más datos
+        if (batch.length < PAGE_SIZE) {
+          keepGoing = false;
+        } else {
+          from += PAGE_SIZE;
+        }
+      }
+    } catch (err) {
+      console.error("Error cargando mensajes:", err);
+    }
+
+    const ordered = allMessages.sort((a, b) => {
+      const da = new Date(a.created_at || 0).getTime();
+      const db = new Date(b.created_at || 0).getTime();
+      return da - db;
+    });
+
+    setDbMessages(ordered);
+    setLoading(false);
+  };
+  // ============================================================
+
+  useEffect(() => {
+    loadMessages();
+    const channel = supabase
+      .channel("received_messages_realtime_inbox_pro")
+      .on("postgres_changes",
+        { event: "*", schema: "public", table: "received_messages" },
+        () => { loadMessages(); }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [user]);
 
   const chatSearchIndex = useMemo(() => {
     const idx = new Map<string, string>();
@@ -611,13 +472,12 @@ export default function InboxPage() {
   const clearFilters = () => {
     setFilterTag(null);
     setFilterDate(undefined);
-    loadMessages(); // Vuelve a últimos 30 días
   };
 
   const hasActiveFilters = !!(filterTag || filterDate);
 
   // ============================================================
-  // 📤 ENVÍO DE MENSAJES
+  // 🔧 FUNCIÓN CORREGIDA - NO BLOQUEA SI NO HAY tenant_id
   // ============================================================
   const handleSendMessage = async () => {
     if (!selectedNumber) {
@@ -638,6 +498,7 @@ export default function InboxPage() {
     try {
       setSending(true);
 
+      // ✅ Obtener perfil sin romper si no existe tenant_id
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("tenant_id, connection_type")
@@ -669,6 +530,7 @@ export default function InboxPage() {
         mediaType = selectedTemplateMedia.type;
       }
 
+      // ✅ Payload flexible: manda tenant_id si existe, pero NO bloquea si está vacío
       const payload: any = {
         user_id: user.id,
         tenant_id: profile?.tenant_id ?? null,
@@ -709,7 +571,7 @@ export default function InboxPage() {
       setMessageInput("");
       setSelectedFile(null);
       setSelectedTemplateMedia(null);
-      await loadMessages(filterDate);
+      await loadMessages();
 
       toast({ title: "✅ Mensaje enviado", description: "La respuesta se envió correctamente por WhatsApp." });
     } catch (error: any) {
@@ -719,6 +581,7 @@ export default function InboxPage() {
       setSending(false);
     }
   };
+  // ============================================================
 
   const handlePauseAI = async () => {
     if (!selectedNumber) return;
@@ -750,7 +613,7 @@ export default function InboxPage() {
     const { error } = await supabase.from("received_messages").delete().eq("from_number", selectedNumber);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     toast({ title: "🗑️ Conversación eliminada" });
-    await loadMessages(filterDate);
+    await loadMessages();
     setSelectedChatNumber(null);
   };
 
@@ -760,7 +623,7 @@ export default function InboxPage() {
     const { error } = await supabase.from("received_messages").delete().eq("from_number", selectedNumber);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     toast({ title: "🧹 Chat limpiado" });
-    await loadMessages(filterDate);
+    await loadMessages();
   };
 
   const assignTagToContact = async (contactId: string, tagName: string) => {
@@ -843,14 +706,9 @@ export default function InboxPage() {
             <h1 className="text-lg font-semibold">Inbox Profesional</h1>
             <p className="text-xs text-muted-foreground">WhatsApp Business integrado</p>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-secondary/50 text-muted-foreground">
-              {filterDate ? format(filterDate, "dd/MM/yyyy") : "Últimos 30 días"}
-            </span>
-            <span className="text-[11px] px-2.5 py-1 rounded-full bg-success/10 text-success border border-success/20">
-              {filteredChats.length} activos
-            </span>
-          </div>
+          <span className="text-[11px] px-2.5 py-1 rounded-full bg-success/10 text-success border border-success/20">
+            {filteredChats.length} activos
+          </span>
         </div>
 
         <div className="flex flex-1 overflow-hidden min-h-0">
@@ -862,9 +720,6 @@ export default function InboxPage() {
               <div className="flex-1">
                 <div className="text-sm font-medium">
                   {selectedChatData?.number || "Sin chat seleccionado"}
-                </div>
-                <div className="text-[10px] text-muted-foreground">
-                  {currentMessages.length} mensajes • {filterDate ? format(filterDate, "dd/MM/yyyy") : "Últimos 30 días"}
                 </div>
               </div>
               <div className="flex items-center gap-1">
@@ -907,17 +762,9 @@ export default function InboxPage() {
 
             <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-4 space-y-3">
               {loading ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-sm text-muted-foreground">Cargando mensajes...</div>
-                </div>
+                <p className="text-sm text-muted-foreground text-center">Cargando mensajes...</p>
               ) : currentMessages.length === 0 ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-sm text-muted-foreground text-center">
-                    {filterDate 
-                      ? `No hay mensajes para el ${format(filterDate, "dd/MM/yyyy")}`
-                      : "No hay mensajes en los últimos 30 días"}
-                  </div>
-                </div>
+                <p className="text-sm text-muted-foreground text-center">No hay mensajes para este chat.</p>
               ) : (
                 currentMessages.map((msg, idx) => {
                   const prevDate = idx > 0 ? currentMessages[idx - 1].date : null;
@@ -1114,47 +961,11 @@ export default function InboxPage() {
                         <Popover>
                           <PopoverTrigger asChild>
                             <button className="w-full text-[11px] px-3 py-1.5 rounded-lg bg-secondary/40 border border-border/40 text-left text-muted-foreground hover:bg-secondary/60">
-                              {filterDate 
-                                ? format(filterDate, "d 'de' MMMM yyyy", { locale: es }) 
-                                : "Últimos 30 días"}
+                              {filterDate ? format(filterDate, "d 'de' MMMM yyyy", { locale: es }) : "Seleccionar fecha..."}
                             </button>
                           </PopoverTrigger>
                           <PopoverContent className="w-auto p-0" align="start">
-                            <Calendar 
-                              mode="single" 
-                              selected={filterDate} 
-                              onSelect={(date) => {
-                                setFilterDate(date);
-                                if (date) {
-                                  loadMessages(date);
-                                  setShowFilters(false);
-                                } else {
-                                  loadMessages();
-                                }
-                              }} 
-                              initialFocus 
-                            />
-                            <div className="p-2 border-t border-border/30 flex gap-2">
-                              <button 
-                                onClick={() => {
-                                  setFilterDate(undefined);
-                                  loadMessages();
-                                  setShowFilters(false);
-                                }}
-                                className="flex-1 text-[10px] py-1.5 rounded-lg bg-secondary/40 hover:bg-secondary/60"
-                              >
-                                Últimos 30 días
-                              </button>
-                              <button 
-                                onClick={() => {
-                                  loadAllMessages();
-                                  setShowFilters(false);
-                                }}
-                                className="flex-1 text-[10px] py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20"
-                              >
-                                Ver todos
-                              </button>
-                            </div>
+                            <Calendar mode="single" selected={filterDate} onSelect={setFilterDate} initialFocus />
                           </PopoverContent>
                         </Popover>
                       </div>
