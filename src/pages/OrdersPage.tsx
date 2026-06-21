@@ -1,5 +1,6 @@
 // ORDERS PAGE - DASHBOARD OSCURO CORPORATIVO
-// ESTILO DATA CENTER CON COLORES VIBRANTES SOBRE FONDO OSCURO
+// CON MÉTRICAS CON DECIMALES, CONFIRMADOS EN VEZ DE PENDIENTES
+// FILTRO POR DEFECTO EN CONFIRMADOS
 
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
@@ -32,11 +33,7 @@ import {
   TrendingUp,
   TrendingDown,
   AlertCircle,
-  BarChart3,
   PieChart as PieChartIcon,
-  Filter,
-  Eye,
-  EyeOff,
 } from "lucide-react";
 
 import {
@@ -167,14 +164,13 @@ const STATUS_CONFIG: Record<
 
 const FILTERS = [
   { id: "all", label: "Todos", icon: Package, count: "total" },
-  { id: "pendientes", label: "Pendientes", icon: Clock, count: "pendientes" },
   { id: "confirmados", label: "Confirmados", icon: Check, count: "confirmados" },
   { id: "cargados", label: "Cargados", icon: Package, count: "cargados" },
   { id: "droppx", label: "Droppx", icon: Truck, count: "droppx" },
   { id: "cancelados", label: "Cancelados", icon: XCircle, count: "cancelados" },
 ];
 
-const CHART_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899"];
+const CHART_COLORS = ["#10b981", "#3b82f6", "#8b5cf6", "#ef4444", "#f59e0b", "#ec4899"];
 
 // Ciudades para el top
 const TOP_CITIES = ["Asunción", "Ciudad del Este", "Pedro Juan Caballero", "Luque", "San Lorenzo"];
@@ -184,7 +180,7 @@ function formatCurrency(value: string | number | null | undefined) {
   const cleanValue = typeof value === "string" ? value.replace(/\./g, "").replace(",", ".") : value;
   const num = typeof cleanValue === "string" ? Number(cleanValue) : cleanValue;
   if (isNaN(num)) return "0";
-  return Math.round(num).toLocaleString("es-PY", { maximumFractionDigits: 0 });
+  return Math.round(num).toLocaleString("es-PY", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 }
 
 function formatDate(dateString: string) {
@@ -232,7 +228,8 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [activeFilter, setActiveFilter] = useState("all");
+  // FILTRO POR DEFECTO EN CONFIRMADOS
+  const [activeFilter, setActiveFilter] = useState("confirmados");
   const [dateFilter, setDateFilter] = useState("all");
   const [userId, setUserId] = useState<string | null>(null);
   const [selectedCity, setSelectedCity] = useState<string>("all");
@@ -381,7 +378,6 @@ export default function OrdersPage() {
   // Estadísticas
   const stats = {
     total: orders.length,
-    pendientes: orders.filter((o) => normalizeStatus(o.status) === "pendiente").length,
     confirmados: orders.filter((o) => normalizeStatus(o.status) === "confirmado").length,
     cargados: orders.filter((o) => normalizeStatus(o.status) === "cargado").length,
     cancelados: orders.filter((o) => normalizeStatus(o.status) === "cancelado").length,
@@ -406,9 +402,8 @@ export default function OrdersPage() {
   const pieData = [
     { name: "Confirmados", value: stats.confirmados, color: CHART_COLORS[0] },
     { name: "Cargados", value: stats.cargados, color: CHART_COLORS[1] },
-    { name: "Pendientes", value: stats.pendientes, color: CHART_COLORS[2] },
+    { name: "Droppx", value: stats.droppx, color: CHART_COLORS[2] },
     { name: "Cancelados", value: stats.cancelados, color: CHART_COLORS[3] },
-    { name: "Droppx", value: stats.droppx, color: CHART_COLORS[4] },
   ].filter(item => item.value > 0);
 
   // Datos de ciudades
@@ -427,7 +422,7 @@ export default function OrdersPage() {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5);
 
-  // Tasa de cobertura (ejemplo)
+  // Tasa de cobertura
   const tasaCobertura = stats.total > 0 ? Math.round((stats.cargados / stats.total) * 100) : 0;
 
   const filteredOrders = orders.filter((order) => {
@@ -444,7 +439,6 @@ export default function OrdersPage() {
 
     const matchesFilter =
       activeFilter === "all" ||
-      (activeFilter === "pendientes" && status === "pendiente") ||
       (activeFilter === "confirmados" && status === "confirmado") ||
       (activeFilter === "cargados" && status === "cargado") ||
       (activeFilter === "cancelados" && status === "cancelado") ||
@@ -477,8 +471,8 @@ export default function OrdersPage() {
           </div>
         </div>
 
-        {/* MÉTRICAS PRINCIPALES */}
-        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        {/* MÉTRICAS PRINCIPALES - CON DECIMALES */}
+        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <MetricCard
             title="VENTAS"
             value={`${formatCurrency(stats.ingresosCargados)} Gs`}
@@ -496,17 +490,9 @@ export default function OrdersPage() {
             borderColor="border-purple-500/20"
           />
           <MetricCard
-            title="PENDIENTES"
-            value={stats.pendientes}
-            subtitle={`0 × ${stats.pendientes}`}
-            color="#f59e0b"
-            bgColor="bg-amber-500/10"
-            borderColor="border-amber-500/20"
-          />
-          <MetricCard
-            title="CARGADOS"
-            value={stats.cargados}
-            subtitle={`Taxa ${tasaCobertura}%`}
+            title="CONFIRMADOS"
+            value={stats.confirmados}
+            subtitle={`${stats.total > 0 ? Math.round((stats.confirmados / stats.total) * 100) : 0}% del total`}
             color="#10b981"
             bgColor="bg-emerald-500/10"
             borderColor="border-emerald-500/20"
