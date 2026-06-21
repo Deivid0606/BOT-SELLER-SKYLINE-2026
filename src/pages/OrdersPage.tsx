@@ -1,5 +1,5 @@
-// ORDERS PAGE - DASHBOARD CORPORATIVO CON MÉTRICAS Y GRÁFICOS
-// ESTILO DATA CENTER CON COLORES VIBRANTES
+// ORDERS PAGE - DASHBOARD OSCURO CORPORATIVO
+// ESTILO DATA CENTER CON COLORES VIBRANTES SOBRE FONDO OSCURO
 
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
@@ -104,6 +104,7 @@ const STATUS_CONFIG: Record<
     bgColor: string;
     icon: any;
     borderColor: string;
+    glowColor: string;
   }
 > = {
   confirmado: {
@@ -112,6 +113,7 @@ const STATUS_CONFIG: Record<
     bgColor: "bg-emerald-500/10",
     icon: Check,
     borderColor: "border-emerald-500/30",
+    glowColor: "shadow-emerald-500/20",
   },
   confirmed: {
     label: "Confirmado",
@@ -119,6 +121,7 @@ const STATUS_CONFIG: Record<
     bgColor: "bg-emerald-500/10",
     icon: Check,
     borderColor: "border-emerald-500/30",
+    glowColor: "shadow-emerald-500/20",
   },
   pendiente: {
     label: "Pendiente",
@@ -126,6 +129,7 @@ const STATUS_CONFIG: Record<
     bgColor: "bg-amber-500/10",
     icon: Clock,
     borderColor: "border-amber-500/30",
+    glowColor: "shadow-amber-500/20",
   },
   pending: {
     label: "Pendiente",
@@ -133,6 +137,7 @@ const STATUS_CONFIG: Record<
     bgColor: "bg-amber-500/10",
     icon: Clock,
     borderColor: "border-amber-500/30",
+    glowColor: "shadow-amber-500/20",
   },
   cargado: {
     label: "Cargado",
@@ -140,6 +145,7 @@ const STATUS_CONFIG: Record<
     bgColor: "bg-blue-500/10",
     icon: Package,
     borderColor: "border-blue-500/30",
+    glowColor: "shadow-blue-500/20",
   },
   cancelado: {
     label: "Cancelado",
@@ -147,6 +153,7 @@ const STATUS_CONFIG: Record<
     bgColor: "bg-red-500/10",
     icon: XCircle,
     borderColor: "border-red-500/30",
+    glowColor: "shadow-red-500/20",
   },
   droppx: {
     label: "Droppx",
@@ -154,6 +161,7 @@ const STATUS_CONFIG: Record<
     bgColor: "bg-purple-500/10",
     icon: Truck,
     borderColor: "border-purple-500/30",
+    glowColor: "shadow-purple-500/20",
   },
 };
 
@@ -450,18 +458,18 @@ export default function OrdersPage() {
   });
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-[#0a0a0f]">
       <div className="mx-auto flex max-w-[1600px] flex-col px-4 py-6 sm:px-6 lg:px-8">
         
         {/* HEADER */}
         <div className="mb-6">
           <div className="flex flex-col items-start justify-between gap-4 md:flex-row md:items-center">
             <div>
-              <h1 className="text-2xl font-bold text-slate-900">Panel de Pedidos</h1>
-              <p className="text-sm text-slate-500">Gestión operativa de pedidos, pagos y despacho</p>
+              <h1 className="text-2xl font-bold text-white">Panel de Pedidos</h1>
+              <p className="text-sm text-zinc-400">Gestión operativa de pedidos, pagos y despacho</p>
             </div>
             <div className="flex items-center gap-3">
-              <Badge variant="outline" className="border-slate-200 bg-white text-slate-600">
+              <Badge variant="outline" className="border-zinc-700 bg-zinc-800/50 text-zinc-300">
                 <Clock className="mr-1 h-3 w-3" />
                 Actualizado: {new Date().toLocaleTimeString()}
               </Badge>
@@ -476,55 +484,61 @@ export default function OrdersPage() {
             value={`${formatCurrency(stats.ingresosCargados)} Gs`}
             subtitle="Total de pedidos cargados"
             color="#3b82f6"
-            bgColor="bg-blue-50"
+            bgColor="bg-blue-500/10"
+            borderColor="border-blue-500/20"
           />
           <MetricCard
             title="PEDIDOS"
             value={stats.total}
             subtitle={`${stats.cargados} visibles`}
             color="#8b5cf6"
-            bgColor="bg-purple-50"
+            bgColor="bg-purple-500/10"
+            borderColor="border-purple-500/20"
           />
           <MetricCard
             title="PENDIENTES"
             value={stats.pendientes}
             subtitle={`0 × ${stats.pendientes}`}
             color="#f59e0b"
-            bgColor="bg-amber-50"
+            bgColor="bg-amber-500/10"
+            borderColor="border-amber-500/20"
           />
           <MetricCard
             title="CARGADOS"
             value={stats.cargados}
             subtitle={`Taxa ${tasaCobertura}%`}
             color="#10b981"
-            bgColor="bg-emerald-50"
+            bgColor="bg-emerald-500/10"
+            borderColor="border-emerald-500/20"
           />
           <MetricCard
             title="COMISIÓN"
             value={`${formatCurrency(comision)} Gs`}
             subtitle={`Ticket promedio ${formatCurrency(ticketPromedio)} Gs`}
             color="#ec4899"
-            bgColor="bg-pink-50"
+            bgColor="bg-pink-500/10"
+            borderColor="border-pink-500/20"
           />
           <MetricCard
             title="CANCELADOS"
             value={stats.cancelados}
             subtitle={`Taxa ${stats.total > 0 ? Math.round((stats.cancelados / stats.total) * 100) : 0}%`}
             color="#ef4444"
-            bgColor="bg-red-50"
+            bgColor="bg-red-500/10"
+            borderColor="border-red-500/20"
           />
         </div>
 
         {/* GRÁFICOS Y DISTRIBUCIÓN */}
         <div className="mb-6 grid gap-4 lg:grid-cols-3">
           {/* Gráfico de torta */}
-          <Card className="border-slate-200 bg-white shadow-sm">
+          <Card className="border-zinc-800 bg-zinc-900/50 backdrop-blur-sm shadow-xl">
             <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                <PieChartIcon className="h-4 w-4 text-slate-400" />
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
+                <PieChartIcon className="h-4 w-4 text-zinc-500" />
                 Distribución de estados
               </CardTitle>
-              <p className="text-xs text-slate-400">Vista general del flujo.</p>
+              <p className="text-xs text-zinc-500">Vista general del flujo.</p>
             </CardHeader>
             <CardContent>
               <div className="h-[200px]">
@@ -541,29 +555,29 @@ export default function OrdersPage() {
                         dataKey="value"
                       >
                         {pieData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} stroke="#fff" strokeWidth={2} />
+                          <Cell key={`cell-${index}`} fill={entry.color} stroke="#1a1a2e" strokeWidth={2} />
                         ))}
                       </Pie>
                       <Tooltip
                         contentStyle={{
-                          backgroundColor: "#fff",
-                          border: "1px solid #e2e8f0",
+                          backgroundColor: "#1a1a2e",
+                          border: "1px solid #3f3f46",
                           borderRadius: "8px",
-                          boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)",
+                          color: "#fff",
                         }}
                       />
                     </PieChart>
                   </ResponsiveContainer>
                 ) : (
-                  <div className="flex h-full items-center justify-center text-slate-400">Sin datos</div>
+                  <div className="flex h-full items-center justify-center text-zinc-500">Sin datos</div>
                 )}
               </div>
               <div className="mt-2 flex flex-wrap justify-center gap-4">
                 {pieData.map((item) => (
                   <div key={item.name} className="flex items-center gap-1.5">
                     <div className="h-3 w-3 rounded-full" style={{ backgroundColor: item.color }} />
-                    <span className="text-xs text-slate-600">{item.name}</span>
-                    <span className="text-xs font-semibold text-slate-900">{item.value}</span>
+                    <span className="text-xs text-zinc-400">{item.name}</span>
+                    <span className="text-xs font-semibold text-white">{item.value}</span>
                   </div>
                 ))}
               </div>
@@ -571,22 +585,22 @@ export default function OrdersPage() {
           </Card>
 
           {/* Top Ciudades */}
-          <Card className="border-slate-200 bg-white shadow-sm">
+          <Card className="border-zinc-800 bg-zinc-900/50 backdrop-blur-sm shadow-xl">
             <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                <MapPin className="h-4 w-4 text-slate-400" />
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
+                <MapPin className="h-4 w-4 text-zinc-500" />
                 Top ciudades
               </CardTitle>
-              <p className="text-xs text-slate-400">Mayor volumen de pedidos.</p>
+              <p className="text-xs text-zinc-500">Mayor volumen de pedidos.</p>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
                 {cityData.map((city, index) => (
                   <div key={city.name} className="flex items-center gap-3">
-                    <span className="w-32 text-sm text-slate-600">{city.name}</span>
+                    <span className="w-32 text-sm text-zinc-400">{city.name}</span>
                     <div className="flex-1">
                       <div 
-                        className="h-2 rounded-full bg-blue-500/20"
+                        className="h-2 rounded-full bg-blue-500/10"
                         style={{ 
                           width: `${Math.max((city.value / Math.max(...cityData.map(c => c.value), 1)) * 100, 5)}%` 
                         }}
@@ -599,41 +613,41 @@ export default function OrdersPage() {
                         />
                       </div>
                     </div>
-                    <span className="w-8 text-right text-sm font-semibold text-slate-700">{city.value}</span>
+                    <span className="w-8 text-right text-sm font-semibold text-white">{city.value}</span>
                   </div>
                 ))}
               </div>
-              <Separator className="my-3" />
+              <Separator className="my-3 bg-zinc-800" />
               <div className="flex items-center justify-between">
-                <span className="text-sm text-slate-600">Tasa de cobertura</span>
-                <span className="text-sm font-bold text-slate-900">{tasaCobertura}%</span>
+                <span className="text-sm text-zinc-400">Tasa de cobertura</span>
+                <span className="text-sm font-bold text-white">{tasaCobertura}%</span>
               </div>
             </CardContent>
           </Card>
 
           {/* Top Productos */}
-          <Card className="border-slate-200 bg-white shadow-sm">
+          <Card className="border-zinc-800 bg-zinc-900/50 backdrop-blur-sm shadow-xl">
             <CardHeader className="pb-2">
-              <CardTitle className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                <Package className="h-4 w-4 text-slate-400" />
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
+                <Package className="h-4 w-4 text-zinc-500" />
                 Top productos
               </CardTitle>
-              <p className="text-xs text-slate-400">Más repetidos en el sheet.</p>
+              <p className="text-xs text-zinc-500">Más repetidos en el sheet.</p>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
                 {topProducts.length > 0 ? (
                   topProducts.map(([product, count], index) => (
                     <div key={product} className="flex items-center gap-3">
-                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-100 text-xs font-medium text-slate-600">
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-800 text-xs font-medium text-zinc-400">
                         {index + 1}
                       </span>
-                      <span className="flex-1 truncate text-sm text-slate-600">{product}</span>
-                      <span className="text-sm font-semibold text-slate-900">{count}</span>
+                      <span className="flex-1 truncate text-sm text-zinc-300">{product}</span>
+                      <span className="text-sm font-semibold text-white">{count}</span>
                     </div>
                   ))
                 ) : (
-                  <div className="py-8 text-center text-slate-400">Sin productos registrados</div>
+                  <div className="py-8 text-center text-zinc-500">Sin productos registrados</div>
                 )}
               </div>
             </CardContent>
@@ -642,8 +656,8 @@ export default function OrdersPage() {
 
         {/* FILTROS RÁPIDOS */}
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium text-slate-600">Todos ({stats.total})</span>
-          <span className="text-sm text-slate-400">•</span>
+          <span className="text-sm font-medium text-zinc-300">Todos ({stats.total})</span>
+          <span className="text-sm text-zinc-600">•</span>
           {FILTERS.map((filter) => {
             const count = stats[filter.count as keyof typeof stats] || 0;
             return (
@@ -655,7 +669,7 @@ export default function OrdersPage() {
                 className={`text-sm ${
                   activeFilter === filter.id
                     ? "bg-blue-600 text-white hover:bg-blue-700"
-                    : "text-slate-600 hover:bg-slate-100"
+                    : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
                 }`}
               >
                 {filter.label} ({count})
@@ -665,25 +679,25 @@ export default function OrdersPage() {
         </div>
 
         {/* FILTROS AVANZADOS */}
-        <Card className="mb-4 border-slate-200 bg-white shadow-sm">
+        <Card className="mb-4 border-zinc-800 bg-zinc-900/50 backdrop-blur-sm shadow-xl">
           <CardContent className="p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-1 flex-wrap items-center gap-3">
                 <div className="relative flex-1 min-w-[200px]">
-                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-zinc-500" />
                   <Input
                     placeholder="Buscar producto..."
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    className="border-slate-200 pl-9 text-sm focus:border-blue-500"
+                    className="border-zinc-700 bg-zinc-800/50 pl-9 text-sm text-white placeholder:text-zinc-500 focus:border-blue-500 focus:ring-blue-500"
                   />
                 </div>
                 <Select value={selectedCity} onValueChange={setSelectedCity}>
-                  <SelectTrigger className="w-[140px] border-slate-200 text-sm">
-                    <MapPin className="mr-2 h-4 w-4 text-slate-400" />
+                  <SelectTrigger className="w-[140px] border-zinc-700 bg-zinc-800/50 text-sm text-white">
+                    <MapPin className="mr-2 h-4 w-4 text-zinc-500" />
                     <SelectValue placeholder="Ciudad" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="border-zinc-700 bg-zinc-900">
                     <SelectItem value="all">Todas</SelectItem>
                     {TOP_CITIES.map(city => (
                       <SelectItem key={city} value={city}>{city}</SelectItem>
@@ -691,11 +705,11 @@ export default function OrdersPage() {
                   </SelectContent>
                 </Select>
                 <Select value={dateFilter} onValueChange={setDateFilter}>
-                  <SelectTrigger className="w-[130px] border-slate-200 text-sm">
-                    <Calendar className="mr-2 h-4 w-4 text-slate-400" />
+                  <SelectTrigger className="w-[130px] border-zinc-700 bg-zinc-800/50 text-sm text-white">
+                    <Calendar className="mr-2 h-4 w-4 text-zinc-500" />
                     <SelectValue placeholder="Fechas" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="border-zinc-700 bg-zinc-900">
                     <SelectItem value="all">Todo el tiempo</SelectItem>
                     <SelectItem value="today">Hoy</SelectItem>
                     <SelectItem value="week">Última semana</SelectItem>
@@ -708,7 +722,7 @@ export default function OrdersPage() {
                 size="icon"
                 onClick={loadOrders}
                 disabled={loading}
-                className="border-slate-200"
+                className="border-zinc-700 bg-zinc-800/50 text-zinc-400 hover:bg-zinc-800 hover:text-white"
               >
                 <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
               </Button>
@@ -718,22 +732,22 @@ export default function OrdersPage() {
 
         {/* CONTADOR DE PEDIDOS */}
         <div className="mb-3 flex items-center justify-between">
-          <p className="text-sm text-slate-500">
-            Mostrando <span className="font-semibold text-slate-700">{filteredOrders.length}</span> de{" "}
-            <span className="font-semibold text-slate-700">{orders.length}</span> filas
+          <p className="text-sm text-zinc-500">
+            Mostrando <span className="font-semibold text-white">{filteredOrders.length}</span> de{" "}
+            <span className="font-semibold text-white">{orders.length}</span> filas
           </p>
         </div>
 
         {/* LISTA DE PEDIDOS */}
         {loading ? (
-          <div className="flex h-64 items-center justify-center text-slate-400">
+          <div className="flex h-64 items-center justify-center text-zinc-400">
             <RefreshCw className="mr-3 h-5 w-5 animate-spin" />
             Cargando pedidos...
           </div>
         ) : filteredOrders.length === 0 ? (
-          <div className="flex h-64 flex-col items-center justify-center rounded-xl border border-slate-200 bg-white">
-            <AlertCircle className="mb-4 h-12 w-12 text-slate-300" />
-            <p className="text-lg text-slate-400">No hay pedidos que coincidan con los filtros</p>
+          <div className="flex h-64 flex-col items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/30">
+            <AlertCircle className="mb-4 h-12 w-12 text-zinc-600" />
+            <p className="text-lg text-zinc-400">No hay pedidos que coincidan con los filtros</p>
           </div>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
@@ -747,14 +761,14 @@ export default function OrdersPage() {
               return (
                 <Card
                   key={order.id}
-                  className={`group overflow-hidden border-slate-200 bg-white shadow-sm transition-all hover:shadow-md ${config.borderColor}`}
+                  className={`group overflow-hidden border-zinc-800 bg-zinc-900/50 backdrop-blur-sm shadow-xl transition-all hover:border-zinc-700 hover:shadow-2xl ${config.borderColor}`}
                 >
                   <CardContent className="p-4">
                     {/* Header */}
                     <div className="mb-3 flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
-                        <p className="text-xs text-slate-400">Desde</p>
-                        <p className="max-w-[180px] break-all font-mono text-sm font-semibold text-slate-700" title={chatNumber}>
+                        <p className="text-xs text-zinc-500">Desde</p>
+                        <p className="max-w-[180px] break-all font-mono text-sm font-semibold text-white" title={chatNumber}>
                           {chatNumber || "—"}
                         </p>
                       </div>
@@ -766,32 +780,32 @@ export default function OrdersPage() {
 
                     {/* Productos */}
                     <div className="mb-3">
-                      <p className="mb-1.5 text-xs text-slate-400">Productos</p>
+                      <p className="mb-1.5 text-xs text-zinc-500">Productos</p>
                       {items.length > 0 ? (
                         <div className="space-y-1.5">
                           {items.slice(0, 2).map((item, index) => (
-                            <div key={index} className="rounded-lg bg-slate-50 p-2.5">
-                              <p className="truncate text-sm font-medium text-slate-700">
+                            <div key={index} className="rounded-lg bg-zinc-800/50 p-2.5">
+                              <p className="truncate text-sm font-medium text-white">
                                 {item.product || item.name || "Producto"}
                               </p>
-                              <div className="mt-0.5 flex items-center gap-3 text-xs text-slate-500">
+                              <div className="mt-0.5 flex items-center gap-3 text-xs text-zinc-400">
                                 <span>Cant: {item.quantity || 1}</span>
-                                <span className="font-medium text-emerald-600">
+                                <span className="font-medium text-emerald-400">
                                   {formatCurrency(item.amount || item.price || 0)} Gs
                                 </span>
                               </div>
                             </div>
                           ))}
                           {items.length > 2 && (
-                            <p className="text-xs text-slate-400">+{items.length - 2} más</p>
+                            <p className="text-xs text-zinc-500">+{items.length - 2} más</p>
                           )}
                         </div>
                       ) : (
-                        <div className="rounded-lg bg-slate-50 p-2.5">
-                          <p className="truncate text-sm font-medium text-slate-700">
+                        <div className="rounded-lg bg-zinc-800/50 p-2.5">
+                          <p className="truncate text-sm font-medium text-white">
                             {order.product || "Producto"}
                           </p>
-                          <div className="mt-0.5 flex items-center gap-3 text-xs text-slate-500">
+                          <div className="mt-0.5 flex items-center gap-3 text-xs text-zinc-400">
                             <span>Cant: {order.quantity || 1}</span>
                           </div>
                         </div>
@@ -800,26 +814,26 @@ export default function OrdersPage() {
 
                     {/* Cliente y total */}
                     <div className="mb-2 flex items-center justify-between gap-2 text-sm">
-                      <div className="flex items-center gap-1.5 text-slate-500">
+                      <div className="flex items-center gap-1.5 text-zinc-400">
                         <User className="h-3.5 w-3.5" />
                         <span className="truncate">{order.customer_name || "Sin nombre"}</span>
                       </div>
-                      <span className="font-semibold text-emerald-600">
+                      <span className="font-semibold text-emerald-400">
                         {formatCurrency(order.total_amount)} Gs
                       </span>
                     </div>
 
                     {order.city && (
-                      <div className="mb-2 flex items-center gap-1.5 text-xs text-slate-400">
+                      <div className="mb-2 flex items-center gap-1.5 text-xs text-zinc-500">
                         <MapPin className="h-3 w-3" />
                         <span>{order.city}</span>
                       </div>
                     )}
 
                     {order.address && (
-                      <div className="mb-3 rounded-lg bg-slate-50 p-2">
-                        <p className="text-xs text-slate-400">Dirección</p>
-                        <p className="text-xs text-slate-600">{order.address}</p>
+                      <div className="mb-3 rounded-lg bg-zinc-800/30 p-2">
+                        <p className="text-xs text-zinc-500">Dirección</p>
+                        <p className="text-xs text-zinc-300">{order.address}</p>
                       </div>
                     )}
 
@@ -828,7 +842,7 @@ export default function OrdersPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="flex-1 border-slate-200 text-xs hover:bg-slate-50"
+                        className="flex-1 border-zinc-700 bg-zinc-800/30 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-white"
                         onClick={() => openEcommerce(order)}
                       >
                         <ShoppingCart className="mr-1 h-3 w-3" />
@@ -837,7 +851,7 @@ export default function OrdersPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="flex-1 border-slate-200 text-xs hover:bg-slate-50"
+                        className="flex-1 border-zinc-700 bg-zinc-800/30 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-white"
                         onClick={() => openChat(chatNumber)}
                       >
                         <MessageSquare className="mr-1 h-3 w-3" />
@@ -846,7 +860,7 @@ export default function OrdersPage() {
                       <Button
                         size="sm"
                         variant="ghost"
-                        className="px-2.5 text-red-400 hover:bg-red-50 hover:text-red-500"
+                        className="px-2.5 text-red-400 hover:bg-red-500/10 hover:text-red-300"
                         onClick={() => deleteOrder(order.id)}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -859,7 +873,7 @@ export default function OrdersPage() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="h-7 px-2 text-xs text-blue-500 hover:bg-blue-50"
+                          className="h-7 px-2 text-xs text-blue-400 hover:bg-blue-500/10"
                           onClick={() => updateStatus(order, "cargado")}
                         >
                           Cargar
@@ -869,7 +883,7 @@ export default function OrdersPage() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="h-7 px-2 text-xs text-purple-500 hover:bg-purple-50"
+                          className="h-7 px-2 text-xs text-purple-400 hover:bg-purple-500/10"
                           onClick={() => updateStatus(order, "droppx")}
                         >
                           Droppx
@@ -879,7 +893,7 @@ export default function OrdersPage() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="h-7 px-2 text-xs text-red-400 hover:bg-red-50"
+                          className="h-7 px-2 text-xs text-red-400 hover:bg-red-500/10"
                           onClick={() => updateStatus(order, "cancelado")}
                         >
                           Cancelar
@@ -892,7 +906,7 @@ export default function OrdersPage() {
                         href={order.comprobante_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="mt-2 inline-flex items-center gap-1 text-xs text-blue-500 hover:underline"
+                        className="mt-2 inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 hover:underline"
                       >
                         <ReceiptText className="h-3 w-3" />
                         Ver comprobante
@@ -909,28 +923,30 @@ export default function OrdersPage() {
   );
 }
 
-// Componente MetricCard con diseño corporativo
+// Componente MetricCard con diseño oscuro corporativo
 function MetricCard({
   title,
   value,
   subtitle,
   color,
   bgColor,
+  borderColor,
 }: {
   title: string;
   value: string | number;
   subtitle: string;
   color: string;
   bgColor: string;
+  borderColor: string;
 }) {
   return (
-    <Card className={`border-slate-200 ${bgColor} shadow-sm`}>
+    <Card className={`border ${borderColor} ${bgColor} bg-zinc-900/30 backdrop-blur-sm shadow-xl`}>
       <CardContent className="p-3">
-        <p className="text-xs font-medium text-slate-500">{title}</p>
-        <p className="text-lg font-bold text-slate-900" style={{ color }}>
+        <p className="text-xs font-medium text-zinc-400">{title}</p>
+        <p className="text-lg font-bold" style={{ color }}>
           {value}
         </p>
-        <p className="text-xs text-slate-400">{subtitle}</p>
+        <p className="text-xs text-zinc-500">{subtitle}</p>
       </CardContent>
     </Card>
   );
