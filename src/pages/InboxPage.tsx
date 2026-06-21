@@ -255,6 +255,11 @@ export default function InboxPage() {
     setShowEmojis(false);
   };
 
+  // ============================================================
+  // 🔧 FUNCIÓN CORREGIDA - TRAE EL 100% DE LOS MENSAJES SIN LÍMITE
+  // Pagina en bloques con .range() hasta que ya no queden más filas,
+  // sin depender de .limit() ni del Max Rows configurado en Supabase.
+  // ============================================================
   const loadMessages = async () => {
     if (!user) {
       setDbMessages([]);
@@ -263,21 +268,41 @@ export default function InboxPage() {
     }
     setLoading(true);
 
-    const { data, error } = await supabase
-      .from("received_messages")
-      .select("*")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false })
-      .limit(10000);
+    const PAGE_SIZE = 1000;
+    let allMessages: DbMessage[] = [];
+    let from = 0;
+    let keepGoing = true;
 
-    if (error) {
-      console.error("Error cargando mensajes:", error);
-      setDbMessages([]);
-      setLoading(false);
-      return;
+    try {
+      while (keepGoing) {
+        const { data, error } = await supabase
+          .from("received_messages")
+          .select("*")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
+
+        if (error) {
+          console.error("Error cargando mensajes:", error);
+          keepGoing = false;
+          break;
+        }
+
+        const batch = (data || []) as DbMessage[];
+        allMessages = allMessages.concat(batch);
+
+        // Si el bloque devuelto es más chico que PAGE_SIZE, ya no hay más datos
+        if (batch.length < PAGE_SIZE) {
+          keepGoing = false;
+        } else {
+          from += PAGE_SIZE;
+        }
+      }
+    } catch (err) {
+      console.error("Error cargando mensajes:", err);
     }
 
-    const ordered = ((data || []) as DbMessage[]).sort((a, b) => {
+    const ordered = allMessages.sort((a, b) => {
       const da = new Date(a.created_at || 0).getTime();
       const db = new Date(b.created_at || 0).getTime();
       return da - db;
@@ -286,6 +311,7 @@ export default function InboxPage() {
     setDbMessages(ordered);
     setLoading(false);
   };
+  // ============================================================
 
   useEffect(() => {
     loadMessages();
