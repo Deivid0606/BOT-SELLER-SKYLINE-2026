@@ -1,5 +1,5 @@
 // ORDERS PAGE - DASHBOARD OSCURO CORPORATIVO
-// CON CHAT QUE ABRE EL MISMO NÚMERO
+// CON FECHA DE PEDIDO VISIBLE EN CADA TARJETA
 
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
@@ -182,18 +182,68 @@ function formatCurrency(value: string | number | null | undefined) {
   return Math.round(num).toLocaleString("es-PY", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
 }
 
-function formatDate(dateString: string) {
+// Función mejorada para formatear fecha con hora
+function formatDateTime(dateString: string) {
   const date = new Date(dateString);
   const now = new Date();
-  const diffHours = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60));
-  if (diffHours < 1) return "Hace unos momentos";
-  if (diffHours < 24) return `Hace ${diffHours} horas`;
+  const diffMs = now.getTime() - date.getTime();
+  const diffMinutes = Math.floor(diffMs / (1000 * 60));
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  // Si es hoy, mostrar "Hoy a las HH:MM"
+  if (diffDays === 0) {
+    return `Hoy a las ${date.toLocaleTimeString("es-PY", {
+      hour: "2-digit",
+      minute: "2-digit",
+    })}`;
+  }
+
+  // Si es ayer
+  if (diffDays === 1) {
+    return `Ayer a las ${date.toLocaleTimeString("es-PY", {
+      hour: "2-digit",
+      minute: "2-digit",
+    })}`;
+  }
+
+  // Si es dentro de los últimos 7 días
+  if (diffDays < 7) {
+    return `Hace ${diffDays} días a las ${date.toLocaleTimeString("es-PY", {
+      hour: "2-digit",
+      minute: "2-digit",
+    })}`;
+  }
+
+  // Si es más de 7 días, mostrar fecha completa
   return date.toLocaleDateString("es-PY", {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
+  });
+}
+
+// Función corta para mostrar en la tarjeta
+function formatDateShort(dateString: string) {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+
+  if (diffDays === 0) {
+    return `Hoy ${date.toLocaleTimeString("es-PY", { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  if (diffDays === 1) {
+    return `Ayer ${date.toLocaleTimeString("es-PY", { hour: "2-digit", minute: "2-digit" })}`;
+  }
+  if (diffDays < 7) {
+    return `Hace ${diffDays} días`;
+  }
+  return date.toLocaleDateString("es-PY", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
   });
 }
 
@@ -769,6 +819,8 @@ export default function OrdersPage() {
               const Icon = config.icon;
               const chatNumber = order.from_number || order.phone || "";
               const items = getOrderItems(order);
+              const fechaPedido = formatDateTime(order.created_at);
+              const fechaCorta = formatDateShort(order.created_at);
 
               return (
                 <Card
@@ -776,15 +828,22 @@ export default function OrdersPage() {
                   className={`group overflow-hidden border-zinc-800 bg-zinc-900/50 backdrop-blur-sm shadow-xl transition-all hover:border-zinc-700 hover:shadow-2xl ${config.borderColor}`}
                 >
                   <CardContent className="p-4">
-                    {/* Header */}
+                    {/* Header con fecha de pedido */}
                     <div className="mb-3 flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
-                        <p className="text-xs text-zinc-500">Desde</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs text-zinc-500">Desde</p>
+                          <span className="text-xs text-zinc-600">•</span>
+                          <div className="flex items-center gap-1 text-xs text-zinc-500">
+                            <Calendar className="h-3 w-3" />
+                            <span title={fechaPedido}>{fechaCorta}</span>
+                          </div>
+                        </div>
                         <p className="max-w-[180px] break-all font-mono text-sm font-semibold text-white" title={chatNumber}>
                           {chatNumber || "—"}
                         </p>
                       </div>
-                      <Badge className={`${config.bgColor} border-0 text-xs`} style={{ color: config.color }}>
+                      <Badge className={`${config.bgColor} border-0 text-xs shrink-0`} style={{ color: config.color }}>
                         <Icon className="mr-1 h-3 w-3" />
                         {config.label}
                       </Badge>
