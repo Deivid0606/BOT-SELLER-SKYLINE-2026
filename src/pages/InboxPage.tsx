@@ -255,6 +255,11 @@ export default function InboxPage() {
     setShowEmojis(false);
   };
 
+  // ============================================================
+  // 🔧 FUNCIÓN CORREGIDA - CARGA EL 100% DE LOS MENSAJES
+  // Usa paginación con .range() y ordenamiento con dos campos
+  // para evitar saltos en la paginación.
+  // ============================================================
   const loadMessages = async () => {
     if (!user) {
       setDbMessages([]);
@@ -263,21 +268,60 @@ export default function InboxPage() {
     }
     setLoading(true);
 
-    const { data, error } = await supabase
-      .from("received_messages")
-      .select("*")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false })
-      .limit(10000);
+    const PAGE_SIZE = 1000;
+    let allMessages: DbMessage[] = [];
+    let page = 0;
+    let hasMore = true;
 
-    if (error) {
-      console.error("Error cargando mensajes:", error);
-      setDbMessages([]);
-      setLoading(false);
-      return;
+    try {
+      console.log(`👤 Cargando mensajes para usuario: ${user.id}`);
+
+      while (hasMore) {
+        const from = page * PAGE_SIZE;
+        const to = from + PAGE_SIZE - 1;
+
+        console.log(`📥 Página ${page + 1}: registros ${from} a ${to}`);
+
+        const { data, error } = await supabase
+          .from("inbox_messages")
+          .select("*")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })  // 🔑 CLAVE: segundo orden para evitar saltos
+          .range(from, to);
+
+        if (error) {
+          console.error("Error cargando mensajes:", error);
+          hasMore = false;
+          break;
+        }
+
+        const batch = (data || []) as DbMessage[];
+        allMessages = allMessages.concat(batch);
+
+        console.log(`✅ Página ${page + 1}: ${batch.length} mensajes, total acumulado: ${allMessages.length}`);
+
+        // Si el bloque devuelto es más chico que PAGE_SIZE, ya no hay más datos
+        if (batch.length < PAGE_SIZE) {
+          hasMore = false;
+        } else {
+          page++;
+        }
+
+        // Seguridad: evitar loop infinito (máximo 100 páginas = 100,000 mensajes)
+        if (page > 100) {
+          console.warn("⚠️ Límite de seguridad alcanzado (100 páginas)");
+          hasMore = false;
+        }
+      }
+    } catch (err) {
+      console.error("Error cargando mensajes:", err);
     }
 
-    const ordered = ((data || []) as DbMessage[]).sort((a, b) => {
+    console.log(`📊 Total mensajes cargados: ${allMessages.length}`);
+
+    // Ordenar ascendente para mostrar en el chat
+    const ordered = allMessages.sort((a, b) => {
       const da = new Date(a.created_at || 0).getTime();
       const db = new Date(b.created_at || 0).getTime();
       return da - db;
@@ -286,14 +330,23 @@ export default function InboxPage() {
     setDbMessages(ordered);
     setLoading(false);
   };
+  // ============================================================
 
   useEffect(() => {
     loadMessages();
     const channel = supabase
-      .channel("received_messages_realtime_inbox_pro")
+      .channel("inbox_messages_realtime")
       .on("postgres_changes",
-        { event: "*", schema: "public", table: "received_messages" },
-        () => { loadMessages(); }
+        { 
+          event: "*", 
+          schema: "public", 
+          table: "inbox_messages",
+          filter: `user_id=eq.${user?.id}`  // 🔑 FILTRO POR USUARIO
+        },
+        () => { 
+          console.log("🔄 Cambio detectado, recargando mensajes...");
+          loadMessages(); 
+        }
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
@@ -428,7 +481,7 @@ export default function InboxPage() {
       if (idsToUpdate.length === 0) return;
 
       const { error } = await supabase
-        .from("received_messages")
+        .from("inbox_messages")
         .update({ is_processed: true })
         .in("id", idsToUpdate);
 
@@ -584,7 +637,7 @@ export default function InboxPage() {
   const handleDeleteChat = async () => {
     if (!selectedNumber) return;
     if (!window.confirm(`¿Eliminar todos los mensajes de ${selectedNumber}?`)) return;
-    const { error } = await supabase.from("received_messages").delete().eq("from_number", selectedNumber);
+    const { error } = await supabase.from("inbox_messages").delete().eq("from_number", selectedNumber);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     toast({ title: "🗑️ Conversación eliminada" });
     await loadMessages();
@@ -594,7 +647,7 @@ export default function InboxPage() {
   const handleClearChat = async () => {
     if (!selectedNumber) return;
     if (!window.confirm(`¿Limpiar mensajes de ${selectedNumber}?`)) return;
-    const { error } = await supabase.from("received_messages").delete().eq("from_number", selectedNumber);
+    const { error } = await supabase.from("inbox_messages").delete().eq("from_number", selectedNumber);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     toast({ title: "🧹 Chat limpiado" });
     await loadMessages();
