@@ -1,5 +1,5 @@
 // api/chat-ia.ts
-// ✅ CORREGIDO: Usa TODOS los entrenamientos del usuario, no solo el último
+// ✅ CORREGIDO: SIEMPRE pregunta CIUDAD primero, sin importar lo que diga el cliente
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -62,7 +62,6 @@ function findMatchingTraining(trainingItems: any[], message: string) {
       const ex = normalize(example);
       if (!ex) continue;
       
-      // Coincidencia exacta o parcial
       if (msg.includes(ex) || ex.includes(msg) || 
           msg.includes(ex.substring(0, 10)) ||
           ex.includes(msg.substring(0, 10))) {
@@ -105,9 +104,7 @@ function buildTrainingContext(trainingItems: any[]) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// EL RESTO DEL CÓDIGO (getPriceLines, extractProductNameFromLine, 
-// detectProduct, isPriceIntent, isBuyIntent, extractData, 
-// mergeOrderData, PRODUCT_PRICES, calculateCorrectTotal, etc.)
+// FUNCIONES AUXILIARES
 // ═══════════════════════════════════════════════════════════
 
 function getPriceLines(training: string): string[] {
@@ -208,6 +205,10 @@ function extractData(msg: string) {
     "pte franco": "Presidente Franco",
     aregua: "Areguá",
     "areguá": "Areguá",
+    vallemi: "Vallemí",
+    "valle mi": "Vallemí",
+    concepción: "Concepción",
+    concepcion: "Concepción",
   };
 
   let city = "";
@@ -589,7 +590,7 @@ async function transcribeAudioWithGemini({
 }
 
 // ═══════════════════════════════════════════════════════════
-// HANDLER PRINCIPAL
+// HANDLER PRINCIPAL - CON SOLUCIÓN DE CIUDAD SIEMPRE PRIMERO
 // ═══════════════════════════════════════════════════════════
 
 export default async function handler(req: any, res: any) {
@@ -628,6 +629,53 @@ export default async function handler(req: any, res: any) {
     if (!texto && !mediaUrl)
       return res.status(400).json({ error: "Faltan message o media" });
 
+    // ─── ✅ NUEVO: SIEMPRE PREGUNTAR CIUDAD PRIMERO ───
+    // Verificar si ya tenemos la ciudad en el contexto
+    const oldOrder = context?.order_data || {};
+    const hasCity = oldOrder?.city || context?.city;
+    
+    // Si NO hay ciudad registrada, FORZAR pregunta de ciudad
+    if (!hasCity) {
+      console.log("📍 FORZANDO pregunta de ciudad (siempre primero)");
+      
+      // Verificar si el mensaje actual CONTIENE una ciudad (para extraerla)
+      const extracted = extractData(texto);
+      if (extracted.city) {
+        // Si el cliente ya dijo la ciudad, actualizamos y seguimos
+        const orderData = mergeOrderData(oldOrder, extracted, "");
+        const newContext = {
+          ...context,
+          city: extracted.city,
+          order_data: orderData,
+          step: "collecting_name",
+          updated_at: new Date().toISOString(),
+        };
+        
+        // Guardar en base de datos
+        await safeUpsertOrder(user_id, fromNumber, orderData, false);
+        
+        // Preguntar siguiente dato (nombre)
+        return res.json({
+          response: `📝 Perfecto! Tu pedido es para ${extracted.city}. Ahora, ¿me podés decir tu NOMBRE completo para el pedido?`,
+          context: newContext,
+          step: "collecting_name",
+        });
+      }
+      
+      // Si NO hay ciudad y el cliente NO dijo ciudad, preguntar
+      return res.json({
+        response: `📍 ¡Hola! Para comenzar con tu pedido, necesito saber ¿para qué CIUDAD sería el envío? 😊`,
+        context: {
+          ...context,
+          step: "collecting_city",
+          awaiting_city: true,
+          updated_at: new Date().toISOString(),
+        },
+      });
+    }
+
+    // ─── SI YA HAY CIUDAD, CONTINUAR CON EL FLUJO NORMAL ───
+    
     // ─── 1. OBTENER CONFIGURACIÓN IA ───
     const { data: iaConfig } = await supabase
       .from("chat_ia_gemini")
@@ -650,7 +698,6 @@ export default async function handler(req: any, res: any) {
       trainingMatch = findMatchingTraining(allTraining, texto);
       if (trainingMatch) {
         console.log(`🎯 Match directo: "${trainingMatch.intent}"`);
-        // Si hay match directo, responder con el entrenamiento sin llamar a Gemini
         return res.json({
           response: trainingMatch.response,
           context: {
@@ -744,21 +791,16 @@ export default async function handler(req: any, res: any) {
     if (!texto) texto = "(mensaje sin texto)";
 
     // ─── FLUJO DE VENTA NORMAL (usando entrenamiento combinado) ───
-    const oldOrder = context?.order_data || {};
-    const product = detectProduct(
-      texto,
-      combinedTraining,
-      context?.current_product || oldOrder?.product
+    const orderData = mergeOrderData(oldOrder, extractData(texto), 
+      detectProduct(texto, combinedTraining, context?.current_product || oldOrder?.product)
     );
-
-    const extracted = extractData(texto);
-    const orderData = mergeOrderData(oldOrder, extracted, product);
     
     const wantsToBuy = isBuyIntent(texto);
     const asksPrice = isPriceIntent(texto);
     
     let step = nextStep(orderData);
     
+    // Si el cliente quiere comprar y falta ciudad, forzar pregunta de ciudad
     if (wantsToBuy && orderData.product && !orderData.city) {
       step = "collecting_city";
       console.log("📍 Forzando pregunta de ciudad");
@@ -769,31 +811,12 @@ export default async function handler(req: any, res: any) {
       console.log("📍 Forzando pregunta de ciudad (cliente dijo quiero)");
     }
     
-    const cityDetectionPatterns = [
-      { pattern: /asuncion\s+es/i, city: "Asunción" },
-      { pattern: /san\s+lorenzo\s+es/i, city: "San Lorenzo" },
-      { pattern: /luque\s+es/i, city: "Luque" },
-      { pattern: /capiat[áa]\s+es/i, city: "Capiatá" },
-      { pattern: /^ita$/i, city: "Itá" },
-      { pattern: /^asuncion$/i, city: "Asunción" },
-      { pattern: /^luque$/i, city: "Luque" },
-    ];
-    
-    for (const { pattern, city: detectedCity } of cityDetectionPatterns) {
-      if (pattern.test(texto.trim()) && !orderData.city) {
-        orderData.city = detectedCity;
-        step = nextStep(orderData);
-        console.log(`📍 Ciudad detectada automáticamente: ${detectedCity}`);
-        break;
-      }
-    }
-    
     const hasOrderData =
-      !!extracted.quantity ||
-      !!extracted.city ||
-      !!extracted.name ||
-      !!extracted.phone ||
-      !!extracted.address;
+      !!extractData(texto).quantity ||
+      !!extractData(texto).city ||
+      !!extractData(texto).name ||
+      !!extractData(texto).phone ||
+      !!extractData(texto).address;
 
     const shouldCollect =
       !!orderData.product &&
