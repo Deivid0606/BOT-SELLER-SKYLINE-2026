@@ -1,6 +1,5 @@
 // ORDERS PAGE - DASHBOARD OSCURO CORPORATIVO
-// CON MÉTRICAS CON DECIMALES, CONFIRMADOS EN VEZ DE PENDIENTES
-// FILTRO POR DEFECTO EN CONFIRMADOS
+// CON CHAT QUE ABRE EL MISMO NÚMERO
 
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
@@ -217,6 +216,22 @@ function getOrderItems(order: Order) {
   }
 }
 
+// Función para limpiar y formatear número de teléfono
+function formatPhoneNumber(phone: string | null): string {
+  if (!phone) return "";
+  // Eliminar espacios, guiones, puntos y paréntesis
+  let clean = phone.replace(/[\s\-\.\(\)]/g, "");
+  // Si empieza con 0, lo quitamos
+  if (clean.startsWith("0")) {
+    clean = clean.substring(1);
+  }
+  // Si empieza con 595, lo mantenemos, si no, lo agregamos
+  if (!clean.startsWith("595")) {
+    clean = "595" + clean;
+  }
+  return clean;
+}
+
 async function getCurrentUser() {
   const { data: { user } } = await supabase.auth.getUser();
   return user;
@@ -349,12 +364,23 @@ export default function OrdersPage() {
     }
   }
 
+  // Función mejorada para abrir el chat con el número correcto
   function openChat(phone: string | null) {
     if (!phone) {
-      toast.error("No hay número");
+      toast.error("No hay número de teléfono");
       return;
     }
-    navigate(`/inbox?phone=${encodeURIComponent(phone)}`);
+
+    // Limpiar y formatear el número
+    const formattedPhone = formatPhoneNumber(phone);
+    
+    if (!formattedPhone || formattedPhone.length < 10) {
+      toast.error("Número de teléfono inválido");
+      return;
+    }
+
+    // Navegar al chat con el número formateado
+    navigate(`/inbox?phone=${encodeURIComponent(formattedPhone)}`);
   }
 
   function openEcommerce(order: Order) {
