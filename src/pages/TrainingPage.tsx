@@ -47,66 +47,6 @@ export default function TrainingPage() {
     }
   }, [user]);
 
-  // Función mejorada para procesar ejemplos
-  const processExamples = (text: string): string[] => {
-    if (!text.trim()) return [];
-    
-    // Dividir por saltos de línea
-    let lines = text.split('\n').filter(line => line.trim());
-    
-    // Si hay líneas, procesar cada una
-    if (lines.length > 0) {
-      let allExamples: string[] = [];
-      
-      lines.forEach(line => {
-        const trimmed = line.trim();
-        
-        // Si la línea contiene comas, dividir por comas
-        if (trimmed.includes(',')) {
-          const parts = trimmed.split(',').map(p => p.trim()).filter(p => p);
-          allExamples.push(...parts);
-        } 
-        // Si la línea contiene punto y coma, dividir por punto y coma
-        else if (trimmed.includes(';')) {
-          const parts = trimmed.split(';').map(p => p.trim()).filter(p => p);
-          allExamples.push(...parts);
-        }
-        // Si la línea contiene múltiples espacios (más de 2), dividir por espacios
-        else if (trimmed.includes('  ')) {
-          const parts = trimmed.split(/\s+/).filter(p => p.trim());
-          allExamples.push(...parts);
-        }
-        // Si es una sola frase, agregarla completa
-        else {
-          allExamples.push(trimmed);
-        }
-      });
-      
-      return allExamples.filter(ex => ex.length > 0);
-    }
-    
-    // Si no hay saltos de línea, procesar el texto completo
-    let cleanText = text.trim();
-    
-    // Intentar dividir por comas
-    if (cleanText.includes(',')) {
-      return cleanText.split(',').map(p => p.trim()).filter(p => p);
-    }
-    
-    // Intentar dividir por punto y coma
-    if (cleanText.includes(';')) {
-      return cleanText.split(';').map(p => p.trim()).filter(p => p);
-    }
-    
-    // Si hay múltiples espacios, dividir por espacios
-    if (cleanText.includes('  ')) {
-      return cleanText.split(/\s+/).filter(p => p.trim());
-    }
-    
-    // Si es una sola frase, devolverla como único elemento
-    return [cleanText];
-  };
-
   const handleSave = async () => {
     if (!user) {
       alert("Debes iniciar sesión");
@@ -122,13 +62,10 @@ export default function TrainingPage() {
       return;
     }
 
-    // Procesar ejemplos con la función mejorada
-    const examplesArray = processExamples(examples);
-    
-    if (examplesArray.length === 0) {
-      alert("Por favor agrega al menos un ejemplo o frase de entrenamiento");
-      return;
-    }
+    const examplesArray = examples
+      .split('\n')
+      .filter(ex => ex.trim())
+      .map(ex => ex.trim());
 
     setSaving(true);
 
@@ -148,7 +85,7 @@ export default function TrainingPage() {
         console.error("Error al actualizar:", error);
         alert("Error al actualizar: " + error.message);
       } else {
-        alert(`✅ Datos actualizados correctamente (${examplesArray.length} ejemplos)`);
+        alert("✅ Datos actualizados correctamente");
         resetForm();
         loadTrainingData();
       }
@@ -167,7 +104,7 @@ export default function TrainingPage() {
         console.error("Error al guardar:", error);
         alert("Error al guardar: " + error.message);
       } else {
-        alert(`✅ Datos guardados correctamente (${examplesArray.length} ejemplos)`);
+        alert("✅ Datos guardados correctamente");
         resetForm();
         loadTrainingData();
       }
@@ -178,7 +115,6 @@ export default function TrainingPage() {
   const handleEdit = (item: TrainingItem) => {
     setIntent(item.intent);
     setResponse(item.response);
-    // Mostrar los ejemplos como texto plano, uno por línea
     setExamples(item.examples.join('\n'));
     setEditingId(item.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -216,11 +152,7 @@ export default function TrainingPage() {
       <h1 className="text-2xl font-bold font-heading text-gradient">Entrenamiento IA</h1>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <motion.div 
-          initial={{ opacity: 0, y: 12 }} 
-          animate={{ opacity: 1, y: 0 }} 
-          className="bg-card border border-border rounded-lg p-5 space-y-4"
-        >
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="bg-card border border-border rounded-lg p-5 space-y-4">
           <div>
             <label className="text-xs text-muted-foreground">Tema / Categoría</label>
             <input
@@ -232,27 +164,17 @@ export default function TrainingPage() {
           </div>
 
           <div>
-            <label className="text-xs text-muted-foreground">
-              Frases de ejemplo 
-              <span className="text-[10px] text-muted-foreground ml-2">
-                (una por línea o separadas por comas)
-              </span>
-            </label>
+            <label className="text-xs text-muted-foreground">Frases de ejemplo (una por línea)</label>
             <textarea
               value={examples}
               onChange={(e) => setExamples(e.target.value)}
-              placeholder="cuánto cuesta?&#10;precio del producto&#10;valor final&#10;o también: cuánto es, cuál es el precio"
-              rows={5}
+              placeholder="cuánto cuesta?&#10;precio del producto&#10;valor final"
+              rows={3}
               className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm font-mono resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
             />
-            <div className="flex justify-between mt-1">
-              <p className="text-[10px] text-muted-foreground">
-                El bot usará estas frases para identificar la intención
-              </p>
-              <p className="text-[10px] text-muted-foreground">
-                {examples ? `${processExamples(examples).length} ejemplos` : '0 ejemplos'}
-              </p>
-            </div>
+            <p className="text-[10px] text-muted-foreground mt-1">
+              El bot usará estas frases para identificar la intención
+            </p>
           </div>
 
           <div>
@@ -265,7 +187,7 @@ export default function TrainingPage() {
             />
           </div>
 
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2">
             <button
               onClick={handleSave}
               disabled={saving}
@@ -285,12 +207,7 @@ export default function TrainingPage() {
           </div>
         </motion.div>
 
-        <motion.div 
-          initial={{ opacity: 0, y: 12 }} 
-          animate={{ opacity: 1, y: 0 }} 
-          transition={{ delay: 0.1 }} 
-          className="bg-card border border-border rounded-lg overflow-hidden"
-        >
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="bg-card border border-border rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-border">
             <h3 className="font-heading font-semibold text-sm">Datos de Entrenamiento</h3>
           </div>
@@ -305,7 +222,7 @@ export default function TrainingPage() {
               <p className="text-xs text-muted-foreground">Aún no hay datos de entrenamiento</p>
             </div>
           ) : (
-            <div className="divide-y divide-border max-h-[600px] overflow-y-auto">
+            <div className="divide-y divide-border">
               {trainingData.map((item) => (
                 <div
                   key={item.id}
@@ -317,18 +234,9 @@ export default function TrainingPage() {
                     <p className="text-sm font-medium truncate">{item.intent}</p>
                     <p className="text-xs text-muted-foreground truncate">{item.response.substring(0, 60)}</p>
                     {item.examples.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {item.examples.slice(0, 3).map((ex, idx) => (
-                          <span key={idx} className="text-[9px] bg-secondary/50 px-1.5 py-0.5 rounded">
-                            "{ex}"
-                          </span>
-                        ))}
-                        {item.examples.length > 3 && (
-                          <span className="text-[9px] text-muted-foreground">
-                            +{item.examples.length - 3} más
-                          </span>
-                        )}
-                      </div>
+                      <p className="text-[10px] text-muted-foreground/60 mt-0.5">
+                        {item.examples.length} ejemplo{item.examples.length !== 1 ? 's' : ''}
+                      </p>
                     )}
                   </div>
                   <button
