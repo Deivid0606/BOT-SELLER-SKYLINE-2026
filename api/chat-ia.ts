@@ -322,46 +322,65 @@ function extractQuantity(text: string) {
 
 function extractPhone(text: string) {
   const compact = clean(text).replace(/\s+/g, "");
-  return compact.match(/(?:09\d{8}|\+595\d{9}|5959\d{8})/)?.[0] || "";
+  // Soporte para: 0994130021, +595994130021, 595994130021
+  const match = compact.match(/(?:09\d{8}|\+5959\d{8}|5959\d{8}|09\d{8,9})/);
+  return match?.[0] || "";
 }
 
+// ============================================================
+// 🔧 CORREGIDO: extractName ahora maneja múltiples líneas
+// ============================================================
 function extractName(text: string, detectedCity: string, phone: string) {
   const raw = clean(text);
   const norm = normalize(raw);
 
-  if (!raw || detectedCity || phone) return "";
+  if (!raw) return "";
 
-  const forbidden = [
-    "quiero",
-    "quiero comprar",
-    "me interesa",
-    "precio",
-    "cuanto cuesta",
-    "nebulizador",
-    "delivery",
-    "envio",
-    "ok",
-    "dale",
-    "si",
-    "hola",
-    "buenas",
-    "gracias",
-  ];
-
-  if (forbidden.some((f) => norm === normalize(f))) return "";
-
+  // Si ya detectamos ciudad o teléfono, aún podemos extraer el nombre
+  // Dividir el texto en líneas
+  const lines = raw.split('\n').filter(l => clean(l).length > 0);
+  
+  // Buscar nombre explícito
   const explicit = raw.match(
     /(?:soy|me llamo|mi nombre es|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,80})/i
   )?.[1];
-
   if (explicit) return clean(explicit);
 
-  const words = raw.split(/\s+/).filter(Boolean);
+  // Si hay múltiples líneas, la primera línea sin números podría ser el nombre
+  for (const line of lines) {
+    const cleaned = clean(line);
+    const hasPhone = /\d{8,}/.test(cleaned);
+    const hasAddressWords = /\b(calle|avda|avenida|ruta|km|barrio|bo|casa)\b/i.test(normalize(cleaned));
+    const hasNumber = /\d/.test(cleaned);
+    
+    // Si la línea parece un nombre (sin números, sin palabras de dirección, y es corta)
+    if (
+      !hasPhone &&
+      !hasAddressWords &&
+      !hasNumber &&
+      cleaned.length >= 4 &&
+      cleaned.length <= 40 &&
+      /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)
+    ) {
+      // Verificar que no sea una palabra prohibida
+      const forbidden = [
+        "quiero", "comprar", "me interesa", "precio", "delivery", 
+        "envio", "ok", "dale", "si", "hola", "buenas", "gracias"
+      ];
+      const normLine = normalize(cleaned);
+      if (!forbidden.some(f => normLine === normalize(f))) {
+        return cleaned;
+      }
+    }
+  }
 
+  // Fallback: si el texto tiene entre 2 y 5 palabras y no tiene números
+  const words = raw.split(/\s+/).filter(Boolean);
   if (
     words.length >= 2 &&
     words.length <= 5 &&
-    /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(raw)
+    !/\d/.test(raw) &&
+    !/calle|avda|avenida|ruta|km|barrio|bo/i.test(normalize(raw))
   ) {
     return raw;
   }
@@ -369,58 +388,65 @@ function extractName(text: string, detectedCity: string, phone: string) {
   return "";
 }
 
+// ============================================================
+// 🔧 CORREGIDO: extractAddress ahora maneja múltiples líneas
+// ============================================================
 function extractAddress(text: string, detectedCity: string, phone: string, name: string) {
   const raw = clean(text);
   const norm = normalize(raw);
 
-  if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) {
-    return "";
-  }
+  if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
+  if (/^\d+$/.test(raw)) return "";
 
-  if (/^\d+$/.test(raw)) {
-    return "";
-  }
+  // Dividir en líneas
+  const lines = raw.split('\n').filter(l => clean(l).length > 0);
 
+  // Buscar dirección explícita
   const explicit = raw.match(
     /(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i
   )?.[1];
-
   if (explicit) return clean(explicit);
 
   if (raw.includes("maps.app") || raw.includes("google.com/maps")) return raw;
 
-  if (
-    /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/.test(
-      norm
-    )
-  ) {
-    if (name || phone) {
-      let remaining = raw;
-      
-      if (name) {
-        const namePattern = name.split(/\s+/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
-        remaining = remaining.replace(new RegExp(namePattern, 'i'), '').trim();
-      }
-      
-      if (phone) {
-        const phonePattern = phone.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        remaining = remaining.replace(new RegExp(phonePattern, 'g'), '').trim();
-      }
-      
-      const wordsToRemove = ['soy', 'me llamo', 'mi nombre es', 'nombre', 'teléfono', 'celular', 'cel', 'mi', 'es'];
-      for (const word of wordsToRemove) {
-        remaining = remaining.replace(new RegExp(`\\b${word}\\b`, 'gi'), '').trim();
-      }
-      
-      if (remaining.length >= 5) {
-        return remaining;
-      }
-    }
+  // Buscar línea que parece dirección
+  for (const line of lines) {
+    const cleaned = clean(line);
+    const normLine = normalize(cleaned);
     
-    return raw;
+    // Si la línea tiene palabras clave de dirección
+    if (
+      /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/i.test(normLine)
+    ) {
+      // Verificar que no sea solo el nombre
+      if (name && normalize(cleaned).includes(normalize(name))) continue;
+      // Verificar que no sea solo el teléfono
+      if (phone && cleaned.includes(phone)) continue;
+      return cleaned;
+    }
   }
 
-  if (/\d/.test(raw) && raw.length >= 8) return raw;
+  // Si el texto tiene números y es largo, podría ser dirección
+  if (/\d/.test(raw) && raw.length >= 8) {
+    // Si hay nombre, removerlo
+    let remaining = raw;
+    if (name) {
+      const namePattern = name.split(/\s+/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
+      remaining = remaining.replace(new RegExp(namePattern, 'i'), '').trim();
+    }
+    if (phone) {
+      const phonePattern = phone.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      remaining = remaining.replace(new RegExp(phonePattern, 'g'), '').trim();
+    }
+    // Remover palabras comunes
+    const wordsToRemove = ['soy', 'me llamo', 'mi nombre es', 'nombre', 'teléfono', 'celular', 'cel', 'mi', 'es'];
+    for (const word of wordsToRemove) {
+      remaining = remaining.replace(new RegExp(`\\b${word}\\b`, 'gi'), '').trim();
+    }
+    if (remaining.length >= 5) {
+      return remaining;
+    }
+  }
 
   return "";
 }
@@ -722,11 +748,7 @@ function inferProductFromLastBotMessage(history: any[], parsed: ParsedTraining) 
   return "";
 }
 
-// ============================================================
-// 🔥 NUEVA FUNCIÓN: Detectar si el usuario está respondiendo a una promoción
-// ============================================================
 function isRespondingToPromotion(text: string, history: any[]) {
-  // Si el usuario dice "quiero" y el último mensaje del bot contenía una promoción
   const isBuy = isBuyIntent(text);
   if (!isBuy) return false;
   
@@ -738,7 +760,6 @@ function isRespondingToPromotion(text: string, history: any[]) {
     const content = clean(item?.content);
     if (!content) continue;
     
-    // Detectar si el mensaje contiene palabras clave de promoción
     if (
       content.includes("Oferta") ||
       content.includes("promoción") ||
@@ -754,9 +775,6 @@ function isRespondingToPromotion(text: string, history: any[]) {
   return false;
 }
 
-// ============================================================
-// 🔥 NUEVA FUNCIÓN: Obtener el producto del mensaje de promoción
-// ============================================================
 function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
   const lastBotMessages = (history || [])
     .slice(-6)
@@ -767,7 +785,6 @@ function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
     const content = clean(item?.content);
     if (!content) continue;
     
-    // Buscar el producto en el mensaje
     const product = detectProduct(content, parsed, "");
     if (product) {
       const productInfo = getProductInfo(product, parsed);
@@ -837,7 +854,6 @@ export default async function handler(req: any, res: any) {
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
     
-    // 🔥 NUEVO: Si es consulta de precio, resetear el pedido
     if (isPriceQuery(texto)) {
       const productMentioned = detectProduct(texto, parsed, "");
       
@@ -929,19 +945,13 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
       p.aliases.some(a => normalize(texto).includes(normalize(a)))
     );
 
-    // ============================================================
-    // 🔥 CORRECCIÓN PRINCIPAL: Si el usuario dice "quiero" y está respondiendo a una promoción
-    // ============================================================
     if (buyIntent && !hasProductInMessage) {
-      // 🔥 NUEVO: Verificar si está respondiendo a una promoción
       const isPromoResponse = isRespondingToPromotion(texto, history);
       
       if (isPromoResponse) {
-        // Obtener el producto de la promoción
         const promoProduct = getProductFromLastPromotion(history, parsed);
         
         if (promoProduct) {
-          // Resetear el pedido y usar el producto de la promoción
           const resetOrder = {
             product: promoProduct.canonical,
             quantity: 0,
@@ -970,7 +980,6 @@ Tenemos el **${promoProduct.canonical}** en oferta:
         }
       }
       
-      // Si no es promoción, continuar con la lógica normal
       const hasExistingOrder = oldOrder.product && oldOrder.city;
 
       if (hasExistingOrder) {
@@ -1110,12 +1119,6 @@ Escribí el nombre del producto que te interesa. 😊`,
       });
     }
 
-    // ============================================================
-    // FLUJO NORMAL: Detectar producto del mensaje
-    // ============================================================
-    
-    // 🔥 CORRECCIÓN: Priorizar el producto detectado en el mensaje actual
-    // Si el mensaje contiene un nombre de producto, usarlo, NO el oldOrder
     const productFromMessage = detectProduct(texto, parsed, "");
     const productToUse = productFromMessage || context?.current_product || oldOrder.product;
     
@@ -1233,6 +1236,112 @@ ${CATALOG_URL}`,
       if (!orderData.customer_name) missing.push("nombre y apellido");
       if (!orderData.address) missing.push("dirección exacta");
       if (!orderData.phone) missing.push("número de celular");
+
+      // Si todos los datos están presentes pero no se detectaron, intentar extraer de nuevo
+      if (missing.length === 3) {
+        // Reintentar extracción con el texto original
+        const rawText = clean(message);
+        const lines = rawText.split('\n').filter(l => clean(l).length > 0);
+        
+        // Buscar teléfono nuevamente
+        if (!orderData.phone) {
+          for (const line of lines) {
+            const phoneMatch = line.match(/(09\d{8}|09\d{8,9})/);
+            if (phoneMatch) {
+              orderData.phone = phoneMatch[0];
+              break;
+            }
+          }
+        }
+        
+        // Buscar nombre nuevamente
+        if (!orderData.customer_name) {
+          for (const line of lines) {
+            const cleaned = clean(line);
+            if (
+              !/\d/.test(cleaned) &&
+              !/calle|avda|avenida|ruta|km|barrio|bo|casa/i.test(normalize(cleaned)) &&
+              cleaned.length >= 4 &&
+              cleaned.length <= 40 &&
+              /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)
+            ) {
+              const forbidden = ["quiero", "comprar", "precio", "delivery", "envio", "ok", "dale", "si", "hola", "gracias"];
+              if (!forbidden.some(f => normalize(cleaned) === normalize(f))) {
+                orderData.customer_name = cleaned;
+                break;
+              }
+            }
+          }
+        }
+        
+        // Buscar dirección nuevamente
+        if (!orderData.address) {
+          for (const line of lines) {
+            const cleaned = clean(line);
+            if (
+              /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/i.test(normalize(cleaned))
+            ) {
+              if (orderData.customer_name && normalize(cleaned).includes(normalize(orderData.customer_name))) continue;
+              if (orderData.phone && cleaned.includes(orderData.phone)) continue;
+              orderData.address = cleaned;
+              break;
+            }
+          }
+        }
+        
+        // Recalcular faltantes
+        const missingAfterRetry = [];
+        if (!orderData.customer_name) missingAfterRetry.push("nombre y apellido");
+        if (!orderData.address) missingAfterRetry.push("dirección exacta");
+        if (!orderData.phone) missingAfterRetry.push("número de celular");
+        
+        if (missingAfterRetry.length === 0) {
+          // Todos los datos fueron extraídos, proceder a confirmar
+          if (orderData.product && orderData.city && orderData.quantity > 0 &&
+              orderData.customer_name && orderData.address && orderData.phone) {
+            await safeUpsertOrder(user_id, fromNumber, orderData, parsed, true);
+            return res.json({
+              response: confirmation(orderData, parsed),
+              context: {
+                ...(context || {}),
+                current_product: orderData.product,
+                order_data: orderData,
+                step: "pedido_confirmado",
+                updated_at: new Date().toISOString(),
+              },
+            });
+          }
+        }
+        
+        // Si aún faltan datos, mostrar mensaje con los que faltan
+        const missingFinal = [];
+        if (!orderData.customer_name) missingFinal.push("nombre y apellido");
+        if (!orderData.address) missingFinal.push("dirección exacta");
+        if (!orderData.phone) missingFinal.push("número de celular");
+        
+        return res.json({
+          response: `🔥 Perfecto 😊
+
+📦 ${orderData.product}
+🔢 Cantidad: ${orderData.quantity}
+💰 Total: ${formatGs(total)} Gs
+
+🚚 Envío GRATIS contra-entrega
+
+📎 Me falta: ${missingFinal.join(", ")}
+
+📲 Podés enviarlo TODO JUNTO o de a uno, voy registrando 😊
+
+y agendamos tu entrega ✨`,
+          context: {
+            ...(context || {}),
+            current_product: orderData.product,
+            order_data: orderData,
+            step: nextStep(orderData),
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
 
       return res.json({
         response: `🔥 Perfecto 😊
