@@ -760,59 +760,40 @@ function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
     .slice(-6)
     .reverse()
     .filter((h: any) => h.role === "assistant" || h.role === "model");
-  
+
   for (const item of lastBotMessages) {
     const content = clean(item?.content);
     if (!content) continue;
-    
-    // 🔥 PRIMERO: Buscar el nombre del producto en el mensaje usando las palabras clave del catálogo
-    // Buscar coincidencia exacta con nombres de productos
-    for (const product of parsed.products) {
-      // Buscar el nombre canónico o el producto en el contenido
-      const productName = product.canonical;
-      const productNameNorm = normalize(productName);
-      const contentNorm = normalize(content);
-      
-      // Si el nombre del producto está en el contenido (con mayor peso)
-      if (contentNorm.includes(productNameNorm)) {
-        // Verificar que no sea solo una coincidencia parcial
-        // Por ejemplo, "Procesador" no debería coincidir con "Limpiador"
-        const words = contentNorm.split(' ');
-        for (const word of words) {
-          if (word === productNameNorm || word.includes(productNameNorm) || productNameNorm.includes(word)) {
-            // Si la palabra es exacta o es una coincidencia fuerte
-            if (word.length >= 4 && (word === productNameNorm || productNameNorm.includes(word) || word.includes(productNameNorm))) {
-              return product;
-            }
-          }
-        }
-      }
-      
-      // También buscar en los alias
-      for (const alias of product.aliases) {
-        const aliasNorm = normalize(alias);
-        if (aliasNorm.length >= 3 && contentNorm.includes(aliasNorm)) {
-          // Verificar que sea una coincidencia fuerte
-          const words = contentNorm.split(' ');
-          for (const word of words) {
-            if (word === aliasNorm || word.includes(aliasNorm) || aliasNorm.includes(word)) {
-              if (word.length >= 3) {
-                return product;
-              }
-            }
-          }
-        }
+
+    const contentNorm = normalize(content);
+
+    // Ordenar productos por longitud del nombre canónico (más largo = más específico primero)
+    const sortedProducts = [...parsed.products].sort(
+      (a, b) => normalize(b.canonical).length - normalize(a.canonical).length
+    );
+
+    // PASO 1: Buscar coincidencia exacta del nombre canónico completo
+    for (const product of sortedProducts) {
+      const canonicalNorm = normalize(product.canonical);
+      if (canonicalNorm.length >= 4 && contentNorm.includes(canonicalNorm)) {
+        return product;
       }
     }
-    
-    // Fallback: usar detectProduct normal
-    const product = detectProduct(content, parsed, "");
-    if (product) {
-      const productInfo = getProductInfo(product, parsed);
-      if (productInfo) return productInfo;
+
+    // PASO 2: Buscar por alias completo (ordenados por longitud, más largo primero)
+    for (const product of sortedProducts) {
+      const sortedAliases = [...product.aliases].sort(
+        (a, b) => normalize(b).length - normalize(a).length
+      );
+      for (const alias of sortedAliases) {
+        const aliasNorm = normalize(alias);
+        if (aliasNorm.length >= 5 && contentNorm.includes(aliasNorm)) {
+          return product;
+        }
+      }
     }
   }
-  
+
   return null;
 }
 
@@ -970,7 +951,7 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
       const isPromoResponse = isRespondingToPromotion(texto, history);
       
       if (isPromoResponse) {
-        // 🔥 USAR LA NUEVA FUNCIÓN MEJORADA
+        // 🔥 USAR LA NUEVA FUNCIÓN CORREGIDA
         const promoProduct = getProductFromLastPromotion(history, parsed);
         
         if (promoProduct) {
