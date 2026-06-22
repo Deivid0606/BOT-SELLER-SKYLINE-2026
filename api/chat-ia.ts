@@ -33,22 +33,14 @@ type ParsedTraining = {
   cities: { alias: string; canonical: string }[];
 };
 
-// ============================================================
-// 🛡️ Sanitizar cantidad
-// ============================================================
 function sanitizeQuantity(q: any) {
   const n = Number(q);
-
   if (!Number.isFinite(n)) return 0;
   if (n < 1) return 0;
   if (n > 100) return 100;
-
   return n;
 }
 
-// ============================================================
-// 🛡️ Verificar si el pedido está estancado
-// ============================================================
 function isOrderStale(order: any, lastActivity: string) {
   const hasProduct = !!order?.product;
   const hasCity = !!order?.city;
@@ -62,22 +54,14 @@ function isOrderStale(order: any, lastActivity: string) {
   return hasProduct && hasCity && hasQuantity && !hasCustomerData && diffMinutes > 10;
 }
 
-// ============================================================
-// 🔥 NUEVA FUNCIÓN: Detectar si es consulta de precio
-// ============================================================
 function isPriceQuery(text: string) {
   const m = normalize(text);
   return /\b(cuanto cuesta|precio|valor|costo|cuanto sale|cuanto vale)\b/.test(m);
 }
 
-// ============================================================
-// 🔥 NUEVA FUNCIÓN: Verificar si es una nueva conversación
-// ============================================================
 function isNewConversation(context: any, history: any[]) {
-  // Si no hay historial o es muy corto, es nueva conversación
-  if (!history || history.length < 2) return true;
+  if (!history || history.length < 3) return true;
   
-  // Si el último mensaje fue hace más de 30 minutos
   const lastMessageTime = context?.updated_at;
   if (lastMessageTime) {
     const now = new Date();
@@ -738,6 +722,62 @@ function inferProductFromLastBotMessage(history: any[], parsed: ParsedTraining) 
   return "";
 }
 
+// ============================================================
+// 🔥 NUEVA FUNCIÓN: Detectar si el usuario está respondiendo a una promoción
+// ============================================================
+function isRespondingToPromotion(text: string, history: any[]) {
+  // Si el usuario dice "quiero" y el último mensaje del bot contenía una promoción
+  const isBuy = isBuyIntent(text);
+  if (!isBuy) return false;
+  
+  const lastBotMessages = (history || [])
+    .slice(-3)
+    .filter((h: any) => h.role === "assistant" || h.role === "model");
+  
+  for (const item of lastBotMessages) {
+    const content = clean(item?.content);
+    if (!content) continue;
+    
+    // Detectar si el mensaje contiene palabras clave de promoción
+    if (
+      content.includes("Oferta") ||
+      content.includes("promoción") ||
+      content.includes("🔥") ||
+      content.includes("HOY") ||
+      content.includes("antes") ||
+      content.includes("llevate")
+    ) {
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+// ============================================================
+// 🔥 NUEVA FUNCIÓN: Obtener el producto del mensaje de promoción
+// ============================================================
+function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
+  const lastBotMessages = (history || [])
+    .slice(-6)
+    .reverse()
+    .filter((h: any) => h.role === "assistant" || h.role === "model");
+  
+  for (const item of lastBotMessages) {
+    const content = clean(item?.content);
+    if (!content) continue;
+    
+    // Buscar el producto en el mensaje
+    const product = detectProduct(content, parsed, "");
+    if (product) {
+      const productInfo = getProductInfo(product, parsed);
+      if (productInfo) return productInfo;
+    }
+  }
+  
+  return null;
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -795,21 +835,15 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // ============================================================
-    // 🔥 INICIO: LÓGICA DE RESETEO DE PEDIDO
-    // ============================================================
-    
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
     
-    // 🔥 NUEVO: Si es consulta de precio, resetear el pedido y comenzar de nuevo
+    // 🔥 NUEVO: Si es consulta de precio, resetear el pedido
     if (isPriceQuery(texto)) {
-      // Buscar el producto mencionado en la consulta
       const productMentioned = detectProduct(texto, parsed, "");
       
       if (productMentioned) {
         const productInfo = getProductInfo(productMentioned, parsed);
         if (productInfo) {
-          // Resetear el pedido y comenzar con este producto
           const resetOrder = {
             product: productInfo.canonical,
             quantity: 0,
@@ -834,7 +868,6 @@ export default async function handler(req: any, res: any) {
         }
       }
       
-      // Si no se detectó producto específico, ofrecer el catálogo
       const defaultProduct = parsed.products.find(p => 
         normalize(p.canonical).includes("nebulizador")
       ) || parsed.products[0];
@@ -864,7 +897,6 @@ export default async function handler(req: any, res: any) {
       }
     }
     
-    // 🛡️ Verificar si el pedido está estancado
     if (isOrderStale(oldOrder, context?.updated_at || new Date().toISOString())) {
       oldOrder = {
         product: "",
@@ -891,22 +923,58 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
       });
     }
 
-    // 🔥 DETECTAR "quiero" sin producto específico
-    const buyIntent = /\b(quiero|comprar|compro|reservar|reserva|llevo|dame|mandame)\b/i.test(texto);
+    const buyIntent = isBuyIntent(texto);
     const hasProductInMessage = parsed.products.some(p => 
       normalize(texto).includes(normalize(p.canonical)) ||
       p.aliases.some(a => normalize(texto).includes(normalize(a)))
     );
 
-    // Si el usuario dice "quiero" sin especificar producto
+    // ============================================================
+    // 🔥 CORRECCIÓN PRINCIPAL: Si el usuario dice "quiero" y está respondiendo a una promoción
+    // ============================================================
     if (buyIntent && !hasProductInMessage) {
+      // 🔥 NUEVO: Verificar si está respondiendo a una promoción
+      const isPromoResponse = isRespondingToPromotion(texto, history);
+      
+      if (isPromoResponse) {
+        // Obtener el producto de la promoción
+        const promoProduct = getProductFromLastPromotion(history, parsed);
+        
+        if (promoProduct) {
+          // Resetear el pedido y usar el producto de la promoción
+          const resetOrder = {
+            product: promoProduct.canonical,
+            quantity: 0,
+            city: "",
+            customer_name: "",
+            phone: "",
+            address: "",
+          };
+          
+          return res.json({
+            response: `🔥 ¡Excelente decisión! 😊
+
+Tenemos el **${promoProduct.canonical}** en oferta:
+
+💰 Precio especial: ${formatGs(promoProduct.price1)} Gs (promoción por tiempo limitado)
+
+📍 ¿Para qué ciudad sería el envío? 😊`,
+            context: {
+              ...(context || {}),
+              current_product: promoProduct.canonical,
+              order_data: resetOrder,
+              step: "collecting_city",
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
+      }
+      
+      // Si no es promoción, continuar con la lógica normal
       const hasExistingOrder = oldOrder.product && oldOrder.city;
 
-      // 🔥 MODIFICADO: Si tiene pedido existente, pero es una conversación nueva o consulta de precio, resetear
       if (hasExistingOrder) {
-        // Verificar si es una nueva conversación
         if (isNewConversation(context, history)) {
-          // Resetear completamente
           const resetOrder = {
             product: "",
             quantity: 0,
@@ -946,7 +1014,6 @@ Tenemos el **${productInfo.canonical}** en oferta:
           }
         }
         
-        // Si no es nueva conversación, preguntar si quiere el mismo producto
         return res.json({
           response: `✅ Ya estabas viendo el **${oldOrder.product}**.
 
@@ -965,7 +1032,6 @@ Escribí el nombre del producto que te interesa. 😊`,
         });
       }
 
-      // Si NO hay pedido previo, empezar de cero
       const resetOrder = {
         product: "",
         quantity: 0,
@@ -1045,13 +1111,18 @@ Escribí el nombre del producto que te interesa. 😊`,
     }
 
     // ============================================================
-    // FIN: LÓGICA DE RESETEO
+    // FLUJO NORMAL: Detectar producto del mensaje
     // ============================================================
-
+    
+    // 🔥 CORRECCIÓN: Priorizar el producto detectado en el mensaje actual
+    // Si el mensaje contiene un nombre de producto, usarlo, NO el oldOrder
+    const productFromMessage = detectProduct(texto, parsed, "");
+    const productToUse = productFromMessage || context?.current_product || oldOrder.product;
+    
     const product = detectProduct(
       texto,
       parsed,
-      context?.current_product || oldOrder.product
+      productToUse
     );
 
     const detectedCity = detectCity(texto, parsed, oldOrder.city);
