@@ -33,34 +33,14 @@ type ParsedTraining = {
   cities: { alias: string; canonical: string }[];
 };
 
-// ============================================================
-// 🛡️ NUEVA FUNCIÓN: Sanitizar cantidad
-// ============================================================
-function sanitizeQuantity(q: any) {
-  const n = Number(q);
-
-  if (!Number.isFinite(n)) return 0;
-  if (n < 1) return 0;
-  if (n > 100) return 100; // Límite de seguridad
-
-  return n;
-}
-
-// ============================================================
-// 🛡️ NUEVA FUNCIÓN: Verificar si el pedido está estancado
-// ============================================================
-function isOrderStale(order: any, lastActivity: string) {
-  const hasProduct = !!order?.product;
-  const hasCity = !!order?.city;
-  const hasQuantity = order?.quantity > 0;
-  const hasCustomerData = !!(order?.customer_name || order?.address || order?.phone);
-  
-  const now = new Date();
-  const last = new Date(lastActivity);
-  const diffMinutes = (now.getTime() - last.getTime()) / (1000 * 60);
-  
-  return hasProduct && hasCity && hasQuantity && !hasCustomerData && diffMinutes > 10;
-}
+const emptyOrder = {
+  product: "",
+  quantity: 0,
+  city: "",
+  customer_name: "",
+  phone: "",
+  address: "",
+};
 
 async function getAllTrainingData(userId: string) {
   const { data, error } = await supabase
@@ -133,36 +113,35 @@ function parseTraining(training: string): ParsedTraining {
     cities.push({ alias: a, canonical: c });
   };
 
-  const citySection =
+  const cityListSection =
     training.match(/LISTA COMPLETA POR CIUDAD([\s\S]*?)⚙️ INSTRUCCIÓN FINAL/i)
-      ?.[1] ||
+      ?.[1] || "";
+
+  cityListSection
+    .split(/📍\s*/g)
+    .filter(Boolean)
+    .forEach((block) => {
+      const lines = block.split("\n").map(clean).filter(Boolean);
+      const canonical = lines[0];
+      const variantsLine = lines.find((l) => l.startsWith("✅"));
+
+      if (canonical && variantsLine) {
+        addCity(canonical, canonical);
+
+        variantsLine
+          .replace(/^✅\s*/, "")
+          .split(",")
+          .map(clean)
+          .filter(Boolean)
+          .forEach((v) => addCity(v, canonical));
+      }
+    });
+
+  const coverageSection =
     training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
     "";
 
-  const cityBlocks = citySection.split(/📍\s*/g).filter(Boolean);
-
-  for (const block of cityBlocks) {
-    const lines = block.split("\n").map(clean).filter(Boolean);
-    const canonical = lines[0];
-    const variantsLine = lines.find((l) => l.startsWith("✅"));
-
-    if (canonical && variantsLine) {
-      addCity(canonical, canonical);
-
-      variantsLine
-        .replace(/^✅\s*/, "")
-        .split(",")
-        .map(clean)
-        .filter(Boolean)
-        .forEach((v) => addCity(v, canonical));
-    }
-  }
-
-  const simpleCoverage =
-    training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
-    "";
-
-  simpleCoverage
+  coverageSection
     .split("\n")
     .filter((l) => l.includes(","))
     .join(",")
@@ -268,53 +247,35 @@ function hasCoverage(city: string, parsed: ParsedTraining) {
   });
 }
 
-function isBuyIntent(text: string) {
-  const m = normalize(text);
-  return /\b(si|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo)\b/.test(
-    m
-  );
-}
-
-// ============================================================
-// 🔧 MODIFICADO: extractQuantity con sanitizeQuantity
-// ============================================================
 function extractQuantity(text: string) {
   const m = normalize(text);
 
-  // Detectar "2 unidades", "3 u", etc.
   const q1 = m.match(/\b(\d+)\s*(unidad|unidades|u|und|unds)\b/);
-  if (q1) return sanitizeQuantity(Number(q1[1]));
+  if (q1) return Number(q1[1]);
 
-  // Detectar "quiero 2", "llevo 3"
   const q2 = m.match(/\b(quiero|llevo|dame|mandame|reservame)\s+(\d+)\b/);
-  if (q2) return sanitizeQuantity(Number(q2[2]));
+  if (q2) return Number(q2[2]);
 
-  // Detectar "2 quiero", "3 llevo"
   const q3 = m.match(/\b(\d+)\s+(quiero|llevo|dame|mandame)\b/);
-  if (q3) return sanitizeQuantity(Number(q3[1]));
+  if (q3) return Number(q3[1]);
 
-  // Solo número
-  if (/^\d+$/.test(m)) return sanitizeQuantity(Number(m));
+  if (/^\d+$/.test(m)) return Number(m);
 
-  // Palabras: uno, dos, tres...
-  const words: Record<string, number> = {
-    uno: 1, una: 1,
-    dos: 2,
-    tres: 3,
-    cuatro: 4,
-    cinco: 5,
-    seis: 6,
-    siete: 7,
-    ocho: 8,
-    nueve: 9,
-    diez: 10
-  };
-
-  for (const [word, num] of Object.entries(words)) {
-    if (new RegExp(`\\b${word}\\b`).test(m)) return sanitizeQuantity(num);
-  }
+  if (/\buno\b|\buna\b/.test(m)) return 1;
+  if (/\bdos\b/.test(m)) return 2;
+  if (/\btres\b/.test(m)) return 3;
+  if (/\bcuatro\b/.test(m)) return 4;
+  if (/\bcinco\b/.test(m)) return 5;
 
   return 0;
+}
+
+function sanitizeQuantity(q: any) {
+  const n = Number(q);
+  if (!Number.isFinite(n)) return 0;
+  if (n < 1) return 0;
+  if (n > 100) return 100;
+  return Math.floor(n);
 }
 
 function extractPhone(text: string) {
@@ -327,6 +288,8 @@ function extractName(text: string, detectedCity: string, phone: string) {
   const norm = normalize(raw);
 
   if (!raw || detectedCity || phone) return "";
+  if (/^\d+$/.test(norm)) return "";
+  if (/^\d+\s*(unidad|unidades|u|und|unds)$/.test(norm)) return "";
 
   const forbidden = [
     "quiero",
@@ -366,30 +329,19 @@ function extractName(text: string, detectedCity: string, phone: string) {
   return "";
 }
 
-// ============================================================
-// 🔧 MODIFICADO: extractAddress con bloqueo de cantidades
-// ============================================================
 function extractAddress(text: string, detectedCity: string, phone: string, name: string) {
   const raw = clean(text);
   const norm = normalize(raw);
 
-  // 🚨 BLOQUEAR respuestas que son solo cantidades
-  if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) {
-    return "";
-  }
-
-  if (/^\d+$/.test(raw)) {
-    return "";
-  }
-
   if (!raw || detectedCity || phone || name) return "";
+  if (/^\d+$/.test(norm)) return "";
+  if (/^\d+\s*(unidad|unidades|u|und|unds)$/.test(norm)) return "";
 
   const explicit = raw.match(
     /(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i
   )?.[1];
 
   if (explicit) return clean(explicit);
-
   if (raw.includes("maps.app") || raw.includes("google.com/maps")) return raw;
 
   if (
@@ -411,7 +363,7 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining) {
 
   return {
     product: productInfo?.canonical || "",
-    quantity: sanitizeQuantity(old?.quantity || 0),
+    quantity: sanitizeQuantity(old?.quantity),
     city: clean(old?.city || ""),
     customer_name:
       old?.customer_name && nameNorm !== "quiero" ? clean(old.customer_name) : "",
@@ -420,13 +372,25 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining) {
   };
 }
 
-// ============================================================
-// 🔧 MODIFICADO: mergeOrderData con sanitizeQuantity
-// ============================================================
+function shouldResetConversation(text: string) {
+  const m = normalize(text);
+
+  return [
+    "quiero",
+    "me interesa",
+    "quiero comprar",
+    "comprar",
+    "hola",
+    "buenas",
+    "info",
+    "informacion",
+  ].includes(m);
+}
+
 function mergeOrderData(old: any, ext: any, product: string) {
   return {
     product: product || old.product || "",
-    quantity: ext.quantity > 0 ? sanitizeQuantity(ext.quantity) : sanitizeQuantity(old.quantity || 0),
+    quantity: sanitizeQuantity(ext.quantity || old.quantity || 0),
     city: ext.city || old.city || "",
     customer_name: ext.name || old.customer_name || "",
     phone: ext.phone || old.phone || "",
@@ -436,9 +400,9 @@ function mergeOrderData(old: any, ext: any, product: string) {
 
 function calculateTotal(productName: string, quantity: number, parsed: ParsedTraining) {
   const p = getProductInfo(productName, parsed);
-  if (!p) return 0;
-
   const q = sanitizeQuantity(quantity);
+
+  if (!p || !q) return 0;
 
   if (q === 2 && p.price2) return p.price2;
   if (q === 3 && p.price3) return p.price3;
@@ -458,6 +422,28 @@ function nextStep(o: any) {
   if (!o.address) return "collecting_address";
   if (!o.phone) return "collecting_phone";
   return "confirm_order";
+}
+
+function quantityReply(o: any, parsed: ParsedTraining) {
+  const total = calculateTotal(o.product, o.quantity, parsed);
+
+  return `🔥 Perfecto 😊
+
+📦 ${o.product}
+🔢 Cantidad: ${o.quantity}
+💰 Total: ${formatGs(total)} Gs
+
+🚚 Envío GRATIS contra-entrega
+
+📎 Pasame tus datos:
+
+✅ nombre y apellido
+✅ dirección exacta o ubicación por Google Maps
+✅ número de celular
+
+📲 Podés enviarlo TODO JUNTO o de a uno, voy registrando 😊
+
+y agendamos tu entrega ✨`;
 }
 
 function missingDataReply(o: any) {
@@ -531,14 +517,7 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 
 ¡Gracias por elegir Mega Todo Store! 💜✨
 
-💵 Pago anticipado por transferencia.
-
-📲 DATOS PARA TRANSFERENCIA:
-
-Titular: DAVID AGUSTIN ALCARAZ AGUILAR
-Banco Familiar
-Cuenta: 81-4981442
-Alias: 0994130022`;
+💵 Pago anticipado por transferencia.`;
 }
 
 async function safeUpsertOrder(
@@ -570,7 +549,7 @@ async function safeUpsertOrder(
     city: order.city || null,
     ciudad: order.city || null,
     address: order.address || null,
-    quantity: order.quantity || 1,
+    quantity: sanitizeQuantity(order.quantity || 1),
     total_amount: total || null,
     status,
     fecha: new Date().toISOString(),
@@ -688,6 +667,20 @@ async function transcribeAudioWithGemini({
   });
 }
 
+function inferProductFromHistory(history: any[], parsed: ParsedTraining) {
+  const lastItems = (history || []).slice(-8).reverse();
+
+  for (const item of lastItems) {
+    const content = clean(item?.content);
+    if (!content) continue;
+
+    const p = detectProduct(content, parsed, "");
+    if (p) return p;
+  }
+
+  return "";
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -745,118 +738,58 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // ============================================================
-    // 🔥 INICIO: LÓGICA DE RESETEO DE PEDIDO
-    // ============================================================
-    
-    let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
-    
-    // 🛡️ Verificar si el pedido está estancado
-    if (isOrderStale(oldOrder, context?.updated_at || new Date().toISOString())) {
-      oldOrder = {
-        product: "",
-        quantity: 0,
-        city: "",
-        customer_name: "",
-        phone: "",
-        address: "",
-      };
-      
-      return res.json({
-        response: `🔄 Veo que tenías un pedido incompleto. Comencemos de nuevo.
+    const resetConversation = shouldResetConversation(texto);
 
-📋 ¿Qué producto te interesa? Tenemos el Nebulizador Portátil en oferta por 129.900 Gs.
+    const oldOrder = resetConversation
+      ? { ...emptyOrder }
+      : sanitizeOldOrder(context?.order_data || {}, parsed);
 
-Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
-        context: {
-          ...(context || {}),
-          order_data: oldOrder,
-          current_product: null,
-          step: "selling",
-          updated_at: new Date().toISOString(),
-        },
-      });
-    }
-
-    // 🔥 DETECTAR "quiero" sin producto específico
-    const buyIntent = /\b(quiero|comprar|compro|reservar|reserva|llevo|dame|mandame)\b/i.test(texto);
-    const hasProductInMessage = parsed.products.some(p => 
-      normalize(texto).includes(normalize(p.canonical)) ||
-      p.aliases.some(a => normalize(texto).includes(normalize(a)))
-    );
-
-    // Si el usuario dice "quiero" sin especificar producto
-    if (buyIntent && !hasProductInMessage) {
-      const hasExistingOrder = oldOrder.product && oldOrder.city;
-
-      if (hasExistingOrder) {
-        // Si ya había un pedido, preguntar si quiere lo mismo o algo nuevo
-        return res.json({
-          response: `✅ Ya estabas viendo el **${oldOrder.product}**.
-
-¿Querés ese mismo producto o querés ver otro?
-
-📋 Catálogo completo: ${CATALOG_URL}
-
-Escribí el nombre del producto que te interesa. 😊`,
-          context: {
-            ...(context || {}),
-            current_product: oldOrder.product,
-            order_data: oldOrder,
-            step: "clarifying_intent",
-            updated_at: new Date().toISOString(),
-          },
-        });
-      }
-
-      // Si NO hay pedido previo, empezar de cero
-      const resetOrder = {
-        product: "",
-        quantity: 0,
-        city: "",
-        customer_name: "",
-        phone: "",
-        address: "",
-      };
-
-      return res.json({
-        response: `🔥 ¡Excelente decisión! 😊
-
-Tenemos el **Nebulizador Portátil** en oferta:
-
-💰 Precio especial: 129.900 Gs (promoción por tiempo limitado)
-
-📍 También tenemos otros productos. 
-📋 Revisá nuestro catálogo completo:
-${CATALOG_URL}
-
-📦 ¿Querés el Nebulizador o te interesa otro producto?
-
-Escribí el nombre y te paso el precio con envío a tu ciudad. 🚚`,
-        context: {
-          ...(context || {}),
-          current_product: null,
-          order_data: resetOrder,
-          step: "selling",
-          updated_at: new Date().toISOString(),
-        },
-      });
-    }
-
-    // ============================================================
-    // FIN: LÓGICA DE RESETEO
-    // ============================================================
+    const productFromMessage = detectProduct(texto, parsed, "");
+    const productFromContext = resetConversation
+      ? clean(context?.last_ad_product || context?.current_product || inferProductFromHistory(history, parsed))
+      : clean(context?.current_product || oldOrder.product);
 
     const product = detectProduct(
-      texto,
+      productFromMessage || productFromContext || texto,
       parsed,
-      context?.current_product || oldOrder.product
+      productFromContext || oldOrder.product
     );
+
+    const productInfo = getProductInfo(product, parsed);
+
+    if (resetConversation && productInfo) {
+      const freshOrder = {
+        ...emptyOrder,
+        product: productInfo.canonical,
+      };
+
+      await safeUpsertOrder(user_id, fromNumber, freshOrder, parsed, false);
+
+      return res.json({
+        response: `💰 ${productInfo.canonical}: ${formatGs(productInfo.price1)} Gs
+
+📍 ¿Para qué ciudad sería el envío? 😊`,
+        context: {
+          ...(context || {}),
+          current_product: productInfo.canonical,
+          last_ad_product: productInfo.canonical,
+          order_data: freshOrder,
+          step: "collecting_city",
+          updated_at: new Date().toISOString(),
+        },
+      });
+    }
 
     const detectedCity = detectCity(texto, parsed, oldOrder.city);
     const phone = extractPhone(texto);
-    const qty = extractQuantity(texto);
-    const name = extractName(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone);
+    const qty = sanitizeQuantity(extractQuantity(texto));
+
+    const name = extractName(
+      texto,
+      detectedCity !== oldOrder.city ? detectedCity : "",
+      phone
+    );
+
     const address = extractAddress(
       texto,
       detectedCity !== oldOrder.city ? detectedCity : "",
@@ -876,51 +809,25 @@ Escribí el nombre y te paso el precio con envío a tu ciudad. 🚚`,
       product
     );
 
-    // Sanitizar cantidad por seguridad
     orderData.quantity = sanitizeQuantity(orderData.quantity);
 
-    const productInfo = getProductInfo(orderData.product, parsed);
+    const finalProductInfo = getProductInfo(orderData.product, parsed);
 
-    if (!productInfo) {
+    if (!finalProductInfo) {
       orderData = { ...orderData, product: "" };
     }
 
-    // ============================================================
-    // 🔥 NUEVO FLUJO: RESPUESTA INMEDIATA DESPUÉS DE CAPTURAR CANTIDAD
-    // ============================================================
-
-    // 1️⃣ Si falta producto → preguntar
-    if (!orderData.product) {
-      await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
-
-      return res.json({
-        response: `📋 ¿Qué producto te gustaría llevar?
-
-Tenemos el **Nebulizador Portátil** en oferta por 129.900 Gs.
-
-📦 Escribí el nombre del producto o revisá el catálogo:
-${CATALOG_URL}`,
-        context: {
-          ...(context || {}),
-          current_product: null,
-          order_data: orderData,
-          step: "selling",
-          updated_at: new Date().toISOString(),
-        },
-      });
-    }
-
-    // 2️⃣ Si falta ciudad → preguntar
     if (orderData.product && !orderData.city) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
       return res.json({
-        response: `💰 ${orderData.product}: ${formatGs(productInfo?.price1 || 0)} Gs
+        response: `💰 ${orderData.product}: ${formatGs(finalProductInfo?.price1 || 0)} Gs
 
 📍 ¿Para qué ciudad sería el envío? 😊`,
         context: {
           ...(context || {}),
           current_product: orderData.product,
+          last_ad_product: orderData.product,
           order_data: orderData,
           step: "collecting_city",
           updated_at: new Date().toISOString(),
@@ -928,24 +835,24 @@ ${CATALOG_URL}`,
       });
     }
 
-    // 3️⃣ Si falta cantidad → preguntar
     if (orderData.product && orderData.city && !orderData.quantity) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
-      const promo = productInfo?.price2
-        ? `\n🔥 PROMO 2x → ${formatGs(productInfo.price2)} Gs`
+      const promo = finalProductInfo?.price2
+        ? `\n🔥 PROMO 2x → ${formatGs(finalProductInfo.price2)} Gs`
         : "";
 
       return res.json({
         response: `✅ Perfecto 😊 ${orderData.city} tiene ENVÍO GRATIS contra-entrega 🚚
 
 🔥 ${orderData.product}
-• 1 unidad → ${formatGs(productInfo?.price1 || 0)} Gs${promo}
+• 1 unidad → ${formatGs(finalProductInfo?.price1 || 0)} Gs${promo}
 
 ¿Cuántas unidades te gustaría llevar? ✨`,
         context: {
           ...(context || {}),
           current_product: orderData.product,
+          last_ad_product: orderData.product,
           order_data: orderData,
           step: "collecting_quantity",
           updated_at: new Date().toISOString(),
@@ -953,43 +860,42 @@ ${CATALOG_URL}`,
       });
     }
 
-    // 4️⃣ 🔥 NUEVO: Si YA TIENE cantidad → mostrar resumen y pedir datos
     if (
       orderData.product &&
       orderData.city &&
-      orderData.quantity > 0 &&
-      (!orderData.customer_name || !orderData.address || !orderData.phone)
+      orderData.quantity &&
+      !orderData.customer_name &&
+      !orderData.address
     ) {
-      // Sanitizar por seguridad
-      orderData.quantity = sanitizeQuantity(orderData.quantity);
-
-      const total = calculateTotal(orderData.product, orderData.quantity, parsed);
-
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
-      // Determinar qué datos faltan
-      const missing = [];
-      if (!orderData.customer_name) missing.push("nombre y apellido");
-      if (!orderData.address) missing.push("dirección exacta");
-      if (!orderData.phone) missing.push("número de celular");
-
       return res.json({
-        response: `🔥 Perfecto 😊
-
-📦 ${orderData.product}
-🔢 Cantidad: ${orderData.quantity}
-💰 Total: ${formatGs(total)} Gs
-
-🚚 Envío GRATIS contra-entrega
-
-📎 Me falta: ${missing.join(", ")}
-
-📲 Podés enviarlo TODO JUNTO o de a uno, voy registrando 😊
-
-y agendamos tu entrega ✨`,
+        response: quantityReply(orderData, parsed),
         context: {
           ...(context || {}),
           current_product: orderData.product,
+          last_ad_product: orderData.product,
+          order_data: orderData,
+          step: "collecting_name",
+          updated_at: new Date().toISOString(),
+        },
+      });
+    }
+
+    if (
+      orderData.product &&
+      orderData.city &&
+      orderData.quantity &&
+      (!orderData.customer_name || !orderData.address || !orderData.phone)
+    ) {
+      await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
+
+      return res.json({
+        response: missingDataReply(orderData),
+        context: {
+          ...(context || {}),
+          current_product: orderData.product,
+          last_ad_product: orderData.product,
           order_data: orderData,
           step: nextStep(orderData),
           updated_at: new Date().toISOString(),
@@ -997,32 +903,14 @@ y agendamos tu entrega ✨`,
       });
     }
 
-    // 5️⃣ Si tiene TODO → confirmar pedido
     if (
       orderData.product &&
       orderData.city &&
-      orderData.quantity > 0 &&
+      orderData.quantity &&
       orderData.customer_name &&
       orderData.address &&
       orderData.phone
     ) {
-      if (!getProductInfo(orderData.product, parsed)) {
-        return res.json({
-          response:
-            "🙏 Para confirmar necesito saber qué producto querés. ¿Te referís al Nebulizador Portátil?",
-          context: {
-            ...(context || {}),
-            order_data: { ...orderData, product: "" },
-            current_product: null,
-            step: "selling",
-            updated_at: new Date().toISOString(),
-          },
-        });
-      }
-
-      // Sanitizar cantidad final
-      orderData.quantity = sanitizeQuantity(orderData.quantity);
-
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, true);
 
       return res.json({
@@ -1030,16 +918,13 @@ y agendamos tu entrega ✨`,
         context: {
           ...(context || {}),
           current_product: orderData.product,
+          last_ad_product: orderData.product,
           order_data: orderData,
           step: "pedido_confirmado",
           updated_at: new Date().toISOString(),
         },
       });
     }
-
-    // ============================================================
-    // FALLBACK: Gemini para respuestas generales
-    // ============================================================
 
     const system = `
 Sos vendedor de Mega Todo Store.
@@ -1049,13 +934,13 @@ REGLAS:
 - Los productos válidos son SOLO los de CATALOGO_PRODUCTOS.
 - Nunca uses ciudades como producto.
 - Nunca uses "quiero" como nombre.
-- Nunca confirmes si falta producto, ciudad, cantidad, nombre, dirección o teléfono.
+- Nunca confirmes pedidos.
+- Nunca calcules cantidad ni total.
 - Si falta producto, ofrecé productos del catálogo.
 - Si falta ciudad, preguntá ciudad.
 - Si falta cantidad, preguntá cantidad.
 - Si faltan datos, pedí solo lo faltante.
 - No inventes precios.
-- NO GENERES CANTIDADES NI TOTALES. El backend los calcula automáticamente.
 
 ENTRENAMIENTO:
 ${trainingText}
@@ -1089,7 +974,9 @@ ${trainingText}
         `📋 Te invito a revisar nuestro catálogo:\n${CATALOG_URL}`,
       context: {
         ...(context || {}),
-        current_product: orderData.product || null,
+        current_product: orderData.product || context?.current_product || null,
+        last_ad_product:
+          orderData.product || context?.last_ad_product || context?.current_product || null,
         order_data: orderData,
         step: nextStep(orderData),
         updated_at: new Date().toISOString(),
