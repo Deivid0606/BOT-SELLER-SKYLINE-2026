@@ -1,5 +1,5 @@
 // api/chat-ia.ts
-// ✅ CORREGIDO: SIEMPRE pregunta CIUDAD primero, con correcciones de cantidad y total
+// ✅ CORREGIDO: SIEMPRE pregunta CIUDAD primero, sin importar lo que diga el cliente
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -142,62 +142,6 @@ function detectProduct(text: string, training: string, prev?: string) {
   return clean(prev || "");
 }
 
-// ✅ FUNCIÓN NUEVA: Verificar y corregir producto detectado
-function ensureCorrectProduct(text: string, training: string, currentProduct: string): string {
-  const textLower = text.toLowerCase();
-  
-  // Detectar nebulizador por contexto
-  if (textLower.includes('nebulizador') || textLower.includes('respir') || 
-      textLower.includes('tos') || textLower.includes('congest') || 
-      textLower.includes('frio') || textLower.includes('resfrio')) {
-    // Buscar nebulizador en el entrenamiento
-    const lines = getPriceLines(training);
-    for (const line of lines) {
-      if (line.toLowerCase().includes('nebulizador')) {
-        return extractProductNameFromLine(line);
-      }
-    }
-    return 'Nebulizador Portátil';
-  }
-  
-  // Si el producto actual es nebulizador pero se perdió, restaurarlo
-  if (currentProduct && currentProduct.toLowerCase().includes('nebulizador')) {
-    return currentProduct;
-  }
-  
-  // Detectar otros productos comunes
-  const productAliases: Record<string, string> = {
-    'destapa': 'Destapa Cañerías Tornado',
-    'tornado': 'Destapa Cañerías Tornado',
-    'abeja': 'Crema de Veneno de Abeja',
-    'veneno': 'Crema de Veneno de Abeja',
-    'olla': 'Limpiador de Ollas y Carbonilla',
-    'carbonilla': 'Limpiador de Ollas y Carbonilla',
-    'peladora': 'Peladora Automática',
-    'perfume': 'Perfume Asad',
-    'asad': 'Perfume Asad',
-    'marmol': 'Tabla de Picar de Mármol',
-    'tabla': 'Tabla de Picar de Mármol',
-    'raqueta': 'Raqueta para Insectos',
-    'insecto': 'Raqueta para Insectos',
-    'afilador': 'Afilador de Cuchillos',
-    'plantilla': 'Plantillas Ortopiex 5D',
-    'ortopiex': 'Plantillas Ortopiex 5D',
-    'almohadilla': 'Almohadillas Antivibración',
-    'antivibracion': 'Almohadillas Antivibración',
-  };
-  
-  for (const [key, value] of Object.entries(productAliases)) {
-    if (textLower.includes(key)) {
-      return value;
-    }
-  }
-  
-  // Usar detección normal si nada coincide
-  const detected = detectProduct(text, training, currentProduct);
-  return detected || currentProduct;
-}
-
 function isPriceIntent(text: string) {
   const m = normalize(text);
   return (
@@ -265,7 +209,6 @@ function extractData(msg: string) {
     "valle mi": "Vallemí",
     concepción: "Concepción",
     concepcion: "Concepción",
-    "san antonio": "San Antonio",
   };
 
   let city = "";
@@ -316,7 +259,7 @@ function mergeOrderData(old: any, ext: any, product: string) {
 }
 
 const PRODUCT_PRICES: Record<string, number> = {
-  "Nebulizador Portátil": 129900,
+  "Nebulizador Portátil": 169900,
   "Destapa Cañerías Tornado": 159900,
   "Veneno de Abeja": 145000,
   "Crema de Veneno de Abeja": 145000,
@@ -350,113 +293,46 @@ function getUnitPrice(productName: string): number {
   return matchedKey ? PRODUCT_PRICES[matchedKey] : 0;
 }
 
-// ✅ FUNCIÓN CORREGIDA: Fix quantity and total
 function fixQuantityAndTotal(response: string, expectedQty: number, productName: string): string {
-  if (!productName || expectedQty < 1) return response;
-  
   let fixed = response;
+  const correctTotal = calculateCorrectTotal(productName, expectedQty);
   
-  // 1. CORREGIR CANTIDAD en todas sus formas
-  const quantityRegexes = [
-    { pattern: /Cantidad:\s*\d+\s*(?:unidad|unidades)?/gi, replacement: `Cantidad: ${expectedQty} ${expectedQty === 1 ? 'unidad' : 'unidades'}` },
-    { pattern: /cantidad:\s*\d+\s*(?:unidad|unidades)?/gi, replacement: `cantidad: ${expectedQty} ${expectedQty === 1 ? 'unidad' : 'unidades'}` },
-    { pattern: /\b(\d+)\s*(?:unidad|unidades)\b/gi, replacement: `${expectedQty} ${expectedQty === 1 ? 'unidad' : 'unidades'}` },
-    { pattern: /unidad(?:es)?:\s*\d+/gi, replacement: `unidades: ${expectedQty}` },
+  const quantityPatterns = [
+    { pattern: /Cantidad:\s*11\b/gi, replacement: `Cantidad: ${expectedQty}` },
+    { pattern: /cantidad:\s*11\b/gi, replacement: `cantidad: ${expectedQty}` },
+    { pattern: /\b11\s*(unidad|unidades)\b/gi, replacement: `${expectedQty} ${expectedQty === 1 ? 'unidad' : 'unidades'}` },
   ];
   
-  for (const { pattern, replacement } of quantityRegexes) {
+  for (const { pattern, replacement } of quantityPatterns) {
     if (pattern.test(fixed)) {
       fixed = fixed.replace(pattern, replacement);
     }
   }
   
-  // Si aún hay números sueltos que parecen cantidades, corregirlos
-  if (expectedQty > 0 && expectedQty !== 1) {
-    fixed = fixed.replace(/\b1\s*(?:u\.?|unidad)/gi, `${expectedQty} unidades`);
+  const totalPattern = /Total:\s*[\d\.\,]+\s*Gs/gi;
+  const currentTotalMatch = fixed.match(totalPattern);
+  if (currentTotalMatch && !currentTotalMatch[0].includes(correctTotal)) {
+    fixed = fixed.replace(totalPattern, `💰 Total: ${correctTotal} Gs`);
   }
   
-  // 2. CALCULAR TOTAL CORRECTO usando PRECIO REAL
-  const unitPrice = getUnitPrice(productName);
-  if (unitPrice > 0) {
-    const correctTotal = unitPrice * expectedQty;
-    const formattedTotal = correctTotal.toLocaleString('es-ES');
-    
-    // Corregir TOTAL en todos los formatos posibles
-    const totalPatterns = [
-      /Total:\s*[\d\.\,]+\s*Gs/gi,
-      /total:\s*[\d\.\,]+\s*Gs/gi,
-      /💰\s*Total:\s*[\d\.\,]+\s*Gs/gi,
-      /\b[\d\.\,]+\s*Gs\b(?!.*(?:precio|valor))/gi
-    ];
-    
-    let totalFixed = false;
-    for (const pattern of totalPatterns) {
-      if (pattern.test(fixed)) {
-        fixed = fixed.replace(pattern, `💰 Total: ${formattedTotal} Gs`);
-        totalFixed = true;
-        break;
-      }
-    }
-    
-    // Si no encontró ningún total, agregarlo al final
-    if (!totalFixed && fixed.includes(productName)) {
-      fixed += `\n\n💰 Total: ${formattedTotal} Gs`;
-    }
-  }
-  
-  // 3. CORREGIR PRODUCTO si está mal nombrado
-  const productKeywords = productName.toLowerCase().split(' ').filter(w => w.length > 3);
-  const currentProductMatch = fixed.match(/Producto:\s*([^\n]+)/i);
-  if (currentProductMatch) {
-    const currentProduct = currentProductMatch[1].toLowerCase();
-    const isCorrect = productKeywords.some(kw => currentProduct.includes(kw));
-    if (!isCorrect) {
-      fixed = fixed.replace(/Producto:\s*[^\n]+/i, `✅ Producto: ${productName}`);
-    }
+  if (fixed.includes("11") && (fixed.includes("Cantidad") || fixed.includes("cantidad"))) {
+    fixed = fixed.replace(/\b11\b/g, String(expectedQty));
   }
   
   return fixed;
 }
 
-// ✅ FUNCIÓN CORREGIDA: Inject correct total
 function injectCorrectTotal(response: string, productName: string, quantity: number): string {
-  if (!productName || quantity < 1) return response;
-  
   const unitPrice = getUnitPrice(productName);
   if (!unitPrice) return response;
-  
   const correctTotal = unitPrice * quantity;
   const formattedTotal = correctTotal.toLocaleString('es-ES');
   
   let fixed = response;
-  
-  // Corregir cualquier mención de precio que esté mal
-  const pricePatterns = [
-    /(?<!\w)129\.900\s*Gs(?=\s|$)/g,
-    /(?<!\w)159\.900\s*Gs(?=\s|$)/g,
-    /(?<!\w)149\.900\s*Gs(?=\s|$)/g,
-    /por solo\s*[\d\.\,]+\s*Gs/g,
-    /\$\s*[\d\.\,]+/g,
-  ];
-  
-  for (const pattern of pricePatterns) {
-    if (pattern.test(fixed)) {
-      // Reemplazar precios incorrectos
-      fixed = fixed.replace(pattern, `${formattedTotal} Gs`);
-    }
+  const totalPattern = /(?:💰\s*)?Total:\s*[\d\.\,]+\s*Gs/gi;
+  if (totalPattern.test(fixed)) {
+    fixed = fixed.replace(totalPattern, `💰 Total: ${formattedTotal} Gs`);
   }
-  
-  // Asegurar que el total final sea correcto
-  const totalRegex = /(?:💰\s*)?Total:\s*[\d\.\,]+\s*Gs/gi;
-  if (totalRegex.test(fixed)) {
-    fixed = fixed.replace(totalRegex, `💰 Total: ${formattedTotal} Gs`);
-  }
-  
-  // Si menciona el precio unitario, mostrarlo correctamente
-  if (fixed.includes('129.900')) {
-    fixed = fixed.replace(/129\.900/g, unitPrice.toLocaleString('es-ES'));
-  }
-  
   return fixed;
 }
 
@@ -915,12 +791,9 @@ export default async function handler(req: any, res: any) {
     if (!texto) texto = "(mensaje sin texto)";
 
     // ─── FLUJO DE VENTA NORMAL (usando entrenamiento combinado) ───
-    // ✅ DETECCIÓN DE PRODUCTO CORREGIDA
-    let detectedProduct = detectProduct(texto, combinedTraining, context?.current_product || oldOrder?.product);
-    // Forzar corrección si el contexto indica nebulizador
-    detectedProduct = ensureCorrectProduct(texto, combinedTraining, detectedProduct);
-    
-    const orderData = mergeOrderData(oldOrder, extractData(texto), detectedProduct);
+    const orderData = mergeOrderData(oldOrder, extractData(texto), 
+      detectProduct(texto, combinedTraining, context?.current_product || oldOrder?.product)
+    );
     
     const wantsToBuy = isBuyIntent(texto);
     const asksPrice = isPriceIntent(texto);
