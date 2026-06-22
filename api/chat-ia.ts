@@ -34,20 +34,20 @@ type ParsedTraining = {
 };
 
 // ============================================================
-// 🛡️ NUEVA FUNCIÓN: Sanitizar cantidad
+// 🛡️ Sanitizar cantidad
 // ============================================================
 function sanitizeQuantity(q: any) {
   const n = Number(q);
 
   if (!Number.isFinite(n)) return 0;
   if (n < 1) return 0;
-  if (n > 100) return 100; // Límite de seguridad
+  if (n > 100) return 100;
 
   return n;
 }
 
 // ============================================================
-// 🛡️ NUEVA FUNCIÓN: Verificar si el pedido está estancado
+// 🛡️ Verificar si el pedido está estancado
 // ============================================================
 function isOrderStale(order: any, lastActivity: string) {
   const hasProduct = !!order?.product;
@@ -60,6 +60,33 @@ function isOrderStale(order: any, lastActivity: string) {
   const diffMinutes = (now.getTime() - last.getTime()) / (1000 * 60);
   
   return hasProduct && hasCity && hasQuantity && !hasCustomerData && diffMinutes > 10;
+}
+
+// ============================================================
+// 🔥 NUEVA FUNCIÓN: Detectar si es consulta de precio
+// ============================================================
+function isPriceQuery(text: string) {
+  const m = normalize(text);
+  return /\b(cuanto cuesta|precio|valor|costo|cuanto sale|cuanto vale)\b/.test(m);
+}
+
+// ============================================================
+// 🔥 NUEVA FUNCIÓN: Verificar si es una nueva conversación
+// ============================================================
+function isNewConversation(context: any, history: any[]) {
+  // Si no hay historial o es muy corto, es nueva conversación
+  if (!history || history.length < 2) return true;
+  
+  // Si el último mensaje fue hace más de 30 minutos
+  const lastMessageTime = context?.updated_at;
+  if (lastMessageTime) {
+    const now = new Date();
+    const last = new Date(lastMessageTime);
+    const diffMinutes = (now.getTime() - last.getTime()) / (1000 * 60);
+    if (diffMinutes > 30) return true;
+  }
+  
+  return false;
 }
 
 async function getAllTrainingData(userId: string) {
@@ -275,28 +302,20 @@ function isBuyIntent(text: string) {
   );
 }
 
-// ============================================================
-// 🔧 MODIFICADO: extractQuantity con sanitizeQuantity
-// ============================================================
 function extractQuantity(text: string) {
   const m = normalize(text);
 
-  // Detectar "2 unidades", "3 u", etc.
   const q1 = m.match(/\b(\d+)\s*(unidad|unidades|u|und|unds)\b/);
   if (q1) return sanitizeQuantity(Number(q1[1]));
 
-  // Detectar "quiero 2", "llevo 3"
   const q2 = m.match(/\b(quiero|llevo|dame|mandame|reservame)\s+(\d+)\b/);
   if (q2) return sanitizeQuantity(Number(q2[2]));
 
-  // Detectar "2 quiero", "3 llevo"
   const q3 = m.match(/\b(\d+)\s+(quiero|llevo|dame|mandame)\b/);
   if (q3) return sanitizeQuantity(Number(q3[1]));
 
-  // Solo número
   if (/^\d+$/.test(m)) return sanitizeQuantity(Number(m));
 
-  // Palabras: uno, dos, tres...
   const words: Record<string, number> = {
     uno: 1, una: 1,
     dos: 2,
@@ -366,14 +385,10 @@ function extractName(text: string, detectedCity: string, phone: string) {
   return "";
 }
 
-// ============================================================
-// 🔧 CORREGIDO: extractAddress ahora extrae dirección incluso con name/phone
-// ============================================================
 function extractAddress(text: string, detectedCity: string, phone: string, name: string) {
   const raw = clean(text);
   const norm = normalize(raw);
 
-  // 🚨 BLOQUEAR respuestas que son solo cantidades
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) {
     return "";
   }
@@ -382,9 +397,6 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
     return "";
   }
 
-  // ❌ ELIMINADA la condición que bloqueaba cuando hay name o phone
-  
-  // Buscar dirección explícita
   const explicit = raw.match(
     /(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i
   )?.[1];
@@ -393,29 +405,24 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
 
   if (raw.includes("maps.app") || raw.includes("google.com/maps")) return raw;
 
-  // Si la dirección contiene palabras clave de dirección
   if (
     /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/.test(
       norm
     )
   ) {
-    // Si hay nombre y/o teléfono, extraer la parte que parece dirección
     if (name || phone) {
       let remaining = raw;
       
-      // Remover nombre
       if (name) {
         const namePattern = name.split(/\s+/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
         remaining = remaining.replace(new RegExp(namePattern, 'i'), '').trim();
       }
       
-      // Remover teléfono
       if (phone) {
         const phonePattern = phone.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         remaining = remaining.replace(new RegExp(phonePattern, 'g'), '').trim();
       }
       
-      // Remover palabras comunes que no son dirección
       const wordsToRemove = ['soy', 'me llamo', 'mi nombre es', 'nombre', 'teléfono', 'celular', 'cel', 'mi', 'es'];
       for (const word of wordsToRemove) {
         remaining = remaining.replace(new RegExp(`\\b${word}\\b`, 'gi'), '').trim();
@@ -449,9 +456,6 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining) {
   };
 }
 
-// ============================================================
-// 🔧 MODIFICADO: mergeOrderData con sanitizeQuantity
-// ============================================================
 function mergeOrderData(old: any, ext: any, product: string) {
   return {
     product: product || old.product || "",
@@ -791,8 +795,76 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    // ============================================================
+    // 🔥 INICIO: LÓGICA DE RESETEO DE PEDIDO
+    // ============================================================
+    
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
     
+    // 🔥 NUEVO: Si es consulta de precio, resetear el pedido y comenzar de nuevo
+    if (isPriceQuery(texto)) {
+      // Buscar el producto mencionado en la consulta
+      const productMentioned = detectProduct(texto, parsed, "");
+      
+      if (productMentioned) {
+        const productInfo = getProductInfo(productMentioned, parsed);
+        if (productInfo) {
+          // Resetear el pedido y comenzar con este producto
+          const resetOrder = {
+            product: productInfo.canonical,
+            quantity: 0,
+            city: "",
+            customer_name: "",
+            phone: "",
+            address: "",
+          };
+          
+          return res.json({
+            response: `💰 ${productInfo.canonical}: ${formatGs(productInfo.price1)} Gs
+
+📍 ¿Para qué ciudad sería el envío? 😊`,
+            context: {
+              ...(context || {}),
+              current_product: productInfo.canonical,
+              order_data: resetOrder,
+              step: "collecting_city",
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
+      }
+      
+      // Si no se detectó producto específico, ofrecer el catálogo
+      const defaultProduct = parsed.products.find(p => 
+        normalize(p.canonical).includes("nebulizador")
+      ) || parsed.products[0];
+      
+      if (defaultProduct) {
+        const resetOrder = {
+          product: defaultProduct.canonical,
+          quantity: 0,
+          city: "",
+          customer_name: "",
+          phone: "",
+          address: "",
+        };
+        
+        return res.json({
+          response: `💰 ${defaultProduct.canonical}: ${formatGs(defaultProduct.price1)} Gs
+
+📍 ¿Para qué ciudad sería el envío? 😊`,
+          context: {
+            ...(context || {}),
+            current_product: defaultProduct.canonical,
+            order_data: resetOrder,
+            step: "collecting_city",
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
+    }
+    
+    // 🛡️ Verificar si el pedido está estancado
     if (isOrderStale(oldOrder, context?.updated_at || new Date().toISOString())) {
       oldOrder = {
         product: "",
@@ -819,16 +891,62 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
       });
     }
 
+    // 🔥 DETECTAR "quiero" sin producto específico
     const buyIntent = /\b(quiero|comprar|compro|reservar|reserva|llevo|dame|mandame)\b/i.test(texto);
     const hasProductInMessage = parsed.products.some(p => 
       normalize(texto).includes(normalize(p.canonical)) ||
       p.aliases.some(a => normalize(texto).includes(normalize(a)))
     );
 
+    // Si el usuario dice "quiero" sin especificar producto
     if (buyIntent && !hasProductInMessage) {
       const hasExistingOrder = oldOrder.product && oldOrder.city;
 
+      // 🔥 MODIFICADO: Si tiene pedido existente, pero es una conversación nueva o consulta de precio, resetear
       if (hasExistingOrder) {
+        // Verificar si es una nueva conversación
+        if (isNewConversation(context, history)) {
+          // Resetear completamente
+          const resetOrder = {
+            product: "",
+            quantity: 0,
+            city: "",
+            customer_name: "",
+            phone: "",
+            address: "",
+          };
+          
+          const productFromContext = clean(
+            context?.last_ad_product ||
+            inferProductFromLastBotMessage(history, parsed)
+          );
+          
+          if (productFromContext) {
+            const productInfo = getProductInfo(productFromContext, parsed);
+            if (productInfo) {
+              resetOrder.product = productInfo.canonical;
+              
+              return res.json({
+                response: `🔥 ¡Excelente decisión! 😊
+
+Tenemos el **${productInfo.canonical}** en oferta:
+
+💰 Precio especial: ${formatGs(productInfo.price1)} Gs (promoción por tiempo limitado)
+
+📍 ¿Para qué ciudad sería el envío? 😊`,
+                context: {
+                  ...(context || {}),
+                  current_product: productInfo.canonical,
+                  order_data: resetOrder,
+                  step: "collecting_city",
+                  updated_at: new Date().toISOString(),
+                },
+              });
+            }
+          }
+        }
+        
+        // Si no es nueva conversación, preguntar si quiere el mismo producto
         return res.json({
           response: `✅ Ya estabas viendo el **${oldOrder.product}**.
 
@@ -847,6 +965,7 @@ Escribí el nombre del producto que te interesa. 😊`,
         });
       }
 
+      // Si NO hay pedido previo, empezar de cero
       const resetOrder = {
         product: "",
         quantity: 0,
@@ -924,6 +1043,10 @@ Escribí el nombre del producto que te interesa. 😊`,
         },
       });
     }
+
+    // ============================================================
+    // FIN: LÓGICA DE RESETEO
+    // ============================================================
 
     const product = detectProduct(
       texto,
