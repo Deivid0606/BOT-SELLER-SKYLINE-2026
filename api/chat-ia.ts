@@ -367,7 +367,7 @@ function extractName(text: string, detectedCity: string, phone: string) {
 }
 
 // ============================================================
-// 🔧 MODIFICADO: extractAddress con bloqueo de cantidades
+// 🔧 CORREGIDO: extractAddress ahora extrae dirección incluso con name/phone
 // ============================================================
 function extractAddress(text: string, detectedCity: string, phone: string, name: string) {
   const raw = clean(text);
@@ -382,8 +382,9 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
     return "";
   }
 
-  if (!raw || detectedCity || phone || name) return "";
-
+  // ❌ ELIMINADA la condición que bloqueaba cuando hay name o phone
+  
+  // Buscar dirección explícita
   const explicit = raw.match(
     /(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i
   )?.[1];
@@ -392,11 +393,39 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
 
   if (raw.includes("maps.app") || raw.includes("google.com/maps")) return raw;
 
+  // Si la dirección contiene palabras clave de dirección
   if (
     /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/.test(
       norm
     )
   ) {
+    // Si hay nombre y/o teléfono, extraer la parte que parece dirección
+    if (name || phone) {
+      let remaining = raw;
+      
+      // Remover nombre
+      if (name) {
+        const namePattern = name.split(/\s+/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
+        remaining = remaining.replace(new RegExp(namePattern, 'i'), '').trim();
+      }
+      
+      // Remover teléfono
+      if (phone) {
+        const phonePattern = phone.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        remaining = remaining.replace(new RegExp(phonePattern, 'g'), '').trim();
+      }
+      
+      // Remover palabras comunes que no son dirección
+      const wordsToRemove = ['soy', 'me llamo', 'mi nombre es', 'nombre', 'teléfono', 'celular', 'cel', 'mi', 'es'];
+      for (const word of wordsToRemove) {
+        remaining = remaining.replace(new RegExp(`\\b${word}\\b`, 'gi'), '').trim();
+      }
+      
+      if (remaining.length >= 5) {
+        return remaining;
+      }
+    }
+    
     return raw;
   }
 
@@ -688,9 +717,6 @@ async function transcribeAudioWithGemini({
   });
 }
 
-// ============================================================
-// 🔥 NUEVA FUNCIÓN: Inferir producto del último mensaje del bot
-// ============================================================
 function inferProductFromLastBotMessage(history: any[], parsed: ParsedTraining) {
   const lastBotMessages = (history || [])
     .slice(-6)
@@ -765,13 +791,8 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // ============================================================
-    // 🔥 INICIO: LÓGICA DE RESETEO DE PEDIDO
-    // ============================================================
-    
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
     
-    // 🛡️ Verificar si el pedido está estancado
     if (isOrderStale(oldOrder, context?.updated_at || new Date().toISOString())) {
       oldOrder = {
         product: "",
@@ -798,19 +819,16 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
       });
     }
 
-    // 🔥 DETECTAR "quiero" sin producto específico
     const buyIntent = /\b(quiero|comprar|compro|reservar|reserva|llevo|dame|mandame)\b/i.test(texto);
     const hasProductInMessage = parsed.products.some(p => 
       normalize(texto).includes(normalize(p.canonical)) ||
       p.aliases.some(a => normalize(texto).includes(normalize(a)))
     );
 
-    // Si el usuario dice "quiero" sin especificar producto
     if (buyIntent && !hasProductInMessage) {
       const hasExistingOrder = oldOrder.product && oldOrder.city;
 
       if (hasExistingOrder) {
-        // Si ya había un pedido, preguntar si quiere lo mismo o algo nuevo
         return res.json({
           response: `✅ Ya estabas viendo el **${oldOrder.product}**.
 
@@ -829,7 +847,6 @@ Escribí el nombre del producto que te interesa. 😊`,
         });
       }
 
-      // Si NO hay pedido previo, empezar de cero
       const resetOrder = {
         product: "",
         quantity: 0,
@@ -839,13 +856,11 @@ Escribí el nombre del producto que te interesa. 😊`,
         address: "",
       };
 
-      // 🔥 CORRECCIÓN: Usar el producto del último anuncio del bot
       const productFromContext = clean(
         context?.last_ad_product ||
         inferProductFromLastBotMessage(history, parsed)
       );
 
-      // Si detectamos un producto del último anuncio, lo usamos
       if (productFromContext) {
         const productInfo = getProductInfo(productFromContext, parsed);
         if (productInfo) {
@@ -870,7 +885,6 @@ Tenemos el **${productInfo.canonical}** en oferta:
         }
       }
 
-      // Fallback: ofrecer el Nebulizador
       const defaultProduct = parsed.products.find(p => 
         normalize(p.canonical).includes("nebulizador")
       ) || parsed.products[0];
@@ -896,7 +910,6 @@ Tenemos el **${defaultProduct.canonical}** en oferta:
         });
       }
 
-      // Si no hay productos en el catálogo
       return res.json({
         response: `📋 Te invito a revisar nuestro catálogo completo:
 ${CATALOG_URL}
@@ -911,10 +924,6 @@ Escribí el nombre del producto que te interesa. 😊`,
         },
       });
     }
-
-    // ============================================================
-    // FIN: LÓGICA DE RESETEO
-    // ============================================================
 
     const product = detectProduct(
       texto,
@@ -945,7 +954,6 @@ Escribí el nombre del producto que te interesa. 😊`,
       product
     );
 
-    // Sanitizar cantidad por seguridad
     orderData.quantity = sanitizeQuantity(orderData.quantity);
 
     const productInfo = getProductInfo(orderData.product, parsed);
@@ -954,11 +962,6 @@ Escribí el nombre del producto que te interesa. 😊`,
       orderData = { ...orderData, product: "" };
     }
 
-    // ============================================================
-    // 🔥 NUEVO FLUJO: RESPUESTA INMEDIATA DESPUÉS DE CAPTURAR CANTIDAD
-    // ============================================================
-
-    // 1️⃣ Si falta producto → preguntar
     if (!orderData.product) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
@@ -979,7 +982,6 @@ ${CATALOG_URL}`,
       });
     }
 
-    // 2️⃣ Si falta ciudad → preguntar
     if (orderData.product && !orderData.city) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
@@ -997,7 +999,6 @@ ${CATALOG_URL}`,
       });
     }
 
-    // 3️⃣ Si falta cantidad → preguntar
     if (orderData.product && orderData.city && !orderData.quantity) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
@@ -1022,21 +1023,18 @@ ${CATALOG_URL}`,
       });
     }
 
-    // 4️⃣ 🔥 NUEVO: Si YA TIENE cantidad → mostrar resumen y pedir datos
     if (
       orderData.product &&
       orderData.city &&
       orderData.quantity > 0 &&
       (!orderData.customer_name || !orderData.address || !orderData.phone)
     ) {
-      // Sanitizar por seguridad
       orderData.quantity = sanitizeQuantity(orderData.quantity);
 
       const total = calculateTotal(orderData.product, orderData.quantity, parsed);
 
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
-      // Determinar qué datos faltan
       const missing = [];
       if (!orderData.customer_name) missing.push("nombre y apellido");
       if (!orderData.address) missing.push("dirección exacta");
@@ -1066,7 +1064,6 @@ y agendamos tu entrega ✨`,
       });
     }
 
-    // 5️⃣ Si tiene TODO → confirmar pedido
     if (
       orderData.product &&
       orderData.city &&
@@ -1089,7 +1086,6 @@ y agendamos tu entrega ✨`,
         });
       }
 
-      // Sanitizar cantidad final
       orderData.quantity = sanitizeQuantity(orderData.quantity);
 
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, true);
@@ -1105,10 +1101,6 @@ y agendamos tu entrega ✨`,
         },
       });
     }
-
-    // ============================================================
-    // FALLBACK: Gemini para respuestas generales
-    // ============================================================
 
     const system = `
 Sos vendedor de Mega Todo Store.
