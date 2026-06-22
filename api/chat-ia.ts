@@ -104,13 +104,11 @@ function parseTraining(training: string): ParsedTraining {
     cities.push({ alias: a, canonical: c });
   };
 
-  const citySection =
+  const cityListSection =
     training.match(/LISTA COMPLETA POR CIUDAD([\s\S]*?)⚙️ INSTRUCCIÓN FINAL/i)
-      ?.[1] ||
-    training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
-    "";
+      ?.[1] || "";
 
-  const cityBlocks = citySection.split(/📍\s*/g).filter(Boolean);
+  const cityBlocks = cityListSection.split(/📍\s*/g).filter(Boolean);
 
   for (const block of cityBlocks) {
     const lines = block.split("\n").map(clean).filter(Boolean);
@@ -129,11 +127,11 @@ function parseTraining(training: string): ParsedTraining {
     }
   }
 
-  const simpleCoverage =
+  const coverageSection =
     training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
     "";
 
-  simpleCoverage
+  coverageSection
     .split("\n")
     .filter((l) => l.includes(","))
     .join(",")
@@ -239,13 +237,6 @@ function hasCoverage(city: string, parsed: ParsedTraining) {
   });
 }
 
-function isBuyIntent(text: string) {
-  const m = normalize(text);
-  return /\b(si|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo)\b/.test(
-    m
-  );
-}
-
 function extractQuantity(text: string) {
   const m = normalize(text);
 
@@ -269,6 +260,14 @@ function extractQuantity(text: string) {
   return 0;
 }
 
+function sanitizeQuantity(q: any) {
+  const n = Number(q);
+  if (!Number.isFinite(n)) return 0;
+  if (n < 1) return 0;
+  if (n > 100) return 100;
+  return Math.floor(n);
+}
+
 function extractPhone(text: string) {
   const compact = clean(text).replace(/\s+/g, "");
   return compact.match(/(?:09\d{8}|\+595\d{9}|5959\d{8})/)?.[0] || "";
@@ -279,6 +278,9 @@ function extractName(text: string, detectedCity: string, phone: string) {
   const norm = normalize(raw);
 
   if (!raw || detectedCity || phone) return "";
+
+  if (/^\d+$/.test(norm)) return "";
+  if (/^\d+\s*(unidad|unidades|u|und|unds)$/.test(norm)) return "";
 
   const forbidden = [
     "quiero",
@@ -324,6 +326,9 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
 
   if (!raw || detectedCity || phone || name) return "";
 
+  if (/^\d+$/.test(norm)) return "";
+  if (/^\d+\s*(unidad|unidades|u|und|unds)$/.test(norm)) return "";
+
   const explicit = raw.match(
     /(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i
   )?.[1];
@@ -351,10 +356,7 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining) {
 
   return {
     product: productInfo?.canonical || "",
-    quantity:
-      Number(old?.quantity) > 0 && Number(old?.quantity) <= 20
-        ? Number(old.quantity)
-        : 0,
+    quantity: sanitizeQuantity(old?.quantity),
     city: clean(old?.city || ""),
     customer_name:
       old?.customer_name && nameNorm !== "quiero" ? clean(old.customer_name) : "",
@@ -366,7 +368,7 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining) {
 function mergeOrderData(old: any, ext: any, product: string) {
   return {
     product: product || old.product || "",
-    quantity: ext.quantity > 0 ? ext.quantity : old.quantity || 0,
+    quantity: sanitizeQuantity(ext.quantity || old.quantity || 0),
     city: ext.city || old.city || "",
     customer_name: ext.name || old.customer_name || "",
     phone: ext.phone || old.phone || "",
@@ -376,12 +378,14 @@ function mergeOrderData(old: any, ext: any, product: string) {
 
 function calculateTotal(productName: string, quantity: number, parsed: ParsedTraining) {
   const p = getProductInfo(productName, parsed);
-  if (!p) return 0;
+  const q = sanitizeQuantity(quantity);
 
-  if (quantity === 2 && p.price2) return p.price2;
-  if (quantity === 3 && p.price3) return p.price3;
+  if (!p || !q) return 0;
 
-  return p.price1 * quantity;
+  if (q === 2 && p.price2) return p.price2;
+  if (q === 3 && p.price3) return p.price3;
+
+  return p.price1 * q;
 }
 
 function formatGs(n: number) {
@@ -396,6 +400,28 @@ function nextStep(o: any) {
   if (!o.address) return "collecting_address";
   if (!o.phone) return "collecting_phone";
   return "confirm_order";
+}
+
+function quantityReply(o: any, parsed: ParsedTraining) {
+  const total = calculateTotal(o.product, o.quantity, parsed);
+
+  return `🔥 Perfecto 😊
+
+📦 ${o.product}
+🔢 Cantidad: ${o.quantity}
+💰 Total: ${formatGs(total)} Gs
+
+🚚 Envío GRATIS contra-entrega
+
+📎 Pasame tus datos:
+
+✅ nombre y apellido
+✅ dirección exacta o ubicación por Google Maps
+✅ número de celular
+
+📲 Podés enviarlo TODO JUNTO o de a uno, voy registrando 😊
+
+y agendamos tu entrega ✨`;
 }
 
 function missingDataReply(o: any) {
@@ -469,14 +495,7 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 
 ¡Gracias por elegir Mega Todo Store! 💜✨
 
-💵 Pago anticipado por transferencia.
-
-📲 DATOS PARA TRANSFERENCIA:
-
-Titular: DAVID AGUSTIN ALCARAZ AGUILAR
-Banco Familiar
-Cuenta: 81-4981442
-Alias: 0994130022`;
+💵 Pago anticipado por transferencia.`;
 }
 
 async function safeUpsertOrder(
@@ -508,7 +527,7 @@ async function safeUpsertOrder(
     city: order.city || null,
     ciudad: order.city || null,
     address: order.address || null,
-    quantity: order.quantity || 1,
+    quantity: sanitizeQuantity(order.quantity || 1),
     total_amount: total || null,
     status,
     fecha: new Date().toISOString(),
@@ -693,8 +712,12 @@ export default async function handler(req: any, res: any) {
 
     const detectedCity = detectCity(texto, parsed, oldOrder.city);
     const phone = extractPhone(texto);
-    const qty = extractQuantity(texto);
-    const name = extractName(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone);
+    const qty = sanitizeQuantity(extractQuantity(texto));
+    const name = extractName(
+      texto,
+      detectedCity !== oldOrder.city ? detectedCity : "",
+      phone
+    );
     const address = extractAddress(
       texto,
       detectedCity !== oldOrder.city ? detectedCity : "",
@@ -713,6 +736,8 @@ export default async function handler(req: any, res: any) {
       },
       product
     );
+
+    orderData.quantity = sanitizeQuantity(orderData.quantity);
 
     const productInfo = getProductInfo(orderData.product, parsed);
 
@@ -765,6 +790,27 @@ export default async function handler(req: any, res: any) {
       orderData.product &&
       orderData.city &&
       orderData.quantity &&
+      !orderData.customer_name &&
+      !orderData.address
+    ) {
+      await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
+
+      return res.json({
+        response: quantityReply(orderData, parsed),
+        context: {
+          ...(context || {}),
+          current_product: orderData.product,
+          order_data: orderData,
+          step: "collecting_name",
+          updated_at: new Date().toISOString(),
+        },
+      });
+    }
+
+    if (
+      orderData.product &&
+      orderData.city &&
+      orderData.quantity &&
       (!orderData.customer_name || !orderData.address || !orderData.phone)
     ) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
@@ -789,20 +835,6 @@ export default async function handler(req: any, res: any) {
       orderData.address &&
       orderData.phone
     ) {
-      if (!getProductInfo(orderData.product, parsed)) {
-        return res.json({
-          response:
-            "🙏 Para confirmar necesito saber qué producto querés. ¿Te referís al Nebulizador Portátil?",
-          context: {
-            ...(context || {}),
-            order_data: { ...orderData, product: "" },
-            current_product: null,
-            step: "selling",
-            updated_at: new Date().toISOString(),
-          },
-        });
-      }
-
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, true);
 
       return res.json({
@@ -825,7 +857,8 @@ REGLAS:
 - Los productos válidos son SOLO los de CATALOGO_PRODUCTOS.
 - Nunca uses ciudades como producto.
 - Nunca uses "quiero" como nombre.
-- Nunca confirmes si falta producto, ciudad, cantidad, nombre, dirección o teléfono.
+- Nunca confirmes pedidos.
+- Nunca calcules cantidad ni total.
 - Si falta producto, ofrecé productos del catálogo.
 - Si falta ciudad, preguntá ciudad.
 - Si falta cantidad, preguntá cantidad.
