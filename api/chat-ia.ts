@@ -1,5 +1,3 @@
-// api/chat-ia.ts
-
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
@@ -9,10 +7,10 @@ const supabase = createClient(
 
 const CATALOG_URL = "https://cat-logomegatodo-com.vercel.app/";
 
-const clean = (t: any): string => String(t || "").trim();
+const clean = (v: any) => String(v || "").trim();
 
-const normalize = (t: string): string =>
-  clean(t)
+const normalize = (v: any) =>
+  clean(v)
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -28,174 +26,12 @@ type ProductItem = {
   price1: number;
   price2?: number;
   price3?: number;
-  requiresSize?: boolean;
-  sizes?: string[];
 };
 
 type ParsedTraining = {
   products: ProductItem[];
-  coverageCities: { alias: string; canonical: string }[];
-  corrections: { alias: string; canonical: string }[];
+  cities: { alias: string; canonical: string }[];
 };
-
-function extractSection(text: string, start: string, end?: string) {
-  const source = String(text || "");
-  const startIndex = source.indexOf(start);
-  if (startIndex === -1) return "";
-
-  const sliced = source.slice(startIndex + start.length);
-  if (!end) return sliced;
-
-  const endIndex = sliced.indexOf(end);
-  if (endIndex === -1) return sliced;
-
-  return sliced.slice(0, endIndex);
-}
-
-function parseTraining(training: string): ParsedTraining {
-  const products: ProductItem[] = [];
-
-  const catalog = extractSection(
-    training,
-    "CATALOGO_PRODUCTOS",
-    "FIN_CATALOGO_PRODUCTOS"
-  );
-
-  const blocks = catalog
-    .split(/\n\s*\n/g)
-    .map((b) => b.trim())
-    .filter((b) => b.includes("PRODUCTO:"));
-
-  for (const block of blocks) {
-    const product = clean(block.match(/PRODUCTO:\s*(.+)/i)?.[1]);
-    const canonical =
-      clean(block.match(/NOMBRE_CANONICO:\s*(.+)/i)?.[1]) || product;
-
-    const aliasRaw = clean(block.match(/ALIAS:\s*(.+)/i)?.[1]);
-    const aliases = aliasRaw
-      ? aliasRaw
-          .split(",")
-          .map((a) => clean(a))
-          .filter(Boolean)
-      : [];
-
-    const price1 = Number(clean(block.match(/PRECIO_1:\s*(\d+)/i)?.[1]) || 0);
-    const price2Match = block.match(/PRECIO_2:\s*(\d+)/i);
-    const price3Match = block.match(/PRECIO_3:\s*(\d+)/i);
-
-    const requiresSize = /REQUIERE_CALCE:\s*true/i.test(block);
-    const sizesRaw = clean(block.match(/CALCES_DISPONIBLES:\s*(.+)/i)?.[1]);
-    const sizes = sizesRaw
-      ? sizesRaw.split(",").map((s) => clean(s)).filter(Boolean)
-      : [];
-
-    if (product && price1 > 0) {
-      products.push({
-        product,
-        canonical,
-        aliases: Array.from(new Set([product, canonical, ...aliases])),
-        price1,
-        price2: price2Match ? Number(price2Match[1]) : undefined,
-        price3: price3Match ? Number(price3Match[1]) : undefined,
-        requiresSize,
-        sizes,
-      });
-    }
-  }
-
-  const coverageText = extractSection(
-    training,
-    "ZONAS CON COBERTURA",
-    "ZONAS SIN COBERTURA"
-  );
-
-  const fullCityListText = extractSection(
-    training,
-    "LISTA COMPLETA POR CIUDAD",
-    "⚙️ INSTRUCCIÓN FINAL"
-  );
-
-  const correctionsText = extractSection(
-    training,
-    "TABLA DE ERRORES COMUNES Y CORRECCIONES",
-    "📐 REGLAS PARA NORMALIZAR"
-  );
-
-  const coverageCities: { alias: string; canonical: string }[] = [];
-  const corrections: { alias: string; canonical: string }[] = [];
-
-  const addCity = (alias: string, canonical?: string) => {
-    const a = clean(alias);
-    const c = clean(canonical || alias);
-    if (!a || a.length < 2) return;
-    coverageCities.push({ alias: a, canonical: c });
-  };
-
-  const greenLine = coverageText
-    .split("\n")
-    .find((l) => l.includes("📍") && l.includes(",")) || "";
-
-  greenLine
-    .replace("📍", "")
-    .split(",")
-    .map((c) => clean(c))
-    .filter(Boolean)
-    .forEach((c) => addCity(c, c));
-
-  const cityBlocks = fullCityListText.split(/📍\s*/g).filter(Boolean);
-
-  for (const block of cityBlocks) {
-    const lines = block.split("\n").map((l) => clean(l)).filter(Boolean);
-    const canonical = clean(lines[0]);
-    const variantsLine = lines.find((l) => l.startsWith("✅"));
-    if (!canonical || !variantsLine) continue;
-
-    variantsLine
-      .replace(/^✅\s*/, "")
-      .split(",")
-      .map((v) => clean(v))
-      .filter(Boolean)
-      .forEach((v) => addCity(v, canonical));
-
-    addCity(canonical, canonical);
-  }
-
-  for (const line of correctionsText.split("\n")) {
-    if (!line.includes("→")) continue;
-    const [left, right] = line.split("→");
-    const canonical = clean(right);
-    if (!canonical) continue;
-
-    left
-      .split(",")
-      .map((v) => clean(v))
-      .filter(Boolean)
-      .forEach((alias) => {
-        corrections.push({ alias, canonical });
-        addCity(alias, canonical);
-      });
-
-    addCity(canonical, canonical);
-  }
-
-  return {
-    products,
-    coverageCities: dedupeCities(coverageCities),
-    corrections,
-  };
-}
-
-function dedupeCities(items: { alias: string; canonical: string }[]) {
-  const map = new Map<string, { alias: string; canonical: string }>();
-
-  for (const item of items) {
-    const key = normalize(item.alias);
-    if (!key) continue;
-    map.set(key, item);
-  }
-
-  return Array.from(map.values());
-}
 
 async function getAllTrainingData(userId: string) {
   const { data, error } = await supabase
@@ -213,96 +49,116 @@ async function getAllTrainingData(userId: string) {
   return data || [];
 }
 
-function buildTrainingText(trainingItems: any[]) {
-  return trainingItems
-    .map((t) => {
-      const examples = Array.isArray(t.examples) ? t.examples.join("\n") : "";
-      return `${t.intent || ""}\n${examples}\n${t.response || ""}`;
+function buildTrainingText(items: any[]) {
+  return items
+    .map((i) => {
+      const examples = Array.isArray(i.examples) ? i.examples.join("\n") : "";
+      return `${i.intent || ""}\n${examples}\n${i.response || ""}`;
     })
     .join("\n\n---\n\n");
 }
 
-function buildTrainingContext(trainingItems: any[]) {
-  if (!trainingItems?.length) return "";
+function parseTraining(training: string): ParsedTraining {
+  const products: ProductItem[] = [];
+  const cities: { alias: string; canonical: string }[] = [];
 
-  return trainingItems
-    .map((item) => {
-      const examples = Array.isArray(item.examples)
-        ? item.examples.map((e: string) => `• ${e}`).join("\n")
-        : "";
+  const catalog =
+    training.match(/CATALOGO_PRODUCTOS([\s\S]*?)FIN_CATALOGO_PRODUCTOS/i)?.[1] ||
+    "";
 
-      return `### ${item.intent || "Entrenamiento"}
-${item.response || ""}
-${examples}`;
-    })
-    .join("\n\n");
-}
+  const productBlocks = catalog
+    .split(/(?=PRODUCTO:\s*)/i)
+    .map((b) => b.trim())
+    .filter((b) => /^PRODUCTO:\s*/i.test(b));
 
-function findMatchingTraining(trainingItems: any[], message: string) {
-  const msg = normalize(message);
-  if (!msg) return null;
+  for (const block of productBlocks) {
+    const product = clean(block.match(/^PRODUCTO:\s*(.+)$/im)?.[1]);
+    const canonical =
+      clean(block.match(/^NOMBRE_CANONICO:\s*(.+)$/im)?.[1]) || product;
 
-  for (const item of trainingItems) {
-    if (!Array.isArray(item.examples)) continue;
+    const aliasRaw = clean(block.match(/^ALIAS:\s*(.+)$/im)?.[1]);
+    const aliases = aliasRaw
+      ? aliasRaw.split(",").map(clean).filter(Boolean)
+      : [];
 
-    for (const example of item.examples) {
-      const ex = normalize(example);
-      if (!ex) continue;
+    const price1 = Number(clean(block.match(/^PRECIO_1:\s*(\d+)/im)?.[1]) || 0);
+    const price2 = Number(clean(block.match(/^PRECIO_2:\s*(\d+)/im)?.[1]) || 0);
+    const price3 = Number(clean(block.match(/^PRECIO_3:\s*(\d+)/im)?.[1]) || 0);
 
-      if (
-        msg === ex ||
-        msg.includes(ex) ||
-        ex.includes(msg) ||
-        msg.includes(ex.substring(0, 12))
-      ) {
-        return {
-          intent: item.intent,
-          response: item.response,
-          matched_example: example,
-        };
-      }
+    if (product && canonical && price1 > 0) {
+      products.push({
+        product,
+        canonical,
+        aliases: Array.from(new Set([product, canonical, ...aliases])),
+        price1,
+        price2: price2 || undefined,
+        price3: price3 || undefined,
+      });
     }
   }
 
-  return null;
-}
+  const addCity = (alias: string, canonical?: string) => {
+    const a = clean(alias);
+    const c = clean(canonical || alias);
+    if (!a || a.length < 2) return;
+    cities.push({ alias: a, canonical: c });
+  };
 
-function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
-  const msg = normalize(text);
-  if (!msg) return clean(prev || "");
+  const citySection =
+    training.match(/LISTA COMPLETA POR CIUDAD([\s\S]*?)⚙️ INSTRUCCIÓN FINAL/i)
+      ?.[1] ||
+    training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
+    "";
 
-  let best: ProductItem | null = null;
-  let bestScore = 0;
+  const cityBlocks = citySection.split(/📍\s*/g).filter(Boolean);
 
-  for (const product of parsed.products) {
-    for (const alias of product.aliases) {
-      const a = normalize(alias);
-      if (!a || a.length < 3) continue;
+  for (const block of cityBlocks) {
+    const lines = block.split("\n").map(clean).filter(Boolean);
+    const canonical = lines[0];
+    const variantsLine = lines.find((l) => l.startsWith("✅"));
 
-      let score = 0;
+    if (canonical && variantsLine) {
+      addCity(canonical, canonical);
 
-      if (msg === a) score += 100;
-      if (msg.includes(a)) score += 60;
-      if (a.includes(msg) && msg.length >= 4) score += 40;
-
-      const words = a.split(" ").filter((w) => w.length >= 4);
-      for (const w of words) {
-        if (msg.includes(w)) score += 10;
-      }
-
-      if (score > bestScore) {
-        bestScore = score;
-        best = product;
-      }
+      variantsLine
+        .replace(/^✅\s*/, "")
+        .split(",")
+        .map(clean)
+        .filter(Boolean)
+        .forEach((v) => addCity(v, canonical));
     }
   }
 
-  if (best && bestScore >= 10) return best.canonical;
-  return clean(prev || "");
+  const simpleCoverage =
+    training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
+    "";
+
+  simpleCoverage
+    .split("\n")
+    .filter((l) => l.includes(","))
+    .join(",")
+    .replace(/📍/g, "")
+    .split(",")
+    .map(clean)
+    .filter((c) => c.length > 2 && !c.includes("━━"))
+    .forEach((c) => addCity(c, c));
+
+  const cityMap = new Map<string, { alias: string; canonical: string }>();
+
+  for (const c of cities) {
+    const key = normalize(c.alias);
+    if (key) cityMap.set(key, c);
+  }
+
+  return {
+    products,
+    cities: Array.from(cityMap.values()),
+  };
 }
 
 function getProductInfo(productName: string, parsed: ParsedTraining) {
   const p = normalize(productName);
+  if (!p) return null;
 
   return (
     parsed.products.find((item) => {
@@ -312,6 +168,40 @@ function getProductInfo(productName: string, parsed: ParsedTraining) {
   );
 }
 
+function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
+  const msg = normalize(text);
+  const prevOk = getProductInfo(prev || "", parsed);
+
+  if (!msg) return prevOk?.canonical || "";
+
+  let best: ProductItem | null = null;
+  let bestScore = 0;
+
+  for (const p of parsed.products) {
+    for (const alias of p.aliases) {
+      const a = normalize(alias);
+      if (!a || a.length < 3) continue;
+
+      let score = 0;
+      if (msg === a) score += 100;
+      if (msg.includes(a)) score += 80;
+      if (a.includes(msg) && msg.length >= 4) score += 50;
+
+      for (const w of a.split(" ").filter((x) => x.length >= 4)) {
+        if (msg.includes(w)) score += 15;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = p;
+      }
+    }
+  }
+
+  if (best && bestScore >= 15) return best.canonical;
+  return prevOk?.canonical || "";
+}
+
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const msg = normalize(text);
   if (!msg) return clean(prev || "");
@@ -319,24 +209,18 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   let best = "";
   let bestScore = 0;
 
-  for (const city of parsed.coverageCities) {
-    const aliasNorm = normalize(city.alias);
-    if (!aliasNorm || aliasNorm.length < 2) continue;
+  for (const c of parsed.cities) {
+    const a = normalize(c.alias);
+    if (!a || a.length < 2) continue;
 
     let score = 0;
-
-    if (msg === aliasNorm) score += 100;
-    if (msg.includes(aliasNorm)) score += 70;
-    if (aliasNorm.includes(msg) && msg.length >= 3) score += 50;
-
-    const words = aliasNorm.split(" ").filter((w) => w.length >= 4);
-    for (const w of words) {
-      if (msg.includes(w)) score += 10;
-    }
+    if (msg === a) score += 100;
+    if (msg.includes(a)) score += 80;
+    if (a.includes(msg) && msg.length >= 3) score += 50;
 
     if (score > bestScore) {
       bestScore = score;
-      best = city.canonical;
+      best = c.canonical;
     }
   }
 
@@ -348,85 +232,78 @@ function hasCoverage(city: string, parsed: ParsedTraining) {
   const c = normalize(city);
   if (!c) return false;
 
-  return parsed.coverageCities.some((item) => {
-    const a = normalize(item.alias);
-    const canonical = normalize(item.canonical);
-    return c === a || c === canonical || c.includes(a) || a.includes(c);
+  return parsed.cities.some((x) => {
+    const a = normalize(x.alias);
+    const cn = normalize(x.canonical);
+    return c === a || c === cn || c.includes(a) || a.includes(c);
   });
-}
-
-function isPriceIntent(text: string) {
-  const m = normalize(text);
-  return /\b(precio|cuanto|cuesta|valor|costo)\b/.test(m);
 }
 
 function isBuyIntent(text: string) {
   const m = normalize(text);
-  return /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo)\b/.test(
+  return /\b(si|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo)\b/.test(
     m
   );
 }
 
 function extractQuantity(text: string) {
-  const norm = normalize(text);
+  const m = normalize(text);
 
-  const q1 = norm.match(/\b(\d+)\s*(unidad|unidades|u|und|unds|pieza|piezas)\b/);
+  const q1 = m.match(/\b(\d+)\s*(unidad|unidades|u|und|unds)\b/);
   if (q1) return Number(q1[1]);
 
-  const q2 = norm.match(/\b(quiero|llevo|dame|mandame|envia|reservame)\s+(\d+)\b/);
+  const q2 = m.match(/\b(quiero|llevo|dame|mandame|reservame)\s+(\d+)\b/);
   if (q2) return Number(q2[2]);
 
-  const q3 = norm.match(/\b(\d+)\s+(quiero|llevo|dame|mandame|envia)\b/);
+  const q3 = m.match(/\b(\d+)\s+(quiero|llevo|dame|mandame)\b/);
   if (q3) return Number(q3[1]);
 
-  if (/^\d+$/.test(norm)) return Number(norm);
+  if (/^\d+$/.test(m)) return Number(m);
 
-  if (/\buno\b|\buna\b/.test(norm)) return 1;
-  if (/\bdos\b/.test(norm)) return 2;
-  if (/\btres\b/.test(norm)) return 3;
-  if (/\bcuatro\b/.test(norm)) return 4;
-  if (/\bcinco\b/.test(norm)) return 5;
+  if (/\buno\b|\buna\b/.test(m)) return 1;
+  if (/\bdos\b/.test(m)) return 2;
+  if (/\btres\b/.test(m)) return 3;
+  if (/\bcuatro\b/.test(m)) return 4;
+  if (/\bcinco\b/.test(m)) return 5;
 
   return 0;
 }
 
 function extractPhone(text: string) {
-  const raw = clean(text);
-  const compact = raw.replace(/\s+/g, "");
+  const compact = clean(text).replace(/\s+/g, "");
   return compact.match(/(?:09\d{8}|\+595\d{9}|5959\d{8})/)?.[0] || "";
 }
 
-function extractName(text: string, city: string, phone: string) {
+function extractName(text: string, detectedCity: string, phone: string) {
   const raw = clean(text);
   const norm = normalize(raw);
 
-  if (!raw || city || phone) return "";
+  if (!raw || detectedCity || phone) return "";
 
-  const explicit = raw.match(
-    /(?:soy|me llamo|nombre|mi nombre es)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,80})/i
-  )?.[1];
-
-  if (explicit) return clean(explicit);
-
-  const banned = [
-    "hola",
+  const forbidden = [
     "quiero",
+    "quiero comprar",
+    "me interesa",
     "precio",
-    "cuanto",
-    "ok",
-    "dale",
-    "si",
-    "sí",
-    "gracias",
+    "cuanto cuesta",
     "nebulizador",
     "delivery",
     "envio",
-    "enviar",
+    "ok",
+    "dale",
+    "si",
+    "hola",
+    "buenas",
+    "gracias",
   ];
 
-  if (banned.some((b) => norm === normalize(b) || norm.includes(normalize(b)))) {
-    return "";
-  }
+  if (forbidden.some((f) => norm === normalize(f))) return "";
+
+  const explicit = raw.match(
+    /(?:soy|me llamo|mi nombre es|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,80})/i
+  )?.[1];
+
+  if (explicit) return clean(explicit);
 
   const words = raw.split(/\s+/).filter(Boolean);
 
@@ -441,9 +318,11 @@ function extractName(text: string, city: string, phone: string) {
   return "";
 }
 
-function extractAddress(text: string, city: string, phone: string, name: string) {
+function extractAddress(text: string, detectedCity: string, phone: string, name: string) {
   const raw = clean(text);
   const norm = normalize(raw);
+
+  if (!raw || detectedCity || phone || name) return "";
 
   const explicit = raw.match(
     /(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i
@@ -452,8 +331,6 @@ function extractAddress(text: string, city: string, phone: string, name: string)
   if (explicit) return clean(explicit);
 
   if (raw.includes("maps.app") || raw.includes("google.com/maps")) return raw;
-
-  if (city || phone || name) return "";
 
   if (
     /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/.test(
@@ -468,36 +345,32 @@ function extractAddress(text: string, city: string, phone: string, name: string)
   return "";
 }
 
-function extractData(text: string, parsed: ParsedTraining, old: any = {}) {
-  const city = detectCity(text, parsed, old?.city || "");
-  const phone = extractPhone(text);
-  const quantity = extractQuantity(text);
-  const name = extractName(text, city && city !== old?.city ? city : "", phone);
-  const address = extractAddress(text, city && city !== old?.city ? city : "", phone, name);
+function sanitizeOldOrder(old: any, parsed: ParsedTraining) {
+  const productInfo = getProductInfo(old?.product || "", parsed);
+  const nameNorm = normalize(old?.customer_name || "");
 
   return {
-    quantity,
-    city: city && city !== old?.city ? city : "",
-    name,
-    phone,
-    address,
+    product: productInfo?.canonical || "",
+    quantity:
+      Number(old?.quantity) > 0 && Number(old?.quantity) <= 20
+        ? Number(old.quantity)
+        : 0,
+    city: clean(old?.city || ""),
+    customer_name:
+      old?.customer_name && nameNorm !== "quiero" ? clean(old.customer_name) : "",
+    phone: clean(old?.phone || ""),
+    address: clean(old?.address || ""),
   };
 }
 
 function mergeOrderData(old: any, ext: any, product: string) {
   return {
-    product: product || old?.product || "",
-    quantity:
-      ext.quantity > 0
-        ? ext.quantity
-        : old?.quantity > 0
-        ? old.quantity
-        : 1,
-    city: ext.city || old?.city || "",
-    customer_name: ext.name || old?.customer_name || "",
-    phone: ext.phone || old?.phone || "",
-    address: ext.address || old?.address || "",
-    size: ext.size || old?.size || "",
+    product: product || old.product || "",
+    quantity: ext.quantity > 0 ? ext.quantity : old.quantity || 0,
+    city: ext.city || old.city || "",
+    customer_name: ext.name || old.customer_name || "",
+    phone: ext.phone || old.phone || "",
+    address: ext.address || old.address || "",
   };
 }
 
@@ -515,22 +388,21 @@ function formatGs(n: number) {
   return Number(n || 0).toLocaleString("es-PY");
 }
 
-function nextStep(order: any) {
-  if (!order.product) return "selling";
-  if (!order.city) return "collecting_city";
-  if (!order.quantity) return "collecting_quantity";
-  if (!order.customer_name) return "collecting_name";
-  if (!order.address) return "collecting_address";
-  if (!order.phone) return "collecting_phone";
+function nextStep(o: any) {
+  if (!o.product) return "selling";
+  if (!o.city) return "collecting_city";
+  if (!o.quantity) return "collecting_quantity";
+  if (!o.customer_name) return "collecting_name";
+  if (!o.address) return "collecting_address";
+  if (!o.phone) return "collecting_phone";
   return "confirm_order";
 }
 
-function buildMissingDataReply(order: any) {
+function missingDataReply(o: any) {
   const missing = [];
-
-  if (!order.customer_name) missing.push("nombre y apellido");
-  if (!order.address) missing.push("dirección exacta o ubicación");
-  if (!order.phone) missing.push("número de celular");
+  if (!o.customer_name) missing.push("nombre y apellido");
+  if (!o.address) missing.push("dirección exacta o ubicación");
+  if (!o.phone) missing.push("número de celular");
 
   if (missing.length === 3) {
     return `🔥 Perfecto 😊
@@ -547,18 +419,18 @@ function buildMissingDataReply(order: any) {
   return `✅ Ya voy registrando tus datos. Me falta: ${missing.join(", ")} 😊`;
 }
 
-function buildConfirmation(order: any, parsed: ParsedTraining) {
-  const total = calculateTotal(order.product, order.quantity || 1, parsed);
-  const coverage = hasCoverage(order.city, parsed);
+function confirmation(o: any, parsed: ParsedTraining) {
+  const total = calculateTotal(o.product, o.quantity, parsed);
+  const coverage = hasCoverage(o.city, parsed);
 
   if (coverage) {
     return `✅ PEDIDO CONFIRMADO
 
-✅ Producto: ${order.product}
-✅ Cliente: ${order.customer_name}
-✅ Ubicación: ${order.city} — ${order.address}
-✅ Contacto: ${order.phone}
-✅ Cantidad: ${order.quantity || 1} u.
+✅ Producto: ${o.product}
+✅ Cliente: ${o.customer_name}
+✅ Ubicación: ${o.city} — ${o.address}
+✅ Contacto: ${o.phone}
+✅ Cantidad: ${o.quantity} u.
 💰 Total: ${formatGs(total)} Gs
 
 🚚 Envío GRATIS · Pagás al recibir
@@ -582,11 +454,11 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 
   return `✅ PEDIDO CONFIRMADO
 
-✅ Producto: ${order.product}
-✅ Cliente: ${order.customer_name}
-✅ Ubicación: ${order.city}
-✅ Contacto: ${order.phone}
-✅ Cantidad: ${order.quantity || 1} u.
+✅ Producto: ${o.product}
+✅ Cliente: ${o.customer_name}
+✅ Ubicación: ${o.city}
+✅ Contacto: ${o.phone}
+✅ Cantidad: ${o.quantity} u.
 💰 Total: ${formatGs(total)} Gs
 
 🚚 Su encomienda será enviada por transportadora.
@@ -604,15 +476,7 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 Titular: DAVID AGUSTIN ALCARAZ AGUILAR
 Banco Familiar
 Cuenta: 81-4981442
-Alias: 0994130022
-
-¡Gracias por tu compra! 🛍️✨
-
-Te dejo nuestro catálogo completo 👇
-
-👉 ${CATALOG_URL}
-
-Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
+Alias: 0994130022`;
 }
 
 async function safeUpsertOrder(
@@ -622,31 +486,31 @@ async function safeUpsertOrder(
   parsed: ParsedTraining,
   confirm = false
 ) {
-  if (!order?.product || !from) return null;
+  if (!getProductInfo(order.product, parsed)) return null;
 
+  const total = calculateTotal(order.product, order.quantity || 1, parsed);
   const step = nextStep(order);
-  const finalStatus =
+
+  const status =
     confirm && step === "confirm_order"
       ? "confirmed"
       : step === "confirm_order"
       ? "confirm_pending"
       : step;
 
-  const total = calculateTotal(order.product, order.quantity || 1, parsed);
-
   const payload: any = {
     user_id: userId,
     from_number: from,
     phone: order.phone || from,
-    product: order.product || null,
-    producto: order.product || null,
+    product: order.product,
+    producto: order.product,
     customer_name: order.customer_name || null,
     city: order.city || null,
     ciudad: order.city || null,
     address: order.address || null,
     quantity: order.quantity || 1,
     total_amount: total || null,
-    status: finalStatus,
+    status,
     fecha: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
@@ -671,45 +535,25 @@ async function safeUpsertOrder(
     .maybeSingle();
 
   if (existing?.id) {
-    const { error } = await supabase
-      .from("orders")
-      .update(payload)
-      .eq("id", existing.id);
-
-    if (error) console.error("❌ updateOrder:", error);
+    await supabase.from("orders").update(payload).eq("id", existing.id);
     return existing.id;
   }
 
-  const { data, error } = await supabase
-    .from("orders")
-    .insert(payload)
-    .select("id")
-    .single();
-
-  if (error) {
-    console.error("❌ insertOrder:", error);
-    return null;
-  }
-
+  const { data } = await supabase.from("orders").insert(payload).select("id").single();
   return data?.id || null;
 }
 
 async function fetchMediaAsBase64(url: string) {
-  try {
-    const r = await fetch(url);
-    if (!r.ok) return null;
+  const r = await fetch(url);
+  if (!r.ok) return null;
 
-    const mime = r.headers.get("content-type") || "application/octet-stream";
-    const buf = Buffer.from(await r.arrayBuffer());
+  const mime = r.headers.get("content-type") || "application/octet-stream";
+  const buf = Buffer.from(await r.arrayBuffer());
 
-    return {
-      data: buf.toString("base64"),
-      mime: mime.split(";")[0].trim(),
-    };
-  } catch (e) {
-    console.error("❌ fetchMediaAsBase64:", e);
-    return null;
-  }
+  return {
+    data: buf.toString("base64"),
+    mime: mime.split(";")[0].trim(),
+  };
 }
 
 async function callGemini({
@@ -758,55 +602,6 @@ async function callGemini({
   );
 }
 
-async function analyzeImageWithGemini({
-  apiKey,
-  model,
-  imageBase64,
-  mime,
-  caption,
-}: any) {
-  const system = `
-Devolvé exclusivamente JSON válido:
-{"kind":"payment_proof"|"product"|"other","transcript":"..."}
-
-payment_proof: comprobante de transferencia, depósito, billetera, banco.
-product: imagen de producto.
-other: cualquier otra imagen.
-`.trim();
-
-  const raw = await callGemini({
-    apiKey,
-    model,
-    system,
-    contents: [
-      {
-        role: "user",
-        parts: [
-          { inlineData: { mimeType: mime, data: imageBase64 } },
-          { text: caption || "Analizá la imagen." },
-        ],
-      },
-    ],
-    temperature: 0.1,
-    maxTokens: 512,
-  });
-
-  try {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("No JSON");
-    const parsed = JSON.parse(match[0]);
-
-    return {
-      kind: ["payment_proof", "product", "other"].includes(parsed.kind)
-        ? parsed.kind
-        : "other",
-      transcript: clean(parsed.transcript),
-    };
-  } catch {
-    return { kind: "other", transcript: clean(raw).slice(0, 200) };
-  }
-}
-
 async function transcribeAudioWithGemini({
   apiKey,
   model,
@@ -816,8 +611,7 @@ async function transcribeAudioWithGemini({
   return callGemini({
     apiKey,
     model,
-    system:
-      "Transcribí el audio al español tal cual. Devolvé solo texto plano.",
+    system: "Transcribí el audio al español. Devolvé solo texto plano.",
     contents: [
       {
         role: "user",
@@ -851,13 +645,10 @@ export default async function handler(req: any, res: any) {
 
     let texto = clean(message);
     const fromNumber = clean(from_number);
-    const mediaUrl = clean(media_url);
-    const mediaType = clean(media_type);
-    const mimeHint = clean(mime_type);
 
     if (!user_id) return res.status(400).json({ error: "Falta user_id" });
     if (!fromNumber) return res.status(400).json({ error: "Falta from_number" });
-    if (!texto && !mediaUrl) {
+    if (!texto && !media_url) {
       return res.status(400).json({ error: "Faltan message o media" });
     }
 
@@ -869,114 +660,79 @@ export default async function handler(req: any, res: any) {
       .maybeSingle();
 
     if (!iaConfig?.api_key) {
-      return res.json({
-        response: "⚠️ La IA no está configurada o desactivada.",
-      });
+      return res.json({ response: "⚠️ La IA no está configurada o desactivada." });
     }
 
     const allTraining = await getAllTrainingData(user_id);
-    const combinedTraining = buildTrainingText(allTraining);
-    const parsed = parseTraining(combinedTraining);
+    const trainingText = buildTrainingText(allTraining);
+    const parsed = parseTraining(trainingText);
 
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    if (mediaUrl && mediaType === "image") {
-      const fetched = await fetchMediaAsBase64(mediaUrl);
-
-      if (fetched) {
-        const analysis = await analyzeImageWithGemini({
-          apiKey,
-          model,
-          imageBase64: fetched.data,
-          mime: mimeHint || fetched.mime || "image/jpeg",
-          caption: texto,
-        });
-
-        if (analysis.kind === "payment_proof") {
-          return res.json({
-            response: `¡Perfecto! 🙏 Recibí tu comprobante. Ya estamos verificando el pago y enseguida te confirmamos el envío 🚚✨`,
-            is_payment_proof: true,
-            context: {
-              ...(context || {}),
-              last_topic: "comprobante",
-              updated_at: new Date().toISOString(),
-            },
-          });
-        }
-
-        texto = texto || analysis.transcript || "El cliente envió una imagen.";
-      }
-    }
-
-    if (mediaUrl && mediaType === "audio") {
-      const fetched = await fetchMediaAsBase64(mediaUrl);
-
+    if (media_url && media_type === "audio") {
+      const fetched = await fetchMediaAsBase64(clean(media_url));
       if (fetched) {
         texto =
           (await transcribeAudioWithGemini({
             apiKey,
             model,
             audioBase64: fetched.data,
-            mime: mimeHint || fetched.mime || "audio/ogg",
+            mime: clean(mime_type) || fetched.mime || "audio/ogg",
           })) || texto;
       }
     }
 
-    const oldOrder = context?.order_data || {};
+    const oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
 
-    const detectedProduct = detectProduct(
+    const product = detectProduct(
       texto,
       parsed,
-      context?.current_product || oldOrder?.product
+      context?.current_product || oldOrder.product
     );
 
-    const extracted = extractData(texto, parsed, oldOrder);
+    const detectedCity = detectCity(texto, parsed, oldOrder.city);
+    const phone = extractPhone(texto);
+    const qty = extractQuantity(texto);
+    const name = extractName(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone);
+    const address = extractAddress(
+      texto,
+      detectedCity !== oldOrder.city ? detectedCity : "",
+      phone,
+      name
+    );
 
-    const orderData = mergeOrderData(oldOrder, extracted, detectedProduct);
-
-    const wantsToBuy = isBuyIntent(texto);
-    const asksPrice = isPriceIntent(texto);
+    let orderData = mergeOrderData(
+      oldOrder,
+      {
+        quantity: qty,
+        city: detectedCity !== oldOrder.city ? detectedCity : "",
+        phone,
+        name,
+        address,
+      },
+      product
+    );
 
     const productInfo = getProductInfo(orderData.product, parsed);
-    const coverage = hasCoverage(orderData.city, parsed);
 
-    let step = nextStep(orderData);
-
-    const newContextBase = {
-      ...(context || {}),
-      current_product: orderData.product || context?.current_product || null,
-      order_data: orderData,
-      step,
-      updated_at: new Date().toISOString(),
-    };
-
-    if (!orderData.product) {
-      const match = findMatchingTraining(allTraining, texto);
-      if (match?.response) {
-        return res.json({
-          response: match.response,
-          context: {
-            ...newContextBase,
-            matched_training: true,
-            last_topic: match.intent,
-          },
-        });
-      }
+    if (!productInfo) {
+      orderData = { ...orderData, product: "" };
     }
 
     if (orderData.product && !orderData.city) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
-      const productPrice = productInfo?.price1
-        ? `💰 Precio: ${formatGs(productInfo.price1)} Gs\n\n`
-        : "";
-
       return res.json({
-        response: `${productPrice}📍 ¿Para qué ciudad sería el envío? 😊`,
+        response: `💰 ${orderData.product}: ${formatGs(productInfo?.price1 || 0)} Gs
+
+📍 ¿Para qué ciudad sería el envío? 😊`,
         context: {
-          ...newContextBase,
+          ...(context || {}),
+          current_product: orderData.product,
+          order_data: orderData,
           step: "collecting_city",
+          updated_at: new Date().toISOString(),
         },
       });
     }
@@ -984,26 +740,23 @@ export default async function handler(req: any, res: any) {
     if (orderData.product && orderData.city && !orderData.quantity) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
-      const total1 = productInfo?.price1 ? formatGs(productInfo.price1) : "";
-      const promo =
-        productInfo?.price2
-          ? `\n🔥 PROMO 2x → ${formatGs(productInfo.price2)} Gs`
-          : "";
-
-      const coverageText = coverage
-        ? `✅ Perfecto 😊 ${orderData.city} tiene ENVÍO GRATIS contra-entrega 🚚`
-        : `ℹ️ ${orderData.city} no está en nuestra lista de envío gratis contra-entrega, pero podemos coordinar envío por transportadora con previa transferencia bancaria.`;
+      const promo = productInfo?.price2
+        ? `\n🔥 PROMO 2x → ${formatGs(productInfo.price2)} Gs`
+        : "";
 
       return res.json({
-        response: `${coverageText}
+        response: `✅ Perfecto 😊 ${orderData.city} tiene ENVÍO GRATIS contra-entrega 🚚
 
 🔥 ${orderData.product}
-${total1 ? `• 1 unidad → ${total1} Gs` : ""}${promo}
+• 1 unidad → ${formatGs(productInfo?.price1 || 0)} Gs${promo}
 
 ¿Cuántas unidades te gustaría llevar? ✨`,
         context: {
-          ...newContextBase,
+          ...(context || {}),
+          current_product: orderData.product,
+          order_data: orderData,
           step: "collecting_quantity",
+          updated_at: new Date().toISOString(),
         },
       });
     }
@@ -1017,10 +770,13 @@ ${total1 ? `• 1 unidad → ${total1} Gs` : ""}${promo}
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
       return res.json({
-        response: buildMissingDataReply(orderData),
+        response: missingDataReply(orderData),
         context: {
-          ...newContextBase,
+          ...(context || {}),
+          current_product: orderData.product,
+          order_data: orderData,
           step: nextStep(orderData),
+          updated_at: new Date().toISOString(),
         },
       });
     }
@@ -1033,46 +789,51 @@ ${total1 ? `• 1 unidad → ${total1} Gs` : ""}${promo}
       orderData.address &&
       orderData.phone
     ) {
+      if (!getProductInfo(orderData.product, parsed)) {
+        return res.json({
+          response:
+            "🙏 Para confirmar necesito saber qué producto querés. ¿Te referís al Nebulizador Portátil?",
+          context: {
+            ...(context || {}),
+            order_data: { ...orderData, product: "" },
+            current_product: null,
+            step: "selling",
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
+
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, true);
 
       return res.json({
-        response: buildConfirmation(orderData, parsed),
+        response: confirmation(orderData, parsed),
         context: {
-          ...newContextBase,
-          step: "pedido_confirmado",
+          ...(context || {}),
+          current_product: orderData.product,
           order_data: orderData,
+          step: "pedido_confirmado",
+          updated_at: new Date().toISOString(),
         },
       });
     }
 
-    const trainingContext = buildTrainingContext(allTraining);
-
     const system = `
-Sos el asistente de ventas de Mega Todo Store.
+Sos vendedor de Mega Todo Store.
+Usá SOLO este entrenamiento como fuente de verdad.
 
-Usá como fuente de verdad el entrenamiento del vendedor.
-Nunca inventes precios.
-Nunca confirmes pedido si falta producto, ciudad, cantidad, nombre, dirección o teléfono.
-
-ENTRENAMIENTO:
-${trainingContext}
-
-ESTADO:
-Producto: ${orderData.product || "pendiente"}
-Ciudad: ${orderData.city || "pendiente"}
-Cantidad: ${orderData.quantity || "pendiente"}
-Nombre: ${orderData.customer_name || "pendiente"}
-Dirección: ${orderData.address || "pendiente"}
-Teléfono: ${orderData.phone || "pendiente"}
-Cobertura: ${orderData.city ? (coverage ? "con cobertura" : "sin cobertura") : "pendiente"}
-
-Reglas:
+REGLAS:
+- Los productos válidos son SOLO los de CATALOGO_PRODUCTOS.
+- Nunca uses ciudades como producto.
+- Nunca uses "quiero" como nombre.
+- Nunca confirmes si falta producto, ciudad, cantidad, nombre, dirección o teléfono.
+- Si falta producto, ofrecé productos del catálogo.
 - Si falta ciudad, preguntá ciudad.
 - Si falta cantidad, preguntá cantidad.
-- Si faltan datos, pedí solo los datos faltantes.
-- Si está todo completo, confirmá pedido.
-- No uses ciudades como producto.
-- No uses frases de pago como producto.
+- Si faltan datos, pedí solo lo faltante.
+- No inventes precios.
+
+ENTRENAMIENTO:
+${trainingText}
 `.trim();
 
     const contents = (history || [])
@@ -1101,7 +862,13 @@ Reglas:
       response:
         aiResponse ||
         `📋 Te invito a revisar nuestro catálogo:\n${CATALOG_URL}`,
-      context: newContextBase,
+      context: {
+        ...(context || {}),
+        current_product: orderData.product || null,
+        order_data: orderData,
+        step: nextStep(orderData),
+        updated_at: new Date().toISOString(),
+      },
     });
   } catch (error: any) {
     console.error("❌ chat-ia:", error);
