@@ -322,38 +322,29 @@ function extractQuantity(text: string) {
 
 function extractPhone(text: string) {
   const compact = clean(text).replace(/\s+/g, "");
-  // Soporte para: 0994130021, +595994130021, 595994130021
   const match = compact.match(/(?:09\d{8}|\+5959\d{8}|5959\d{8}|09\d{8,9})/);
   return match?.[0] || "";
 }
 
-// ============================================================
-// 🔧 CORREGIDO: extractName ahora maneja múltiples líneas
-// ============================================================
 function extractName(text: string, detectedCity: string, phone: string) {
   const raw = clean(text);
   const norm = normalize(raw);
 
   if (!raw) return "";
 
-  // Si ya detectamos ciudad o teléfono, aún podemos extraer el nombre
-  // Dividir el texto en líneas
   const lines = raw.split('\n').filter(l => clean(l).length > 0);
   
-  // Buscar nombre explícito
   const explicit = raw.match(
     /(?:soy|me llamo|mi nombre es|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,80})/i
   )?.[1];
   if (explicit) return clean(explicit);
 
-  // Si hay múltiples líneas, la primera línea sin números podría ser el nombre
   for (const line of lines) {
     const cleaned = clean(line);
     const hasPhone = /\d{8,}/.test(cleaned);
     const hasAddressWords = /\b(calle|avda|avenida|ruta|km|barrio|bo|casa)\b/i.test(normalize(cleaned));
     const hasNumber = /\d/.test(cleaned);
     
-    // Si la línea parece un nombre (sin números, sin palabras de dirección, y es corta)
     if (
       !hasPhone &&
       !hasAddressWords &&
@@ -362,7 +353,6 @@ function extractName(text: string, detectedCity: string, phone: string) {
       cleaned.length <= 40 &&
       /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)
     ) {
-      // Verificar que no sea una palabra prohibida
       const forbidden = [
         "quiero", "comprar", "me interesa", "precio", "delivery", 
         "envio", "ok", "dale", "si", "hola", "buenas", "gracias"
@@ -374,7 +364,6 @@ function extractName(text: string, detectedCity: string, phone: string) {
     }
   }
 
-  // Fallback: si el texto tiene entre 2 y 5 palabras y no tiene números
   const words = raw.split(/\s+/).filter(Boolean);
   if (
     words.length >= 2 &&
@@ -388,9 +377,6 @@ function extractName(text: string, detectedCity: string, phone: string) {
   return "";
 }
 
-// ============================================================
-// 🔧 CORREGIDO: extractAddress ahora maneja múltiples líneas
-// ============================================================
 function extractAddress(text: string, detectedCity: string, phone: string, name: string) {
   const raw = clean(text);
   const norm = normalize(raw);
@@ -398,10 +384,8 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
   if (/^\d+$/.test(raw)) return "";
 
-  // Dividir en líneas
   const lines = raw.split('\n').filter(l => clean(l).length > 0);
 
-  // Buscar dirección explícita
   const explicit = raw.match(
     /(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i
   )?.[1];
@@ -409,26 +393,20 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
 
   if (raw.includes("maps.app") || raw.includes("google.com/maps")) return raw;
 
-  // Buscar línea que parece dirección
   for (const line of lines) {
     const cleaned = clean(line);
     const normLine = normalize(cleaned);
     
-    // Si la línea tiene palabras clave de dirección
     if (
       /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/i.test(normLine)
     ) {
-      // Verificar que no sea solo el nombre
       if (name && normalize(cleaned).includes(normalize(name))) continue;
-      // Verificar que no sea solo el teléfono
       if (phone && cleaned.includes(phone)) continue;
       return cleaned;
     }
   }
 
-  // Si el texto tiene números y es largo, podría ser dirección
   if (/\d/.test(raw) && raw.length >= 8) {
-    // Si hay nombre, removerlo
     let remaining = raw;
     if (name) {
       const namePattern = name.split(/\s+/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
@@ -438,7 +416,6 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
       const phonePattern = phone.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       remaining = remaining.replace(new RegExp(phonePattern, 'g'), '').trim();
     }
-    // Remover palabras comunes
     const wordsToRemove = ['soy', 'me llamo', 'mi nombre es', 'nombre', 'teléfono', 'celular', 'cel', 'mi', 'es'];
     for (const word of wordsToRemove) {
       remaining = remaining.replace(new RegExp(`\\b${word}\\b`, 'gi'), '').trim();
@@ -775,6 +752,9 @@ function isRespondingToPromotion(text: string, history: any[]) {
   return false;
 }
 
+// ============================================================
+// 🔧 CORREGIDO: getProductFromLastPromotion con detección mejorada
+// ============================================================
 function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
   const lastBotMessages = (history || [])
     .slice(-6)
@@ -785,6 +765,47 @@ function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
     const content = clean(item?.content);
     if (!content) continue;
     
+    // 🔥 PRIMERO: Buscar el nombre del producto en el mensaje usando las palabras clave del catálogo
+    // Buscar coincidencia exacta con nombres de productos
+    for (const product of parsed.products) {
+      // Buscar el nombre canónico o el producto en el contenido
+      const productName = product.canonical;
+      const productNameNorm = normalize(productName);
+      const contentNorm = normalize(content);
+      
+      // Si el nombre del producto está en el contenido (con mayor peso)
+      if (contentNorm.includes(productNameNorm)) {
+        // Verificar que no sea solo una coincidencia parcial
+        // Por ejemplo, "Procesador" no debería coincidir con "Limpiador"
+        const words = contentNorm.split(' ');
+        for (const word of words) {
+          if (word === productNameNorm || word.includes(productNameNorm) || productNameNorm.includes(word)) {
+            // Si la palabra es exacta o es una coincidencia fuerte
+            if (word.length >= 4 && (word === productNameNorm || productNameNorm.includes(word) || word.includes(productNameNorm))) {
+              return product;
+            }
+          }
+        }
+      }
+      
+      // También buscar en los alias
+      for (const alias of product.aliases) {
+        const aliasNorm = normalize(alias);
+        if (aliasNorm.length >= 3 && contentNorm.includes(aliasNorm)) {
+          // Verificar que sea una coincidencia fuerte
+          const words = contentNorm.split(' ');
+          for (const word of words) {
+            if (word === aliasNorm || word.includes(aliasNorm) || aliasNorm.includes(word)) {
+              if (word.length >= 3) {
+                return product;
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // Fallback: usar detectProduct normal
     const product = detectProduct(content, parsed, "");
     if (product) {
       const productInfo = getProductInfo(product, parsed);
@@ -949,6 +970,7 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
       const isPromoResponse = isRespondingToPromotion(texto, history);
       
       if (isPromoResponse) {
+        // 🔥 USAR LA NUEVA FUNCIÓN MEJORADA
         const promoProduct = getProductFromLastPromotion(history, parsed);
         
         if (promoProduct) {
@@ -1237,13 +1259,10 @@ ${CATALOG_URL}`,
       if (!orderData.address) missing.push("dirección exacta");
       if (!orderData.phone) missing.push("número de celular");
 
-      // Si todos los datos están presentes pero no se detectaron, intentar extraer de nuevo
       if (missing.length === 3) {
-        // Reintentar extracción con el texto original
         const rawText = clean(message);
         const lines = rawText.split('\n').filter(l => clean(l).length > 0);
         
-        // Buscar teléfono nuevamente
         if (!orderData.phone) {
           for (const line of lines) {
             const phoneMatch = line.match(/(09\d{8}|09\d{8,9})/);
@@ -1254,7 +1273,6 @@ ${CATALOG_URL}`,
           }
         }
         
-        // Buscar nombre nuevamente
         if (!orderData.customer_name) {
           for (const line of lines) {
             const cleaned = clean(line);
@@ -1274,7 +1292,6 @@ ${CATALOG_URL}`,
           }
         }
         
-        // Buscar dirección nuevamente
         if (!orderData.address) {
           for (const line of lines) {
             const cleaned = clean(line);
@@ -1289,14 +1306,12 @@ ${CATALOG_URL}`,
           }
         }
         
-        // Recalcular faltantes
         const missingAfterRetry = [];
         if (!orderData.customer_name) missingAfterRetry.push("nombre y apellido");
         if (!orderData.address) missingAfterRetry.push("dirección exacta");
         if (!orderData.phone) missingAfterRetry.push("número de celular");
         
         if (missingAfterRetry.length === 0) {
-          // Todos los datos fueron extraídos, proceder a confirmar
           if (orderData.product && orderData.city && orderData.quantity > 0 &&
               orderData.customer_name && orderData.address && orderData.phone) {
             await safeUpsertOrder(user_id, fromNumber, orderData, parsed, true);
@@ -1313,7 +1328,6 @@ ${CATALOG_URL}`,
           }
         }
         
-        // Si aún faltan datos, mostrar mensaje con los que faltan
         const missingFinal = [];
         if (!orderData.customer_name) missingFinal.push("nombre y apellido");
         if (!orderData.address) missingFinal.push("dirección exacta");
