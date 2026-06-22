@@ -46,11 +46,11 @@ function isOrderStale(order: any, lastActivity: string) {
   const hasCity = !!order?.city;
   const hasQuantity = order?.quantity > 0;
   const hasCustomerData = !!(order?.customer_name || order?.address || order?.phone);
-  
+
   const now = new Date();
   const last = new Date(lastActivity);
   const diffMinutes = (now.getTime() - last.getTime()) / (1000 * 60);
-  
+
   return hasProduct && hasCity && hasQuantity && !hasCustomerData && diffMinutes > 10;
 }
 
@@ -61,7 +61,7 @@ function isPriceQuery(text: string) {
 
 function isNewConversation(context: any, history: any[]) {
   if (!history || history.length < 3) return true;
-  
+
   const lastMessageTime = context?.updated_at;
   if (lastMessageTime) {
     const now = new Date();
@@ -69,7 +69,7 @@ function isNewConversation(context: any, history: any[]) {
     const diffMinutes = (now.getTime() - last.getTime()) / (1000 * 60);
     if (diffMinutes > 30) return true;
   }
-  
+
   return false;
 }
 
@@ -103,8 +103,7 @@ function parseTraining(training: string): ParsedTraining {
   const cities: { alias: string; canonical: string }[] = [];
 
   const catalog =
-    training.match(/CATALOGO_PRODUCTOS([\s\S]*?)FIN_CATALOGO_PRODUCTOS/i)?.[1] ||
-    "";
+    training.match(/CATALOGO_PRODUCTOS([\s\S]*?)FIN_CATALOGO_PRODUCTOS/i)?.[1] || "";
 
   const productBlocks = catalog
     .split(/(?=PRODUCTO:\s*)/i)
@@ -145,8 +144,7 @@ function parseTraining(training: string): ParsedTraining {
   };
 
   const citySection =
-    training.match(/LISTA COMPLETA POR CIUDAD([\s\S]*?)⚙️ INSTRUCCIÓN FINAL/i)
-      ?.[1] ||
+    training.match(/LISTA COMPLETA POR CIUDAD([\s\S]*?)⚙️ INSTRUCCIÓN FINAL/i)?.[1] ||
     training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
     "";
 
@@ -170,8 +168,7 @@ function parseTraining(training: string): ParsedTraining {
   }
 
   const simpleCoverage =
-    training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
-    "";
+    training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] || "";
 
   simpleCoverage
     .split("\n")
@@ -310,7 +307,7 @@ function extractQuantity(text: string) {
     siete: 7,
     ocho: 8,
     nueve: 9,
-    diez: 10
+    diez: 10,
   };
 
   for (const [word, num] of Object.entries(words)) {
@@ -332,8 +329,8 @@ function extractName(text: string, detectedCity: string, phone: string) {
 
   if (!raw) return "";
 
-  const lines = raw.split('\n').filter(l => clean(l).length > 0);
-  
+  const lines = raw.split("\n").filter((l) => clean(l).length > 0);
+
   const explicit = raw.match(
     /(?:soy|me llamo|mi nombre es|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,80})/i
   )?.[1];
@@ -342,9 +339,10 @@ function extractName(text: string, detectedCity: string, phone: string) {
   for (const line of lines) {
     const cleaned = clean(line);
     const hasPhone = /\d{8,}/.test(cleaned);
-    const hasAddressWords = /\b(calle|avda|avenida|ruta|km|barrio|bo|casa)\b/i.test(normalize(cleaned));
+    const hasAddressWords =
+      /\b(calle|avda|avenida|ruta|km|barrio|bo|casa)\b/i.test(normalize(cleaned));
     const hasNumber = /\d/.test(cleaned);
-    
+
     if (
       !hasPhone &&
       !hasAddressWords &&
@@ -354,11 +352,11 @@ function extractName(text: string, detectedCity: string, phone: string) {
       /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)
     ) {
       const forbidden = [
-        "quiero", "comprar", "me interesa", "precio", "delivery", 
-        "envio", "ok", "dale", "si", "hola", "buenas", "gracias"
+        "quiero", "comprar", "me interesa", "precio", "delivery",
+        "envio", "ok", "dale", "si", "hola", "buenas", "gracias",
       ];
       const normLine = normalize(cleaned);
-      if (!forbidden.some(f => normLine === normalize(f))) {
+      if (!forbidden.some((f) => normLine === normalize(f))) {
         return cleaned;
       }
     }
@@ -384,7 +382,7 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
   if (/^\d+$/.test(raw)) return "";
 
-  const lines = raw.split('\n').filter(l => clean(l).length > 0);
+  const lines = raw.split("\n").filter((l) => clean(l).length > 0);
 
   const explicit = raw.match(
     /(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i
@@ -396,9 +394,11 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   for (const line of lines) {
     const cleaned = clean(line);
     const normLine = normalize(cleaned);
-    
+
     if (
-      /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/i.test(normLine)
+      /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/i.test(
+        normLine
+      )
     ) {
       if (name && normalize(cleaned).includes(normalize(name))) continue;
       if (phone && cleaned.includes(phone)) continue;
@@ -409,16 +409,21 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   if (/\d/.test(raw) && raw.length >= 8) {
     let remaining = raw;
     if (name) {
-      const namePattern = name.split(/\s+/).map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
-      remaining = remaining.replace(new RegExp(namePattern, 'i'), '').trim();
+      const namePattern = name
+        .split(/\s+/)
+        .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("\\s*");
+      remaining = remaining.replace(new RegExp(namePattern, "i"), "").trim();
     }
     if (phone) {
-      const phonePattern = phone.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      remaining = remaining.replace(new RegExp(phonePattern, 'g'), '').trim();
+      const phonePattern = phone.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      remaining = remaining.replace(new RegExp(phonePattern, "g"), "").trim();
     }
-    const wordsToRemove = ['soy', 'me llamo', 'mi nombre es', 'nombre', 'teléfono', 'celular', 'cel', 'mi', 'es'];
+    const wordsToRemove = [
+      "soy", "me llamo", "mi nombre es", "nombre", "teléfono", "celular", "cel", "mi", "es",
+    ];
     for (const word of wordsToRemove) {
-      remaining = remaining.replace(new RegExp(`\\b${word}\\b`, 'gi'), '').trim();
+      remaining = remaining.replace(new RegExp(`\\b${word}\\b`, "gi"), "").trim();
     }
     if (remaining.length >= 5) {
       return remaining;
@@ -728,15 +733,15 @@ function inferProductFromLastBotMessage(history: any[], parsed: ParsedTraining) 
 function isRespondingToPromotion(text: string, history: any[]) {
   const isBuy = isBuyIntent(text);
   if (!isBuy) return false;
-  
+
   const lastBotMessages = (history || [])
     .slice(-3)
     .filter((h: any) => h.role === "assistant" || h.role === "model");
-  
+
   for (const item of lastBotMessages) {
     const content = clean(item?.content);
     if (!content) continue;
-    
+
     if (
       content.includes("Oferta") ||
       content.includes("promoción") ||
@@ -748,12 +753,15 @@ function isRespondingToPromotion(text: string, history: any[]) {
       return true;
     }
   }
-  
+
   return false;
 }
 
 // ============================================================
-// 🔧 CORREGIDO: getProductFromLastPromotion con detección mejorada
+// ✅ CORREGIDO: getProductFromLastPromotion con matching exacto
+// Busca el nombre canónico completo como substring antes de
+// intentar cualquier matching por palabras sueltas, evitando
+// falsos positivos como "limpiar" → "Limpiador de Ollas".
 // ============================================================
 function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
   const lastBotMessages = (history || [])
@@ -767,12 +775,13 @@ function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
 
     const contentNorm = normalize(content);
 
-    // Ordenar productos por longitud del nombre canónico (más largo = más específico primero)
+    // Ordenar productos por longitud del nombre canónico normalizado
+    // (más largo primero = más específico, evita matches parciales)
     const sortedProducts = [...parsed.products].sort(
       (a, b) => normalize(b.canonical).length - normalize(a.canonical).length
     );
 
-    // PASO 1: Buscar coincidencia exacta del nombre canónico completo
+    // PASO 1: Coincidencia exacta del nombre canónico completo como substring
     for (const product of sortedProducts) {
       const canonicalNorm = normalize(product.canonical);
       if (canonicalNorm.length >= 4 && contentNorm.includes(canonicalNorm)) {
@@ -780,7 +789,7 @@ function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
       }
     }
 
-    // PASO 2: Buscar por alias completo (ordenados por longitud, más largo primero)
+    // PASO 2: Coincidencia por alias completo (más largo primero)
     for (const product of sortedProducts) {
       const sortedAliases = [...product.aliases].sort(
         (a, b) => normalize(b).length - normalize(a).length
@@ -855,10 +864,10 @@ export default async function handler(req: any, res: any) {
     }
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
-    
+
     if (isPriceQuery(texto)) {
       const productMentioned = detectProduct(texto, parsed, "");
-      
+
       if (productMentioned) {
         const productInfo = getProductInfo(productMentioned, parsed);
         if (productInfo) {
@@ -870,7 +879,7 @@ export default async function handler(req: any, res: any) {
             phone: "",
             address: "",
           };
-          
+
           return res.json({
             response: `💰 ${productInfo.canonical}: ${formatGs(productInfo.price1)} Gs
 
@@ -885,11 +894,11 @@ export default async function handler(req: any, res: any) {
           });
         }
       }
-      
-      const defaultProduct = parsed.products.find(p => 
-        normalize(p.canonical).includes("nebulizador")
-      ) || parsed.products[0];
-      
+
+      const defaultProduct =
+        parsed.products.find((p) => normalize(p.canonical).includes("nebulizador")) ||
+        parsed.products[0];
+
       if (defaultProduct) {
         const resetOrder = {
           product: defaultProduct.canonical,
@@ -899,7 +908,7 @@ export default async function handler(req: any, res: any) {
           phone: "",
           address: "",
         };
-        
+
         return res.json({
           response: `💰 ${defaultProduct.canonical}: ${formatGs(defaultProduct.price1)} Gs
 
@@ -914,7 +923,7 @@ export default async function handler(req: any, res: any) {
         });
       }
     }
-    
+
     if (isOrderStale(oldOrder, context?.updated_at || new Date().toISOString())) {
       oldOrder = {
         product: "",
@@ -924,7 +933,7 @@ export default async function handler(req: any, res: any) {
         phone: "",
         address: "",
       };
-      
+
       return res.json({
         response: `🔄 Veo que tenías un pedido incompleto. Comencemos de nuevo.
 
@@ -942,18 +951,19 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
     }
 
     const buyIntent = isBuyIntent(texto);
-    const hasProductInMessage = parsed.products.some(p => 
-      normalize(texto).includes(normalize(p.canonical)) ||
-      p.aliases.some(a => normalize(texto).includes(normalize(a)))
+    const hasProductInMessage = parsed.products.some(
+      (p) =>
+        normalize(texto).includes(normalize(p.canonical)) ||
+        p.aliases.some((a) => normalize(texto).includes(normalize(a)))
     );
 
     if (buyIntent && !hasProductInMessage) {
       const isPromoResponse = isRespondingToPromotion(texto, history);
-      
+
       if (isPromoResponse) {
-        // 🔥 USAR LA NUEVA FUNCIÓN CORREGIDA
+        // ✅ FUNCIÓN CORREGIDA: detecta el producto exacto de la promo
         const promoProduct = getProductFromLastPromotion(history, parsed);
-        
+
         if (promoProduct) {
           const resetOrder = {
             product: promoProduct.canonical,
@@ -963,7 +973,7 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
             phone: "",
             address: "",
           };
-          
+
           return res.json({
             response: `🔥 ¡Excelente decisión! 😊
 
@@ -982,7 +992,7 @@ Tenemos el **${promoProduct.canonical}** en oferta:
           });
         }
       }
-      
+
       const hasExistingOrder = oldOrder.product && oldOrder.city;
 
       if (hasExistingOrder) {
@@ -995,17 +1005,16 @@ Tenemos el **${promoProduct.canonical}** en oferta:
             phone: "",
             address: "",
           };
-          
+
           const productFromContext = clean(
-            context?.last_ad_product ||
-            inferProductFromLastBotMessage(history, parsed)
+            context?.last_ad_product || inferProductFromLastBotMessage(history, parsed)
           );
-          
+
           if (productFromContext) {
             const productInfo = getProductInfo(productFromContext, parsed);
             if (productInfo) {
               resetOrder.product = productInfo.canonical;
-              
+
               return res.json({
                 response: `🔥 ¡Excelente decisión! 😊
 
@@ -1025,7 +1034,7 @@ Tenemos el **${productInfo.canonical}** en oferta:
             }
           }
         }
-        
+
         return res.json({
           response: `✅ Ya estabas viendo el **${oldOrder.product}**.
 
@@ -1054,15 +1063,14 @@ Escribí el nombre del producto que te interesa. 😊`,
       };
 
       const productFromContext = clean(
-        context?.last_ad_product ||
-        inferProductFromLastBotMessage(history, parsed)
+        context?.last_ad_product || inferProductFromLastBotMessage(history, parsed)
       );
 
       if (productFromContext) {
         const productInfo = getProductInfo(productFromContext, parsed);
         if (productInfo) {
           resetOrder.product = productInfo.canonical;
-          
+
           return res.json({
             response: `🔥 ¡Excelente decisión! 😊
 
@@ -1082,13 +1090,13 @@ Tenemos el **${productInfo.canonical}** en oferta:
         }
       }
 
-      const defaultProduct = parsed.products.find(p => 
-        normalize(p.canonical).includes("nebulizador")
-      ) || parsed.products[0];
+      const defaultProduct =
+        parsed.products.find((p) => normalize(p.canonical).includes("nebulizador")) ||
+        parsed.products[0];
 
       if (defaultProduct) {
         resetOrder.product = defaultProduct.canonical;
-        
+
         return res.json({
           response: `🔥 ¡Excelente decisión! 😊
 
@@ -1124,12 +1132,8 @@ Escribí el nombre del producto que te interesa. 😊`,
 
     const productFromMessage = detectProduct(texto, parsed, "");
     const productToUse = productFromMessage || context?.current_product || oldOrder.product;
-    
-    const product = detectProduct(
-      texto,
-      parsed,
-      productToUse
-    );
+
+    const product = detectProduct(texto, parsed, productToUse);
 
     const detectedCity = detectCity(texto, parsed, oldOrder.city);
     const phone = extractPhone(texto);
@@ -1242,8 +1246,8 @@ ${CATALOG_URL}`,
 
       if (missing.length === 3) {
         const rawText = clean(message);
-        const lines = rawText.split('\n').filter(l => clean(l).length > 0);
-        
+        const lines = rawText.split("\n").filter((l) => clean(l).length > 0);
+
         if (!orderData.phone) {
           for (const line of lines) {
             const phoneMatch = line.match(/(09\d{8}|09\d{8,9})/);
@@ -1253,7 +1257,7 @@ ${CATALOG_URL}`,
             }
           }
         }
-        
+
         if (!orderData.customer_name) {
           for (const line of lines) {
             const cleaned = clean(line);
@@ -1264,37 +1268,48 @@ ${CATALOG_URL}`,
               cleaned.length <= 40 &&
               /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)
             ) {
-              const forbidden = ["quiero", "comprar", "precio", "delivery", "envio", "ok", "dale", "si", "hola", "gracias"];
-              if (!forbidden.some(f => normalize(cleaned) === normalize(f))) {
+              const forbidden = [
+                "quiero", "comprar", "precio", "delivery", "envio", "ok", "dale", "si", "hola", "gracias",
+              ];
+              if (!forbidden.some((f) => normalize(cleaned) === normalize(f))) {
                 orderData.customer_name = cleaned;
                 break;
               }
             }
           }
         }
-        
+
         if (!orderData.address) {
           for (const line of lines) {
             const cleaned = clean(line);
             if (
-              /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/i.test(normalize(cleaned))
+              /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/i.test(
+                normalize(cleaned)
+              )
             ) {
-              if (orderData.customer_name && normalize(cleaned).includes(normalize(orderData.customer_name))) continue;
+              if (orderData.customer_name && normalize(cleaned).includes(normalize(orderData.customer_name)))
+                continue;
               if (orderData.phone && cleaned.includes(orderData.phone)) continue;
               orderData.address = cleaned;
               break;
             }
           }
         }
-        
+
         const missingAfterRetry = [];
         if (!orderData.customer_name) missingAfterRetry.push("nombre y apellido");
         if (!orderData.address) missingAfterRetry.push("dirección exacta");
         if (!orderData.phone) missingAfterRetry.push("número de celular");
-        
+
         if (missingAfterRetry.length === 0) {
-          if (orderData.product && orderData.city && orderData.quantity > 0 &&
-              orderData.customer_name && orderData.address && orderData.phone) {
+          if (
+            orderData.product &&
+            orderData.city &&
+            orderData.quantity > 0 &&
+            orderData.customer_name &&
+            orderData.address &&
+            orderData.phone
+          ) {
             await safeUpsertOrder(user_id, fromNumber, orderData, parsed, true);
             return res.json({
               response: confirmation(orderData, parsed),
@@ -1308,12 +1323,12 @@ ${CATALOG_URL}`,
             });
           }
         }
-        
+
         const missingFinal = [];
         if (!orderData.customer_name) missingFinal.push("nombre y apellido");
         if (!orderData.address) missingFinal.push("dirección exacta");
         if (!orderData.phone) missingFinal.push("número de celular");
-        
+
         return res.json({
           response: `🔥 Perfecto 😊
 
@@ -1443,9 +1458,7 @@ ${trainingText}
     });
 
     return res.json({
-      response:
-        aiResponse ||
-        `📋 Te invito a revisar nuestro catálogo:\n${CATALOG_URL}`,
+      response: aiResponse || `📋 Te invito a revisar nuestro catálogo:\n${CATALOG_URL}`,
       context: {
         ...(context || {}),
         current_product: orderData.product || null,
