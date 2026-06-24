@@ -323,6 +323,7 @@ function extractPhone(text: string) {
   return match?.[0] || "";
 }
 
+// ✅ FIX 3: extractName con blacklist extendida y límite de palabras
 function extractName(text: string, detectedCity: string, phone: string) {
   const raw = clean(text);
   const norm = normalize(raw);
@@ -343,6 +344,9 @@ function extractName(text: string, detectedCity: string, phone: string) {
       /\b(calle|avda|avenida|ruta|km|barrio|bo|casa)\b/i.test(normalize(cleaned));
     const hasNumber = /\d/.test(cleaned);
 
+    // Más de 4 palabras no es un nombre
+    if (cleaned.split(/\s+/).length > 4) continue;
+
     if (
       !hasPhone &&
       !hasAddressWords &&
@@ -351,12 +355,17 @@ function extractName(text: string, detectedCity: string, phone: string) {
       cleaned.length <= 40 &&
       /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)
     ) {
+      // ✅ Blacklist extendida: frases post-pedido y palabras inválidas
       const forbidden = [
         "quiero", "comprar", "me interesa", "precio", "delivery",
         "envio", "ok", "dale", "si", "hola", "buenas", "gracias",
+        "cuanto", "cuando", "dia", "llega", "llego", "pedido",
+        "cancelar", "no", "nebulizador", "raqueta", "que",
+        "estado", "seguimiento", "ya", "fue", "como", "donde",
+        "cuando llega", "que dia", "ya fue", "llego mi",
       ];
       const normLine = normalize(cleaned);
-      if (!forbidden.some((f) => normLine === normalize(f))) {
+      if (!forbidden.some((f) => normLine === normalize(f) || normLine.includes(normalize(f)))) {
         return cleaned;
       }
     }
@@ -365,11 +374,20 @@ function extractName(text: string, detectedCity: string, phone: string) {
   const words = raw.split(/\s+/).filter(Boolean);
   if (
     words.length >= 2 &&
-    words.length <= 5 &&
+    words.length <= 4 &&
     !/\d/.test(raw) &&
     !/calle|avda|avenida|ruta|km|barrio|bo/i.test(normalize(raw))
   ) {
-    return raw;
+    // Verificar que no sea una frase prohibida
+    const forbidden = [
+      "cuanto", "cuando", "dia", "llega", "llego", "pedido",
+      "cancelar", "que dia", "ya fue", "no raqueta", "no nebulizador",
+      "estado", "seguimiento",
+    ];
+    const normRaw = normalize(raw);
+    if (!forbidden.some((f) => normRaw.includes(normalize(f)))) {
+      return raw;
+    }
   }
 
   return "";
@@ -437,12 +455,24 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining) {
   const productInfo = getProductInfo(old?.product || "", parsed);
   const nameNorm = normalize(old?.customer_name || "");
 
+  // ✅ FIX 3 también en sanitize: limpiar nombres inválidos guardados previamente
+  const forbiddenNames = [
+    "quiero", "cuando", "dia", "llega", "llego", "pedido", "cancelar",
+    "no", "raqueta", "nebulizador", "que", "estado", "seguimiento",
+    "ya fue", "que dia llega mi pedido", "no raqueta",
+  ];
+  const isInvalidName = forbiddenNames.some((f) =>
+    nameNorm.includes(normalize(f))
+  ) || nameNorm.split(" ").length > 4;
+
   return {
     product: productInfo?.canonical || "",
     quantity: sanitizeQuantity(old?.quantity || 0),
     city: clean(old?.city || ""),
     customer_name:
-      old?.customer_name && nameNorm !== "quiero" ? clean(old.customer_name) : "",
+      old?.customer_name && nameNorm !== "quiero" && !isInvalidName
+        ? clean(old.customer_name)
+        : "",
     phone: clean(old?.phone || ""),
     address: clean(old?.address || ""),
   };
@@ -566,6 +596,7 @@ Cuenta: 81-4981442
 Alias: 0994130022`;
 }
 
+// ✅ FIX 1: safeUpsertOrder busca también pedidos ya confirmados para no duplicar
 async function safeUpsertOrder(
   userId: string,
   from: string,
@@ -616,6 +647,8 @@ async function safeUpsertOrder(
       "collecting_phone",
       "collecting_address",
       "confirm_pending",
+      "confirmed",        // ✅ FIX 1: evita crear pedido nuevo si ya fue confirmado
+      "pedido_confirmado",// ✅ FIX 1: ídem
     ])
     .order("created_at", { ascending: false })
     .limit(1)
@@ -757,12 +790,6 @@ function isRespondingToPromotion(text: string, history: any[]) {
   return false;
 }
 
-// ============================================================
-// ✅ CORREGIDO: getProductFromLastPromotion con matching exacto
-// Busca el nombre canónico completo como substring antes de
-// intentar cualquier matching por palabras sueltas, evitando
-// falsos positivos como "limpiar" → "Limpiador de Ollas".
-// ============================================================
 function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
   const lastBotMessages = (history || [])
     .slice(-6)
@@ -775,13 +802,10 @@ function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
 
     const contentNorm = normalize(content);
 
-    // Ordenar productos por longitud del nombre canónico normalizado
-    // (más largo primero = más específico, evita matches parciales)
     const sortedProducts = [...parsed.products].sort(
       (a, b) => normalize(b.canonical).length - normalize(a.canonical).length
     );
 
-    // PASO 1: Coincidencia exacta del nombre canónico completo como substring
     for (const product of sortedProducts) {
       const canonicalNorm = normalize(product.canonical);
       if (canonicalNorm.length >= 4 && contentNorm.includes(canonicalNorm)) {
@@ -789,7 +813,6 @@ function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
       }
     }
 
-    // PASO 2: Coincidencia por alias completo (más largo primero)
     for (const product of sortedProducts) {
       const sortedAliases = [...product.aliases].sort(
         (a, b) => normalize(b).length - normalize(a).length
@@ -864,6 +887,28 @@ export default async function handler(req: any, res: any) {
     }
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
+
+    // ✅ FIX 2: Bloqueo post-pedido — si ya fue confirmado, responder sin procesar
+    if (context?.step === "pedido_confirmado") {
+      const msgNorm = normalize(texto);
+      const isFollowUp =
+        /cuand|llega|llego|dia|estado|seguimiento|cancelar|ya fue|cuando|entrega|envio|despacho/.test(
+          msgNorm
+        );
+      const hasNewProduct = !!detectProduct(texto, parsed, "");
+
+      // Si no es un producto nuevo, responder como seguimiento
+      if (isFollowUp || !hasNewProduct) {
+        return res.json({
+          response: `🚚 Tu pedido de *${context.order_data?.product || "tu producto"}* está agendado para la próxima ronda de envíos. El delivery te confirma al llegar a tu zona. 😊`,
+          context: {
+            ...context,
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
+      // Si el cliente menciona un producto nuevo, dejar caer al flujo normal para nuevo pedido
+    }
 
     if (isPriceQuery(texto)) {
       const productMentioned = detectProduct(texto, parsed, "");
@@ -961,7 +1006,6 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
       const isPromoResponse = isRespondingToPromotion(texto, history);
 
       if (isPromoResponse) {
-        // ✅ FUNCIÓN CORREGIDA: detecta el producto exacto de la promo
         const promoProduct = getProductFromLastPromotion(history, parsed);
 
         if (promoProduct) {
@@ -1261,6 +1305,8 @@ ${CATALOG_URL}`,
         if (!orderData.customer_name) {
           for (const line of lines) {
             const cleaned = clean(line);
+            // ✅ FIX 3 inline: blacklist extendida y límite de palabras
+            if (cleaned.split(/\s+/).length > 4) continue;
             if (
               !/\d/.test(cleaned) &&
               !/calle|avda|avenida|ruta|km|barrio|bo|casa/i.test(normalize(cleaned)) &&
@@ -1269,9 +1315,13 @@ ${CATALOG_URL}`,
               /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)
             ) {
               const forbidden = [
-                "quiero", "comprar", "precio", "delivery", "envio", "ok", "dale", "si", "hola", "gracias",
+                "quiero", "comprar", "precio", "delivery", "envio",
+                "ok", "dale", "si", "hola", "gracias",
+                "cuanto", "cuando", "dia", "llega", "llego",
+                "pedido", "cancelar", "no", "que", "estado",
+                "seguimiento", "ya", "fue",
               ];
-              if (!forbidden.some((f) => normalize(cleaned) === normalize(f))) {
+              if (!forbidden.some((f) => normalize(cleaned).includes(normalize(f)))) {
                 orderData.customer_name = cleaned;
                 break;
               }
@@ -1430,6 +1480,7 @@ REGLAS:
 - Si faltan datos, pedí solo lo faltante.
 - No inventes precios.
 - NO GENERES CANTIDADES NI TOTALES. El backend los calcula automáticamente.
+- Si el cliente pregunta por el estado de su pedido ya confirmado, responder SOLO: "Tu pedido está agendado para la próxima ronda de envíos. El delivery te confirma al llegar."
 
 ENTRENAMIENTO:
 ${trainingText}
