@@ -585,6 +585,73 @@ async function evaluarDisparadores({ userId, from, texto }) {
     const ctx = await getContexto(userId, from);
     const lastTrigger = ctx?.last_trigger || null;
 
+    // PASADA 1: si hay lastTrigger, buscar su secundario con prioridad absoluta
+    // Esto evita que un primario de OTRO trigger (ej. "quiero" del procesador)
+    // se dispare cuando el contexto activo es un producto diferente (ej. nebulizador)
+    if (lastTrigger) {
+      const trigLastMatch = triggers.find((t) => t.name === lastTrigger);
+      if (trigLastMatch && matchSecundario(trigLastMatch.secondary, textoNorm)) {
+        const trig = trigLastMatch;
+        console.log(
+          `🎯 Disparador SECUNDARIO (prioridad lastTrigger): "${trig.name}" (lastTrigger=${lastTrigger})`
+        );
+
+        if (trig.send_limit && trig.send_limit !== "" && trig.send_limit !== "∞") {
+          const limite = parseInt(trig.send_limit, 10);
+          if (!isNaN(limite) && limite > 0) {
+            const { count } = await supabase
+              .from("trigger_log")
+              .select("*", { count: "exact", head: true })
+              .eq("trigger_id", trig.id);
+            if ((count || 0) < limite) {
+              const plantillaSec = await enviarPlantillaCompleta({
+                userId,
+                from,
+                templateName: trig.secondary?.template,
+                fallbackText: trig.secondary?.response,
+              });
+              const contenidoSecondary = clean(plantillaSec?.content || trig.secondary?.response || "");
+              try {
+                await supabase.from("trigger_log").insert({
+                  trigger_id: trig.id,
+                  user_id: userId,
+                  from_number: from,
+                  sent_at: new Date().toISOString(),
+                });
+              } catch {}
+              if (contenidoSecondary && esMensajePedidoConfirmado(contenidoSecondary)) {
+                await detectarYGuardarPedidoConfirmado({ userId, from, textoMensaje: contenidoSecondary, sourceMessageId: null });
+              }
+              await saveContexto(userId, from, { ...ctx, last_trigger: trig.name });
+              return true;
+            }
+          }
+        } else {
+          const plantillaSec = await enviarPlantillaCompleta({
+            userId,
+            from,
+            templateName: trig.secondary?.template,
+            fallbackText: trig.secondary?.response,
+          });
+          const contenidoSecondary = clean(plantillaSec?.content || trig.secondary?.response || "");
+          try {
+            await supabase.from("trigger_log").insert({
+              trigger_id: trig.id,
+              user_id: userId,
+              from_number: from,
+              sent_at: new Date().toISOString(),
+            });
+          } catch {}
+          if (contenidoSecondary && esMensajePedidoConfirmado(contenidoSecondary)) {
+            await detectarYGuardarPedidoConfirmado({ userId, from, textoMensaje: contenidoSecondary, sourceMessageId: null });
+          }
+          await saveContexto(userId, from, { ...ctx, last_trigger: trig.name });
+          return true;
+        }
+      }
+    }
+
+    // PASADA 2: buscar match primario (y secundario solo para el propio trigger)
     const triggersOrdenados = [...triggers].sort((a, b) => {
       if (a.name === lastTrigger) return -1;
       if (b.name === lastTrigger) return 1;
@@ -593,9 +660,9 @@ async function evaluarDisparadores({ userId, from, texto }) {
 
     for (const trig of triggersOrdenados) {
       const matchPrimary = matchKeywords(trig.condition, trig.type, textoNorm);
-      const secundarioPermitido = matchPrimary || lastTrigger === trig.name;
-      const matchSecondary =
-        secundarioPermitido && matchSecundario(trig.secondary, textoNorm);
+      // El secundario solo se evalúa si el primario también hace match en este trig
+      // (el caso lastTrigger ya fue cubierto en la pasada 1)
+      const matchSecondary = matchPrimary && matchSecundario(trig.secondary, textoNorm);
 
       if (!matchPrimary && !matchSecondary) continue;
 
