@@ -908,9 +908,10 @@ export default async function handler(req: any, res: any) {
           msgNorm
         );
       const hasNewProduct = !!detectProduct(texto, parsed, "");
+      // Si el cliente responde a una nueva promoción (bot mandó oferta), no bloquear
+      const isPromoResponse = isRespondingToPromotion(texto, history);
 
-      // Si no es un producto nuevo, responder como seguimiento
-      if (isFollowUp || !hasNewProduct) {
+      if (!isPromoResponse && (isFollowUp || !hasNewProduct)) {
         return res.json({
           response: `🚚 Tu pedido de *${context.order_data?.product || "tu producto"}* está agendado para la próxima ronda de envíos. El delivery te confirma al llegar a tu zona. 😊`,
           context: {
@@ -919,7 +920,8 @@ export default async function handler(req: any, res: any) {
           },
         });
       }
-      // Si el cliente menciona un producto nuevo, dejar caer al flujo normal para nuevo pedido
+      // Si el cliente menciona un producto nuevo o responde a promoción, reiniciar para nuevo pedido
+      oldOrder = { product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" };
     }
 
     if (isPriceQuery(texto)) {
