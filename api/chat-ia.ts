@@ -346,6 +346,9 @@ function extractName(text: string, detectedCity: string, phone: string) {
 
   if (!raw) return "";
 
+  // Si el texto es una cantidad, no puede ser nombre
+  if (extractQuantity(raw) > 0) return "";
+
   const isMultiLine = raw.includes("\n");
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
 
@@ -356,6 +359,8 @@ function extractName(text: string, detectedCity: string, phone: string) {
     "cuanto", "cuando", "dia", "llega", "llego", "pedido",
     "cancelar", "no", "nebulizador", "raqueta", "que",
     "estado", "seguimiento", "ya", "fue", "como", "donde",
+    "unidad", "unidades", "und", "unds", "una unidad", "dos unidades",
+    "una", "uno", "dos", "tres", "cuatro", "cinco",
   ];
 
   // Verificación de línea como nombre válido
@@ -1335,7 +1340,10 @@ ${CATALOG_URL}`,
               "cuanto", "cuando", "dia", "llega", "llego",
               "pedido", "cancelar", "no", "que", "estado",
               "seguimiento", "ya", "fue",
+              "unidad", "unidades", "und", "unds",
+              "una", "uno", "dos", "tres", "cuatro", "cinco",
             ];
+            if (extractQuantity(cleaned) > 0) continue;
             if (!forbidden.some((f) => normCleaned === normalize(f) || normCleaned.startsWith(normalize(f) + " ") || normCleaned.endsWith(" " + normalize(f)))) {
               orderData.customer_name = cleaned;
               break;
