@@ -286,18 +286,7 @@ function isBuyIntent(text: string) {
 function extractQuantity(text: string) {
   const m = normalize(text);
 
-  const q1 = m.match(/\b(\d+)\s*(unidad|unidades|u|und|unds)\b/);
-  if (q1) return sanitizeQuantity(Number(q1[1]));
-
-  const q2 = m.match(/\b(quiero|llevo|dame|mandame|reservame)\s+(\d+)\b/);
-  if (q2) return sanitizeQuantity(Number(q2[2]));
-
-  const q3 = m.match(/\b(\d+)\s+(quiero|llevo|dame|mandame)\b/);
-  if (q3) return sanitizeQuantity(Number(q3[1]));
-
-  if (/^\d+$/.test(m)) return sanitizeQuantity(Number(m));
-
-  const words: Record<string, number> = {
+  const wordMap: Record<string, number> = {
     uno: 1, una: 1,
     dos: 2,
     tres: 3,
@@ -310,7 +299,35 @@ function extractQuantity(text: string) {
     diez: 10,
   };
 
-  for (const [word, num] of Object.entries(words)) {
+  // 1. Numero + unidad: "2 unidades", "1 unidad"
+  const q1 = m.match(/\b(\d+)\s*(unidad|unidades|u|und|unds)\b/);
+  if (q1) return sanitizeQuantity(Number(q1[1]));
+
+  // 2. Palabra + unidad: "una unidad", "dos unidades", "solo una unidad"
+  for (const [word, num] of Object.entries(wordMap)) {
+    const regex = new RegExp(`\\b${word}\\s*(unidad|unidades|u\\b|und\\b)`);
+    if (regex.test(m)) return sanitizeQuantity(num);
+  }
+
+  // 3. Verbo/solo + numero: "quiero 2", "solo 1"
+  const q2 = m.match(/\b(quiero|llevo|dame|mandame|reservame|solo|solamente)\s+(\d+)\b/);
+  if (q2) return sanitizeQuantity(Number(q2[2]));
+
+  // 4. Numero + verbo: "2 quiero"
+  const q3 = m.match(/\b(\d+)\s+(quiero|llevo|dame|mandame)\b/);
+  if (q3) return sanitizeQuantity(Number(q3[1]));
+
+  // 5. Verbo/solo + palabra: "quiero uno", "solo una", "dame dos"
+  for (const [word, num] of Object.entries(wordMap)) {
+    const regex = new RegExp(`\\b(quiero|llevo|dame|mandame|reservame|solo|solamente)\\s+${word}\\b`);
+    if (regex.test(m)) return sanitizeQuantity(num);
+  }
+
+  // 6. Mensaje es solo un numero
+  if (/^\d+$/.test(m)) return sanitizeQuantity(Number(m));
+
+  // 7. Palabra sola (menor prioridad)
+  for (const [word, num] of Object.entries(wordMap)) {
     if (new RegExp(`\\b${word}\\b`).test(m)) return sanitizeQuantity(num);
   }
 
