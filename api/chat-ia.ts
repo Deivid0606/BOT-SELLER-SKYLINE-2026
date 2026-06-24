@@ -326,69 +326,64 @@ function extractPhone(text: string) {
 // ✅ FIX 3: extractName con blacklist extendida y límite de palabras
 function extractName(text: string, detectedCity: string, phone: string) {
   const raw = clean(text);
-  const norm = normalize(raw);
 
   if (!raw) return "";
 
+  const isMultiLine = raw.includes("\n");
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
 
+  // Frases y palabras prohibidas como nombre
+  const forbidden = [
+    "quiero", "comprar", "me interesa", "precio", "delivery",
+    "envio", "ok", "dale", "si", "hola", "buenas", "gracias",
+    "cuanto", "cuando", "dia", "llega", "llego", "pedido",
+    "cancelar", "no", "nebulizador", "raqueta", "que",
+    "estado", "seguimiento", "ya", "fue", "como", "donde",
+  ];
+
+  // Verificación de línea como nombre válido
+  const isValidNameLine = (line: string): boolean => {
+    const cleaned = clean(line);
+    const normLine = normalize(cleaned);
+    const words = cleaned.split(/\s+/).filter(Boolean);
+
+    if (words.length < 2 || words.length > 4) return false;
+    if (/\d/.test(cleaned)) return false;
+    if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)) return false;
+    if (cleaned.length < 4 || cleaned.length > 50) return false;
+    if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi)\b/i.test(normLine)) return false;
+
+    // No debe ser igual a la ciudad detectada
+    if (detectedCity && normalize(cleaned) === normalize(detectedCity)) return false;
+
+    // No debe contener palabras prohibidas
+    if (forbidden.some((f) => normLine === normalize(f) || normLine.startsWith(normalize(f) + " ") || normLine.endsWith(" " + normalize(f)))) return false;
+
+    return true;
+  };
+
+  // 1. Intento explícito: "soy / me llamo / mi nombre es"
   const explicit = raw.match(
     /(?:soy|me llamo|mi nombre es|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,80})/i
   )?.[1];
   if (explicit) return clean(explicit);
 
-  for (const line of lines) {
-    const cleaned = clean(line);
-    const hasPhone = /\d{8,}/.test(cleaned);
-    const hasAddressWords =
-      /\b(calle|avda|avenida|ruta|km|barrio|bo|casa)\b/i.test(normalize(cleaned));
-    const hasNumber = /\d/.test(cleaned);
+  // 2. Si es multilínea, buscar línea por línea (excluye líneas con teléfono o dirección)
+  if (isMultiLine) {
+    for (const line of lines) {
+      const cleaned = clean(line);
+      // Saltar líneas con teléfono
+      if (/\d{7,}/.test(cleaned)) continue;
+      // Saltar líneas con palabras de dirección
+      if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|rca|colombia|republica|nro|manzana)\b/i.test(normalize(cleaned))) continue;
 
-    // Más de 4 palabras no es un nombre
-    if (cleaned.split(/\s+/).length > 4) continue;
-
-    if (
-      !hasPhone &&
-      !hasAddressWords &&
-      !hasNumber &&
-      cleaned.length >= 4 &&
-      cleaned.length <= 40 &&
-      /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)
-    ) {
-      // ✅ Blacklist extendida: frases post-pedido y palabras inválidas
-      const forbidden = [
-        "quiero", "comprar", "me interesa", "precio", "delivery",
-        "envio", "ok", "dale", "si", "hola", "buenas", "gracias",
-        "cuanto", "cuando", "dia", "llega", "llego", "pedido",
-        "cancelar", "no", "nebulizador", "raqueta", "que",
-        "estado", "seguimiento", "ya", "fue", "como", "donde",
-        "cuando llega", "que dia", "ya fue", "llego mi",
-      ];
-      const normLine = normalize(cleaned);
-      if (!forbidden.some((f) => normLine === normalize(f) || normLine.includes(normalize(f)))) {
-        return cleaned;
-      }
+      if (isValidNameLine(cleaned)) return cleaned;
     }
+    return "";
   }
 
-  const words = raw.split(/\s+/).filter(Boolean);
-  if (
-    words.length >= 2 &&
-    words.length <= 4 &&
-    !/\d/.test(raw) &&
-    !/calle|avda|avenida|ruta|km|barrio|bo/i.test(normalize(raw))
-  ) {
-    // Verificar que no sea una frase prohibida
-    const forbidden = [
-      "cuanto", "cuando", "dia", "llega", "llego", "pedido",
-      "cancelar", "que dia", "ya fue", "no raqueta", "no nebulizador",
-      "estado", "seguimiento",
-    ];
-    const normRaw = normalize(raw);
-    if (!forbidden.some((f) => normRaw.includes(normalize(f)))) {
-      return raw;
-    }
-  }
+  // 3. Mensaje de una sola línea
+  if (isValidNameLine(raw)) return raw;
 
   return "";
 }
@@ -1305,26 +1300,26 @@ ${CATALOG_URL}`,
         if (!orderData.customer_name) {
           for (const line of lines) {
             const cleaned = clean(line);
-            // ✅ FIX 3 inline: blacklist extendida y límite de palabras
-            if (cleaned.split(/\s+/).length > 4) continue;
-            if (
-              !/\d/.test(cleaned) &&
-              !/calle|avda|avenida|ruta|km|barrio|bo|casa/i.test(normalize(cleaned)) &&
-              cleaned.length >= 4 &&
-              cleaned.length <= 40 &&
-              /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)
-            ) {
-              const forbidden = [
-                "quiero", "comprar", "precio", "delivery", "envio",
-                "ok", "dale", "si", "hola", "gracias",
-                "cuanto", "cuando", "dia", "llega", "llego",
-                "pedido", "cancelar", "no", "que", "estado",
-                "seguimiento", "ya", "fue",
-              ];
-              if (!forbidden.some((f) => normalize(cleaned).includes(normalize(f)))) {
-                orderData.customer_name = cleaned;
-                break;
-              }
+            const normCleaned = normalize(cleaned);
+            const lineWords = cleaned.split(/\s+/).filter(Boolean);
+
+            if (lineWords.length < 2 || lineWords.length > 4) continue;
+            if (/\d/.test(cleaned)) continue;
+            if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)) continue;
+            if (cleaned.length < 4 || cleaned.length > 50) continue;
+            if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|rca|colombia|republica|nro)\b/i.test(normCleaned)) continue;
+            if (orderData.city && normalize(cleaned) === normalize(orderData.city)) continue;
+
+            const forbidden = [
+              "quiero", "comprar", "precio", "delivery", "envio",
+              "ok", "dale", "si", "hola", "gracias",
+              "cuanto", "cuando", "dia", "llega", "llego",
+              "pedido", "cancelar", "no", "que", "estado",
+              "seguimiento", "ya", "fue",
+            ];
+            if (!forbidden.some((f) => normCleaned === normalize(f) || normCleaned.startsWith(normalize(f) + " ") || normCleaned.endsWith(" " + normalize(f)))) {
+              orderData.customer_name = cleaned;
+              break;
             }
           }
         }
