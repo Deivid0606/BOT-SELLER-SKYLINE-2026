@@ -127,7 +127,8 @@ export default function InboxPage() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [showEmojis, setShowEmojis] = useState(false);
   const [filterTag, setFilterTag] = useState<string | null>(null);
-  const [filterDate, setFilterDate] = useState<Date | undefined>(new Date());
+  const [filterDateFrom, setFilterDateFrom] = useState<Date | undefined>(new Date());
+  const [filterDateTo, setFilterDateTo] = useState<Date | undefined>(new Date());
   const [showFilters, setShowFilters] = useState(false);
 
   const [dbMessages, setDbMessages] = useState<DbMessage[]>([]);
@@ -255,9 +256,8 @@ export default function InboxPage() {
     setShowEmojis(false);
   };
 
-  // Carga mensajes del día seleccionado (por defecto hoy).
-  // Filtra en BD para no traer toda la historia.
-  const loadMessages = async (date?: Date) => {
+  // Carga mensajes del rango de fechas seleccionado (por defecto hoy).
+  const loadMessages = async (from_date?: Date, to_date?: Date) => {
     if (!user) {
       setDbMessages([]);
       setLoading(false);
@@ -265,15 +265,17 @@ export default function InboxPage() {
     }
     setLoading(true);
 
-    const targetDate = date ?? filterDate ?? new Date();
-    const dayStart = new Date(targetDate);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(targetDate);
-    dayEnd.setHours(23, 59, 59, 999);
+    const startDate = from_date ?? filterDateFrom ?? new Date();
+    const endDate = to_date ?? filterDateTo ?? startDate;
+
+    const rangeStart = new Date(startDate);
+    rangeStart.setHours(0, 0, 0, 0);
+    const rangeEnd = new Date(endDate);
+    rangeEnd.setHours(23, 59, 59, 999);
 
     const PAGE_SIZE = 1000;
     let allMessages: DbMessage[] = [];
-    let from = 0;
+    let offset = 0;
     let keepGoing = true;
 
     try {
@@ -282,10 +284,10 @@ export default function InboxPage() {
           .from("received_messages")
           .select("*")
           .eq("user_id", user.id)
-          .gte("created_at", dayStart.toISOString())
-          .lte("created_at", dayEnd.toISOString())
+          .gte("created_at", rangeStart.toISOString())
+          .lte("created_at", rangeEnd.toISOString())
           .order("created_at", { ascending: true })
-          .range(from, from + PAGE_SIZE - 1);
+          .range(offset, offset + PAGE_SIZE - 1);
 
         if (error) {
           console.error("Error cargando mensajes:", error);
@@ -299,7 +301,7 @@ export default function InboxPage() {
         if (batch.length < PAGE_SIZE) {
           keepGoing = false;
         } else {
-          from += PAGE_SIZE;
+          offset += PAGE_SIZE;
         }
       }
     } catch (err) {
@@ -311,16 +313,16 @@ export default function InboxPage() {
   };
 
   useEffect(() => {
-    loadMessages(filterDate);
+    loadMessages(filterDateFrom, filterDateTo);
     const channel = supabase
       .channel("received_messages_realtime_inbox_pro")
       .on("postgres_changes",
         { event: "*", schema: "public", table: "received_messages" },
-        () => { loadMessages(filterDate); }
+        () => { loadMessages(filterDateFrom, filterDateTo); }
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [user, filterDate]);
+  }, [user, filterDateFrom, filterDateTo]);
 
   const chatSearchIndex = useMemo(() => {
     const idx = new Map<string, string>();
@@ -378,7 +380,11 @@ export default function InboxPage() {
         const hasTag = tagsForChat.includes(filterTag) || chat.tag === filterTag;
         if (!hasTag) return false;
       }
-      if (filterDate && chat.date !== format(filterDate, "yyyy-MM-dd")) return false;
+      if (filterDateFrom || filterDateTo) {
+        const chatDate = chat.date;
+        if (filterDateFrom && chatDate < format(filterDateFrom, "yyyy-MM-dd")) return false;
+        if (filterDateTo && chatDate > format(filterDateTo, "yyyy-MM-dd")) return false;
+      }
 
       return true;
     });
@@ -468,10 +474,11 @@ export default function InboxPage() {
 
   const clearFilters = () => {
     setFilterTag(null);
-    setFilterDate(new Date());
+    setFilterDateFrom(new Date());
+    setFilterDateTo(new Date());
   };
 
-  const hasActiveFilters = !!(filterTag || filterDate);
+  const hasActiveFilters = !!(filterTag || filterDateFrom || filterDateTo);
 
   // ============================================================
   // 🔧 FUNCIÓN CORREGIDA - NO BLOQUEA SI NO HAY tenant_id
@@ -953,18 +960,53 @@ export default function InboxPage() {
 
                       <div>
                         <div className="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground uppercase mb-1.5">
-                          <CalendarDays className="w-3 h-3" /> Fecha
+                          <CalendarDays className="w-3 h-3" /> Rango de fechas
                         </div>
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <button className="w-full text-[11px] px-3 py-1.5 rounded-lg bg-secondary/40 border border-border/40 text-left text-muted-foreground hover:bg-secondary/60">
-                              {filterDate ? format(filterDate, "d 'de' MMMM yyyy", { locale: es }) : "Seleccionar fecha..."}
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-auto p-0" align="start">
-                            <Calendar mode="single" selected={filterDate} onSelect={setFilterDate} initialFocus />
-                          </PopoverContent>
-                        </Popover>
+                        <div className="flex flex-col gap-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-muted-foreground w-10 shrink-0">Desde</span>
+                            <Popover>
+                              <PopoverTrigger asChild>
+                                <button className="flex-1 text-[11px] px-3 py-1.5 rounded-lg bg-secondary/40 border border-border/40 text-left text-muted-foreground hover:bg-secondary/60">
+                                  {filterDateFrom ? format(filterDateFrom, "d MMM yyyy", { locale: es }) : "Fecha inicio..."}
+                                </button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-auto p-0" align="start">
+                                <Calendar
+                                  mode="single"
+                                  selected={filterDateFrom}
+                                  onSelect={(d) => {
+                                    setFilterDateFrom(d);
+                                    if (d && filterDateTo && d > filterDateTo) setFilterDateTo(d);
+                                  }}
+                                  initialFocus
+                                />
+                              </PopoverContent>
+                            </Popover>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-muted-foreground w-10 shrink-0">Hasta</span>
+                            <Popover>
+                              <PopoverTrigger asChild>
+                                <button className="flex-1 text-[11px] px-3 py-1.5 rounded-lg bg-secondary/40 border border-border/40 text-left text-muted-foreground hover:bg-secondary/60">
+                                  {filterDateTo ? format(filterDateTo, "d MMM yyyy", { locale: es }) : "Fecha fin..."}
+                                </button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-auto p-0" align="start">
+                                <Calendar
+                                  mode="single"
+                                  selected={filterDateTo}
+                                  onSelect={(d) => {
+                                    setFilterDateTo(d);
+                                    if (d && filterDateFrom && d < filterDateFrom) setFilterDateFrom(d);
+                                  }}
+                                  disabled={(d) => filterDateFrom ? d < filterDateFrom : false}
+                                  initialFocus
+                                />
+                              </PopoverContent>
+                            </Popover>
+                          </div>
+                        </div>
                       </div>
 
                       {hasActiveFilters && (
