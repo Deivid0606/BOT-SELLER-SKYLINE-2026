@@ -388,7 +388,7 @@ export default function InboxPage() {
 
       return true;
     });
-  }, [chats, searchQuery, filterTag, filterDate, contactTagsMap, chatSearchIndex]);
+  }, [chats, searchQuery, filterTag, filterDateFrom, filterDateTo, contactTagsMap, chatSearchIndex]);
 
   const selectedNumber = selectedChatNumber;
 
