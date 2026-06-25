@@ -127,7 +127,7 @@ export default function InboxPage() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [showEmojis, setShowEmojis] = useState(false);
   const [filterTag, setFilterTag] = useState<string | null>(null);
-  const [filterDate, setFilterDate] = useState<Date | undefined>(undefined);
+  const [filterDate, setFilterDate] = useState<Date | undefined>(new Date());
   const [showFilters, setShowFilters] = useState(false);
 
   const [dbMessages, setDbMessages] = useState<DbMessage[]>([]);
@@ -255,18 +255,21 @@ export default function InboxPage() {
     setShowEmojis(false);
   };
 
-  // ============================================================
-  // 🔧 FUNCIÓN CORREGIDA - TRAE EL 100% DE LOS MENSAJES SIN LÍMITE
-  // Pagina en bloques con .range() hasta que ya no queden más filas,
-  // sin depender de .limit() ni del Max Rows configurado en Supabase.
-  // ============================================================
-  const loadMessages = async () => {
+  // Carga mensajes del día seleccionado (por defecto hoy).
+  // Filtra en BD para no traer toda la historia.
+  const loadMessages = async (date?: Date) => {
     if (!user) {
       setDbMessages([]);
       setLoading(false);
       return;
     }
     setLoading(true);
+
+    const targetDate = date ?? filterDate ?? new Date();
+    const dayStart = new Date(targetDate);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(targetDate);
+    dayEnd.setHours(23, 59, 59, 999);
 
     const PAGE_SIZE = 1000;
     let allMessages: DbMessage[] = [];
@@ -279,7 +282,9 @@ export default function InboxPage() {
           .from("received_messages")
           .select("*")
           .eq("user_id", user.id)
-          .order("created_at", { ascending: false })
+          .gte("created_at", dayStart.toISOString())
+          .lte("created_at", dayEnd.toISOString())
+          .order("created_at", { ascending: true })
           .range(from, from + PAGE_SIZE - 1);
 
         if (error) {
@@ -291,7 +296,6 @@ export default function InboxPage() {
         const batch = (data || []) as DbMessage[];
         allMessages = allMessages.concat(batch);
 
-        // Si el bloque devuelto es más chico que PAGE_SIZE, ya no hay más datos
         if (batch.length < PAGE_SIZE) {
           keepGoing = false;
         } else {
@@ -302,28 +306,21 @@ export default function InboxPage() {
       console.error("Error cargando mensajes:", err);
     }
 
-    const ordered = allMessages.sort((a, b) => {
-      const da = new Date(a.created_at || 0).getTime();
-      const db = new Date(b.created_at || 0).getTime();
-      return da - db;
-    });
-
-    setDbMessages(ordered);
+    setDbMessages(allMessages);
     setLoading(false);
   };
-  // ============================================================
 
   useEffect(() => {
-    loadMessages();
+    loadMessages(filterDate);
     const channel = supabase
       .channel("received_messages_realtime_inbox_pro")
       .on("postgres_changes",
         { event: "*", schema: "public", table: "received_messages" },
-        () => { loadMessages(); }
+        () => { loadMessages(filterDate); }
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [user]);
+  }, [user, filterDate]);
 
   const chatSearchIndex = useMemo(() => {
     const idx = new Map<string, string>();
@@ -471,7 +468,7 @@ export default function InboxPage() {
 
   const clearFilters = () => {
     setFilterTag(null);
-    setFilterDate(undefined);
+    setFilterDate(new Date());
   };
 
   const hasActiveFilters = !!(filterTag || filterDate);
