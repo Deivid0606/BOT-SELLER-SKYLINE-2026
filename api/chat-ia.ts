@@ -912,9 +912,23 @@ export default async function handler(req: any, res: any) {
         /cuand|llega|llego|dia|estado|seguimiento|cancelar|ya fue|cuando|entrega|envio|despacho/.test(
           msgNorm
         );
+      const isGratitude =
+        /^(gracias|muchas gracias|grax|grac|ok|dale|perfecto|listo|genial|excelente|buenisimo|buenísimo|de nada|chevere|chévere|okey|👍|🙏|😊|✅)/.test(
+          msgNorm
+        );
       const hasNewProduct = !!detectProduct(texto, parsed, "");
       // Si el cliente responde a una nueva promoción (bot mandó oferta), no bloquear
       const isPromoResponse = isRespondingToPromotion(texto, history);
+
+      if (!isPromoResponse && isGratitude) {
+        return res.json({
+          response: `¡De nada! 😊 Fue un placer atenderte. Tu pedido de *${context.order_data?.product || "tu producto"}* ya está agendado, el delivery te va a contactar cuando llegue a tu zona. ¡Que lo disfrutes! 💜`,
+          context: {
+            ...context,
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
 
       if (!isPromoResponse && (isFollowUp || !hasNewProduct)) {
         return res.json({
