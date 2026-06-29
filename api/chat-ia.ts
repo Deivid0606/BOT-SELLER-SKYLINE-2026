@@ -224,8 +224,9 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
       if (msg.includes(a)) score += 80;
       if (a.includes(msg) && msg.length >= 4) score += 50;
 
-      for (const w of a.split(" ").filter((x) => x.length >= 4)) {
-        if (msg.includes(w)) score += 15;
+      for (const w of a.split(" ").filter((x) => x.length >= 5)) {
+        // palabra completa solamente, no substring parcial
+        if (new RegExp(`\\b${w}\\b`).test(msg)) score += 15;
       }
 
       if (score > bestScore) {
@@ -341,13 +342,23 @@ function extractPhone(text: string) {
 }
 
 // ✅ FIX 3: extractName con blacklist extendida y límite de palabras
-function extractName(text: string, detectedCity: string, phone: string) {
+function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const raw = clean(text);
 
   if (!raw) return "";
 
   // Si el texto es una cantidad, no puede ser nombre
   if (extractQuantity(raw) > 0) return "";
+
+  // Si el texto parece ser una ciudad conocida, no puede ser nombre
+  if (parsed) {
+    const normRaw = normalize(raw);
+    const isCity = parsed.cities.some((c) => {
+      const a = normalize(c.alias);
+      return a && (normRaw === a || normRaw.includes(a) || a.includes(normRaw));
+    });
+    if (isCity) return "";
+  }
 
   const isMultiLine = raw.includes("\n");
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
@@ -913,9 +924,9 @@ export default async function handler(req: any, res: any) {
           msgNorm
         );
       const isGratitude =
-        /^(gracias|muchas gracias|grax|grac|ok|dale|perfecto|listo|genial|excelente|buenisimo|buenísimo|de nada|chevere|chévere|okey|👍|🙏|😊|✅)/.test(
+        /\b(gracias|muchas gracias|grax|grac|bueno gracias|buenas gracias|dale gracias|ok|dale|perfecto|listo|genial|excelente|buenisimo|buenísimo|de nada|chevere|chévere|okey)\b/.test(
           msgNorm
-        );
+        ) || /^(👍|🙏|😊|✅)/.test(msgNorm);
       const hasNewProduct = !!detectProduct(texto, parsed, "");
       // Si el cliente responde a una nueva promoción (bot mandó oferta), no bloquear
       const isPromoResponse = isRespondingToPromotion(texto, history);
@@ -1215,7 +1226,7 @@ Escribí el nombre del producto que te interesa. 😊`,
     const detectedCity = detectCity(texto, parsed, oldOrder.city);
     const phone = extractPhone(texto);
     const qty = extractQuantity(texto);
-    const name = extractName(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone);
+    const name = extractName(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone, parsed);
     const address = extractAddress(
       texto,
       detectedCity !== oldOrder.city ? detectedCity : "",
