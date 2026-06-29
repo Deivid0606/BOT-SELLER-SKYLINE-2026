@@ -287,6 +287,24 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   return clean(prev || "");
 }
 
+// Extrae el texto de ciudad cuando el cliente usa frases como "soy de X", "vivo en X"
+// Devuelve el texto crudo de la ciudad si el mensaje ES una declaración de ciudad, o "" si no.
+function extractCityStatement(text: string): string {
+  const norm = normalize(clean(text));
+  const match = norm.match(
+    /^(?:soy de|vivo en|estoy en|soy de la ciudad de|de la ciudad de|ciudad de|mi ciudad es|mi ciudad:|para la ciudad de|para|de)\s+(.+)$/
+  );
+  if (match) {
+    return clean(match[1]);
+  }
+  // Mensaje corto sin verbos ni frases extra → podría ser solo el nombre de la ciudad
+  const words = norm.split(/\s+/);
+  if (words.length <= 5 && !/\b(quiero|precio|cuanto|hola|buenas|gracias|si|no|ok|dale)\b/.test(norm)) {
+    return clean(text);
+  }
+  return "";
+}
+
 function hasCoverage(city: string, parsed: ParsedTraining) {
   const c = normalize(city);
   if (!c) return false;
@@ -1244,7 +1262,14 @@ Escribí el nombre del producto que te interesa. 😊`,
 
     const product = detectProduct(texto, parsed, productToUse);
 
-    const detectedCity = detectCity(texto, parsed, oldOrder.city);
+    // Si el cliente está declarando una ciudad ("soy de X"), intentar detectarla primero.
+    // Si no la reconoce pero el mensaje ES una declaración de ciudad, usarla como ciudad cruda
+    // para que no caiga al fallback del oldOrder.city anterior.
+    const cityStatement = extractCityStatement(texto);
+    const detectedCityRaw = detectCity(texto, parsed, ""); // sin fallback al anterior
+    const detectedCity =
+      detectedCityRaw ||
+      (cityStatement && !extractQuantity(texto) && !extractPhone(texto) ? cityStatement : detectCity(texto, parsed, oldOrder.city));
     const phone = extractPhone(texto);
     const qty = extractQuantity(texto);
     const name = extractName(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone, parsed);
