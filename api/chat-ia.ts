@@ -1296,6 +1296,62 @@ ${CATALOG_URL}`,
     }
 
     if (orderData.product && !orderData.city) {
+      // Si el step anterior era collecting_city, el mensaje actual probablemente ES la ciudad
+      // aunque no esté registrada en training. Usarla como ciudad sin cobertura.
+      const prevStep = context?.step || "";
+      const looksLikeCity =
+        prevStep === "collecting_city" &&
+        !extractQuantity(texto) &&
+        !extractPhone(texto) &&
+        !detectProduct(texto, parsed, "") &&
+        normalize(texto).length >= 2 &&
+        normalize(texto).split(/\s+/).length <= 6;
+
+      if (looksLikeCity) {
+        const rawCity = clean(texto);
+        orderData = { ...orderData, city: rawCity };
+
+        await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
+
+        const promo = productInfo?.price2
+          ? `\n🔥 PROMO 2x → ${formatGs(productInfo.price2)} Gs`
+          : "";
+
+        return res.json({
+          response: `ℹ️ ${rawCity} no entra en nuestra zona de contra-entrega 😊
+
+Pero sí hacemos envíos seguros por transportadora:
+🚚 TSI / NASA / Occidental / MG Express / Multienvíos
+
+📦 En tu zona trabajamos con pago anticipado por transferencia.
+
+🔥 ${orderData.product}:
+• 1 unidad → ${formatGs(productInfo?.price1 || 0)} Gs${promo}
+
+📲 DATOS PARA TRANSFERENCIA:
+
+Titular: David Agustin Alcaraz Aguilar
+CI: 5347454
+Entidad: ueno bank
+N° de cuenta: 18107326
+Alias: 5347454
+
+📎 Enviame:
+✅ comprobante
+✅ nombre completo
+✅ teléfono
+
+y confirmamos tu pedido 🚚✨`,
+          context: {
+            ...(context || {}),
+            current_product: orderData.product,
+            order_data: orderData,
+            step: "collecting_quantity",
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
+
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
       return res.json({
@@ -1315,9 +1371,46 @@ ${CATALOG_URL}`,
     if (orderData.product && orderData.city && !orderData.quantity) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
+      const coverage = hasCoverage(orderData.city, parsed);
       const promo = productInfo?.price2
         ? `\n🔥 PROMO 2x → ${formatGs(productInfo.price2)} Gs`
         : "";
+
+      if (!coverage) {
+        return res.json({
+          response: `ℹ️ ${orderData.city} no entra en nuestra zona de contra-entrega 😊
+
+Pero sí hacemos envíos seguros por transportadora:
+🚚 TSI / NASA / Occidental / MG Express / Multienvíos
+
+📦 En tu zona trabajamos con pago anticipado por transferencia.
+
+🔥 ${orderData.product}:
+• 1 unidad → ${formatGs(productInfo?.price1 || 0)} Gs${promo}
+
+📲 DATOS PARA TRANSFERENCIA:
+
+Titular: David Agustin Alcaraz Aguilar
+CI: 5347454
+Entidad: ueno bank
+N° de cuenta: 18107326
+Alias: 5347454
+
+📎 Enviame:
+✅ comprobante
+✅ nombre completo
+✅ teléfono
+
+y confirmamos tu pedido 🚚✨`,
+          context: {
+            ...(context || {}),
+            current_product: orderData.product,
+            order_data: orderData,
+            step: "collecting_quantity",
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
 
       return res.json({
         response: `✅ Perfecto 😊 ${orderData.city} tiene ENVÍO GRATIS contra-entrega 🚚
