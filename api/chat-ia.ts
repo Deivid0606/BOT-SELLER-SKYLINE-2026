@@ -247,14 +247,35 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   let best = "";
   let bestScore = 0;
 
+  // Tokenize message words para coincidencia parcial de alias multi-palabra
+  const msgWords = msg.split(/\s+/);
+
   for (const c of parsed.cities) {
     const a = normalize(c.alias);
     if (!a || a.length < 2) continue;
 
     let score = 0;
     if (msg === a) score += 100;
-    if (msg.includes(a)) score += 80;
-    if (a.includes(msg) && msg.length >= 3) score += 50;
+    else if (msg.includes(a)) score += 80;
+    else if (a.includes(msg) && msg.length >= 3) score += 50;
+    else {
+      // Coincidencia fuzzy: cuántas palabras del alias aparecen en el mensaje
+      const aliasWords = a.split(/\s+/).filter((w) => w.length >= 3);
+      if (aliasWords.length >= 2) {
+        const matched = aliasWords.filter((w) => {
+          // acepta singular/plural: "arroyo" coincide con "arroyos" y viceversa
+          return msgWords.some(
+            (mw) =>
+              mw === w ||
+              mw.startsWith(w) ||
+              w.startsWith(mw)
+          );
+        });
+        if (matched.length >= Math.ceil(aliasWords.length * 0.7)) {
+          score += 60 + matched.length * 5;
+        }
+      }
+    }
 
     if (score > bestScore) {
       bestScore = score;
