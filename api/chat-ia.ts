@@ -287,21 +287,27 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   return clean(prev || "");
 }
 
-// Extrae el texto de ciudad cuando el cliente usa frases como "soy de X", "vivo en X"
-// Devuelve el texto crudo de la ciudad si el mensaje ES una declaración de ciudad, o "" si no.
+// Extrae el texto de ciudad cuando el cliente usa frases EXPLÍCITAS como "soy de X", "vivo en X"
+// Solo activa con prefijos claros. Mensajes cortos sin prefijo NO se tratan como ciudad aquí.
 function extractCityStatement(text: string): string {
-  const norm = normalize(clean(text));
+  const raw = clean(text);
+  const norm = normalize(raw);
+
+  // Ignorar emojis, saludos, mensajes demasiado cortos o sin letras
+  if (!raw || raw.length < 3 || /^[\p{Emoji}\s]+$/u.test(raw)) return "";
+  if (/^\p{Emoji}/u.test(raw)) return "";
+
+  const GREETINGS = /^(hola|buenas|buenos|buen dia|buen dia|hi|hey|buenas noches|buenas tardes|saludos|ok|dale|si|no|gracias|de nada|listo|perfecto)[\s!.]*$/;
+  if (GREETINGS.test(norm)) return "";
+
+  // Solo activar si tiene prefijo explícito de declaración de ciudad
   const match = norm.match(
-    /^(?:soy de|vivo en|estoy en|soy de la ciudad de|de la ciudad de|ciudad de|mi ciudad es|mi ciudad:|para la ciudad de|para|de)\s+(.+)$/
+    /^(?:soy de|vivo en|estoy en|ya estoy en|ya esty en|soy de la ciudad de|de la ciudad de|ciudad de|mi ciudad es|para la ciudad de)\s+(.+)$/
   );
   if (match) {
     return clean(match[1]);
   }
-  // Mensaje corto sin verbos ni frases extra → podría ser solo el nombre de la ciudad
-  const words = norm.split(/\s+/);
-  if (words.length <= 5 && !/\b(quiero|precio|cuanto|hola|buenas|gracias|si|no|ok|dale)\b/.test(norm)) {
-    return clean(text);
-  }
+
   return "";
 }
 
@@ -363,8 +369,8 @@ function extractQuantity(text: string) {
     if (regex.test(m)) return sanitizeQuantity(num);
   }
 
-  // 6. Mensaje es solo un numero
-  if (/^\d+$/.test(m)) return sanitizeQuantity(Number(m));
+  // 6. Mensaje es solo un numero (pero NO si parece teléfono: 8+ dígitos o empieza con 09)
+  if (/^\d+$/.test(m) && m.length <= 5 && !m.startsWith("09")) return sanitizeQuantity(Number(m));
 
   // 7. Palabra sola (menor prioridad)
   for (const [word, num] of Object.entries(wordMap)) {
@@ -1263,13 +1269,20 @@ Escribí el nombre del producto que te interesa. 😊`,
     const product = detectProduct(texto, parsed, productToUse);
 
     // Si el cliente está declarando una ciudad ("soy de X"), intentar detectarla primero.
-    // Si no la reconoce pero el mensaje ES una declaración de ciudad, usarla como ciudad cruda
+    // Si no la reconoce pero el mensaje ES una declaración explícita de ciudad, usarla como ciudad cruda
     // para que no caiga al fallback del oldOrder.city anterior.
     const cityStatement = extractCityStatement(texto);
     const detectedCityRaw = detectCity(texto, parsed, ""); // sin fallback al anterior
+    const prevStep = context?.step || "";
+    const isCityStep = prevStep === "collecting_city";
     const detectedCity =
       detectedCityRaw ||
-      (cityStatement && !extractQuantity(texto) && !extractPhone(texto) ? cityStatement : detectCity(texto, parsed, oldOrder.city));
+      // Con prefijo explícito ("soy de X") siempre lo tratamos como ciudad
+      (cityStatement && !extractQuantity(texto) && !extractPhone(texto) ? cityStatement :
+       // Sin prefijo, solo si el step es collecting_city y el mensaje es corto y parece ciudad
+       (isCityStep && !extractQuantity(texto) && !extractPhone(texto) && !detectProduct(texto, parsed, "") && normalize(texto).split(/\s+/).length <= 5
+         ? (clean(texto) || detectCity(texto, parsed, oldOrder.city))
+         : detectCity(texto, parsed, oldOrder.city)));
     const phone = extractPhone(texto);
     const qty = extractQuantity(texto);
     const name = extractName(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone, parsed);
