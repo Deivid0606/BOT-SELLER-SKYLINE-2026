@@ -417,7 +417,14 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     "estado", "seguimiento", "ya", "fue", "como", "donde",
     "unidad", "unidades", "und", "unds", "una unidad", "dos unidades",
     "una", "uno", "dos", "tres", "cuatro", "cinco",
+    "traen", "trae", "traes", "mandan", "manda", "mandas",
+    "cdo", "xq", "xfa", "xfavor", "porfavor", "porfa",
+    "me", "te", "se", "lo", "la", "les", "nos",
+    "para", "con", "por", "del", "mas",
   ];
+
+  // Verbos frecuentes en preguntas — si el texto los contiene como parte central no es un nombre
+  const QUESTION_VERBS = /\b(traen|trae|mandan|llegan|llega|entrega|viene|vienen|cuesta|cobran|demora|tarda)\b/;
 
   // Verificación de línea como nombre válido
   const isValidNameLine = (line: string): boolean => {
@@ -425,17 +432,21 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     const normLine = normalize(cleaned);
     const words = cleaned.split(/\s+/).filter(Boolean);
 
-    if (words.length < 2 || words.length > 4) return false;
+    if (words.length < 2 || words.length > 5) return false;
     if (/\d/.test(cleaned)) return false;
     if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)) return false;
-    if (cleaned.length < 4 || cleaned.length > 50) return false;
-    if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi)\b/i.test(normLine)) return false;
+    if (cleaned.length < 4 || cleaned.length > 60) return false;
+    if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|san pedro|santa|bario)\b/i.test(normLine)) return false;
+    if (QUESTION_VERBS.test(normLine)) return false;
 
     // No debe ser igual a la ciudad detectada
     if (detectedCity && normalize(cleaned) === normalize(detectedCity)) return false;
 
     // No debe contener palabras prohibidas
     if (forbidden.some((f) => normLine === normalize(f) || normLine.startsWith(normalize(f) + " ") || normLine.endsWith(" " + normalize(f)))) return false;
+
+    // Al menos la primera palabra debe empezar con mayúscula (nombres propios)
+    if (!/^[A-ZÁÉÍÓÚÑ]/.test(cleaned)) return false;
 
     return true;
   };
@@ -987,15 +998,19 @@ export default async function handler(req: any, res: any) {
       }
 
       if (!isPromoResponse && (isFollowUp || !hasNewProduct)) {
-        return res.json({
-          response: `🚚 Tu pedido de *${context.order_data?.product || "tu producto"}* está agendado para la próxima ronda de envíos. El delivery te confirma al llegar a tu zona. 😊`,
-          context: {
-            ...context,
-            updated_at: new Date().toISOString(),
-          },
-        });
+        // Si el cliente menciona que quiere OTRO producto (corrección), dejar pasar aunque no haya newProduct detectado
+        const wantsCorrection = /\b(no|no quiero|no era|me equivoque|en realidad|quiero es|lo que quiero|lo que piero|piero|qiero)\b/.test(msgNorm);
+        if (!wantsCorrection) {
+          return res.json({
+            response: `🚚 Tu pedido de *${context.order_data?.product || "tu producto"}* está agendado para la próxima ronda de envíos. El delivery te confirma al llegar a tu zona. 😊`,
+            context: {
+              ...context,
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
       }
-      // Si el cliente menciona un producto nuevo o responde a promoción, reiniciar para nuevo pedido
+      // Si el cliente menciona un producto nuevo o responde a promoción o quiere corregir → reiniciar
       oldOrder = { product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" };
     }
 
@@ -1275,14 +1290,21 @@ Escribí el nombre del producto que te interesa. 😊`,
     const detectedCityRaw = detectCity(texto, parsed, ""); // sin fallback al anterior
     const prevStep = context?.step || "";
     const isCityStep = prevStep === "collecting_city";
+    // Si ya hay ciudad confirmada y estamos recolectando datos (nombre/dirección/teléfono),
+    // NO cambiar la ciudad aunque el mensaje contenga palabras que parezcan ciudad.
+    // La ciudad solo se puede cambiar si hay un prefijo explícito ("soy de X") o si el step es collecting_city.
+    const isDataCollectionStep = ["collecting_name", "collecting_address", "collecting_phone", "collecting_quantity"].includes(prevStep);
     const detectedCity =
+      // 1. Detección directa (alias registrado en training)
       detectedCityRaw ||
-      // Con prefijo explícito ("soy de X") siempre lo tratamos como ciudad
+      // 2. Con prefijo explícito ("soy de X") — siempre actualiza ciudad
       (cityStatement && !extractQuantity(texto) && !extractPhone(texto) ? cityStatement :
-       // Sin prefijo, solo si el step es collecting_city y el mensaje es corto y parece ciudad
-       (isCityStep && !extractQuantity(texto) && !extractPhone(texto) && !detectProduct(texto, parsed, "") && normalize(texto).split(/\s+/).length <= 5
-         ? (clean(texto) || detectCity(texto, parsed, oldOrder.city))
-         : detectCity(texto, parsed, oldOrder.city)));
+       // 3. Sin prefijo y recolectando datos → proteger ciudad actual
+       (isDataCollectionStep && oldOrder.city ? oldOrder.city :
+        // 4. Step collecting_city: mensaje corto sin producto/cantidad/teléfono → usarlo como ciudad
+        (isCityStep && !extractQuantity(texto) && !extractPhone(texto) && !detectProduct(texto, parsed, "") && normalize(texto).split(/\s+/).length <= 6
+          ? (clean(texto) || detectCity(texto, parsed, oldOrder.city))
+          : detectCity(texto, parsed, oldOrder.city))));
     const phone = extractPhone(texto);
     const qty = extractQuantity(texto);
     const name = extractName(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone, parsed);
