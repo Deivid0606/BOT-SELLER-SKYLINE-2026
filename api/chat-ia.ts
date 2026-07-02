@@ -448,14 +448,25 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     // Al menos la primera palabra debe empezar con mayúscula (nombres propios)
     if (!/^[A-ZÁÉÍÓÚÑ]/.test(cleaned)) return false;
 
+    // Primera palabra de una sola letra = conjunción/artículo, no nombre
+    if (/^[A-ZÁÉÍÓÚÑa-záéíóúñ]\s/.test(cleaned) && words[0].length === 1) return false;
+
+    // Frases de confirmación / deícticos ("Y este es", "Ese es", "Este soy")
+    if (/^(y |ese |esta |este |eso |esa |aqui |ahi |ya |igual |listo |ok |dale )/i.test(normLine)) return false;
+    if (/\b(este es|ese es|eso es|este soy|soy yo|ese soy)\b/.test(normLine)) return false;
+
     return true;
   };
 
-  // 1. Intento explícito: "soy / me llamo / mi nombre es"
+  // 1. Intento explícito: "soy / me llamo / mi nombre es [NOMBRE]"
   const explicit = raw.match(
     /(?:soy|me llamo|mi nombre es|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,80})/i
   )?.[1];
   if (explicit) return clean(explicit);
+
+  // 1b. Nombre ANTES de "soy": "Jorge Caballero soy 0975..."
+  const beforeSoy = raw.match(/^([A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,4})\s+soy\b/i)?.[1];
+  if (beforeSoy && isValidNameLine(beforeSoy)) return clean(beforeSoy);
 
   // 2. Si es multilínea, buscar línea por línea (excluye líneas con teléfono o dirección)
   if (isMultiLine) {
