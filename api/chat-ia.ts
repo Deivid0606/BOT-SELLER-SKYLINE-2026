@@ -717,32 +717,53 @@ async function safeUpsertOrder(
     updated_at: new Date().toISOString(),
   };
 
-  const { data: existing } = await supabase
+  // Primero buscar pedido EN PROGRESO (nunca confirmado) para este número
+  const IN_PROGRESS_STATUSES = [
+    "draft",
+    "selling",
+    "collecting_city",
+    "collecting_quantity",
+    "collecting_name",
+    "collecting_phone",
+    "collecting_address",
+    "confirm_pending",
+  ];
+
+  const { data: inProgress } = await supabase
     .from("orders")
     .select("id")
     .eq("user_id", userId)
     .eq("from_number", from)
-    .in("status", [
-      "draft",
-      "selling",
-      "collecting_city",
-      "collecting_quantity",
-      "collecting_name",
-      "collecting_phone",
-      "collecting_address",
-      "confirm_pending",
-      "confirmed",        // ✅ FIX 1: evita crear pedido nuevo si ya fue confirmado
-      "pedido_confirmado",// ✅ FIX 1: ídem
-    ])
+    .in("status", IN_PROGRESS_STATUSES)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
 
-  if (existing?.id) {
-    await supabase.from("orders").update(payload).eq("id", existing.id);
-    return existing.id;
+  if (inProgress?.id) {
+    await supabase.from("orders").update(payload).eq("id", inProgress.id);
+    return inProgress.id;
   }
 
+  // Si estamos confirmando, buscar el último pedido confirmado para actualizarlo
+  // (evita duplicar cuando el bot reconfirma el mismo pedido)
+  if (confirm) {
+    const { data: lastConfirmed } = await supabase
+      .from("orders")
+      .select("id, product")
+      .eq("user_id", userId)
+      .eq("from_number", from)
+      .in("status", ["confirmed", "confirmado", "pedido_confirmado", "confirm_pending"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (lastConfirmed?.id && lastConfirmed.product === order.product) {
+      await supabase.from("orders").update(payload).eq("id", lastConfirmed.id);
+      return lastConfirmed.id;
+    }
+  }
+
+  // Pedido nuevo (cliente comprando por primera vez o comprando un producto diferente)
   const { data } = await supabase.from("orders").insert(payload).select("id").single();
   return data?.id || null;
 }
@@ -1338,13 +1359,20 @@ Escribí el nombre del producto que te interesa. 😊`,
     if (!orderData.product) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
+      const bestsellersLines = (parsed.products || []).map((p) => {
+        const price1Str = p.price1 ? `${formatGs(p.price1)} Gs` : "";
+        const price2Str = p.price2 ? `🔥 PROMO 2x → ${formatGs(p.price2)} Gs` : "";
+        const priceBlock = [price1Str ? `💰 1 unidad → ${price1Str}` : "", price2Str].filter(Boolean).join(" | ");
+        return `⭐ *${p.canonical}*${priceBlock ? `\n   ${priceBlock}` : ""}`;
+      });
+
+      const bestsellersMsg =
+        bestsellersLines.length > 0
+          ? `🔥 *Estos son nuestros productos más vendidos* 😊\n\n${bestsellersLines.join("\n\n")}\n\n¿Cuál te interesa? ✨`
+          : `📋 ¿Qué producto te gustaría llevar?\n\n📦 Revisá nuestro catálogo:\n${CATALOG_URL}`;
+
       return res.json({
-        response: `📋 ¿Qué producto te gustaría llevar?
-
-Tenemos el **Nebulizador Portátil** en oferta por 129.900 Gs.
-
-📦 Escribí el nombre del producto o revisá el catálogo:
-${CATALOG_URL}`,
+        response: bestsellersMsg,
         context: {
           ...(context || {}),
           current_product: null,
@@ -1429,6 +1457,22 @@ y confirmamos tu pedido 🚚✨`,
     }
 
     if (orderData.product && orderData.city && !orderData.quantity) {
+      // Si el cliente manda agradecimiento en lugar de cantidad, responder cálidamente
+      const msgNormQty = normalize(texto);
+      const isGratitudeHere = /\b(gracias|grax|grac|ok|dale|perfecto|listo|genial|excelente|de nada|chevere|okey|bueno|joya)\b/.test(msgNormQty);
+      if (isGratitudeHere && !extractQuantity(texto)) {
+        return res.json({
+          response: `¡De nada! 😊 Cuando quieras continuar con tu pedido del *${orderData.product}*, avisame. 💜`,
+          context: {
+            ...(context || {}),
+            current_product: orderData.product,
+            order_data: orderData,
+            step: "collecting_quantity",
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
+
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
       const coverage = hasCoverage(orderData.city, parsed);
