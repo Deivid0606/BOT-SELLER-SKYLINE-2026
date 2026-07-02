@@ -386,6 +386,10 @@ function extractPhone(text: string) {
   return match?.[0] || "";
 }
 
+function toTitleCase(str: string): string {
+  return str.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 // ✅ FIX 3: extractName con blacklist extendida y límite de palabras
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const raw = clean(text);
@@ -445,11 +449,8 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     // No debe contener palabras prohibidas
     if (forbidden.some((f) => normLine === normalize(f) || normLine.startsWith(normalize(f) + " ") || normLine.endsWith(" " + normalize(f)))) return false;
 
-    // Al menos la primera palabra debe empezar con mayúscula (nombres propios)
-    if (!/^[A-ZÁÉÍÓÚÑ]/.test(cleaned)) return false;
-
     // Primera palabra de una sola letra = conjunción/artículo, no nombre
-    if (/^[A-ZÁÉÍÓÚÑa-záéíóúñ]\s/.test(cleaned) && words[0].length === 1) return false;
+    if (words[0].length === 1) return false;
 
     // Frases de confirmación / deícticos ("Y este es", "Ese es", "Este soy")
     if (/^(y |ese |esta |este |eso |esa |aqui |ahi |ya |igual |listo |ok |dale )/i.test(normLine)) return false;
@@ -462,11 +463,11 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   const explicit = raw.match(
     /(?:soy|me llamo|mi nombre es|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,80})/i
   )?.[1];
-  if (explicit) return clean(explicit);
+  if (explicit) return toTitleCase(clean(explicit));
 
-  // 1b. Nombre ANTES de "soy": "Jorge Caballero soy 0975..."
-  const beforeSoy = raw.match(/^([A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,4})\s+soy\b/i)?.[1];
-  if (beforeSoy && isValidNameLine(beforeSoy)) return clean(beforeSoy);
+  // 1b. Nombre ANTES de "soy": "Jorge Caballero soy 0975..." o "david alcaraz soy..."
+  const beforeSoy = raw.match(/^([a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,4})\s+soy\b/i)?.[1];
+  if (beforeSoy && isValidNameLine(beforeSoy)) return toTitleCase(clean(beforeSoy));
 
   // 2. Si es multilínea, buscar línea por línea (excluye líneas con teléfono o dirección)
   if (isMultiLine) {
@@ -477,13 +478,13 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
       // Saltar líneas con palabras de dirección
       if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|rca|colombia|republica|nro|manzana)\b/i.test(normalize(cleaned))) continue;
 
-      if (isValidNameLine(cleaned)) return cleaned;
+      if (isValidNameLine(cleaned)) return toTitleCase(cleaned);
     }
     return "";
   }
 
   // 3. Mensaje de una sola línea
-  if (isValidNameLine(raw)) return raw;
+  if (isValidNameLine(raw)) return toTitleCase(raw);
 
   return "";
 }
