@@ -28,9 +28,18 @@ type ProductItem = {
   price3?: number;
 };
 
+type BankInfo = {
+  titular: string;
+  ci: string;
+  entidad: string;
+  cuenta: string;
+  alias: string;
+};
+
 type ParsedTraining = {
   products: ProductItem[];
   cities: { alias: string; canonical: string }[];
+  bank?: BankInfo;
 };
 
 function sanitizeQuantity(q: any) {
@@ -187,9 +196,29 @@ function parseTraining(training: string): ParsedTraining {
     if (key) cityMap.set(key, c);
   }
 
+  // Extraer datos bancarios del training
+  let bank: BankInfo | undefined;
+  const titularMatch = training.match(/Titular[:\s]+([^\n]+)/i);
+  const ciMatch = training.match(/CI[:\s]+(\d[\d\s]*)/i);
+  const entidadMatch = training.match(/Entidad[:\s]+([^\n]+)/i);
+  const cuentaMatch = training.match(/N[°o][^\d]*de cuenta[:\s]+([^\n]+)/i) ||
+                      training.match(/Cuenta[:\s]+([\d\-]+)/i);
+  const aliasMatch = training.match(/Alias[:\s]+([^\n]+)/i);
+
+  if (titularMatch && cuentaMatch) {
+    bank = {
+      titular: clean(titularMatch[1]),
+      ci: clean(ciMatch?.[1] || ""),
+      entidad: clean(entidadMatch?.[1] || ""),
+      cuenta: clean(cuentaMatch[1]),
+      alias: clean(aliasMatch?.[1] || ""),
+    };
+  }
+
   return {
     products,
     cities: Array.from(cityMap.values()),
+    bank,
   };
 }
 
@@ -632,6 +661,21 @@ function missingDataReply(o: any) {
   return `✅ Ya voy registrando tus datos. Me falta: ${missing.join(", ")} 😊`;
 }
 
+function bankBlock(parsed: ParsedTraining): string {
+  const b = parsed.bank;
+  if (!b) return "📲 Consultanos por los datos de transferencia.";
+  const lines = [
+    `📲 DATOS PARA TRANSFERENCIA:`,
+    ``,
+    `Titular: ${b.titular}`,
+    b.ci ? `CI: ${b.ci}` : "",
+    b.entidad ? `Entidad: ${b.entidad}` : "",
+    b.cuenta ? `N° de cuenta: ${b.cuenta}` : "",
+    b.alias ? `Alias: ${b.alias}` : "",
+  ].filter((l) => l !== undefined && !(l === "" && !b.ci));
+  return lines.join("\n");
+}
+
 function confirmation(o: any, parsed: ParsedTraining) {
   const total = calculateTotal(o.product, o.quantity, parsed);
   const coverage = hasCoverage(o.city, parsed);
@@ -684,12 +728,7 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 
 💵 Pago anticipado por transferencia.
 
-📲 DATOS PARA TRANSFERENCIA:
-
-Titular: DAVID AGUSTIN ALCARAZ AGUILAR
-Banco Familiar
-Cuenta: 81-4981442
-Alias: 0994130022`;
+${bankBlock(parsed)}`;
 }
 
 // ✅ FIX 1: safeUpsertOrder busca también pedidos ya confirmados para no duplicar
@@ -1004,6 +1043,12 @@ export default async function handler(req: any, res: any) {
     }
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
+
+    // Reset contexto corrupto: ciudad guardada como saludo (bug previo)
+    const INVALID_CITY_WORDS = /^(hola|buenas|buenos|hi|hey|ok|dale|si|no|gracias|listo|perfecto|okey|buenisimo|hola que tal)[\s!.]*$/i;
+    if (oldOrder.city && INVALID_CITY_WORDS.test(normalize(oldOrder.city))) {
+      oldOrder = { product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" };
+    }
 
     // ✅ FIX 2: Bloqueo post-pedido — si ya fue confirmado, responder sin procesar
     if (context?.step === "pedido_confirmado") {
@@ -1424,13 +1469,7 @@ Pero sí hacemos envíos seguros por transportadora:
 🔥 ${orderData.product}:
 • 1 unidad → ${formatGs(productInfo?.price1 || 0)} Gs${promo}
 
-📲 DATOS PARA TRANSFERENCIA:
-
-Titular: David Agustin Alcaraz Aguilar
-CI: 5347454
-Entidad: ueno bank
-N° de cuenta: 18107326
-Alias: 5347454
+${bankBlock(parsed)}
 
 📎 Enviame:
 ✅ comprobante
@@ -1499,13 +1538,7 @@ Pero sí hacemos envíos seguros por transportadora:
 🔥 ${orderData.product}:
 • 1 unidad → ${formatGs(productInfo?.price1 || 0)} Gs${promo}
 
-📲 DATOS PARA TRANSFERENCIA:
-
-Titular: David Agustin Alcaraz Aguilar
-CI: 5347454
-Entidad: ueno bank
-N° de cuenta: 18107326
-Alias: 5347454
+${bankBlock(parsed)}
 
 📎 Enviame:
 ✅ comprobante
@@ -1514,38 +1547,48 @@ Alias: 5347454
 
 y confirmamos tu pedido 🚚✨`;
 
-        // Si ya se mostró el bloque de transferencia antes (step ya era collecting_quantity)
-        // y el cliente pregunta algo, responder la pregunta vía AI en vez de repetir el bloque
+        const sinCoberturaCtx = {
+          ...(context || {}),
+          current_product: orderData.product,
+          order_data: orderData,
+          step: "collecting_quantity",
+          updated_at: new Date().toISOString(),
+        };
+
+        // Si ya se mostró el bloque de transferencia (step ya era collecting_quantity)
         if (prevStep === "collecting_quantity") {
-          const isQuestion = /\?/.test(texto) || /\b(tiene|hay|dan|hacen|puede|como|cuando|cuanto|descuento|oferta|promo|precio)\b/i.test(normalize(texto));
-          if (isQuestion) {
-            // Dejar caer al bloque de AI más abajo para que responda la pregunta
-            // No hacemos return aquí — continuamos al fallback de AI al final
-          } else {
-            // Mensaje corto/confuso: recordatorio breve
+          const msgNormCov = normalize(texto);
+          const isDeliveryQuestion = /\b(cuando|llega|llego|entrega|envio|despacho|dias|demora|tarda)\b/.test(msgNormCov);
+          const isNewPurchaseQ = /\b(descuento|oferta|promo|precio|cuanto|compro|comprar)\b/.test(msgNormCov);
+          const isGreetingOnly = /^(hola|buenas|hi|hey|que tal|hola que tal|buenos dias|buenas tardes|buenas noches)[\s!.]*$/i.test(msgNormCov);
+
+          if (isDeliveryQuestion) {
             return res.json({
-              response: `📎 Para confirmar tu pedido, enviame:\n✅ comprobante de transferencia\n✅ nombre completo\n✅ teléfono 😊`,
-              context: {
-                ...(context || {}),
-                current_product: orderData.product,
-                order_data: orderData,
-                step: "collecting_quantity",
-                updated_at: new Date().toISOString(),
-              },
+              response: `🚚 Una vez que recibamos tu comprobante de transferencia y tus datos, coordinamos el envío con la transportadora (TSI / NASA / Occidental / MG Express).\n\nEl tiempo estimado suele ser de 2 a 5 días hábiles según tu zona. 😊\n\n📎 Enviame:\n✅ comprobante\n✅ nombre completo\n✅ teléfono`,
+              context: sinCoberturaCtx,
             });
           }
-        } else {
-          return res.json({
-            response: sinCoberturaBlock,
-            context: {
-              ...(context || {}),
-              current_product: orderData.product,
-              order_data: orderData,
-              step: "collecting_quantity",
-              updated_at: new Date().toISOString(),
-            },
-          });
+          if (isNewPurchaseQ) {
+            return res.json({
+              response: sinCoberturaBlock,
+              context: sinCoberturaCtx,
+            });
+          }
+          if (!isGreetingOnly) {
+            // Pregunta genérica: recordatorio corto
+            return res.json({
+              response: `📎 Para confirmar tu pedido de *${orderData.product}*, enviame:\n✅ comprobante de transferencia\n✅ nombre completo\n✅ teléfono 😊`,
+              context: sinCoberturaCtx,
+            });
+          }
+          // Saludo puro → mostrar el bloque completo de nuevo para orientar al cliente
+          return res.json({ response: sinCoberturaBlock, context: sinCoberturaCtx });
         }
+
+        return res.json({
+          response: sinCoberturaBlock,
+          context: sinCoberturaCtx,
+        });
       }
 
       return res.json({
@@ -1762,25 +1805,56 @@ y agendamos tu entrega ✨`,
       });
     }
 
+    // Construir catálogo dinámico desde parsed.products
+    const catalogLines = (parsed.products || []).map((p) => {
+      const promo = p.price2 ? `\n   🔥 PROMO 2x → ${formatGs(p.price2)} Gs` : "";
+      return `• *${p.canonical}* — ${formatGs(p.price1)} Gs${promo}`;
+    });
+
+    // Construir bloque de transferencia dinámico
+    const transferBlock = parsed.bank
+      ? `Titular: ${parsed.bank.titular}${parsed.bank.ci ? `\nCI: ${parsed.bank.ci}` : ""}${parsed.bank.entidad ? `\nEntidad: ${parsed.bank.entidad}` : ""}${parsed.bank.cuenta ? `\nN° de cuenta: ${parsed.bank.cuenta}` : ""}${parsed.bank.alias ? `\nAlias: ${parsed.bank.alias}` : ""}`
+      : "Consultá los datos de transferencia con el administrador.";
+
     const system = `
-Sos vendedor de Mega Todo Store.
-Usá SOLO este entrenamiento como fuente de verdad.
+Sos ARACELI GALEANO, vendedora de Mega Todo Store. Tu único objetivo es VENDER y CERRAR pedidos.
 
-REGLAS:
-- Los productos válidos son SOLO los de CATALOGO_PRODUCTOS.
-- Nunca uses ciudades como producto.
-- Nunca uses "quiero" como nombre.
-- Nunca confirmes si falta producto, ciudad, cantidad, nombre, dirección o teléfono.
-- Si falta producto, ofrecé productos del catálogo.
-- Si falta ciudad, preguntá ciudad.
-- Si falta cantidad, preguntá cantidad.
-- Si faltan datos, pedí solo lo faltante.
-- No inventes precios.
-- NO GENERES CANTIDADES NI TOTALES. El backend los calcula automáticamente.
-- Si el cliente pregunta por el estado de su pedido ya confirmado, responder SOLO: "Tu pedido está agendado para la próxima ronda de envíos. El delivery te confirma al llegar."
+═══════════════════════════════
+CATÁLOGO COMPLETO (ÚNICA FUENTE VÁLIDA DE PRODUCTOS Y PRECIOS):
+${catalogLines.join("\n")}
+═══════════════════════════════
 
-ENTRENAMIENTO:
-${trainingText}
+FLUJO DE VENTA OBLIGATORIO:
+1. Cliente menciona producto → mostrar precio + MENSAJE_VENTA del producto + preguntar CIUDAD
+2. Ciudad con cobertura → mostrar precio con opciones + preguntar CANTIDAD ("¿Cuántas unidades te gustaría llevar? ✨")
+3. Ciudad sin cobertura → mostrar precio + datos de transferencia + pedir comprobante/nombre/teléfono
+4. Cantidad recibida → pedir NOMBRE, DIRECCIÓN y TELÉFONO (aceptar en cualquier orden, acumular progresivamente)
+5. Todos los datos completos → el backend confirma automáticamente
+
+REGLAS ABSOLUTAS:
+- NUNCA uses un producto que no esté en el catálogo de arriba
+- NUNCA uses ciudades, frases conversacionales o "quiero" como nombre de persona
+- NUNCA confirmes pedido si falta producto, ciudad, cantidad, nombre, dirección o teléfono
+- NUNCA inventes precios ni hagas cálculos de total — el backend lo hace
+- NUNCA digas "Ups", "cantidad máxima", ni errores de cantidad
+- Si el cliente escribe "1" → cantidad = 1 (NUNCA 11)
+- Si el cliente escribe "2" → cantidad = 2 (NUNCA 22)
+- Mantener el producto en contexto durante TODA la conversación
+- Datos en mensajes separados: guardar cada uno y pedir solo el faltante
+- Si pedido ya fue confirmado y cliente pregunta estado: responder SOLO "Tu pedido de [PRODUCTO] está agendado para la próxima ronda de envíos. El delivery te confirma al llegar a tu zona. 😊"
+
+COBERTURA (ENVÍO GRATIS CONTRA-ENTREGA):
+Las ciudades con cobertura están pre-verificadas por el sistema. Si el sistema llegó hasta aquí es porque aún hay ambigüedad. Preguntá ciudad si no la sabés.
+
+SIN COBERTURA — DATOS DE TRANSFERENCIA:
+${transferBlock}
+
+ESTILO:
+- Soná humana, cálida, con emojis moderados
+- Crear urgencia: "stock limitado", "oferta válida hoy"
+- Manejar objeciones: si duda, ofrecé "pagás al recibir, no arriesgás nada"
+- Si no hay producto en contexto → mostrar más vendidos del catálogo
+- Preguntar ciudad con frases variadas (no siempre la misma)
 `.trim();
 
     const contents = (history || [])
