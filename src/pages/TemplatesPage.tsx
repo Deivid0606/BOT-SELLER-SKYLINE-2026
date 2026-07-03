@@ -28,12 +28,11 @@ type MediaFile = {
   mediaType: string;
 };
 
+// 👇 SIMPLIFICADO: Solo texto y emoji
 type TemplateButton = {
   id: string;
-  label: string;
-  action: string;
-  emoji?: string;
-  type?: 'reply' | 'url' | 'postback';
+  label: string;  // Lo que ve el cliente
+  emoji?: string; // Emoji opcional
 };
 
 type SavedTemplate = {
@@ -70,16 +69,13 @@ export default function TemplatesPage() {
   const [editingButtonId, setEditingButtonId] = useState<string | null>(null);
   const [isAddingButton, setIsAddingButton] = useState(false);
 
-  // Estado para botones
+  // 👇 Estado para botones - SIMPLIFICADO
   const [buttons, setButtons] = useState<TemplateButton[]>([]);
   
-  // Estado para el formulario de botón
-  const [buttonForm, setButtonForm] = useState<TemplateButton>({
-    id: '',
+  // 👇 Formulario simplificado
+  const [buttonForm, setButtonForm] = useState<Omit<TemplateButton, 'id'>>({
     label: '',
-    action: '',
-    emoji: '💬',
-    type: 'reply'
+    emoji: '💬'
   });
 
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -89,7 +85,8 @@ export default function TemplatesPage() {
   // Emojis predefinidos para los botones
   const availableEmojis = [
     '💬', '👍', '👋', '🛠️', '💰', 'ℹ️', '📦', '🚀', '⭐', 
-    '❤️', '🔧', '📄', '❓', '💻', '📱', '📊', '🎯', '🏷️'
+    '❤️', '🔧', '📄', '❓', '💻', '📱', '📊', '🎯', '🏷️',
+    '🎉', '✨', '🔥', '💡', '🔔', '📌', '📍', '🎈', '🎁'
   ];
 
   // Subir archivo a Supabase Storage
@@ -169,16 +166,12 @@ export default function TemplatesPage() {
     setImages((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // ========== FUNCIONES PARA BOTONES ==========
+  // ========== FUNCIONES PARA BOTONES SIMPLIFICADAS ==========
   
   // Agregar nuevo botón
   const handleAddButton = () => {
     if (!buttonForm.label.trim()) {
       toast({ title: "Falta etiqueta", description: "Escribe un texto para el botón", variant: "destructive" });
-      return;
-    }
-    if (!buttonForm.action.trim()) {
-      toast({ title: "Falta acción", description: "Escribe una acción para el botón", variant: "destructive" });
       return;
     }
     
@@ -211,7 +204,10 @@ export default function TemplatesPage() {
 
   // Editar botón (cargar en formulario)
   const handleEditButton = (button: TemplateButton) => {
-    setButtonForm(button);
+    setButtonForm({
+      label: button.label,
+      emoji: button.emoji || '💬'
+    });
     setEditingButtonId(button.id);
     setIsAddingButton(true);
   };
@@ -219,11 +215,8 @@ export default function TemplatesPage() {
   // Cancelar edición/agregado
   const resetButtonForm = () => {
     setButtonForm({
-      id: '',
       label: '',
-      action: '',
-      emoji: '💬',
-      type: 'reply'
+      emoji: '💬'
     });
     setEditingButtonId(null);
     setIsAddingButton(false);
@@ -232,9 +225,9 @@ export default function TemplatesPage() {
   // Duplicar botón
   const handleDuplicateButton = (button: TemplateButton) => {
     const newButton: TemplateButton = {
-      ...button,
       id: `btn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      label: `${button.label} (copia)`
+      label: `${button.label} (copia)`,
+      emoji: button.emoji
     };
     setButtons(prev => [...prev, newButton]);
     toast({ title: "📋 Botón duplicado" });
@@ -299,7 +292,8 @@ export default function TemplatesPage() {
         videoUrl: videoUrl,
         gifUrl: gifUrl,
       },
-      buttons: buttons, // Guardar los botones en variables
+      // 👇 Guardamos los botones (solo texto y emoji)
+      buttons: buttons,
     };
 
     const payload = {
@@ -432,7 +426,7 @@ export default function TemplatesPage() {
     setTemplateName(tpl.name || "");
     setTemplateMessage(tpl.content || "");
     
-    // Cargar botones desde variables
+    // 👇 Cargar botones SIMPLIFICADOS
     if (tpl.variables?.buttons) {
       setButtons(tpl.variables.buttons as TemplateButton[]);
     } else {
@@ -538,11 +532,11 @@ export default function TemplatesPage() {
             />
           </div>
 
-          {/* ========== SECCIÓN DE BOTONES ========== */}
+          {/* ========== SECCIÓN DE BOTONES SIMPLIFICADA ========== */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <label className="text-xs text-muted-foreground font-medium flex items-center gap-1">
-                <MessageSquare className="h-3 w-3" /> Botones ({buttons.length}/5)
+                <MessageSquare className="h-3 w-3" /> Botones de respuesta ({buttons.length}/5)
               </label>
               {buttons.length < 5 && !isAddingButton && (
                 <button
@@ -554,6 +548,10 @@ export default function TemplatesPage() {
               )}
             </div>
 
+            <p className="text-[10px] text-muted-foreground">
+              El cliente verá estos botones como opciones rápidas. La IA interpretará su selección.
+            </p>
+
             {/* Lista de botones existentes */}
             <AnimatePresence>
               {buttons.map((btn, index) => (
@@ -564,10 +562,9 @@ export default function TemplatesPage() {
                   exit={{ opacity: 0, x: 20 }}
                   className="flex items-center gap-2 bg-secondary/30 rounded-lg p-2 border border-border group"
                 >
-                  <span className="text-sm">{btn.emoji || '💬'}</span>
+                  <span className="text-lg">{btn.emoji || '💬'}</span>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{btn.label}</p>
-                    <p className="text-[10px] text-muted-foreground truncate">Acción: {btn.action}</p>
                   </div>
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button
@@ -607,7 +604,7 @@ export default function TemplatesPage() {
               ))}
             </AnimatePresence>
 
-            {/* Formulario para agregar/editar botón */}
+            {/* Formulario para agregar/editar botón - SIMPLIFICADO */}
             <AnimatePresence>
               {(isAddingButton || editingButtonId) && (
                 <motion.div
@@ -634,16 +631,7 @@ export default function TemplatesPage() {
                       value={buttonForm.label}
                       onChange={(e) => setButtonForm({ ...buttonForm, label: e.target.value })}
                       className="w-full bg-background border border-border rounded-lg px-3 py-1 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
-                      placeholder="Texto del botón (ej. Soporte)"
-                    />
-                  </div>
-
-                  <div>
-                    <input
-                      value={buttonForm.action}
-                      onChange={(e) => setButtonForm({ ...buttonForm, action: e.target.value })}
-                      className="w-full bg-background border border-border rounded-lg px-3 py-1 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
-                      placeholder="Acción (ej. soporte, /comando, URL)"
+                      placeholder="Texto del botón (ej. Quiero soporte)"
                     />
                   </div>
 
@@ -959,7 +947,7 @@ export default function TemplatesPage() {
                                   key={btn.id}
                                   className="bg-white rounded-lg px-3 py-1.5 border border-[#25D366] text-[#075e54] text-xs font-medium flex items-center gap-2 hover:bg-[#25D366]/5 transition-colors cursor-pointer"
                                 >
-                                  <span>{btn.emoji || '💬'}</span>
+                                  <span className="text-base">{btn.emoji || '💬'}</span>
                                   <span>{btn.label}</span>
                                 </div>
                               ))}
@@ -1038,7 +1026,7 @@ export default function TemplatesPage() {
                     {hasButtons && (
                       <div className="mt-1 flex gap-1 flex-wrap">
                         <span className="text-[9px] bg-primary/10 text-primary px-2 py-0.5 rounded-full">
-                          {tpl.variables.buttons.length} botones
+                          {tpl.variables.buttons.length} botones de respuesta
                         </span>
                       </div>
                     )}
