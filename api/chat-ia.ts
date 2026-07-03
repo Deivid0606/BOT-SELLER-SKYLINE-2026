@@ -1493,8 +1493,7 @@ y confirmamos tu pedido 🚚✨`,
         : "";
 
       if (!coverage) {
-        return res.json({
-          response: `ℹ️ ${orderData.city} no entra en nuestra zona de contra-entrega 😊
+        const sinCoberturaBlock = `ℹ️ ${orderData.city} no entra en nuestra zona de contra-entrega 😊
 
 Pero sí hacemos envíos seguros por transportadora:
 🚚 TSI / NASA / Occidental / MG Express / Multienvíos
@@ -1517,15 +1516,40 @@ Alias: 5347454
 ✅ nombre completo
 ✅ teléfono
 
-y confirmamos tu pedido 🚚✨`,
-          context: {
-            ...(context || {}),
-            current_product: orderData.product,
-            order_data: orderData,
-            step: "collecting_quantity",
-            updated_at: new Date().toISOString(),
-          },
-        });
+y confirmamos tu pedido 🚚✨`;
+
+        // Si ya se mostró el bloque de transferencia antes (step ya era collecting_quantity)
+        // y el cliente pregunta algo, responder la pregunta vía AI en vez de repetir el bloque
+        if (prevStep === "collecting_quantity") {
+          const isQuestion = /\?/.test(texto) || /\b(tiene|hay|dan|hacen|puede|como|cuando|cuanto|descuento|oferta|promo|precio)\b/i.test(normalize(texto));
+          if (isQuestion) {
+            // Dejar caer al bloque de AI más abajo para que responda la pregunta
+            // No hacemos return aquí — continuamos al fallback de AI al final
+          } else {
+            // Mensaje corto/confuso: recordatorio breve
+            return res.json({
+              response: `📎 Para confirmar tu pedido, enviame:\n✅ comprobante de transferencia\n✅ nombre completo\n✅ teléfono 😊`,
+              context: {
+                ...(context || {}),
+                current_product: orderData.product,
+                order_data: orderData,
+                step: "collecting_quantity",
+                updated_at: new Date().toISOString(),
+              },
+            });
+          }
+        } else {
+          return res.json({
+            response: sinCoberturaBlock,
+            context: {
+              ...(context || {}),
+              current_product: orderData.product,
+              order_data: orderData,
+              step: "collecting_quantity",
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
       }
 
       return res.json({
