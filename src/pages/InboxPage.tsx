@@ -47,6 +47,15 @@ const COMMON_EMOJIS = [
   "👇","☝️","👍","👎","✊","👊","🤛","🤜","👏","🙌",
 ];
 
+// ============================================================
+// TIPOS
+// ============================================================
+type TemplateButton = {
+  id: string;
+  label: string;
+  emoji?: string;
+};
+
 type DbMessage = {
   id: string;
   user_id: string | null;
@@ -57,6 +66,7 @@ type DbMessage = {
   media_url: string | null;
   is_processed: boolean | null;
   created_at?: string;
+  buttons?: TemplateButton[];
 };
 
 type Chat = {
@@ -77,6 +87,7 @@ type Message = {
   badge?: string;
   mediaUrl?: string;
   mediaType?: string;
+  buttons?: TemplateButton[];
 };
 
 type FullTemplate = {
@@ -90,6 +101,9 @@ type FullTemplate = {
 
 type DbTag = { id: string; name: string; color: string };
 
+// ============================================================
+// FUNCIONES UTILITARIAS
+// ============================================================
 function isOutgoingType(type?: string | null) {
   return !!type && type.startsWith("out_");
 }
@@ -108,7 +122,6 @@ function formatMessageDate(date: Date) {
   return format(date, "yyyy-MM-dd");
 }
 
-// Convierte hex → rgba con opacidad para fondos suaves
 function hexToRgba(hex: string, alpha: number) {
   const h = hex.replace("#", "");
   const bigint = parseInt(h.length === 3 ? h.split("").map(c => c + c).join("") : h, 16);
@@ -118,9 +131,13 @@ function hexToRgba(hex: string, alpha: number) {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+// ============================================================
+// COMPONENTE PRINCIPAL
+// ============================================================
 export default function InboxPage() {
   const { user } = useAuth();
 
+  // Estado de chat
   const [selectedChatNumber, setSelectedChatNumber] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [messageInput, setMessageInput] = useState("");
@@ -131,21 +148,30 @@ export default function InboxPage() {
   const [filterDateTo, setFilterDateTo] = useState<Date | undefined>(new Date());
   const [showFilters, setShowFilters] = useState(false);
 
+  // Datos
   const [dbMessages, setDbMessages] = useState<DbMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [availableTemplates, setAvailableTemplates] = useState<FullTemplate[]>([]);
   const [selectedFile, setSelectedFile] = useState<{ file: File; preview: string; type: string } | null>(null);
-  const [selectedTemplateMedia, setSelectedTemplateMedia] = useState<{ url: string; type: string } | null>(null);
+  const [selectedTemplateMedia, setSelectedTemplateMedia] = useState<{ 
+    url: string; 
+    type: string; 
+    buttons?: TemplateButton[];
+  } | null>(null);
 
+  // Tags
   const [allTags, setAllTags] = useState<DbTag[]>([]);
   const [contactTagsMap, setContactTagsMap] = useState<Record<string, string[]>>({});
   const [convoTagsMap, setConvoTagsMap] = useState<Record<string, string>>({});
 
+  // Refs
   const fileInputRef = useRef<HTMLInputElement>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
 
-  // Helper: obtener color de una etiqueta por nombre
+  // ============================================================
+  // LOADERS
+  // ============================================================
   const getTagColor = (name?: string) => {
     if (!name) return "#64748B";
     return allTags.find(t => t.name === name)?.color || "#64748B";
@@ -217,10 +243,20 @@ export default function InboxPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // ============================================================
+  // SELECCIÓN DE PLANTILLA (CON BOTONES)
+  // ============================================================
   const handleSelectTemplate = (template: FullTemplate) => {
     setMessageInput(template.content || "");
+    
+    const templateButtons = template.variables?.buttons || null;
+    
     if (template.media_url && template.media_type) {
-      setSelectedTemplateMedia({ url: template.media_url, type: template.media_type });
+      setSelectedTemplateMedia({ 
+        url: template.media_url, 
+        type: template.media_type,
+        buttons: templateButtons
+      });
       setSelectedFile(null);
     } else {
       setSelectedTemplateMedia(null);
@@ -256,7 +292,9 @@ export default function InboxPage() {
     setShowEmojis(false);
   };
 
-  // Carga mensajes del rango de fechas seleccionado (por defecto hoy).
+  // ============================================================
+  // CARGA DE MENSAJES
+  // ============================================================
   const loadMessages = async (from_date?: Date, to_date?: Date) => {
     if (!user) {
       setDbMessages([]);
@@ -324,6 +362,9 @@ export default function InboxPage() {
     return () => { supabase.removeChannel(channel); };
   }, [user, filterDateFrom, filterDateTo]);
 
+  // ============================================================
+  // CHATS Y MENSAJES
+  // ============================================================
   const chatSearchIndex = useMemo(() => {
     const idx = new Map<string, string>();
     for (const msg of dbMessages) {
@@ -391,12 +432,14 @@ export default function InboxPage() {
   }, [chats, searchQuery, filterTag, filterDateFrom, filterDateTo, contactTagsMap, chatSearchIndex]);
 
   const selectedNumber = selectedChatNumber;
-
   const selectedChatData = useMemo(() => {
     if (!selectedNumber) return null;
     return filteredChats.find((chat) => chat.number === selectedNumber) || null;
   }, [filteredChats, selectedNumber]);
 
+  // ============================================================
+  // MENSAJES CON BOTONES
+  // ============================================================
   const currentMessages = useMemo<Message[]>(() => {
     if (!selectedNumber) return [];
     const chatMessages = dbMessages.filter((msg) => msg.from_number === selectedNumber);
@@ -431,10 +474,14 @@ export default function InboxPage() {
         badge: getDisplayType(msg.message_type),
         mediaUrl: msg.media_url || undefined,
         mediaType: mediaType || undefined,
+        buttons: msg.buttons || undefined,
       };
     });
   }, [dbMessages, selectedNumber]);
 
+  // ============================================================
+  // MARCAR COMO LEÍDOS
+  // ============================================================
   useEffect(() => {
     if (filteredChats.length === 0) {
       if (selectedChatNumber !== null) setSelectedChatNumber(null);
@@ -472,6 +519,9 @@ export default function InboxPage() {
     markAsProcessed();
   }, [selectedNumber, dbMessages]);
 
+  // ============================================================
+  // FILTROS
+  // ============================================================
   const clearFilters = () => {
     setFilterTag(null);
     setFilterDateFrom(new Date());
@@ -481,7 +531,7 @@ export default function InboxPage() {
   const hasActiveFilters = !!(filterTag || filterDateFrom || filterDateTo);
 
   // ============================================================
-  // 🔧 FUNCIÓN CORREGIDA - NO BLOQUEA SI NO HAY tenant_id
+  // ENVÍO DE MENSAJE CON BOTONES
   // ============================================================
   const handleSendMessage = async () => {
     if (!selectedNumber) {
@@ -502,7 +552,6 @@ export default function InboxPage() {
     try {
       setSending(true);
 
-      // ✅ Obtener perfil sin romper si no existe tenant_id
       const { data: profile, error: profileError } = await supabase
         .from("profiles")
         .select("tenant_id, connection_type")
@@ -516,6 +565,7 @@ export default function InboxPage() {
       const textToSend = messageInput.trim();
       let mediaUrl: string | null = null;
       let mediaType: string | null = null;
+      let buttonsToSend: TemplateButton[] | null = null;
 
       if (selectedFile) {
         const fileExt = selectedFile.file.name.split(".").pop();
@@ -532,9 +582,9 @@ export default function InboxPage() {
       } else if (selectedTemplateMedia) {
         mediaUrl = selectedTemplateMedia.url;
         mediaType = selectedTemplateMedia.type;
+        buttonsToSend = selectedTemplateMedia.buttons || null;
       }
 
-      // ✅ Payload flexible: manda tenant_id si existe, pero NO bloquea si está vacío
       const payload: any = {
         user_id: user.id,
         tenant_id: profile?.tenant_id ?? null,
@@ -548,9 +598,14 @@ export default function InboxPage() {
         payload.media_type = mediaType;
       }
 
+      if (buttonsToSend && buttonsToSend.length > 0) {
+        payload.buttons = buttonsToSend;
+      }
+
       console.log("📤 Enviando mensaje con payload:", {
         ...payload,
         message: payload.message?.substring(0, 50),
+        buttons: payload.buttons?.length || 0,
       });
 
       const response = await fetch("/api/send-whatsapp", {
@@ -572,6 +627,26 @@ export default function InboxPage() {
         throw new Error(result?.error || "No se pudo enviar el mensaje");
       }
 
+      // Guardar en Supabase con botones
+      const messageToSave: any = {
+        user_id: user.id,
+        from_number: selectedNumber,
+        message: textToSend,
+        message_type: 'out_text',
+        is_processed: true,
+      };
+
+      if (mediaUrl && mediaType) {
+        messageToSave.media_url = mediaUrl;
+        messageToSave.message_type = `out_${mediaType}`;
+      }
+
+      if (buttonsToSend && buttonsToSend.length > 0) {
+        messageToSave.buttons = buttonsToSend;
+      }
+
+      await supabase.from("received_messages").insert(messageToSave);
+
       setMessageInput("");
       setSelectedFile(null);
       setSelectedTemplateMedia(null);
@@ -585,8 +660,48 @@ export default function InboxPage() {
       setSending(false);
     }
   };
-  // ============================================================
 
+  // ============================================================
+  // ENVÍO DE MENSAJE CON TEXTO (PARA BOTONES)
+  // ============================================================
+  const handleSendMessageWithText = async (text: string) => {
+    if (!selectedNumber || !text.trim()) return;
+    
+    try {
+      // Guardar el mensaje del usuario
+      await supabase.from("received_messages").insert({
+        user_id: user.id,
+        from_number: selectedNumber,
+        message: text,
+        message_type: 'in_text',
+        is_processed: true,
+      });
+      
+      // Llamar al webhook para procesar con IA
+      const response = await fetch("/api/webhook", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          from: selectedNumber,
+          message: text,
+          user_id: user.id,
+        }),
+      });
+      
+      if (!response.ok) {
+        console.error("Error en webhook:", await response.text());
+      }
+      
+      await loadMessages();
+    } catch (error) {
+      console.error("Error enviando mensaje desde botón:", error);
+      toast({ title: "Error", description: "No se pudo procesar el botón", variant: "destructive" });
+    }
+  };
+
+  // ============================================================
+  // ACCIONES DEL CHAT
+  // ============================================================
   const handlePauseAI = async () => {
     if (!selectedNumber) return;
     const { data: existing } = await supabase
@@ -665,6 +780,9 @@ export default function InboxPage() {
     toast({ title: `🏷️ Etiqueta: ${tag}` });
   };
 
+  // ============================================================
+  // RENDERIZADO DE MEDIA
+  // ============================================================
   const renderMedia = (mediaUrl?: string, mediaType?: string, messageText?: string) => {
     if (!mediaUrl) return null;
 
@@ -701,9 +819,37 @@ export default function InboxPage() {
     return null;
   };
 
+  // ============================================================
+  // RENDERIZADO DE BOTONES
+  // ============================================================
+  const renderMessageButtons = (buttons?: TemplateButton[]) => {
+    if (!buttons || buttons.length === 0) return null;
+    
+    return (
+      <div className="mt-3 flex flex-col gap-1.5">
+        {buttons.map((btn) => (
+          <button
+            key={btn.id}
+            onClick={async () => {
+              await handleSendMessageWithText(btn.label);
+            }}
+            className="bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-lg px-3 py-1.5 border border-primary/30 text-xs font-medium flex items-center gap-2 hover:bg-primary/5 dark:hover:bg-primary/10 transition-colors w-full text-left shadow-sm"
+          >
+            <span className="text-base">{btn.emoji || '💬'}</span>
+            <span>{btn.label}</span>
+          </button>
+        ))}
+      </div>
+    );
+  };
+
+  // ============================================================
+  // RENDER PRINCIPAL
+  // ============================================================
   return (
     <div className="flex h-[calc(100dvh-48px)] max-h-[calc(100dvh-48px)] min-h-0 bg-background overflow-hidden">
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        {/* HEADER */}
         <div className="border-b border-border/40 px-6 py-4 flex items-center gap-3 shrink-0">
           <div className="w-1 h-10 bg-primary rounded-full" />
           <div className="flex-1">
@@ -716,7 +862,9 @@ export default function InboxPage() {
         </div>
 
         <div className="flex flex-1 overflow-hidden min-h-0">
+          {/* CHAT PRINCIPAL */}
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+            {/* CABECERA DEL CHAT */}
             <div className="border-b border-border/40 px-6 py-3 flex items-center gap-3 shrink-0">
               <div className="w-9 h-9 rounded-full bg-primary/15 flex items-center justify-center text-xs font-semibold text-primary">
                 {selectedChatData?.number?.slice(-2) || "--"}
@@ -725,6 +873,18 @@ export default function InboxPage() {
                 <div className="text-sm font-medium">
                   {selectedChatData?.number || "Sin chat seleccionado"}
                 </div>
+                {selectedChatData?.tag && (
+                  <span 
+                    className="text-[9px] px-1.5 py-0.5 rounded border"
+                    style={{
+                      backgroundColor: hexToRgba(getTagColor(selectedChatData.tag), 0.15),
+                      color: getTagColor(selectedChatData.tag),
+                      borderColor: hexToRgba(getTagColor(selectedChatData.tag), 0.3),
+                    }}
+                  >
+                    {selectedChatData.tag}
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-1">
                 <button onClick={handlePauseAI} className="p-2 rounded-lg hover:bg-secondary/60" title="Pausar/reanudar IA">
@@ -739,6 +899,7 @@ export default function InboxPage() {
               </div>
             </div>
 
+            {/* ACCIONES RÁPIDAS */}
             <div className="border-b border-border/40 px-6 py-2.5 flex items-center gap-2 flex-wrap shrink-0">
               <button onClick={() => handleMarkSale("normal")} className="text-[11px] px-3 py-1.5 rounded-lg bg-success/10 text-success border border-success/20 hover:bg-success/20 transition-all font-medium">
                 ✏️ Venta Normal
@@ -764,6 +925,7 @@ export default function InboxPage() {
               </select>
             </div>
 
+            {/* MENSAJES */}
             <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-4 space-y-3">
               {loading ? (
                 <p className="text-sm text-muted-foreground text-center">Cargando mensajes...</p>
@@ -785,9 +947,16 @@ export default function InboxPage() {
                       <div className={`flex ${msg.from === "out" ? "justify-end" : "justify-start"}`}>
                         <div className={`max-w-[70%] rounded-2xl px-4 py-2.5 ${msg.from === "out" ? "bg-primary text-primary-foreground" : "bg-secondary/60"}`}>
                           {renderMedia(msg.mediaUrl, msg.mediaType, msg.text)}
+                          
                           {msg.text && msg.mediaType !== "audio" && (
                             <p className="text-sm whitespace-pre-wrap break-words">{msg.text}</p>
                           )}
+                          
+                          {/* 👇 BOTONES - SOLO PARA MENSAJES ENTRANTES DEL BOT */}
+                          {msg.from === "in" && msg.buttons && msg.buttons.length > 0 && (
+                            renderMessageButtons(msg.buttons)
+                          )}
+                          
                           <div className="flex items-center gap-1.5 mt-1 text-[10px] opacity-70">
                             <span>{msg.time}</span>
                             {msg.badge && <span className="px-1.5 py-0.5 rounded bg-black/10">{msg.badge}</span>}
@@ -801,6 +970,7 @@ export default function InboxPage() {
               )}
             </div>
 
+            {/* INPUT */}
             <div className="border-t border-border/40 p-4 shrink-0">
               {selectedFile && (
                 <div className="mb-2 flex items-center gap-2 bg-secondary/40 rounded-lg p-2">
@@ -821,6 +991,11 @@ export default function InboxPage() {
                     {selectedTemplateMedia.type === "image" && <Image className="w-4 h-4" />}
                     {selectedTemplateMedia.type === "video" && <VideoIcon className="w-4 h-4" />}
                     <span>Multimedia de plantilla</span>
+                    {selectedTemplateMedia.buttons && selectedTemplateMedia.buttons.length > 0 && (
+                      <span className="text-[9px] bg-primary/10 text-primary px-1.5 py-0.5 rounded">
+                        {selectedTemplateMedia.buttons.length} botones
+                      </span>
+                    )}
                   </div>
                   <button onClick={() => setSelectedTemplateMedia(null)} className="p-1 hover:bg-destructive/20 rounded">
                     <X className="w-3 h-3" />
@@ -860,22 +1035,30 @@ export default function InboxPage() {
                     {availableTemplates.length === 0 ? (
                       <p className="text-xs text-muted-foreground text-center py-4">No hay plantillas. Crealas en Plantillas.</p>
                     ) : (
-                      availableTemplates.map((tpl) => (
-                        <button
-                          key={tpl.id}
-                          onClick={() => handleSelectTemplate(tpl)}
-                          className="w-full text-left px-4 py-3 hover:bg-primary/5 border-b border-border/20 last:border-0"
-                        >
-                          <div className="flex items-center gap-2 mb-1">
-                            {tpl.media_type === "image" && <Image className="w-3 h-3" />}
-                            {tpl.media_type === "video" && <VideoIcon className="w-3 h-3" />}
-                            {tpl.media_type === "audio" && <Music className="w-3 h-3" />}
-                            <span className="text-sm font-medium">{tpl.name}</span>
-                          </div>
-                          <p className="text-xs text-muted-foreground line-clamp-2">{tpl.content || "Sin contenido"}</p>
-                          {tpl.media_url && <p className="text-[10px] text-primary mt-1">📎 Con multimedia</p>}
-                        </button>
-                      ))
+                      availableTemplates.map((tpl) => {
+                        const hasButtons = tpl.variables?.buttons && tpl.variables.buttons.length > 0;
+                        return (
+                          <button
+                            key={tpl.id}
+                            onClick={() => handleSelectTemplate(tpl)}
+                            className="w-full text-left px-4 py-3 hover:bg-primary/5 border-b border-border/20 last:border-0"
+                          >
+                            <div className="flex items-center gap-2 mb-1">
+                              {tpl.media_type === "image" && <Image className="w-3 h-3" />}
+                              {tpl.media_type === "video" && <VideoIcon className="w-3 h-3" />}
+                              {tpl.media_type === "audio" && <Music className="w-3 h-3" />}
+                              <span className="text-sm font-medium">{tpl.name}</span>
+                              {hasButtons && (
+                                <span className="text-[8px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full ml-auto">
+                                  {tpl.variables.buttons.length} botones
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground line-clamp-2">{tpl.content || "Sin contenido"}</p>
+                            {tpl.media_url && <p className="text-[10px] text-primary mt-1">📎 Con multimedia</p>}
+                          </button>
+                        );
+                      })
                     )}
                   </div>
                 </div>
