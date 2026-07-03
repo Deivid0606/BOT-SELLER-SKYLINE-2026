@@ -1393,8 +1393,10 @@ Escribí el nombre del producto que te interesa. 😊`,
       // Si el step anterior era collecting_city, el mensaje actual probablemente ES la ciudad
       // aunque no esté registrada en training. Usarla como ciudad sin cobertura.
       const prevStep = context?.step || "";
+      const IS_GREETING = /^(hola|buenas|buenos|hi|hey|buen dia|buenos dias|buenas tardes|buenas noches|saludos|ok|dale|si|no|gracias|listo|perfecto|okey)[\s!.]*$/i;
       const looksLikeCity =
         prevStep === "collecting_city" &&
+        !IS_GREETING.test(normalize(texto)) &&
         !extractQuantity(texto) &&
         !extractPhone(texto) &&
         !detectProduct(texto, parsed, "") &&
