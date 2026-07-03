@@ -1080,29 +1080,20 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      const defaultProduct =
-        parsed.products.find((p) => normalize(p.canonical).includes("nebulizador")) ||
-        parsed.products[0];
-
-      if (defaultProduct) {
-        const resetOrder = {
-          product: defaultProduct.canonical,
-          quantity: 0,
-          city: "",
-          customer_name: "",
-          phone: "",
-          address: "",
-        };
+      // No se detectó producto específico → mostrar lista de precios de todos los productos
+      if (parsed.products.length > 0) {
+        const priceLines = parsed.products.map((p) => {
+          const promo = p.price2 ? ` | 🔥 2x → ${formatGs(p.price2)} Gs` : "";
+          return `⭐ *${p.canonical}*: ${formatGs(p.price1)} Gs${promo}`;
+        });
 
         return res.json({
-          response: `💰 ${defaultProduct.canonical}: ${formatGs(defaultProduct.price1)} Gs
-
-📍 ¿Para qué ciudad sería el envío? 😊`,
+          response: `💰 *Nuestros precios:*\n\n${priceLines.join("\n")}\n\n¿Cuál te interesa? 😊`,
           context: {
             ...(context || {}),
-            current_product: defaultProduct.canonical,
-            order_data: resetOrder,
-            step: "collecting_city",
+            current_product: null,
+            order_data: { product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" },
+            step: "selling",
             updated_at: new Date().toISOString(),
           },
         });
