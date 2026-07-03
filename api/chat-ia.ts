@@ -1031,9 +1031,12 @@ export default async function handler(req: any, res: any) {
       }
 
       if (!isPromoResponse && (isFollowUp || !hasNewProduct)) {
-        // Si el cliente menciona que quiere OTRO producto (corrección), dejar pasar aunque no haya newProduct detectado
         const wantsCorrection = /\b(no|no quiero|no era|me equivoque|en realidad|quiero es|lo que quiero|lo que piero|piero|qiero)\b/.test(msgNorm);
-        if (!wantsCorrection) {
+        // Saludo o pregunta de nueva compra → dejar pasar al flujo de venta
+        const isGreeting = /^(hola|buenas|hi|hey|buen dia|buenos dias|buenas tardes|buenas noches|saludos)[\s!.]*$/.test(msgNorm);
+        const isNewPurchaseQuestion = /\b(compro|comprar|precio|cuanto|cuestan|cuanto sale|cuantos|quiero|interesa|promo|descuento|oferta)\b/.test(msgNorm);
+
+        if (!wantsCorrection && !isGreeting && !isNewPurchaseQuestion) {
           return res.json({
             response: `🚚 Tu pedido de *${context.order_data?.product || "tu producto"}* está agendado para la próxima ronda de envíos. El delivery te confirma al llegar a tu zona. 😊`,
             context: {
@@ -1043,7 +1046,7 @@ export default async function handler(req: any, res: any) {
           });
         }
       }
-      // Si el cliente menciona un producto nuevo o responde a promoción o quiere corregir → reiniciar
+      // Cliente saluda, pregunta precio, quiere corregir o responde a promo → reiniciar para nueva compra
       oldOrder = { product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" };
     }
 
