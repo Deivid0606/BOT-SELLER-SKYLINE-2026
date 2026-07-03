@@ -11,6 +11,11 @@ import {
   Video,
   Sparkles,
   Phone,
+  GripVertical,
+  Edit2,
+  Check,
+  Copy,
+  MessageSquare,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
@@ -21,6 +26,14 @@ type MediaFile = {
   preview: string;
   type: "image" | "video" | "gif";
   mediaType: string;
+};
+
+type TemplateButton = {
+  id: string;
+  label: string;
+  action: string;
+  emoji?: string;
+  type?: 'reply' | 'url' | 'postback';
 };
 
 type SavedTemplate = {
@@ -38,6 +51,7 @@ type SavedTemplate = {
   media_url: string | null;
   media_type: string | null;
   media_file_name: string | null;
+  buttons?: TemplateButton[];
 };
 
 export default function TemplatesPage() {
@@ -53,10 +67,30 @@ export default function TemplatesPage() {
   const [templates, setTemplates] = useState<SavedTemplate[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [editingButtonId, setEditingButtonId] = useState<string | null>(null);
+  const [isAddingButton, setIsAddingButton] = useState(false);
+
+  // Estado para botones
+  const [buttons, setButtons] = useState<TemplateButton[]>([]);
+  
+  // Estado para el formulario de botón
+  const [buttonForm, setButtonForm] = useState<TemplateButton>({
+    id: '',
+    label: '',
+    action: '',
+    emoji: '💬',
+    type: 'reply'
+  });
 
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const gifInputRef = useRef<HTMLInputElement>(null);
+
+  // Emojis predefinidos para los botones
+  const availableEmojis = [
+    '💬', '👍', '👋', '🛠️', '💰', 'ℹ️', '📦', '🚀', '⭐', 
+    '❤️', '🔧', '📄', '❓', '💻', '📱', '📊', '🎯', '🏷️'
+  ];
 
   // Subir archivo a Supabase Storage
   const uploadFile = async (file: File, folder: string): Promise<string | null> => {
@@ -87,7 +121,6 @@ export default function TemplatesPage() {
     const files = Array.from(e.target.files || []);
     const remaining = 3 - images.length;
     
-    // Validar tamaño máximo (5MB por imagen)
     const validFiles = files.filter(file => {
       if (file.size > 5 * 1024 * 1024) {
         toast({ title: "Archivo muy grande", description: `${file.name} excede 5MB`, variant: "destructive" });
@@ -109,7 +142,6 @@ export default function TemplatesPage() {
   const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      // Validar tamaño máximo (16MB para video)
       if (file.size > 16 * 1024 * 1024) {
         toast({ title: "Video muy grande", description: "El video no puede superar 16MB", variant: "destructive" });
         e.target.value = "";
@@ -137,47 +169,92 @@ export default function TemplatesPage() {
     setImages((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const resetEditor = () => {
-    setTemplateId(null);
-    setTemplateName("");
-    setTemplateMessage("");
-    setImages([]);
-    setVideo(null);
-    setGif(null);
-    setShowPreview(false);
-  };
-
-  const loadTemplates = async () => {
-    if (!user) return;
-
-    setLoading(true);
-
-    const { data, error } = await supabase
-      .from("templates")
-      .select("*")
-      .eq("user_id", user.id)
-      .order("updated_at", { ascending: false });
-
-    if (error) {
-      console.error("Error cargando plantillas:", error);
-      toast({
-        title: "Error",
-        description: "No se pudieron cargar las plantillas",
-        variant: "destructive",
-      });
-      setLoading(false);
+  // ========== FUNCIONES PARA BOTONES ==========
+  
+  // Agregar nuevo botón
+  const handleAddButton = () => {
+    if (!buttonForm.label.trim()) {
+      toast({ title: "Falta etiqueta", description: "Escribe un texto para el botón", variant: "destructive" });
       return;
     }
-
-    setTemplates((data || []) as SavedTemplate[]);
-    setLoading(false);
+    if (!buttonForm.action.trim()) {
+      toast({ title: "Falta acción", description: "Escribe una acción para el botón", variant: "destructive" });
+      return;
+    }
+    
+    if (editingButtonId) {
+      // Editar botón existente
+      setButtons(prev => prev.map(btn => 
+        btn.id === editingButtonId 
+          ? { ...buttonForm, id: editingButtonId }
+          : btn
+      ));
+      toast({ title: "✅ Botón actualizado" });
+    } else {
+      // Agregar nuevo botón
+      const newButton: TemplateButton = {
+        ...buttonForm,
+        id: `btn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      };
+      setButtons(prev => [...prev, newButton]);
+      toast({ title: "✅ Botón agregado" });
+    }
+    
+    resetButtonForm();
   };
 
-  useEffect(() => {
-    loadTemplates();
-  }, [user]);
+  // Eliminar botón
+  const handleRemoveButton = (id: string) => {
+    setButtons(prev => prev.filter(btn => btn.id !== id));
+    toast({ title: "🗑️ Botón eliminado" });
+  };
 
-  // ========== GUARDAR PLANTILLA (CORREGIDO) ==========
+  // Editar botón (cargar en formulario)
+  const handleEditButton = (button: TemplateButton) => {
+    setButtonForm(button);
+    setEditingButtonId(button.id);
+    setIsAddingButton(true);
+  };
+
+  // Cancelar edición/agregado
+  const resetButtonForm = () => {
+    setButtonForm({
+      id: '',
+      label: '',
+      action: '',
+      emoji: '💬',
+      type: 'reply'
+    });
+    setEditingButtonId(null);
+    setIsAddingButton(false);
+  };
+
+  // Duplicar botón
+  const handleDuplicateButton = (button: TemplateButton) => {
+    const newButton: TemplateButton = {
+      ...button,
+      id: `btn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      label: `${button.label} (copia)`
+    };
+    setButtons(prev => [...prev, newButton]);
+    toast({ title: "📋 Botón duplicado" });
+  };
+
+  // Mover botón (arriba/abajo)
+  const handleMoveButton = (id: string, direction: 'up' | 'down') => {
+    const index = buttons.findIndex(btn => btn.id === id);
+    if (
+      (direction === 'up' && index === 0) ||
+      (direction === 'down' && index === buttons.length - 1)
+    ) return;
+    
+    const newButtons = [...buttons];
+    const newIndex = direction === 'up' ? index - 1 : index + 1;
+    [newButtons[index], newButtons[newIndex]] = [newButtons[newIndex], newButtons[index]];
+    setButtons(newButtons);
+  };
+
+  // ========== GUARDAR PLANTILLA ==========
   const handleSaveTemplate = async () => {
     if (!user) {
       toast({ title: "Debes iniciar sesión", variant: "destructive" });
@@ -195,7 +272,6 @@ export default function TemplatesPage() {
     let videoUrl = null;
     let gifUrl = null;
 
-    // Subir TODAS las imágenes
     for (const image of images) {
       const url = await uploadFile(image.file, 'images');
       if (url) {
@@ -203,17 +279,14 @@ export default function TemplatesPage() {
       }
     }
 
-    // Subir video
     if (video) {
       videoUrl = await uploadFile(video.file, 'videos');
     }
 
-    // Subir GIF
     if (gif) {
       gifUrl = await uploadFile(gif.file, 'gifs');
     }
 
-    // Guardar la primera imagen como principal (para compatibilidad)
     const mainMediaUrl = uploadedImageUrls.length > 0 ? uploadedImageUrls[0] : (videoUrl || gifUrl);
     const mainMediaType = uploadedImageUrls.length > 0 ? 'image' : (video ? 'video' : (gif ? 'gif' : null));
 
@@ -226,6 +299,7 @@ export default function TemplatesPage() {
         videoUrl: videoUrl,
         gifUrl: gifUrl,
       },
+      buttons: buttons, // Guardar los botones en variables
     };
 
     const payload = {
@@ -310,13 +384,62 @@ export default function TemplatesPage() {
     await loadTemplates();
   };
 
-  // ========== SELECCIONAR PLANTILLA (CORREGIDO) ==========
+  const resetEditor = () => {
+    setTemplateId(null);
+    setTemplateName("");
+    setTemplateMessage("");
+    setImages([]);
+    setVideo(null);
+    setGif(null);
+    setButtons([]);
+    setShowPreview(false);
+    resetButtonForm();
+  };
+
+  const loadTemplates = async () => {
+    if (!user) return;
+
+    setLoading(true);
+
+    const { data, error } = await supabase
+      .from("templates")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("updated_at", { ascending: false });
+
+    if (error) {
+      console.error("Error cargando plantillas:", error);
+      toast({
+        title: "Error",
+        description: "No se pudieron cargar las plantillas",
+        variant: "destructive",
+      });
+      setLoading(false);
+      return;
+    }
+
+    setTemplates((data || []) as SavedTemplate[]);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadTemplates();
+  }, [user]);
+
+  // ========== SELECCIONAR PLANTILLA ==========
   const handleSelectSavedTemplate = (tpl: SavedTemplate) => {
     setTemplateId(tpl.id);
     setTemplateName(tpl.name || "");
     setTemplateMessage(tpl.content || "");
     
-    // Cargar múltiples imágenes desde variables
+    // Cargar botones desde variables
+    if (tpl.variables?.buttons) {
+      setButtons(tpl.variables.buttons as TemplateButton[]);
+    } else {
+      setButtons([]);
+    }
+    
+    // Cargar imágenes
     const savedImageUrls = tpl.variables?.media?.imageUrls || [];
     if (savedImageUrls.length > 0) {
       const loadedImages: MediaFile[] = savedImageUrls.map((url: string, index: number) => ({
@@ -337,7 +460,7 @@ export default function TemplatesPage() {
       setImages([]);
     }
     
-    // Cargar video desde variables
+    // Cargar video
     const savedVideoUrl = tpl.variables?.media?.videoUrl;
     if (savedVideoUrl) {
       setVideo({
@@ -350,7 +473,7 @@ export default function TemplatesPage() {
       setVideo(null);
     }
     
-    // Cargar GIF desde variables
+    // Cargar GIF
     const savedGifUrl = tpl.variables?.media?.gifUrl;
     if (savedGifUrl) {
       setGif({
@@ -367,7 +490,7 @@ export default function TemplatesPage() {
   };
 
   const hasContent =
-    !!templateName || !!templateMessage || images.length > 0 || !!video || !!gif;
+    !!templateName || !!templateMessage || images.length > 0 || !!video || !!gif || buttons.length > 0;
 
   const previewTime = useMemo(() => {
     return new Date().toLocaleTimeString("es", {
@@ -393,7 +516,7 @@ export default function TemplatesPage() {
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
-          className="lg:col-span-1 bg-card border border-border rounded-lg p-5 space-y-4"
+          className="lg:col-span-1 bg-card border border-border rounded-lg p-5 space-y-4 max-h-[800px] overflow-y-auto"
         >
           <div>
             <label className="text-xs text-muted-foreground">Nombre</label>
@@ -413,6 +536,134 @@ export default function TemplatesPage() {
               className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[120px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
               placeholder="Texto de la plantilla…"
             />
+          </div>
+
+          {/* ========== SECCIÓN DE BOTONES ========== */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs text-muted-foreground font-medium flex items-center gap-1">
+                <MessageSquare className="h-3 w-3" /> Botones ({buttons.length}/5)
+              </label>
+              {buttons.length < 5 && !isAddingButton && (
+                <button
+                  onClick={() => setIsAddingButton(true)}
+                  className="text-[10px] px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors flex items-center gap-1"
+                >
+                  <Plus className="h-3 w-3" /> Agregar
+                </button>
+              )}
+            </div>
+
+            {/* Lista de botones existentes */}
+            <AnimatePresence>
+              {buttons.map((btn, index) => (
+                <motion.div
+                  key={btn.id}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 20 }}
+                  className="flex items-center gap-2 bg-secondary/30 rounded-lg p-2 border border-border group"
+                >
+                  <span className="text-sm">{btn.emoji || '💬'}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{btn.label}</p>
+                    <p className="text-[10px] text-muted-foreground truncate">Acción: {btn.action}</p>
+                  </div>
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={() => handleMoveButton(btn.id, 'up')}
+                      disabled={index === 0}
+                      className="p-1 hover:bg-secondary rounded disabled:opacity-30"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      onClick={() => handleMoveButton(btn.id, 'down')}
+                      disabled={index === buttons.length - 1}
+                      className="p-1 hover:bg-secondary rounded disabled:opacity-30"
+                    >
+                      ↓
+                    </button>
+                    <button
+                      onClick={() => handleEditButton(btn)}
+                      className="p-1 hover:bg-secondary rounded text-blue-500"
+                    >
+                      <Edit2 className="h-3 w-3" />
+                    </button>
+                    <button
+                      onClick={() => handleDuplicateButton(btn)}
+                      className="p-1 hover:bg-secondary rounded text-green-500"
+                    >
+                      <Copy className="h-3 w-3" />
+                    </button>
+                    <button
+                      onClick={() => handleRemoveButton(btn.id)}
+                      className="p-1 hover:bg-secondary rounded text-red-500"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                </motion.div>
+              ))}
+            </AnimatePresence>
+
+            {/* Formulario para agregar/editar botón */}
+            <AnimatePresence>
+              {(isAddingButton || editingButtonId) && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="bg-secondary/30 rounded-lg p-3 space-y-2 overflow-hidden"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">Emoji</span>
+                    <select
+                      value={buttonForm.emoji || '💬'}
+                      onChange={(e) => setButtonForm({ ...buttonForm, emoji: e.target.value })}
+                      className="flex-1 bg-background border border-border rounded-lg px-2 py-1 text-sm"
+                    >
+                      {availableEmojis.map((emoji) => (
+                        <option key={emoji} value={emoji}>{emoji}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <input
+                      value={buttonForm.label}
+                      onChange={(e) => setButtonForm({ ...buttonForm, label: e.target.value })}
+                      className="w-full bg-background border border-border rounded-lg px-3 py-1 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+                      placeholder="Texto del botón (ej. Soporte)"
+                    />
+                  </div>
+
+                  <div>
+                    <input
+                      value={buttonForm.action}
+                      onChange={(e) => setButtonForm({ ...buttonForm, action: e.target.value })}
+                      className="w-full bg-background border border-border rounded-lg px-3 py-1 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+                      placeholder="Acción (ej. soporte, /comando, URL)"
+                    />
+                  </div>
+
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleAddButton}
+                      className="flex-1 px-3 py-1 rounded-lg bg-primary text-primary-foreground text-sm hover:bg-primary/90 transition-colors"
+                    >
+                      {editingButtonId ? 'Actualizar' : 'Agregar'}
+                    </button>
+                    <button
+                      onClick={resetButtonForm}
+                      className="px-3 py-1 rounded-lg bg-secondary text-sm hover:bg-secondary/80 transition-colors"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
           <div className="space-y-3">
@@ -591,7 +842,7 @@ export default function TemplatesPage() {
           </div>
         </motion.div>
 
-        {/* Vista previa */}
+        {/* Vista previa con botones */}
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -601,6 +852,11 @@ export default function TemplatesPage() {
           <div className="px-4 py-3 border-b border-border flex items-center gap-2">
             <Eye className="h-4 w-4 text-primary" />
             <h3 className="font-heading font-semibold text-sm">Vista Previa</h3>
+            {buttons.length > 0 && (
+              <span className="ml-auto text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full">
+                {buttons.length} botones
+              </span>
+            )}
           </div>
 
           <div
@@ -694,6 +950,22 @@ export default function TemplatesPage() {
                           <p className="text-xs text-gray-800 whitespace-pre-wrap leading-relaxed">
                             {templateMessage || "..."}
                           </p>
+                          
+                          {/* ========== BOTONES EN VISTA PREVIA ========== */}
+                          {buttons.length > 0 && (
+                            <div className="mt-3 flex flex-col gap-1.5">
+                              {buttons.map((btn) => (
+                                <div
+                                  key={btn.id}
+                                  className="bg-white rounded-lg px-3 py-1.5 border border-[#25D366] text-[#075e54] text-xs font-medium flex items-center gap-2 hover:bg-[#25D366]/5 transition-colors cursor-pointer"
+                                >
+                                  <span>{btn.emoji || '💬'}</span>
+                                  <span>{btn.label}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          
                           <p className="text-[9px] text-gray-500 text-right mt-1">
                             {previewTime} ✓✓
                           </p>
@@ -727,8 +999,9 @@ export default function TemplatesPage() {
           transition={{ delay: 0.1 }}
           className="lg:col-span-1 bg-card border border-border rounded-lg overflow-hidden"
         >
-          <div className="px-4 py-3 border-b border-border">
+          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
             <h3 className="font-heading font-semibold text-sm">Lista de Plantillas</h3>
+            <span className="text-[10px] text-muted-foreground">{templates.length} plantillas</span>
           </div>
 
           {loading ? (
@@ -740,27 +1013,39 @@ export default function TemplatesPage() {
               Aún no hay plantillas guardadas
             </p>
           ) : (
-            <div className="divide-y divide-border">
-              {templates.map((tpl) => (
-                <div
-                  key={tpl.id}
-                  onClick={() => handleSelectSavedTemplate(tpl)}
-                  className={`px-4 py-3 hover:bg-secondary/30 transition-colors cursor-pointer flex items-center gap-3 ${
-                    templateId === tpl.id ? "bg-primary/5" : ""
-                  }`}
-                >
-                  {tpl.media_type === 'image' && <Image className="h-4 w-4 text-primary shrink-0" />}
-                  {tpl.media_type === 'video' && <Video className="h-4 w-4 text-primary shrink-0" />}
-                  {(!tpl.media_type) && <FileText className="h-4 w-4 text-primary shrink-0" />}
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-bold">{tpl.name}</p>
-                    <p className="text-xs text-muted-foreground truncate">
-                      {tpl.content || "Sin contenido"}
-                    </p>
+            <div className="divide-y divide-border max-h-[500px] overflow-y-auto">
+              {templates.map((tpl) => {
+                const hasButtons = tpl.variables?.buttons && tpl.variables.buttons.length > 0;
+                return (
+                  <div
+                    key={tpl.id}
+                    onClick={() => handleSelectSavedTemplate(tpl)}
+                    className={`px-4 py-3 hover:bg-secondary/30 transition-colors cursor-pointer ${
+                      templateId === tpl.id ? "bg-primary/5" : ""
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      {tpl.media_type === 'image' && <Image className="h-4 w-4 text-primary shrink-0" />}
+                      {tpl.media_type === 'video' && <Video className="h-4 w-4 text-primary shrink-0" />}
+                      {(!tpl.media_type) && <FileText className="h-4 w-4 text-primary shrink-0" />}
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-bold">{tpl.name}</p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {tpl.content || "Sin contenido"}
+                        </p>
+                      </div>
+                    </div>
+                    {hasButtons && (
+                      <div className="mt-1 flex gap-1 flex-wrap">
+                        <span className="text-[9px] bg-primary/10 text-primary px-2 py-0.5 rounded-full">
+                          {tpl.variables.buttons.length} botones
+                        </span>
+                      </div>
+                    )}
+                    <Eye className="h-3.5 w-3.5 text-muted-foreground ml-auto" />
                   </div>
-                  <Eye className="h-3.5 w-3.5 text-muted-foreground" />
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </motion.div>
