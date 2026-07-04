@@ -1,4 +1,4 @@
-// api/webhook.js — CORREGIDO CON BOTONES E IMAGEN + INTERACTIVOS + CONTEXTO (100% FUNCIONAL)
+// api/webhook.js — CORREGIDO CON BOTONES E IMAGEN + INTERACTIVOS + CONTEXTO + DIAGNÓSTICO
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
@@ -9,6 +9,7 @@
 // + ✅ MANEJO DE MENSAJES INTERACTIVOS (RESPUESTA A BOTONES)
 // + ✅ GUARDA PRODUCTO EN CONTEXTO AL ENVIAR PLANTILLA
 // + ✅ FIX: SIEMPRE usa template si existe, ignora response cuando hay plantilla
+// + ✅ LOGS DE DIAGNÓSTICO PARA VERIFICAR GUARDADO DE CONTEXTO
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -406,10 +407,10 @@ async function saveReceivedMessage({
 }
 
 // ═══════════════════════════════════════════════════════════
-// PLANTILLAS CON BOTONES E IMAGEN - CORREGIDO ✅
+// PLANTILLAS CON BOTONES E IMAGEN - CORREGIDO CON DIAGNÓSTICO ✅
 // ═══════════════════════════════════════════════════════════
 
-// ✅ FUNCIÓN CORREGIDA: Envía plantilla COMPLETA con BOTONES E IMAGEN + GUARDA CONTEXTO
+// ✅ FUNCIÓN CORREGIDA: Envía plantilla COMPLETA con BOTONES E IMAGEN + GUARDA CONTEXTO + DIAGNÓSTICO
 async function enviarPlantillaCompleta({ userId, from, templateName, fallbackText }) {
   console.log('🔍 ===== INICIO enviarPlantillaCompleta =====');
   console.log('🔍 userId:', userId);
@@ -434,6 +435,14 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     
     plantilla = tpl;
     productName = plantilla?.name || templateName || "";
+    
+    // 🔥 LOGS DE DIAGNÓSTICO
+    console.log('🔍 ===== DIAGNÓSTICO =====');
+    console.log(`🔍 plantilla?.name: "${plantilla?.name}"`);
+    console.log(`🔍 templateName recibido: "${templateName}"`);
+    console.log(`🔍 productName resultante: "${productName}"`);
+    console.log(`🔍 ¿productName tiene valor?: ${!!productName}`);
+    
     console.log('🔍 Plantilla encontrada:', productName);
     console.log('🔍 media_url:', plantilla?.media_url);
     console.log('🔍 media_type:', plantilla?.media_type);
@@ -455,6 +464,9 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
       },
       updated_at: new Date().toISOString(),
     });
+    console.log(`✅ Contexto guardado con current_product: "${productName}"`);
+  } else {
+    console.log('⚠️ NO se guardó contexto: productName está vacío');
   }
 
   const mensajeFinal = clean(plantilla?.content || fallbackText || "");
