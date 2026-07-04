@@ -1,4 +1,4 @@
-// api/send-whatsapp.js - VERSIÓN DEFINITIVA CON BOTONES
+// api/send-whatsapp.js - VERSIÓN DEFINITIVA CON BOTONES (CORREGIDA)
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -14,6 +14,40 @@ async function getConfig(userId) {
     .eq('user_id', userId)
     .maybeSingle();
   return data;
+}
+
+// ============================================================
+// 📤 Enviar multimedia (helper) - MOVIDO ARRIBA
+// ============================================================
+async function metaSendMedia(config, to, mediaUrl, type = 'image', caption = '') {
+  try {
+    const t = type === 'video' ? 'video' : 'image';
+    const payload = {
+      messaging_product: 'whatsapp',
+      to,
+      type: t,
+      [t]: caption ? { link: mediaUrl, caption } : { link: mediaUrl },
+    };
+    const r = await fetch(
+      `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.permanent_token.trim()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!r.ok) {
+      console.error(`📤 Meta ${t} error:`, await r.text());
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('❌ Error en metaSendMedia:', err);
+    return false;
+  }
 }
 
 // ============================================================
@@ -36,7 +70,6 @@ async function metaSendInteractiveWithImage(config, to, text, buttons, imageUrl)
       }
     }));
 
-    // 👇 FORMATO CORRECTO: Imagen en HEADER, texto en BODY
     const payload = {
       messaging_product: 'whatsapp',
       to: to,
@@ -46,14 +79,14 @@ async function metaSendInteractiveWithImage(config, to, text, buttons, imageUrl)
         header: {
           type: 'image',
           image: { 
-            link: imageUrl  // 👈 Imagen en el HEADER
+            link: imageUrl
           }
         },
         body: {
-          text: text.substring(0, 1024)  // 👈 Texto en el BODY
+          text: text.substring(0, 1024)
         },
         action: {
-          buttons: formattedButtons  // 👈 Botones en ACTION
+          buttons: formattedButtons
         }
       }
     };
@@ -212,14 +245,18 @@ export default async function handler(req, res) {
 
     // ✅ VALIDACIÓN
     if (!to || !userId) {
+      console.error('❌ Faltan to o userId');
       return res.status(400).json({ error: 'Missing to or userId' });
     }
 
     const cleanTo = String(to).replace(/[^0-9]/g, '');
-    if (!cleanTo) return res.status(400).json({ error: 'Invalid phone number' });
+    if (!cleanTo) {
+      return res.status(400).json({ error: 'Invalid phone number' });
+    }
 
     const config = await getConfig(userId);
     if (!config?.phone_number_id || !config?.permanent_token) {
+      console.error('❌ WhatsApp no configurado para userId:', userId);
       return res.status(400).json({ error: 'WhatsApp no configurado' });
     }
 
@@ -236,17 +273,15 @@ export default async function handler(req, res) {
       let success = false;
       
       if (imageUrl) {
-        // ✅ IMAGEN + BOTONES: TODO en un solo mensaje interactivo
         console.log('📸 Enviando mensaje INTERACTIVO CON IMAGEN');
         success = await metaSendInteractiveWithImage(
           config,
           cleanTo,
           message,
           buttons,
-          imageUrl  // 👈 Imagen en el HEADER
+          imageUrl
         );
       } else {
-        // ✅ SIN IMAGEN: Solo interactivo
         console.log('📤 Enviando mensaje INTERACTIVO SIN IMAGEN');
         success = await metaSendInteractive(config, cleanTo, message, buttons);
       }
@@ -298,39 +333,5 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error('❌ send-whatsapp error:', err);
     return res.status(500).json({ error: err.message });
-  }
-}
-
-// ============================================================
-// 📤 Enviar multimedia (helper)
-// ============================================================
-async function metaSendMedia(config, to, mediaUrl, type = 'image', caption = '') {
-  try {
-    const t = type === 'video' ? 'video' : 'image';
-    const payload = {
-      messaging_product: 'whatsapp',
-      to,
-      type: t,
-      [t]: caption ? { link: mediaUrl, caption } : { link: mediaUrl },
-    };
-    const r = await fetch(
-      `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${config.permanent_token.trim()}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      }
-    );
-    if (!r.ok) {
-      console.error(`📤 Meta ${t} error:`, await r.text());
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.error('❌ Error en metaSendMedia:', err);
-    return false;
   }
 }
