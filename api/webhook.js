@@ -411,15 +411,15 @@ async function saveReceivedMessage({
 // ═══════════════════════════════════════════════════════════
 
 // ✅ FUNCIÓN CORREGIDA: Envía plantilla COMPLETA con BOTONES E IMAGEN + GUARDA CONTEXTO + DIAGNÓSTICO
-async function enviarPlantillaCompleta({ userId, from, templateName, fallbackText }) {
+async function enviarPlantillaCompleta({ userId, from, templateName, fallbackText, productNameFallback }) {
   console.log('🔍 ===== INICIO enviarPlantillaCompleta =====');
   console.log('🔍 userId:', userId);
   console.log('🔍 from:', from);
   console.log('🔍 templateName:', templateName);
   
   let plantilla = null;
-  let productName = "";
-  
+  let productName = productNameFallback || "";
+
   if (templateName && templateName !== "Ninguna") {
     console.log('🔍 Buscando plantilla en Supabase...');
     const { data: tpl, error } = await supabase
@@ -434,7 +434,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     }
     
     plantilla = tpl;
-    productName = plantilla?.name || templateName || "";
+    productName = plantilla?.name || templateName || productNameFallback || "";
     
     // 🔥 LOGS DE DIAGNÓSTICO
     console.log('🔍 ===== DIAGNÓSTICO =====');
@@ -773,6 +773,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
                 from,
                 templateName: trig.secondary?.template,
                 fallbackText: trig.secondary?.response,
+                productNameFallback: trig.name,
               });
               const contenidoSecondary = clean(plantillaSec?.content || trig.secondary?.response || "");
               try {
@@ -786,7 +787,8 @@ async function evaluarDisparadores({ userId, from, texto }) {
               if (contenidoSecondary && esMensajePedidoConfirmado(contenidoSecondary)) {
                 await detectarYGuardarPedidoConfirmado({ userId, from, textoMensaje: contenidoSecondary, sourceMessageId: null });
               }
-              await saveContexto(userId, from, { ...ctx, last_trigger: trig.name });
+              const ctxTrasSecundario = await getContexto(userId, from);
+              await saveContexto(userId, from, { ...ctxTrasSecundario, last_trigger: trig.name });
               return true;
             }
           }
@@ -796,6 +798,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
             from,
             templateName: trig.secondary?.template,
             fallbackText: trig.secondary?.response,
+            productNameFallback: trig.name,
           });
           const contenidoSecondary = clean(plantillaSec?.content || trig.secondary?.response || "");
           try {
@@ -809,7 +812,8 @@ async function evaluarDisparadores({ userId, from, texto }) {
           if (contenidoSecondary && esMensajePedidoConfirmado(contenidoSecondary)) {
             await detectarYGuardarPedidoConfirmado({ userId, from, textoMensaje: contenidoSecondary, sourceMessageId: null });
           }
-          await saveContexto(userId, from, { ...ctx, last_trigger: trig.name });
+          const ctxTrasSecundario2 = await getContexto(userId, from);
+          await saveContexto(userId, from, { ...ctxTrasSecundario2, last_trigger: trig.name });
           return true;
         }
       }
@@ -876,6 +880,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
             from,
             templateName: trig.template,
             fallbackText: "", // No usar response
+            productNameFallback: trig.name,
           });
         } else {
           // Solo si NO hay template, usar response como fallback
@@ -885,6 +890,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
             from,
             templateName: null,
             fallbackText: trig.response,
+            productNameFallback: trig.name,
           });
         }
         contenidoPrimary = clean(plantillaPrimary?.content || trig.response || "");
@@ -904,6 +910,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
           from,
           templateName: trig.secondary?.template,
           fallbackText: trig.secondary?.response,
+          productNameFallback: trig.name,
         });
         contenidoSecondary = clean(plantillaSec?.content || trig.secondary?.response || "");
       }
@@ -933,7 +940,8 @@ async function evaluarDisparadores({ userId, from, texto }) {
         console.log("⚠️ post-trigger pedido check error:", e.message);
       }
 
-      await saveContexto(userId, from, { ...ctx, last_trigger: trig.name });
+      const ctxTrasDisparador = await getContexto(userId, from);
+      await saveContexto(userId, from, { ...ctxTrasDisparador, last_trigger: trig.name });
       return true;
     }
 
