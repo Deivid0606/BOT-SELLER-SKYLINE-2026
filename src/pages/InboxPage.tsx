@@ -546,7 +546,7 @@ export default function InboxPage() {
   const hasActiveFilters = !!(filterTag || filterDateFrom || filterDateTo);
 
   // ============================================================
-  // ENVÍO DE MENSAJE CON BOTONES
+  // ENVÍO DE MENSAJE CON BOTONES - CORREGIDO ✅
   // ============================================================
   const handleSendMessage = async () => {
     if (!selectedNumber) {
@@ -595,11 +595,22 @@ export default function InboxPage() {
         mediaUrl = publicUrl;
         mediaType = selectedFile.type;
       } else if (selectedTemplateMedia) {
-        mediaUrl = selectedTemplateMedia.url;
-        mediaType = selectedTemplateMedia.type;
+        // ✅ CORREGIDO: Guardar URL solo si no está vacía
+        mediaUrl = selectedTemplateMedia.url && selectedTemplateMedia.url !== '' 
+          ? selectedTemplateMedia.url 
+          : null;
+        mediaType = selectedTemplateMedia.type || 'text';
         buttonsToSend = selectedTemplateMedia.buttons || null;
+        
+        // 👇 LOG PARA VERIFICAR
+        console.log('📌 selectedTemplateMedia en handleSendMessage:', {
+          url: mediaUrl,
+          type: mediaType,
+          buttons: buttonsToSend?.length || 0
+        });
       }
 
+      // 👇 CONSTRUIR PAYLOAD
       const payload: any = {
         user_id: user.id,
         tenant_id: profile?.tenant_id ?? null,
@@ -608,17 +619,19 @@ export default function InboxPage() {
         message: textToSend,
       };
 
+      // 👇 AGREGAR MEDIA SOLO SI EXISTE
       if (mediaUrl && mediaType) {
         payload.media_url = mediaUrl;
         payload.media_type = mediaType;
       }
 
+      // 👇 AGREGAR BOTONES SOLO SI EXISTEN
       if (buttonsToSend && buttonsToSend.length > 0) {
         payload.buttons = buttonsToSend;
       }
 
       console.log("📤 Enviando mensaje con payload:", {
-        ...payload,
+        to: payload.to,
         message: payload.message?.substring(0, 50),
         buttons: payload.buttons?.length || 0,
         media: payload.media_url ? 'SÍ' : 'NO',
