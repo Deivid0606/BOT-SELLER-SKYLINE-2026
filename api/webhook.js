@@ -1,4 +1,4 @@
-// api/webhook.js — CORREGIDO CON BOTONES E IMAGEN (100% FUNCIONAL)
+// api/webhook.js — CORREGIDO CON BOTONES E IMAGEN + INTERACTIVOS (100% FUNCIONAL)
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
@@ -6,6 +6,7 @@
 // + ✅ CORREGIDO: Verificación de token en base de datos (soporte multi-usuario)
 // + ✅ BOTONES E IMAGEN: enviarPlantillaCompleta ahora envía botones CON imagen
 // + ✅ URL ABSOLUTA CON DOMINIO DE PRODUCCIÓN FIJO (SOLUCIONA ERROR 401)
+// + ✅ MANEJO DE MENSAJES INTERACTIVOS (RESPUESTA A BOTONES)
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -1369,7 +1370,7 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// PROCESAR MENSAJE ENTRANTE
+// PROCESAR MENSAJE ENTRANTE - CON MANEJO DE INTERACTIVOS ✅
 // ═══════════════════════════════════════════════════════════
 
 export async function procesar(req, message, userId, from) {
@@ -1382,6 +1383,95 @@ export async function procesar(req, message, userId, from) {
     let mediaId = null;
     let mimeType = null;
 
+    // 🔥 NUEVO: Manejar mensajes de tipo "interactive" (botones)
+    if (tipoMsg === "interactive") {
+      // Obtener el texto del botón que el usuario seleccionó
+      const buttonText = message.interactive?.button_reply?.title || 
+                         message.interactive?.list_reply?.title || 
+                         message.interactive?.button_reply?.id || 
+                         "";
+      
+      texto = clean(buttonText);
+      messageType = "interactive";
+      mediaId = null;
+      mimeType = null;
+      
+      console.log(`🔘 Botón presionado: "${texto}"`);
+      
+      // Guardar el mensaje
+      await saveReceivedMessage({
+        userId,
+        from,
+        message: texto,
+        messageType: "interactive",
+        mediaUrl: null,
+        waMessageId: message.id || null,
+      });
+      
+      // Procesar como texto normal (ejecutar triggers, etc.)
+      const disparado = await evaluarDisparadores({ userId, from, texto });
+      if (disparado) {
+        console.log("✅ Disparador atendió el mensaje del botón.");
+        return { response: null, handled_by: "trigger", error: null };
+      }
+      
+      // Si no hay trigger, enviar a Gemini
+      const ctx = await getContexto(userId, from);
+      const history = await getHistory(userId, from);
+      
+      let data = {};
+      try {
+        data = await llamarChatIA({ req, userId, texto, from, ctx, history });
+      } catch (err) {
+        console.error("❌ chat-ia error:", err);
+        const fallbackMsg = "⚠️ Disculpá, hubo un error momentáneo. Escribime nuevamente.";
+        await enviarMensaje(userId, from, fallbackMsg);
+        await saveReceivedMessage({
+          userId,
+          from,
+          message: fallbackMsg,
+          messageType: "out_text",
+        });
+        return { response: fallbackMsg, error: err.message };
+      }
+      
+      if (data?.context) await saveContexto(userId, from, data.context);
+      
+      if (data?.response) {
+        const sent = await enviarMensaje(userId, from, data.response);
+        if (sent) {
+          await saveReceivedMessage({
+            userId,
+            from,
+            message: data.response,
+            messageType: "out_text",
+          });
+          
+          if (esMensajePedidoConfirmado(data.response)) {
+            await detectarYGuardarPedidoConfirmado({
+              userId,
+              from,
+              textoMensaje: data.response,
+              sourceMessageId: null,
+            });
+          }
+        }
+        return { response: data.response, context: data.context };
+      }
+      
+      // Fallback si no hay respuesta
+      const fallback = "👋 Gracias por tu respuesta. ¿En qué más puedo ayudarte?";
+      await enviarMensaje(userId, from, fallback);
+      await saveReceivedMessage({
+        userId,
+        from,
+        message: fallback,
+        messageType: "out_text",
+      });
+      return { response: fallback, error: null };
+    }
+
+    // Mensajes de texto normales
     if (tipoMsg === "text") {
       texto = clean(message.text?.body || "");
       messageType = "text";
