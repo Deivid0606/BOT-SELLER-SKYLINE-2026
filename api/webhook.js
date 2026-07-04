@@ -1,9 +1,10 @@
-// api/webhook.js — CORREGIDO
+// api/webhook.js — CORREGIDO CON BOTONES
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
 // + ✅ CORREGIDO: Verificación de token en base de datos (soporte multi-usuario)
+// + ✅ BOTONES: enviarPlantillaCompleta ahora envía botones
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -11,9 +12,6 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-// ⚠️ ELIMINADO: const VERIFY_TOKEN = "miTokenSeguro2026";
-// Ahora se busca en la base de datos
 
 const clean = (t) => String(t || "").trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -404,7 +402,7 @@ async function saveReceivedMessage({
 }
 
 // ═══════════════════════════════════════════════════════════
-// PLANTILLAS
+// PLANTILLAS CON BOTONES - CORREGIDO ✅
 // ═══════════════════════════════════════════════════════════
 
 function extraerMediosDePlantilla(plantilla) {
@@ -438,6 +436,7 @@ function extraerMediosDePlantilla(plantilla) {
   return { imagenes, video, gif };
 }
 
+// ✅ FUNCIÓN CORREGIDA: Envía plantilla COMPLETA con BOTONES
 async function enviarPlantillaCompleta({ userId, from, templateName, fallbackText }) {
   let plantilla = null;
   if (templateName && templateName !== "Ninguna") {
@@ -452,10 +451,79 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
 
   const mensajeFinal = clean(plantilla?.content || fallbackText || "");
   const { imagenes, video, gif } = extraerMediosDePlantilla(plantilla);
+  
+  // 👇 OBTENER BOTONES DE LA PLANTILLA
+  const buttons = plantilla?.variables?.buttons || null;
+  
   console.log(
-    `📦 Plantilla "${plantilla?.name || templateName}" → ${imagenes.length} img, video: ${!!video}, gif: ${!!gif}`
+    `📦 Plantilla "${plantilla?.name || templateName}" → ${imagenes.length} img, video: ${!!video}, gif: ${!!gif}, botones: ${buttons?.length || 0}`
   );
 
+  // 👇 OBTENER LA PRIMERA IMAGEN (para el header del mensaje interactivo)
+  let firstImage = null;
+  if (imagenes && imagenes.length > 0) {
+    firstImage = imagenes[0];
+  }
+
+  // ✅ CASO 1: CON BOTONES - Usar la API send-whatsapp
+  if (buttons && buttons.length > 0) {
+    console.log(`🎯 Enviando plantilla con ${buttons.length} botones desde webhook`);
+    
+    const payload = {
+      to: from,
+      userId: userId,
+      message: mensajeFinal,
+      media_url: firstImage || null,
+      media_type: firstImage ? 'image' : null,
+      buttons: buttons, // 👈 ENVIAR BOTONES
+    };
+
+    try {
+      const host = process.env.VERCEL_URL || 'bot-seller-skyline-2026.vercel.app';
+      const protocol = process.env.NODE_ENV === 'development' ? 'http' : 'https';
+      const baseUrl = `${protocol}://${host}`;
+
+      const response = await fetch(`${baseUrl}/api/send-whatsapp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ Error enviando plantilla con botones:', errorText);
+      } else {
+        console.log('✅ Plantilla con botones enviada desde webhook');
+        
+        // Guardar mensaje saliente
+        await saveReceivedMessage({
+          userId,
+          from,
+          message: mensajeFinal,
+          messageType: "out_interactive",
+          mediaUrl: firstImage,
+        });
+      }
+    } catch (err) {
+      console.error('❌ Error en fetch send-whatsapp:', err);
+    }
+
+    // Actualizar contador de uso
+    if (plantilla?.id) {
+      try {
+        await supabase
+          .from("templates")
+          .update({ usage_count: (plantilla.usage_count || 0) + 1 })
+          .eq("id", plantilla.id);
+      } catch {}
+    }
+
+    return plantilla;
+  }
+
+  // ✅ CASO 2: SIN BOTONES - Usar el flujo normal (imagenes + texto)
+  // (código original para compatibilidad)
+  
   for (let i = 0; i < imagenes.length; i++) {
     const url = imagenes[i];
     const caption = i === 0 && mensajeFinal ? mensajeFinal : "";
@@ -586,8 +654,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
     const lastTrigger = ctx?.last_trigger || null;
 
     // PASADA 1: si hay lastTrigger, buscar su secundario con prioridad absoluta
-    // Esto evita que un primario de OTRO trigger (ej. "quiero" del procesador)
-    // se dispare cuando el contexto activo es un producto diferente (ej. nebulizador)
     if (lastTrigger) {
       const trigLastMatch = triggers.find((t) => t.name === lastTrigger);
       if (trigLastMatch && matchSecundario(trigLastMatch.secondary, textoNorm)) {
@@ -651,7 +717,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
       }
     }
 
-    // PASADA 2: buscar match primario (y secundario solo para el propio trigger)
+    // PASADA 2: buscar match primario
     const triggersOrdenados = [...triggers].sort((a, b) => {
       if (a.name === lastTrigger) return -1;
       if (b.name === lastTrigger) return 1;
@@ -660,8 +726,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
 
     for (const trig of triggersOrdenados) {
       const matchPrimary = matchKeywords(trig.condition, trig.type, textoNorm);
-      // El secundario solo se evalúa si el primario también hace match en este trig
-      // (el caso lastTrigger ya fue cubierto en la pasada 1)
       const matchSecondary = matchPrimary && matchSecundario(trig.secondary, textoNorm);
 
       if (!matchPrimary && !matchSecondary) continue;
@@ -769,7 +833,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// LLAMADA A CHAT-IA (texto + media opcional)
+// LLAMADA A CHAT-IA
 // ═══════════════════════════════════════════════════════════
 
 async function llamarChatIA({
@@ -1242,7 +1306,7 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// PROCESAR MENSAJE ENTRANTE - ✅ AHORA RETORNA LA RESPUESTA
+// PROCESAR MENSAJE ENTRANTE
 // ═══════════════════════════════════════════════════════════
 
 export async function procesar(req, message, userId, from) {
@@ -1300,13 +1364,11 @@ export async function procesar(req, message, userId, from) {
       return { response: null, error: "Duplicado" };
     }
 
-    // Si hay media, descargarla y subirla a Storage ANTES de guardar
-    let mediaMime = mimeType;
     if (mediaId) {
       const result = await descargarYSubirMedia({ userId, mediaId, mimeType, from });
       if (result) {
         mediaUrl = result.url;
-        mediaMime = result.mime || mimeType;
+        mimeType = result.mime || mimeType;
       } else {
         console.log("⚠️ No se pudo subir media, se guarda mensaje sin URL");
       }
@@ -1341,7 +1403,6 @@ export async function procesar(req, message, userId, from) {
       waMessageId: message.id || null,
     });
 
-    // ─── TEXTO: triggers + IA ───
     if (messageType === "text") {
       const disparado = await evaluarDisparadores({ userId, from, texto });
       if (disparado) {
@@ -1389,7 +1450,6 @@ export async function procesar(req, message, userId, from) {
             });
           }
         }
-        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
         return { response: data.response, context: data.context, is_payment_proof: data.is_payment_proof };
       }
 
@@ -1404,7 +1464,6 @@ export async function procesar(req, message, userId, from) {
       return { response: fallback, error: null };
     }
 
-    // ─── IMAGEN: comprobante + IA Vision ───
     if (messageType === "image" && mediaUrl) {
       asociarComprobanteAlPedido({ userId, from, mediaUrl }).catch((e) =>
         console.error("comprobante bg error:", e)
@@ -1424,7 +1483,7 @@ export async function procesar(req, message, userId, from) {
           history,
           mediaUrl,
           mediaType: "image",
-          mimeType: mediaMime,
+          mimeType: mimeType,
         });
       } catch (err) {
         console.error("❌ chat-ia (image) error:", err);
@@ -1456,13 +1515,11 @@ export async function procesar(req, message, userId, from) {
             });
           }
         }
-        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
         return { response: data.response, context: data.context, is_payment_proof: data.is_payment_proof };
       }
       return { response: null, error: null };
     }
 
-    // ─── AUDIO: IA transcribe + responde ───
     if (messageType === "audio" && mediaUrl) {
       const ctx = await getContexto(userId, from);
       const history = await getHistory(userId, from);
@@ -1478,7 +1535,7 @@ export async function procesar(req, message, userId, from) {
           history,
           mediaUrl,
           mediaType: "audio",
-          mimeType: mediaMime,
+          mimeType: mimeType,
         });
       } catch (err) {
         console.error("❌ chat-ia (audio) error:", err);
@@ -1506,13 +1563,11 @@ export async function procesar(req, message, userId, from) {
             });
           }
         }
-        // ✅ RETORNAR LA RESPUESTA PARA WAHA QR
         return { response: data.response, context: data.context };
       }
       return { response: null, error: null };
     }
 
-    // ─── Otros (video/document/sticker): solo guardar ───
     console.log(`ℹ️ Mensaje ${messageType} guardado, no se procesa con IA`);
     return { response: null, error: null, handled_by: "no_ia" };
   } catch (err) {
@@ -1522,7 +1577,7 @@ export async function procesar(req, message, userId, from) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// HANDLER PRINCIPAL - ✅ CORREGIDO
+// HANDLER PRINCIPAL
 // ═══════════════════════════════════════════════════════════
 
 export default async function handler(req, res) {
@@ -1531,7 +1586,6 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  // ✅ CORREGIDO: Verificación GET con búsqueda en base de datos
   if (req.method === "GET") {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
@@ -1539,7 +1593,6 @@ export default async function handler(req, res) {
 
     if (mode === "subscribe" && token) {
       try {
-        // Buscar el token en la base de datos
         const { data: config, error } = await supabase
           .from("whatsapp_config")
           .select("user_id")
