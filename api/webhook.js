@@ -1,10 +1,10 @@
-// api/webhook.js — CORREGIDO CON BOTONES (100% FUNCIONAL)
+// api/webhook.js — CORREGIDO CON BOTONES E IMAGEN (100% FUNCIONAL)
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
 // + ✅ CORREGIDO: Verificación de token en base de datos (soporte multi-usuario)
-// + ✅ BOTONES: enviarPlantillaCompleta ahora envía botones con URL ABSOLUTA
+// + ✅ BOTONES E IMAGEN: enviarPlantillaCompleta ahora envía botones CON imagen
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -402,41 +402,10 @@ async function saveReceivedMessage({
 }
 
 // ═══════════════════════════════════════════════════════════
-// PLANTILLAS CON BOTONES - CORREGIDO ✅
+// PLANTILLAS CON BOTONES E IMAGEN - CORREGIDO ✅
 // ═══════════════════════════════════════════════════════════
 
-function extraerMediosDePlantilla(plantilla) {
-  const imagenes = [];
-  let video = null;
-  let gif = null;
-
-  if (!plantilla) return { imagenes, video, gif };
-
-  const m = plantilla.variables?.media;
-  if (m && typeof m === "object") {
-    if (Array.isArray(m.imageUrls)) {
-      for (const u of m.imageUrls) if (u) imagenes.push(u);
-    }
-    if (m.videoUrl) video = m.videoUrl;
-    if (m.gifUrl) gif = m.gifUrl;
-  }
-
-  if (Array.isArray(plantilla.media_urls)) {
-    for (const u of plantilla.media_urls) {
-      if (u && !imagenes.includes(u)) imagenes.push(u);
-    }
-  }
-
-  if (imagenes.length === 0 && !video && !gif && plantilla.media_url) {
-    if (plantilla.media_type === "video") video = plantilla.media_url;
-    else if (plantilla.media_type === "gif") gif = plantilla.media_url;
-    else imagenes.push(plantilla.media_url);
-  }
-
-  return { imagenes, video, gif };
-}
-
-// ✅ FUNCIÓN CORREGIDA 100%: Envía plantilla COMPLETA con BOTONES usando URL ABSOLUTA
+// ✅ FUNCIÓN CORREGIDA: Envía plantilla COMPLETA con BOTONES E IMAGEN
 async function enviarPlantillaCompleta({ userId, from, templateName, fallbackText }) {
   console.log('🔍 ===== INICIO enviarPlantillaCompleta =====');
   console.log('🔍 userId:', userId);
@@ -458,18 +427,60 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     }
     
     plantilla = tpl;
-    console.log('🔍 Plantilla encontrada?:', !!plantilla);
-    console.log('🔍 ID de plantilla:', plantilla?.id);
-    console.log('🔍 Nombre de plantilla:', plantilla?.name);
-    
-    // LOG CRÍTICO - Ver el contenido de variables
-    console.log('🔍 VARIABLES COMPLETAS:', JSON.stringify(plantilla?.variables, null, 2));
-    console.log('🔍 BUTTONS en variables.buttons:', JSON.stringify(plantilla?.variables?.buttons, null, 2));
-    console.log('🔍 Cantidad de botones:', plantilla?.variables?.buttons?.length || 0);
+    console.log('🔍 Plantilla encontrada:', plantilla?.name);
+    console.log('🔍 media_url:', plantilla?.media_url);
+    console.log('🔍 media_type:', plantilla?.media_type);
+    console.log('🔍 variables:', JSON.stringify(plantilla?.variables, null, 2));
   }
 
   const mensajeFinal = clean(plantilla?.content || fallbackText || "");
-  const { imagenes, video, gif } = extraerMediosDePlantilla(plantilla);
+  
+  // 🔧 CORREGIDO: Buscar imagen en MULTIPLES lugares
+  let firstImage = null;
+  let imagenes = [];
+  
+  // 1. Buscar en variables.media.imageUrls (múltiples imágenes)
+  if (plantilla?.variables?.media?.imageUrls && Array.isArray(plantilla.variables.media.imageUrls)) {
+    imagenes = plantilla.variables.media.imageUrls.filter(url => url);
+    console.log('🔍 Imágenes en variables.media.imageUrls:', imagenes.length);
+  }
+  
+  // 2. 🔥 BUSCAR EN media_url (¡ESTE ES EL QUE FALTABA!)
+  if (imagenes.length === 0 && plantilla?.media_url) {
+    console.log('🔍 Usando media_url como imagen:', plantilla.media_url);
+    imagenes = [plantilla.media_url];
+  }
+  
+  // 3. Buscar en variables.media directamente (estructuras alternativas)
+  if (imagenes.length === 0 && plantilla?.variables?.media) {
+    const media = plantilla.variables.media;
+    if (media.imageUrl) {
+      imagenes = [media.imageUrl];
+      console.log('🔍 Imagen en variables.media.imageUrl');
+    } else if (media.image_url) {
+      imagenes = [media.image_url];
+      console.log('🔍 Imagen en variables.media.image_url');
+    } else if (media.url) {
+      imagenes = [media.url];
+      console.log('🔍 Imagen en variables.media.url');
+    }
+  }
+  
+  // Obtener primera imagen
+  if (imagenes && imagenes.length > 0) {
+    firstImage = imagenes[0];
+    console.log('🔍 Primera imagen seleccionada:', firstImage);
+  }
+  
+  // Obtener video y GIF
+  let video = null;
+  let gif = null;
+  if (plantilla?.variables?.media?.videoUrl) {
+    video = plantilla.variables.media.videoUrl;
+  }
+  if (plantilla?.variables?.media?.gifUrl) {
+    gif = plantilla.variables.media.gifUrl;
+  }
   
   const buttons = plantilla?.variables?.buttons || null;
   
@@ -477,14 +488,10 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     `📦 Plantilla "${plantilla?.name || templateName}" → ${imagenes.length} img, video: ${!!video}, gif: ${!!gif}, botones: ${buttons?.length || 0}`
   );
 
-  let firstImage = null;
-  if (imagenes && imagenes.length > 0) {
-    firstImage = imagenes[0];
-  }
-
   // ✅ CASO 1: CON BOTONES - Usar URL ABSOLUTA
   if (buttons && buttons.length > 0) {
     console.log(`🎯 Enviando plantilla con ${buttons.length} botones desde webhook`);
+    console.log(`📸 Imagen a enviar: ${firstImage || 'ninguna'}`);
     
     // 🔧 CONSTRUIR URL ABSOLUTA
     let baseUrl = '';
@@ -512,9 +519,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     console.log('📤 Payload a enviar a send-whatsapp:', JSON.stringify(payload, null, 2));
 
     try {
-      // ✅ URL ABSOLUTA - CORREGIDO
       const url = `${baseUrl}/api/send-whatsapp`;
-      
       console.log(`📤 Enviando a: ${url}`);
 
       const response = await fetch(url, {
@@ -532,16 +537,21 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
       
       if (!response.ok) {
         console.error('❌ Error enviando plantilla con botones:', response.status, responseText);
-        // Fallback: enviar mensaje sin botones
-        await enviarMensaje(userId, from, mensajeFinal);
+        // Fallback: enviar mensaje sin botones pero CON imagen
+        if (firstImage) {
+          await enviarMedia(userId, from, firstImage, "image", mensajeFinal);
+        } else {
+          await enviarMensaje(userId, from, mensajeFinal);
+        }
         await saveReceivedMessage({
           userId,
           from,
           message: mensajeFinal,
           messageType: "out_text",
+          mediaUrl: firstImage,
         });
       } else {
-        console.log('✅ Plantilla con botones enviada desde webhook');
+        console.log('✅ Plantilla con botones e imagen enviada desde webhook');
         
         await saveReceivedMessage({
           userId,
@@ -553,13 +563,18 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
       }
     } catch (err) {
       console.error('❌ Error en fetch send-whatsapp:', err);
-      // Fallback: enviar mensaje sin botones
-      await enviarMensaje(userId, from, mensajeFinal);
+      // Fallback: enviar mensaje sin botones pero CON imagen
+      if (firstImage) {
+        await enviarMedia(userId, from, firstImage, "image", mensajeFinal);
+      } else {
+        await enviarMensaje(userId, from, mensajeFinal);
+      }
       await saveReceivedMessage({
         userId,
         from,
         message: mensajeFinal,
         messageType: "out_text",
+        mediaUrl: firstImage,
       });
     }
 
