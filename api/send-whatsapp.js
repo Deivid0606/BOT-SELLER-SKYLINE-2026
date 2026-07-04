@@ -1,4 +1,4 @@
-// api/send-whatsapp.js - VERSIÓN FINAL CORREGIDA
+// api/send-whatsapp.js - VERSIÓN DEFINITIVA CON BOTONES
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -17,7 +17,7 @@ async function getConfig(userId) {
 }
 
 // ============================================================
-// 📤 Enviar mensaje interactivo CON imagen en header
+// 📤 Enviar mensaje interactivo CON imagen en HEADER
 // ============================================================
 async function metaSendInteractiveWithImage(config, to, text, buttons, imageUrl) {
   try {
