@@ -909,6 +909,79 @@ function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
   return null;
 }
 
+function getLockedProductFromContext(
+  context: any,
+  oldOrder: any,
+  history: any[],
+  parsed: ParsedTraining
+): ProductItem | null {
+  const candidates = [
+    context?.current_product,
+    context?.last_topic,
+    context?.order_data?.product,
+    context?.last_ad_product,
+    oldOrder?.product,
+    inferProductFromLastBotMessage(history, parsed),
+    getProductFromLastPromotion(history, parsed)?.canonical,
+  ]
+    .map(clean)
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    const productInfo = getProductInfo(candidate, parsed);
+    if (productInfo) return productInfo;
+  }
+
+  return null;
+}
+
+function isGenericBuyReply(text: string) {
+  const m = normalize(text);
+
+  if (!m) return false;
+
+  const exact = [
+    "quiero",
+    "si",
+    "si quiero",
+    "lo quiero",
+    "quiero comprar",
+    "quiero llevar",
+    "me interesa",
+    "comprar",
+    "compro",
+    "dale",
+    "ok",
+    "listo",
+    "confirmo",
+    "reservar",
+    "reservame",
+    "agendar",
+    "agendame",
+  ];
+
+  if (exact.includes(m)) return true;
+
+  return /^(si\s+)?(quiero|lo quiero|me interesa|comprar|compro|dale|ok|listo|confirmo)(\s+(1|2|3|una|uno|dos|tres|unidad|unidades))?$/.test(m);
+}
+
+function productOfferReply(productInfo: ProductItem) {
+  const promo2 = productInfo.price2
+    ? `\n🔥 Promo 2 unidades → ${formatGs(productInfo.price2)} Gs`
+    : "";
+  const promo3 = productInfo.price3
+    ? `\n🔥 Promo 3 unidades → ${formatGs(productInfo.price3)} Gs`
+    : "";
+
+  return `🔥 ¡Excelente decisión! 😊
+
+Tenemos el **${productInfo.canonical}** en oferta:
+
+💰 1 unidad → ${formatGs(productInfo.price1)} Gs${promo2}${promo3}
+
+📍 ¿Para qué ciudad sería el envío? 😊`;
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1012,32 +1085,34 @@ export default async function handler(req: any, res: any) {
 
     if (isPriceQuery(texto)) {
       const productMentioned = detectProduct(texto, parsed, "");
+      const lockedProductForPrice = getLockedProductFromContext(context, oldOrder, history, parsed);
+      const productInfo =
+        getProductInfo(productMentioned, parsed) ||
+        (!productMentioned ? lockedProductForPrice : null);
 
-      if (productMentioned) {
-        const productInfo = getProductInfo(productMentioned, parsed);
-        if (productInfo) {
-          const resetOrder = {
-            product: productInfo.canonical,
-            quantity: 0,
-            city: "",
-            customer_name: "",
-            phone: "",
-            address: "",
-          };
+      if (productInfo) {
+        const resetOrder = {
+          product: productInfo.canonical,
+          quantity: 0,
+          city: oldOrder.city || "",
+          customer_name: "",
+          phone: "",
+          address: "",
+        };
 
-          return res.json({
-            response: `💰 ${productInfo.canonical}: ${formatGs(productInfo.price1)} Gs
+        return res.json({
+          response: `💰 ${productInfo.canonical}: ${formatGs(productInfo.price1)} Gs${productInfo.price2 ? `\n🔥 Promo 2 unidades → ${formatGs(productInfo.price2)} Gs` : ""}
 
 📍 ¿Para qué ciudad sería el envío? 😊`,
-            context: {
-              ...(context || {}),
-              current_product: productInfo.canonical,
-              order_data: resetOrder,
-              step: "collecting_city",
-              updated_at: new Date().toISOString(),
-            },
-          });
-        }
+          context: {
+            ...(context || {}),
+            current_product: productInfo.canonical,
+            last_topic: productInfo.canonical,
+            order_data: resetOrder,
+            step: "collecting_city",
+            updated_at: new Date().toISOString(),
+          },
+        });
       }
 
       if (parsed.products.length > 0) {
@@ -1092,49 +1167,37 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
         p.aliases.some((a) => normalize(texto).includes(normalize(a)))
     );
 
-    // 🔥 CORREGIDO: Detectar intención de compra usando el producto del contexto
-    if (buyIntent && !hasProductInMessage) {
-      const isPromoResponse = isRespondingToPromotion(texto, history);
+    // ✅ FIX 100%: Si el cliente responde un botón o texto genérico como "QUIERO",
+    // NO cambiar de producto. Primero se bloquea el producto actual de la plantilla/contexto.
+    if ((buyIntent || isGenericBuyReply(texto)) && !hasProductInMessage) {
+      const lockedProduct = getLockedProductFromContext(context, oldOrder, history, parsed);
 
-      // 🔥 PRIMERO: Intentar usar el producto del contexto (current_product)
-      const productFromContext = context?.current_product || 
-                                 context?.last_topic || 
-                                 context?.order_data?.product || 
-                                 "";
-      
-      if (productFromContext) {
-        const productInfo = getProductInfo(productFromContext, parsed);
-        if (productInfo) {
-          const resetOrder = {
-            product: productInfo.canonical,
-            quantity: 0,
-            city: oldOrder.city || "",
-            customer_name: "",
-            phone: "",
-            address: "",
-          };
+      if (lockedProduct) {
+        const resetOrder = {
+          product: lockedProduct.canonical,
+          quantity: oldOrder.quantity > 0 ? oldOrder.quantity : 0,
+          city: oldOrder.city || "",
+          customer_name: "",
+          phone: "",
+          address: "",
+        };
 
-          console.log(`🛒 Usando producto del contexto: "${productInfo.canonical}" para la compra`);
+        console.log(`🛒 Compra genérica detectada. Producto bloqueado por contexto: "${lockedProduct.canonical}"`);
 
-          return res.json({
-            response: `🔥 ¡Excelente decisión! 😊
-
-Tenemos el **${productInfo.canonical}** en oferta:
-
-💰 Precio especial: ${formatGs(productInfo.price1)} Gs
-
-📍 ¿Para qué ciudad sería el envío? 😊`,
-            context: {
-              ...(context || {}),
-              current_product: productInfo.canonical,
-              order_data: resetOrder,
-              step: "collecting_city",
-              updated_at: new Date().toISOString(),
-            },
-          });
-        }
+        return res.json({
+          response: productOfferReply(lockedProduct),
+          context: {
+            ...(context || {}),
+            current_product: lockedProduct.canonical,
+            last_topic: lockedProduct.canonical,
+            order_data: resetOrder,
+            step: resetOrder.city ? "collecting_quantity" : "collecting_city",
+            updated_at: new Date().toISOString(),
+          },
+        });
       }
 
+      const isPromoResponse = isRespondingToPromotion(texto, history);
       if (isPromoResponse) {
         const promoProduct = getProductFromLastPromotion(history, parsed);
 
@@ -1149,16 +1212,11 @@ Tenemos el **${productInfo.canonical}** en oferta:
           };
 
           return res.json({
-            response: `🔥 ¡Excelente decisión! 😊
-
-Tenemos el **${promoProduct.canonical}** en oferta:
-
-💰 Precio especial: ${formatGs(promoProduct.price1)} Gs (promoción por tiempo limitado)
-
-📍 ¿Para qué ciudad sería el envío? 😊`,
+            response: productOfferReply(promoProduct),
             context: {
               ...(context || {}),
               current_product: promoProduct.canonical,
+              last_topic: promoProduct.canonical,
               order_data: resetOrder,
               step: "collecting_city",
               updated_at: new Date().toISOString(),
@@ -1167,66 +1225,8 @@ Tenemos el **${promoProduct.canonical}** en oferta:
         }
       }
 
-      const hasExistingOrder = oldOrder.product && oldOrder.city;
-
-      if (hasExistingOrder) {
-        if (isNewConversation(context, history)) {
-          const resetOrder = {
-            product: "",
-            quantity: 0,
-            city: "",
-            customer_name: "",
-            phone: "",
-            address: "",
-          };
-
-          const productFromContext2 = clean(
-            context?.last_ad_product || inferProductFromLastBotMessage(history, parsed)
-          );
-
-          if (productFromContext2) {
-            const productInfo = getProductInfo(productFromContext2, parsed);
-            if (productInfo) {
-              resetOrder.product = productInfo.canonical;
-
-              return res.json({
-                response: `🔥 ¡Excelente decisión! 😊
-
-Tenemos el **${productInfo.canonical}** en oferta:
-
-💰 Precio especial: ${formatGs(productInfo.price1)} Gs (promoción por tiempo limitado)
-
-📍 ¿Para qué ciudad sería el envío? 😊`,
-                context: {
-                  ...(context || {}),
-                  current_product: productInfo.canonical,
-                  order_data: resetOrder,
-                  step: "collecting_city",
-                  updated_at: new Date().toISOString(),
-                },
-              });
-            }
-          }
-        }
-
-        return res.json({
-          response: `✅ Ya estabas viendo el **${oldOrder.product}**.
-
-¿Querés ese mismo producto o querés ver otro?
-
-📋 Catálogo completo: ${CATALOG_URL}
-
-Escribí el nombre del producto que te interesa. 😊`,
-          context: {
-            ...(context || {}),
-            current_product: oldOrder.product,
-            order_data: oldOrder,
-            step: "clarifying_intent",
-            updated_at: new Date().toISOString(),
-          },
-        });
-      }
-
+      // Antes el código caía al producto por defecto y podía cambiar a otro producto.
+      // Ahora, si no hay contexto real, se pregunta cuál producto quiere.
       const resetOrder = {
         product: "",
         quantity: 0,
@@ -1236,67 +1236,15 @@ Escribí el nombre del producto que te interesa. 😊`,
         address: "",
       };
 
-      const productFromContext3 = clean(
-        context?.last_ad_product || inferProductFromLastBotMessage(history, parsed)
-      );
-
-      if (productFromContext3) {
-        const productInfo = getProductInfo(productFromContext3, parsed);
-        if (productInfo) {
-          resetOrder.product = productInfo.canonical;
-
-          return res.json({
-            response: `🔥 ¡Excelente decisión! 😊
-
-Tenemos el **${productInfo.canonical}** en oferta:
-
-💰 Precio especial: ${formatGs(productInfo.price1)} Gs (promoción por tiempo limitado)
-
-📍 ¿Para qué ciudad sería el envío? 😊`,
-            context: {
-              ...(context || {}),
-              current_product: productInfo.canonical,
-              order_data: resetOrder,
-              step: "collecting_city",
-              updated_at: new Date().toISOString(),
-            },
-          });
-        }
-      }
-
-      const defaultProduct =
-        parsed.products.find((p) => normalize(p.canonical).includes("nebulizador")) ||
-        parsed.products[0];
-
-      if (defaultProduct) {
-        resetOrder.product = defaultProduct.canonical;
-
-        return res.json({
-          response: `🔥 ¡Excelente decisión! 😊
-
-Tenemos el **${defaultProduct.canonical}** en oferta:
-
-💰 Precio especial: ${formatGs(defaultProduct.price1)} Gs (promoción por tiempo limitado)
-
-📍 ¿Para qué ciudad sería el envío? 😊`,
-          context: {
-            ...(context || {}),
-            current_product: defaultProduct.canonical,
-            order_data: resetOrder,
-            step: "collecting_city",
-            updated_at: new Date().toISOString(),
-          },
-        });
-      }
-
       return res.json({
-        response: `📋 Te invito a revisar nuestro catálogo completo:
-${CATALOG_URL}
+        response: `😊 Perfecto. ¿Cuál producto querés llevar?
 
-Escribí el nombre del producto que te interesa. 😊`,
+📋 Podés escribir el nombre del producto o mirar el catálogo:
+${CATALOG_URL}`,
         context: {
           ...(context || {}),
           current_product: null,
+          last_topic: null,
           order_data: resetOrder,
           step: "selling",
           updated_at: new Date().toISOString(),
@@ -1305,8 +1253,11 @@ Escribí el nombre del producto que te interesa. 😊`,
     }
 
     const productFromMessage = detectProduct(texto, parsed, "");
-    const productToUse = productFromMessage || context?.current_product || oldOrder.product;
+    const lockedProduct = getLockedProductFromContext(context, oldOrder, history, parsed);
 
+    // ✅ Si el mensaje NO menciona otro producto, mantener el producto actual.
+    // Solo se cambia si el cliente escribe explícitamente otro producto válido.
+    const productToUse = productFromMessage || lockedProduct?.canonical || oldOrder.product || "";
     const product = detectProduct(texto, parsed, productToUse);
 
     const cityStatement = extractCityStatement(texto);
