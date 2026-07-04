@@ -8,6 +8,7 @@
 // + ✅ URL ABSOLUTA CON DOMINIO DE PRODUCCIÓN FIJO (SOLUCIONA ERROR 401)
 // + ✅ MANEJO DE MENSAJES INTERACTIVOS (RESPUESTA A BOTONES)
 // + ✅ GUARDA PRODUCTO EN CONTEXTO AL ENVIAR PLANTILLA
+// + ✅ FIX: SIEMPRE usa template si existe, ignora response cuando hay plantilla
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -853,13 +854,27 @@ async function evaluarDisparadores({ userId, from, texto }) {
       let contenidoPrimary = "";
       let contenidoSecondary = "";
 
+      // 🔥🔥🔥 CORREGIDO: SIEMPRE usar template si existe, ignorar response
       if (matchPrimary) {
-        plantillaPrimary = await enviarPlantillaCompleta({
-          userId,
-          from,
-          templateName: trig.template,
-          fallbackText: trig.response,
-        });
+        // Si hay template, usarlo SIEMPRE (incluso si response tiene texto)
+        if (trig.template && trig.template !== "Ninguna" && trig.template !== "null") {
+          console.log(`📌 Usando plantilla "${trig.template}" (ignorando response)`);
+          plantillaPrimary = await enviarPlantillaCompleta({
+            userId,
+            from,
+            templateName: trig.template,
+            fallbackText: "", // No usar response
+          });
+        } else {
+          // Solo si NO hay template, usar response como fallback
+          console.log(`📌 No hay plantilla, usando response como fallback`);
+          plantillaPrimary = await enviarPlantillaCompleta({
+            userId,
+            from,
+            templateName: null,
+            fallbackText: trig.response,
+          });
+        }
         contenidoPrimary = clean(plantillaPrimary?.content || trig.response || "");
 
         if (trig.auto_tag) {
