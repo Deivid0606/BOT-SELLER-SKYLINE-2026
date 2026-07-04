@@ -691,40 +691,68 @@ export default function InboxPage() {
   };
 
   // ============================================================
-  // ENVÍO DE MENSAJE CON TEXTO (PARA BOTONES)
+  // ENVÍO DE MENSAJE CON TEXTO (PARA BOTONES) - CORREGIDO ✅
   // ============================================================
   const handleSendMessageWithText = async (text: string) => {
     if (!selectedNumber || !text.trim()) return;
     
     try {
-      // Guardar el mensaje del usuario
+      // 1. Guardar el mensaje del usuario (NO procesado aún)
       await supabase.from("received_messages").insert({
         user_id: user.id,
         from_number: selectedNumber,
         message: text,
         message_type: 'in_text',
-        is_processed: true,
+        is_processed: false,  // ✅ CORREGIDO: para que el webhook lo procese
       });
       
-      // Llamar al webhook para procesar con IA
+      // 2. Llamar al webhook con el formato EXACTO de WhatsApp
+      const payload = {
+        object: "whatsapp_business_account",
+        entry: [{
+          changes: [{
+            value: {
+              messages: [{
+                from: selectedNumber,
+                id: `btn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                timestamp: Math.floor(Date.now() / 1000),
+                type: "text",
+                text: { body: text }
+              }]
+            }
+          }]
+        }]
+      };
+
+      console.log('📤 Enviando al webhook (formato WhatsApp):', JSON.stringify(payload, null, 2));
+
       const response = await fetch("/api/webhook", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from: selectedNumber,
-          message: text,
-          user_id: user.id,
-        }),
+        body: JSON.stringify(payload),
       });
       
       if (!response.ok) {
-        console.error("Error en webhook:", await response.text());
+        const errorText = await response.text();
+        console.error("❌ Error en webhook:", errorText);
+        toast({ 
+          title: "Error", 
+          description: "No se pudo procesar el mensaje", 
+          variant: "destructive" 
+        });
+      } else {
+        console.log("✅ Webhook procesó el mensaje correctamente");
+        // Recargar mensajes para mostrar la respuesta
+        await loadMessages();
       }
       
-      await loadMessages();
     } catch (error) {
-      console.error("Error enviando mensaje desde botón:", error);
-      toast({ title: "Error", description: "No se pudo procesar el botón", variant: "destructive" });
+      console.error("❌ Error enviando mensaje desde botón:", error);
+      toast({ 
+        title: "Error", 
+        description: "No se pudo procesar el botón", 
+        variant: "destructive" 
+      });
     }
   };
 
