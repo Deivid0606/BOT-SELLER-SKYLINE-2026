@@ -1,4 +1,4 @@
-// api/send-whatsapp.js - CORRECCIÓN FINAL
+// api/send-whatsapp.js - VERSIÓN FINAL CORREGIDA
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -17,10 +17,15 @@ async function getConfig(userId) {
 }
 
 // ============================================================
-// 📤 Enviar mensaje interactivo CON imagen en el header
+// 📤 Enviar mensaje interactivo CON imagen en header
 // ============================================================
 async function metaSendInteractiveWithImage(config, to, text, buttons, imageUrl) {
   try {
+    if (!imageUrl) {
+      console.log('⚠️ No hay imagen, usando sin imagen');
+      return await metaSendInteractive(config, to, text, buttons);
+    }
+
     const maxButtons = buttons.slice(0, 3);
     
     const formattedButtons = maxButtons.map((btn, index) => ({
@@ -31,7 +36,7 @@ async function metaSendInteractiveWithImage(config, to, text, buttons, imageUrl)
       }
     }));
 
-    // 👇 CONSTRUIR PAYLOAD CON IMAGEN EN HEADER
+    // 👇 FORMATO CORRECTO: Imagen en HEADER, texto en BODY
     const payload = {
       messaging_product: 'whatsapp',
       to: to,
@@ -40,18 +45,21 @@ async function metaSendInteractiveWithImage(config, to, text, buttons, imageUrl)
         type: 'button',
         header: {
           type: 'image',
-          image: { link: imageUrl }  // 👈 IMAGEN EN EL HEADER
+          image: { 
+            link: imageUrl  // 👈 Imagen en el HEADER
+          }
         },
         body: {
-          text: text.substring(0, 1024)
+          text: text.substring(0, 1024)  // 👈 Texto en el BODY
         },
         action: {
-          buttons: formattedButtons
+          buttons: formattedButtons  // 👈 Botones en ACTION
         }
       }
     };
 
-    console.log('📤 Enviando INTERACTIVO con imagen en header:', JSON.stringify(payload, null, 2));
+    console.log('📤 Enviando INTERACTIVO con imagen en header');
+    console.log('📌 Payload:', JSON.stringify(payload, null, 2));
 
     const r = await fetch(
       `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
@@ -110,7 +118,8 @@ async function metaSendInteractive(config, to, text, buttons) {
       }
     };
 
-    console.log('📤 Enviando INTERACTIVO sin imagen:', JSON.stringify(payload, null, 2));
+    console.log('📤 Enviando INTERACTIVO sin imagen');
+    console.log('📌 Payload:', JSON.stringify(payload, null, 2));
 
     const r = await fetch(
       `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
@@ -139,6 +148,9 @@ async function metaSendInteractive(config, to, text, buttons) {
   }
 }
 
+// ============================================================
+// 📤 Enviar mensaje de texto normal (fallback)
+// ============================================================
 async function metaSendText(config, to, text) {
   try {
     const r = await fetch(
@@ -168,6 +180,9 @@ async function metaSendText(config, to, text) {
   }
 }
 
+// ============================================================
+// 🚀 HANDLER PRINCIPAL
+// ============================================================
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
@@ -178,6 +193,8 @@ export default async function handler(req, res) {
 
   try {
     const body = req.body || {};
+    
+    // 📥 LEER PARÁMETROS
     const to = body.to || body.To || body.number || body.phone;
     const userId = body.userId || body.user_id || body.userid;
     const message = body.message || body.text || '';
@@ -185,6 +202,15 @@ export default async function handler(req, res) {
     const mediaUrl = body.media_url || null;
     const mediaType = body.media_type || 'image';
 
+    console.log('📥 Payload recibido:', {
+      to,
+      userId,
+      messageLength: message?.length || 0,
+      buttonsCount: buttons?.length || 0,
+      mediaUrl: !!mediaUrl,
+    });
+
+    // ✅ VALIDACIÓN
     if (!to || !userId) {
       return res.status(400).json({ error: 'Missing to or userId' });
     }
@@ -210,34 +236,27 @@ export default async function handler(req, res) {
       let success = false;
       
       if (imageUrl) {
-        // ✅ CON IMAGEN: Enviar TODO en un solo mensaje interactivo
-        console.log('📸 Enviando mensaje interactivo CON imagen en header');
+        // ✅ IMAGEN + BOTONES: TODO en un solo mensaje interactivo
+        console.log('📸 Enviando mensaje INTERACTIVO CON IMAGEN');
         success = await metaSendInteractiveWithImage(
           config,
           cleanTo,
           message,
           buttons,
-          imageUrl
+          imageUrl  // 👈 Imagen en el HEADER
         );
-        
-        // Si falla, intentar enviar imagen y botones por separado
-        if (!success) {
-          console.log('⚠️ Falló interactivo con imagen, intentando separado...');
-          await metaSendMedia(config, cleanTo, imageUrl, 'image', message);
-          success = await metaSendInteractive(config, cleanTo, 'Selecciona una opción:', buttons);
-        }
       } else {
-        // ✅ SIN IMAGEN: Enviar solo interactivo (como funcionó en la prueba)
-        console.log('📤 Enviando mensaje interactivo SIN imagen');
+        // ✅ SIN IMAGEN: Solo interactivo
+        console.log('📤 Enviando mensaje INTERACTIVO SIN IMAGEN');
         success = await metaSendInteractive(config, cleanTo, message, buttons);
       }
       
-      // Fallback final: opciones numeradas
+      // ⚠️ FALLBACK: Si falla el interactivo, usar opciones numeradas
       if (!success) {
-        console.log('⚠️ Fallback a opciones numeradas');
-        const fallbackText = message + '\n\nRESPONDE CON EL NÚMERO:\n' +
+        console.log('⚠️ Fallback: enviando como texto con opciones numeradas');
+        const fallbackText = message + '\n\n📌 RESPONDE CON EL NÚMERO DE TU OPCIÓN:\n\n' +
           buttons.map((b, i) => `${i+1}️⃣ ${b.label.replace(/[^\w\s]/g, '').trim()}`).join('\n') +
-          '\n\n📲 Escribí el número de tu opción 😊';
+          '\n\n📲 Escribí 1, 2 o 3 😊';
         await metaSendText(config, cleanTo, fallbackText);
       }
 
@@ -248,6 +267,7 @@ export default async function handler(req, res) {
           hasButtons: true,
           buttonsCount: buttons.length,
           hasImage: !!imageUrl,
+          type: imageUrl ? 'interactive_with_image' : 'interactive',
         }
       });
     }
@@ -255,6 +275,8 @@ export default async function handler(req, res) {
     // ============================================================
     // 🎯 CASO 2: SIN BOTONES
     // ============================================================
+    console.log('📤 Enviando mensaje SIN botones');
+    
     if (mediaUrl) {
       await metaSendMedia(config, cleanTo, mediaUrl, mediaType, message || '');
       if (message) {
@@ -276,5 +298,39 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error('❌ send-whatsapp error:', err);
     return res.status(500).json({ error: err.message });
+  }
+}
+
+// ============================================================
+// 📤 Enviar multimedia (helper)
+// ============================================================
+async function metaSendMedia(config, to, mediaUrl, type = 'image', caption = '') {
+  try {
+    const t = type === 'video' ? 'video' : 'image';
+    const payload = {
+      messaging_product: 'whatsapp',
+      to,
+      type: t,
+      [t]: caption ? { link: mediaUrl, caption } : { link: mediaUrl },
+    };
+    const r = await fetch(
+      `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.permanent_token.trim()}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      }
+    );
+    if (!r.ok) {
+      console.error(`📤 Meta ${t} error:`, await r.text());
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('❌ Error en metaSendMedia:', err);
+    return false;
   }
 }
