@@ -472,7 +472,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     const payload = {
       to: from,
       userId: userId,
-      user_id: userId,  // 👈 AGREGAR PARA COMPATIBILIDAD
+      user_id: userId,
       message: mensajeFinal,
       media_url: firstImage || null,
       media_type: firstImage ? 'image' : null,
@@ -482,15 +482,9 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     console.log('📤 Payload a enviar a send-whatsapp:', JSON.stringify(payload, null, 2));
 
     try {
-      // ✅ USAR LA URL CORRECTA
-      const baseUrl = process.env.VERCEL_URL 
-        ? `https://${process.env.VERCEL_URL}` 
-        : 'https://bot-seller-skyline-2026.vercel.app';
+      // ✅ URL RELATIVA - SIEMPRE FUNCIONA
+      const url = '/api/send-whatsapp';
       
-      const url = process.env.NODE_ENV === 'development' 
-        ? 'http://localhost:3000/api/send-whatsapp'
-        : `${baseUrl}/api/send-whatsapp`;
-
       console.log(`📤 Enviando a: ${url}`);
 
       const response = await fetch(url, {
@@ -503,12 +497,14 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
 
       const responseText = await response.text();
       
+      console.log(`📥 Status: ${response.status}`);
+      console.log(`📥 Response: ${responseText}`);
+      
       if (!response.ok) {
         console.error('❌ Error enviando plantilla con botones:', response.status, responseText);
       } else {
         console.log('✅ Plantilla con botones enviada desde webhook');
         
-        // Guardar mensaje saliente
         await saveReceivedMessage({
           userId,
           from,
@@ -521,7 +517,6 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
       console.error('❌ Error en fetch send-whatsapp:', err);
     }
 
-    // Actualizar contador de uso
     if (plantilla?.id) {
       try {
         await supabase
