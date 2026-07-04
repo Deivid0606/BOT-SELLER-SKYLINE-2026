@@ -225,7 +225,6 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
       if (a.includes(msg) && msg.length >= 4) score += 50;
 
       for (const w of a.split(" ").filter((x) => x.length >= 5)) {
-        // palabra completa solamente, no substring parcial
         if (new RegExp(`\\b${w}\\b`).test(msg)) score += 15;
       }
 
@@ -247,7 +246,6 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   let best = "";
   let bestScore = 0;
 
-  // Tokenize message words para coincidencia parcial de alias multi-palabra
   const msgWords = msg.split(/\s+/);
 
   for (const c of parsed.cities) {
@@ -259,11 +257,9 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
     else if (msg.includes(a)) score += 80;
     else if (a.includes(msg) && msg.length >= 3) score += 50;
     else {
-      // Coincidencia fuzzy: cuántas palabras del alias aparecen en el mensaje
       const aliasWords = a.split(/\s+/).filter((w) => w.length >= 3);
       if (aliasWords.length >= 2) {
         const matched = aliasWords.filter((w) => {
-          // acepta singular/plural: "arroyo" coincide con "arroyos" y viceversa
           return msgWords.some(
             (mw) =>
               mw === w ||
@@ -287,20 +283,16 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   return clean(prev || "");
 }
 
-// Extrae el texto de ciudad cuando el cliente usa frases EXPLÍCITAS como "soy de X", "vivo en X"
-// Solo activa con prefijos claros. Mensajes cortos sin prefijo NO se tratan como ciudad aquí.
 function extractCityStatement(text: string): string {
   const raw = clean(text);
   const norm = normalize(raw);
 
-  // Ignorar emojis, saludos, mensajes demasiado cortos o sin letras
   if (!raw || raw.length < 3 || /^[\p{Emoji}\s]+$/u.test(raw)) return "";
   if (/^\p{Emoji}/u.test(raw)) return "";
 
   const GREETINGS = /^(hola|buenas|buenos|buen dia|buen dia|hi|hey|buenas noches|buenas tardes|saludos|ok|dale|si|no|gracias|de nada|listo|perfecto)[\s!.]*$/;
   if (GREETINGS.test(norm)) return "";
 
-  // Solo activar si tiene prefijo explícito de declaración de ciudad
   const match = norm.match(
     /^(?:soy de|vivo en|estoy en|ya estoy en|ya esty en|soy de la ciudad de|de la ciudad de|ciudad de|mi ciudad es|para la ciudad de)\s+(.+)$/
   );
@@ -345,34 +337,27 @@ function extractQuantity(text: string) {
     diez: 10,
   };
 
-  // 1. Numero + unidad: "2 unidades", "1 unidad"
   const q1 = m.match(/\b(\d+)\s*(unidad|unidades|u|und|unds)\b/);
   if (q1) return sanitizeQuantity(Number(q1[1]));
 
-  // 2. Palabra + unidad: "una unidad", "dos unidades", "solo una unidad"
   for (const [word, num] of Object.entries(wordMap)) {
     const regex = new RegExp(`\\b${word}\\s*(unidad|unidades|u\\b|und\\b)`);
     if (regex.test(m)) return sanitizeQuantity(num);
   }
 
-  // 3. Verbo/solo + numero: "quiero 2", "solo 1"
   const q2 = m.match(/\b(quiero|llevo|dame|mandame|reservame|solo|solamente)\s+(\d+)\b/);
   if (q2) return sanitizeQuantity(Number(q2[2]));
 
-  // 4. Numero + verbo: "2 quiero"
   const q3 = m.match(/\b(\d+)\s+(quiero|llevo|dame|mandame)\b/);
   if (q3) return sanitizeQuantity(Number(q3[1]));
 
-  // 5. Verbo/solo + palabra: "quiero uno", "solo una", "dame dos"
   for (const [word, num] of Object.entries(wordMap)) {
     const regex = new RegExp(`\\b(quiero|llevo|dame|mandame|reservame|solo|solamente)\\s+${word}\\b`);
     if (regex.test(m)) return sanitizeQuantity(num);
   }
 
-  // 6. Mensaje es solo un numero (pero NO si parece teléfono: 8+ dígitos o empieza con 09)
   if (/^\d+$/.test(m) && m.length <= 5 && !m.startsWith("09")) return sanitizeQuantity(Number(m));
 
-  // 7. Palabra sola (menor prioridad)
   for (const [word, num] of Object.entries(wordMap)) {
     if (new RegExp(`\\b${word}\\b`).test(m)) return sanitizeQuantity(num);
   }
@@ -390,16 +375,13 @@ function toTitleCase(str: string): string {
   return str.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-// ✅ FIX 3: extractName con blacklist extendida y límite de palabras
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const raw = clean(text);
 
   if (!raw) return "";
 
-  // Si el texto es una cantidad, no puede ser nombre
   if (extractQuantity(raw) > 0) return "";
 
-  // Si el texto parece ser una ciudad conocida, no puede ser nombre
   if (parsed) {
     const normRaw = normalize(raw);
     const isCity = parsed.cities.some((c) => {
@@ -412,7 +394,6 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   const isMultiLine = raw.includes("\n");
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
 
-  // Frases y palabras prohibidas como nombre
   const forbidden = [
     "quiero", "comprar", "me interesa", "precio", "delivery",
     "envio", "ok", "dale", "si", "hola", "buenas", "gracias",
@@ -427,10 +408,8 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     "para", "con", "por", "del", "mas",
   ];
 
-  // Verbos frecuentes en preguntas — si el texto los contiene como parte central no es un nombre
   const QUESTION_VERBS = /\b(traen|trae|mandan|llegan|llega|entrega|viene|vienen|cuesta|cobran|demora|tarda)\b/;
 
-  // Verificación de línea como nombre válido
   const isValidNameLine = (line: string): boolean => {
     const cleaned = clean(line);
     const normLine = normalize(cleaned);
@@ -443,39 +422,30 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|san pedro|santa|bario)\b/i.test(normLine)) return false;
     if (QUESTION_VERBS.test(normLine)) return false;
 
-    // No debe ser igual a la ciudad detectada
     if (detectedCity && normalize(cleaned) === normalize(detectedCity)) return false;
 
-    // No debe contener palabras prohibidas
     if (forbidden.some((f) => normLine === normalize(f) || normLine.startsWith(normalize(f) + " ") || normLine.endsWith(" " + normalize(f)))) return false;
 
-    // Primera palabra de una sola letra = conjunción/artículo, no nombre
     if (words[0].length === 1) return false;
 
-    // Frases de confirmación / deícticos ("Y este es", "Ese es", "Este soy")
     if (/^(y |ese |esta |este |eso |esa |aqui |ahi |ya |igual |listo |ok |dale )/i.test(normLine)) return false;
     if (/\b(este es|ese es|eso es|este soy|soy yo|ese soy)\b/.test(normLine)) return false;
 
     return true;
   };
 
-  // 1. Intento explícito: "soy / me llamo / mi nombre es [NOMBRE]"
   const explicit = raw.match(
     /(?:soy|me llamo|mi nombre es|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,80})/i
   )?.[1];
   if (explicit) return toTitleCase(clean(explicit));
 
-  // 1b. Nombre ANTES de "soy": "Jorge Caballero soy 0975..." o "david alcaraz soy..."
   const beforeSoy = raw.match(/^([a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,4})\s+soy\b/i)?.[1];
   if (beforeSoy && isValidNameLine(beforeSoy)) return toTitleCase(clean(beforeSoy));
 
-  // 2. Si es multilínea, buscar línea por línea (excluye líneas con teléfono o dirección)
   if (isMultiLine) {
     for (const line of lines) {
       const cleaned = clean(line);
-      // Saltar líneas con teléfono
       if (/\d{7,}/.test(cleaned)) continue;
-      // Saltar líneas con palabras de dirección
       if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|rca|colombia|republica|nro|manzana)\b/i.test(normalize(cleaned))) continue;
 
       if (isValidNameLine(cleaned)) return toTitleCase(cleaned);
@@ -483,7 +453,6 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     return "";
   }
 
-  // 3. Mensaje de una sola línea
   if (isValidNameLine(raw)) return toTitleCase(raw);
 
   return "";
@@ -551,7 +520,6 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining) {
   const productInfo = getProductInfo(old?.product || "", parsed);
   const nameNorm = normalize(old?.customer_name || "");
 
-  // ✅ FIX 3 también en sanitize: limpiar nombres inválidos guardados previamente
   const forbiddenNames = [
     "quiero", "cuando", "dia", "llega", "llego", "pedido", "cancelar",
     "no", "raqueta", "nebulizador", "que", "estado", "seguimiento",
@@ -692,7 +660,6 @@ Cuenta: 81-4981442
 Alias: 0994130022`;
 }
 
-// ✅ FIX 1: safeUpsertOrder busca también pedidos ya confirmados para no duplicar
 async function safeUpsertOrder(
   userId: string,
   from: string,
@@ -729,7 +696,6 @@ async function safeUpsertOrder(
     updated_at: new Date().toISOString(),
   };
 
-  // Primero buscar pedido EN PROGRESO (nunca confirmado) para este número
   const IN_PROGRESS_STATUSES = [
     "draft",
     "selling",
@@ -756,8 +722,6 @@ async function safeUpsertOrder(
     return inProgress.id;
   }
 
-  // Si estamos confirmando, buscar el último pedido confirmado para actualizarlo
-  // (evita duplicar cuando el bot reconfirma el mismo pedido)
   if (confirm) {
     const { data: lastConfirmed } = await supabase
       .from("orders")
@@ -775,7 +739,6 @@ async function safeUpsertOrder(
     }
   }
 
-  // Pedido nuevo (cliente comprando por primera vez o comprando un producto diferente)
   const { data } = await supabase.from("orders").insert(payload).select("id").single();
   return data?.id || null;
 }
@@ -1005,7 +968,7 @@ export default async function handler(req: any, res: any) {
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
 
-    // ✅ FIX 2: Bloqueo post-pedido — si ya fue confirmado, responder sin procesar
+    // ✅ FIX 2: Bloqueo post-pedido
     if (context?.step === "pedido_confirmado") {
       const msgNorm = normalize(texto);
       const isFollowUp =
@@ -1017,7 +980,6 @@ export default async function handler(req: any, res: any) {
           msgNorm
         ) || /^(👍|🙏|😊|✅)/.test(msgNorm);
       const hasNewProduct = !!detectProduct(texto, parsed, "");
-      // Si el cliente responde a una nueva promoción (bot mandó oferta), no bloquear
       const isPromoResponse = isRespondingToPromotion(texto, history);
 
       if (!isPromoResponse && isGratitude) {
@@ -1032,7 +994,6 @@ export default async function handler(req: any, res: any) {
 
       if (!isPromoResponse && (isFollowUp || !hasNewProduct)) {
         const wantsCorrection = /\b(no|no quiero|no era|me equivoque|en realidad|quiero es|lo que quiero|lo que piero|piero|qiero)\b/.test(msgNorm);
-        // Saludo o pregunta de nueva compra → dejar pasar al flujo de venta
         const isGreeting = /^(hola|buenas|hi|hey|buen dia|buenos dias|buenas tardes|buenas noches|saludos)[\s!.]*$/.test(msgNorm);
         const isNewPurchaseQuestion = /\b(compro|comprar|precio|cuanto|cuestan|cuanto sale|cuantos|quiero|interesa|promo|descuento|oferta)\b/.test(msgNorm);
 
@@ -1046,7 +1007,6 @@ export default async function handler(req: any, res: any) {
           });
         }
       }
-      // Cliente saluda, pregunta precio, quiere corregir o responde a promo → reiniciar para nueva compra
       oldOrder = { product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" };
     }
 
@@ -1080,7 +1040,6 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      // No se detectó producto específico → mostrar lista de precios de todos los productos
       if (parsed.products.length > 0) {
         const priceLines = parsed.products.map((p) => {
           const promo = p.price2 ? ` | 🔥 2x → ${formatGs(p.price2)} Gs` : "";
@@ -1133,8 +1092,48 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
         p.aliases.some((a) => normalize(texto).includes(normalize(a)))
     );
 
+    // 🔥 CORREGIDO: Detectar intención de compra usando el producto del contexto
     if (buyIntent && !hasProductInMessage) {
       const isPromoResponse = isRespondingToPromotion(texto, history);
+
+      // 🔥 PRIMERO: Intentar usar el producto del contexto (current_product)
+      const productFromContext = context?.current_product || 
+                                 context?.last_topic || 
+                                 context?.order_data?.product || 
+                                 "";
+      
+      if (productFromContext) {
+        const productInfo = getProductInfo(productFromContext, parsed);
+        if (productInfo) {
+          const resetOrder = {
+            product: productInfo.canonical,
+            quantity: 0,
+            city: oldOrder.city || "",
+            customer_name: "",
+            phone: "",
+            address: "",
+          };
+
+          console.log(`🛒 Usando producto del contexto: "${productInfo.canonical}" para la compra`);
+
+          return res.json({
+            response: `🔥 ¡Excelente decisión! 😊
+
+Tenemos el **${productInfo.canonical}** en oferta:
+
+💰 Precio especial: ${formatGs(productInfo.price1)} Gs
+
+📍 ¿Para qué ciudad sería el envío? 😊`,
+            context: {
+              ...(context || {}),
+              current_product: productInfo.canonical,
+              order_data: resetOrder,
+              step: "collecting_city",
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
+      }
 
       if (isPromoResponse) {
         const promoProduct = getProductFromLastPromotion(history, parsed);
@@ -1181,12 +1180,12 @@ Tenemos el **${promoProduct.canonical}** en oferta:
             address: "",
           };
 
-          const productFromContext = clean(
+          const productFromContext2 = clean(
             context?.last_ad_product || inferProductFromLastBotMessage(history, parsed)
           );
 
-          if (productFromContext) {
-            const productInfo = getProductInfo(productFromContext, parsed);
+          if (productFromContext2) {
+            const productInfo = getProductInfo(productFromContext2, parsed);
             if (productInfo) {
               resetOrder.product = productInfo.canonical;
 
@@ -1237,12 +1236,12 @@ Escribí el nombre del producto que te interesa. 😊`,
         address: "",
       };
 
-      const productFromContext = clean(
+      const productFromContext3 = clean(
         context?.last_ad_product || inferProductFromLastBotMessage(history, parsed)
       );
 
-      if (productFromContext) {
-        const productInfo = getProductInfo(productFromContext, parsed);
+      if (productFromContext3) {
+        const productInfo = getProductInfo(productFromContext3, parsed);
         if (productInfo) {
           resetOrder.product = productInfo.canonical;
 
@@ -1310,25 +1309,15 @@ Escribí el nombre del producto que te interesa. 😊`,
 
     const product = detectProduct(texto, parsed, productToUse);
 
-    // Si el cliente está declarando una ciudad ("soy de X"), intentar detectarla primero.
-    // Si no la reconoce pero el mensaje ES una declaración explícita de ciudad, usarla como ciudad cruda
-    // para que no caiga al fallback del oldOrder.city anterior.
     const cityStatement = extractCityStatement(texto);
-    const detectedCityRaw = detectCity(texto, parsed, ""); // sin fallback al anterior
+    const detectedCityRaw = detectCity(texto, parsed, "");
     const prevStep = context?.step || "";
     const isCityStep = prevStep === "collecting_city";
-    // Si ya hay ciudad confirmada y estamos recolectando datos (nombre/dirección/teléfono),
-    // NO cambiar la ciudad aunque el mensaje contenga palabras que parezcan ciudad.
-    // La ciudad solo se puede cambiar si hay un prefijo explícito ("soy de X") o si el step es collecting_city.
     const isDataCollectionStep = ["collecting_name", "collecting_address", "collecting_phone", "collecting_quantity"].includes(prevStep);
     const detectedCity =
-      // 1. Detección directa (alias registrado en training)
       detectedCityRaw ||
-      // 2. Con prefijo explícito ("soy de X") — siempre actualiza ciudad
       (cityStatement && !extractQuantity(texto) && !extractPhone(texto) ? cityStatement :
-       // 3. Sin prefijo y recolectando datos → proteger ciudad actual
        (isDataCollectionStep && oldOrder.city ? oldOrder.city :
-        // 4. Step collecting_city: mensaje corto sin producto/cantidad/teléfono → usarlo como ciudad
         (isCityStep && !extractQuantity(texto) && !extractPhone(texto) && !detectProduct(texto, parsed, "") && normalize(texto).split(/\s+/).length <= 6
           ? (clean(texto) || detectCity(texto, parsed, oldOrder.city))
           : detectCity(texto, parsed, oldOrder.city))));
@@ -1390,8 +1379,6 @@ Escribí el nombre del producto que te interesa. 😊`,
     }
 
     if (orderData.product && !orderData.city) {
-      // Si el step anterior era collecting_city, el mensaje actual probablemente ES la ciudad
-      // aunque no esté registrada en training. Usarla como ciudad sin cobertura.
       const prevStep = context?.step || "";
       const IS_GREETING = /^(hola|buenas|buenos|hi|hey|buen dia|buenos dias|buenas tardes|buenas noches|saludos|ok|dale|si|no|gracias|listo|perfecto|okey)[\s!.]*$/i;
       const looksLikeCity =
@@ -1465,7 +1452,6 @@ y confirmamos tu pedido 🚚✨`,
     }
 
     if (orderData.product && orderData.city && !orderData.quantity) {
-      // Si el cliente manda agradecimiento en lugar de cantidad, responder cálidamente
       const msgNormQty = normalize(texto);
       const isGratitudeHere = /\b(gracias|grax|grac|ok|dale|perfecto|listo|genial|excelente|de nada|chevere|okey|bueno|joya)\b/.test(msgNormQty);
       if (isGratitudeHere && !extractQuantity(texto)) {
@@ -1522,7 +1508,6 @@ y confirmamos tu pedido 🚚✨`;
           updated_at: new Date().toISOString(),
         };
 
-        // Si ya se mostró el bloque de transferencia (step ya era collecting_quantity)
         if (prevStep === "collecting_quantity") {
           const msgNormCov = normalize(texto);
           const isDeliveryQuestion = /\b(cuando|llega|llego|entrega|envio|despacho|dias|demora|tarda)\b/.test(msgNormCov);
@@ -1542,13 +1527,11 @@ y confirmamos tu pedido 🚚✨`;
             });
           }
           if (!isGreetingOnly) {
-            // Pregunta genérica: recordatorio corto
             return res.json({
               response: `📎 Para confirmar tu pedido de *${orderData.product}*, enviame:\n✅ comprobante de transferencia\n✅ nombre completo\n✅ teléfono 😊`,
               context: sinCoberturaCtx,
             });
           }
-          // Saludo puro → mostrar el bloque completo de nuevo para orientar al cliente
           return res.json({ response: sinCoberturaBlock, context: sinCoberturaCtx });
         }
 
