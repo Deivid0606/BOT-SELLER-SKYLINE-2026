@@ -595,14 +595,12 @@ export default function InboxPage() {
         mediaUrl = publicUrl;
         mediaType = selectedFile.type;
       } else if (selectedTemplateMedia) {
-        // ✅ CORREGIDO: Guardar URL solo si no está vacía
         mediaUrl = selectedTemplateMedia.url && selectedTemplateMedia.url !== '' 
           ? selectedTemplateMedia.url 
           : null;
         mediaType = selectedTemplateMedia.type || 'text';
         buttonsToSend = selectedTemplateMedia.buttons || null;
         
-        // 👇 LOG PARA VERIFICAR
         console.log('📌 selectedTemplateMedia en handleSendMessage:', {
           url: mediaUrl,
           type: mediaType,
@@ -610,7 +608,6 @@ export default function InboxPage() {
         });
       }
 
-      // 👇 CONSTRUIR PAYLOAD
       const payload: any = {
         user_id: user.id,
         tenant_id: profile?.tenant_id ?? null,
@@ -619,13 +616,11 @@ export default function InboxPage() {
         message: textToSend,
       };
 
-      // 👇 AGREGAR MEDIA SOLO SI EXISTE
       if (mediaUrl && mediaType) {
         payload.media_url = mediaUrl;
         payload.media_type = mediaType;
       }
 
-      // 👇 AGREGAR BOTONES SOLO SI EXISTEN
       if (buttonsToSend && buttonsToSend.length > 0) {
         payload.buttons = buttonsToSend;
       }
@@ -656,7 +651,6 @@ export default function InboxPage() {
         throw new Error(result?.error || "No se pudo enviar el mensaje");
       }
 
-      // Guardar en Supabase con botones
       const messageToSave: any = {
         user_id: user.id,
         from_number: selectedNumber,
@@ -697,21 +691,43 @@ export default function InboxPage() {
     if (!selectedNumber || !text.trim()) return;
     
     try {
-      // 1. Guardar el mensaje del usuario (NO procesado aún)
+      // 1️⃣ Obtener phone_number_id del usuario
+      const { data: config, error: configError } = await supabase
+        .from("whatsapp_config")
+        .select("phone_number_id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (configError || !config?.phone_number_id) {
+        console.error("❌ No se encontró phone_number_id:", configError);
+        toast({ 
+          title: "Error", 
+          description: "WhatsApp no configurado correctamente", 
+          variant: "destructive" 
+        });
+        return;
+      }
+
+      console.log('📌 phone_number_id encontrado:', config.phone_number_id);
+
+      // 2️⃣ Guardar el mensaje del usuario (NO procesado aún)
       await supabase.from("received_messages").insert({
         user_id: user.id,
         from_number: selectedNumber,
         message: text,
         message_type: 'in_text',
-        is_processed: false,  // ✅ CORREGIDO: para que el webhook lo procese
+        is_processed: false,
       });
       
-      // 2. Llamar al webhook con el formato EXACTO de WhatsApp
+      // 3️⃣ Llamar al webhook con el formato EXACTO de WhatsApp
       const payload = {
         object: "whatsapp_business_account",
         entry: [{
           changes: [{
             value: {
+              metadata: {
+                phone_number_id: config.phone_number_id,
+              },
               messages: [{
                 from: selectedNumber,
                 id: `btn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -742,7 +758,6 @@ export default function InboxPage() {
         });
       } else {
         console.log("✅ Webhook procesó el mensaje correctamente");
-        // Recargar mensajes para mostrar la respuesta
         await loadMessages();
       }
       
@@ -1009,7 +1024,6 @@ export default function InboxPage() {
                             <p className="text-sm whitespace-pre-wrap break-words">{msg.text}</p>
                           )}
                           
-                          {/* 👇 BOTONES - SOLO PARA MENSAJES ENTRANTES DEL BOT */}
                           {msg.from === "in" && msg.buttons && msg.buttons.length > 0 && (
                             renderMessageButtons(msg.buttons)
                           )}
