@@ -1,4 +1,4 @@
-// api/webhook.js — CORREGIDO CON BOTONES E IMAGEN + INTERACTIVOS (100% FUNCIONAL)
+// api/webhook.js — CORREGIDO CON BOTONES E IMAGEN + INTERACTIVOS + CONTEXTO (100% FUNCIONAL)
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
@@ -7,6 +7,7 @@
 // + ✅ BOTONES E IMAGEN: enviarPlantillaCompleta ahora envía botones CON imagen
 // + ✅ URL ABSOLUTA CON DOMINIO DE PRODUCCIÓN FIJO (SOLUCIONA ERROR 401)
 // + ✅ MANEJO DE MENSAJES INTERACTIVOS (RESPUESTA A BOTONES)
+// + ✅ GUARDA PRODUCTO EN CONTEXTO AL ENVIAR PLANTILLA
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -407,7 +408,7 @@ async function saveReceivedMessage({
 // PLANTILLAS CON BOTONES E IMAGEN - CORREGIDO ✅
 // ═══════════════════════════════════════════════════════════
 
-// ✅ FUNCIÓN CORREGIDA: Envía plantilla COMPLETA con BOTONES E IMAGEN
+// ✅ FUNCIÓN CORREGIDA: Envía plantilla COMPLETA con BOTONES E IMAGEN + GUARDA CONTEXTO
 async function enviarPlantillaCompleta({ userId, from, templateName, fallbackText }) {
   console.log('🔍 ===== INICIO enviarPlantillaCompleta =====');
   console.log('🔍 userId:', userId);
@@ -415,6 +416,8 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
   console.log('🔍 templateName:', templateName);
   
   let plantilla = null;
+  let productName = "";
+  
   if (templateName && templateName !== "Ninguna") {
     console.log('🔍 Buscando plantilla en Supabase...');
     const { data: tpl, error } = await supabase
@@ -429,10 +432,28 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     }
     
     plantilla = tpl;
-    console.log('🔍 Plantilla encontrada:', plantilla?.name);
+    productName = plantilla?.name || templateName || "";
+    console.log('🔍 Plantilla encontrada:', productName);
     console.log('🔍 media_url:', plantilla?.media_url);
     console.log('🔍 media_type:', plantilla?.media_type);
     console.log('🔍 variables:', JSON.stringify(plantilla?.variables, null, 2));
+  }
+
+  // 🔥 GUARDAR PRODUCTO EN CONTEXTO ANTES DE ENVIAR
+  if (productName) {
+    console.log(`📌 Guardando producto en contexto: "${productName}"`);
+    const ctx = await getContexto(userId, from);
+    await saveContexto(userId, from, {
+      ...ctx,
+      current_product: productName,
+      last_topic: productName,
+      last_trigger: templateName || null,
+      order_data: {
+        ...(ctx?.order_data || {}),
+        product: productName,
+      },
+      updated_at: new Date().toISOString(),
+    });
   }
 
   const mensajeFinal = clean(plantilla?.content || fallbackText || "");
