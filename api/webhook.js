@@ -5,6 +5,7 @@
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
 // + ✅ CORREGIDO: Verificación de token en base de datos (soporte multi-usuario)
 // + ✅ BOTONES E IMAGEN: enviarPlantillaCompleta ahora envía botones CON imagen
+// + ✅ URL ABSOLUTA CON DOMINIO DE PRODUCCIÓN FIJO (SOLUCIONA ERROR 401)
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -488,23 +489,14 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     `📦 Plantilla "${plantilla?.name || templateName}" → ${imagenes.length} img, video: ${!!video}, gif: ${!!gif}, botones: ${buttons?.length || 0}`
   );
 
-  // ✅ CASO 1: CON BOTONES - Usar URL ABSOLUTA
+  // ✅ CASO 1: CON BOTONES - Usar URL ABSOLUTA CON DOMINIO DE PRODUCCIÓN
   if (buttons && buttons.length > 0) {
     console.log(`🎯 Enviando plantilla con ${buttons.length} botones desde webhook`);
     console.log(`📸 Imagen a enviar: ${firstImage || 'ninguna'}`);
     
-    // 🔧 CONSTRUIR URL ABSOLUTA
-    let baseUrl = '';
-    
-    if (process.env.VERCEL_URL) {
-      baseUrl = `https://${process.env.VERCEL_URL}`;
-    } else if (process.env.NEXT_PUBLIC_APP_URL) {
-      baseUrl = process.env.NEXT_PUBLIC_APP_URL;
-    } else if (process.env.NEXT_PUBLIC_BASE_URL) {
-      baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
-    } else {
-      baseUrl = 'http://localhost:3000';
-    }
+    // 🔧 URL ABSOLUTA - DOMINIO DE PRODUCCIÓN FIJO
+    // Este es tu dominio de producción (sin hash, sin autenticación)
+    const baseUrl = 'https://bot-seller-skyline-2026.vercel.app';
     
     const payload = {
       to: from,
