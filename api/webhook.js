@@ -472,26 +472,39 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     const payload = {
       to: from,
       userId: userId,
+      user_id: userId,  // 👈 AGREGAR PARA COMPATIBILIDAD
       message: mensajeFinal,
       media_url: firstImage || null,
       media_type: firstImage ? 'image' : null,
-      buttons: buttons, // 👈 ENVIAR BOTONES
+      buttons: buttons,
     };
 
-    try {
-      const host = process.env.VERCEL_URL || 'bot-seller-skyline-2026.vercel.app';
-      const protocol = process.env.NODE_ENV === 'development' ? 'http' : 'https';
-      const baseUrl = `${protocol}://${host}`;
+    console.log('📤 Payload a enviar a send-whatsapp:', JSON.stringify(payload, null, 2));
 
-      const response = await fetch(`${baseUrl}/api/send-whatsapp`, {
+    try {
+      // ✅ USAR LA URL CORRECTA
+      const baseUrl = process.env.VERCEL_URL 
+        ? `https://${process.env.VERCEL_URL}` 
+        : 'https://bot-seller-skyline-2026.vercel.app';
+      
+      const url = process.env.NODE_ENV === 'development' 
+        ? 'http://localhost:3000/api/send-whatsapp'
+        : `${baseUrl}/api/send-whatsapp`;
+
+      console.log(`📤 Enviando a: ${url}`);
+
+      const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify(payload),
       });
 
+      const responseText = await response.text();
+      
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ Error enviando plantilla con botones:', errorText);
+        console.error('❌ Error enviando plantilla con botones:', response.status, responseText);
       } else {
         console.log('✅ Plantilla con botones enviada desde webhook');
         
@@ -522,8 +535,6 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
   }
 
   // ✅ CASO 2: SIN BOTONES - Usar el flujo normal (imagenes + texto)
-  // (código original para compatibilidad)
-  
   for (let i = 0; i < imagenes.length; i++) {
     const url = imagenes[i];
     const caption = i === 0 && mensajeFinal ? mensajeFinal : "";
