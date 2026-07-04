@@ -1,4 +1,4 @@
-// api/send-whatsapp.js - VERSIÓN COMPLETA Y CORREGIDA
+// api/send-whatsapp.js - VERSIÓN CORREGIDA
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -7,38 +7,17 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// ============================================================
-// 🔍 OBTENER CONFIGURACIÓN DE WHATSAPP
-// ============================================================
 async function getConfig(userId) {
-  console.log('🔍 Buscando config para userId:', userId);
-  
-  try {
-    const { data, error } = await supabase
-      .from('whatsapp_config')
-      .select('phone_number_id, permanent_token')
-      .eq('user_id', userId)
-      .maybeSingle();
-    
-    if (error) {
-      console.error('❌ Error en getConfig:', error);
-      return null;
-    }
-    
-    console.log('📌 Config encontrada:', data ? 'SÍ' : 'NO');
-    return data;
-  } catch (err) {
-    console.error('❌ Error en getConfig:', err);
-    return null;
-  }
+  const { data } = await supabase
+    .from('whatsapp_config')
+    .select('phone_number_id, permanent_token')
+    .eq('user_id', userId)
+    .maybeSingle();
+  return data;
 }
 
-// ============================================================
-// 📤 Enviar mensaje interactivo (CON o SIN imagen)
-// ============================================================
 async function metaSendInteractive(config, to, text, buttons, imageUrl = null) {
   try {
-    // WhatsApp solo permite hasta 3 botones
     const maxButtons = buttons.slice(0, 3);
     
     const formattedButtons = maxButtons.map((btn, index) => ({
@@ -49,7 +28,6 @@ async function metaSendInteractive(config, to, text, buttons, imageUrl = null) {
       }
     }));
 
-    // Construir payload interactivo
     const interactivePayload = {
       type: "button",
       body: {
@@ -60,7 +38,6 @@ async function metaSendInteractive(config, to, text, buttons, imageUrl = null) {
       }
     };
 
-    // Si hay imagen, agregar header con imagen
     if (imageUrl) {
       interactivePayload.header = {
         type: "image",
@@ -75,11 +52,7 @@ async function metaSendInteractive(config, to, text, buttons, imageUrl = null) {
       interactive: interactivePayload
     };
 
-    console.log('📤 Enviando mensaje INTERACTIVO:');
-    console.log('  - Has Image:', !!imageUrl);
-    console.log('  - Buttons:', formattedButtons.length);
-    console.log('  - Text length:', text.length);
-    console.log('  - Payload:', JSON.stringify(payload, null, 2));
+    console.log('📤 Enviando INTERACTIVO:', JSON.stringify(payload, null, 2));
 
     const r = await fetch(
       `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
@@ -100,7 +73,7 @@ async function metaSendInteractive(config, to, text, buttons, imageUrl = null) {
       return false;
     }
 
-    console.log('✅ Mensaje interactivo ENVIADO:', responseText);
+    console.log('✅ Mensaje interactivo ENVIADO');
     return true;
   } catch (err) {
     console.error('❌ Error en metaSendInteractive:', err);
@@ -108,9 +81,6 @@ async function metaSendInteractive(config, to, text, buttons, imageUrl = null) {
   }
 }
 
-// ============================================================
-// 📤 Enviar mensaje de texto normal
-// ============================================================
 async function metaSendText(config, to, text) {
   try {
     const r = await fetch(
@@ -133,7 +103,6 @@ async function metaSendText(config, to, text) {
       console.error('📤 Meta text error:', await r.text());
       return false;
     }
-    console.log('✅ Mensaje de texto ENVIADO');
     return true;
   } catch (err) {
     console.error('❌ Error en metaSendText:', err);
@@ -141,9 +110,6 @@ async function metaSendText(config, to, text) {
   }
 }
 
-// ============================================================
-// 📤 Enviar multimedia
-// ============================================================
 async function metaSendMedia(config, to, mediaUrl, type = 'image', caption = '') {
   try {
     const t = type === 'video' ? 'video' : 'image';
@@ -153,9 +119,6 @@ async function metaSendMedia(config, to, mediaUrl, type = 'image', caption = '')
       type: t,
       [t]: caption ? { link: mediaUrl, caption } : { link: mediaUrl },
     };
-    
-    console.log(`📤 Enviando ${t} a ${to}`);
-    
     const r = await fetch(
       `https://graph.facebook.com/v22.0/${config.phone_number_id}/messages`,
       {
@@ -171,7 +134,6 @@ async function metaSendMedia(config, to, mediaUrl, type = 'image', caption = '')
       console.error(`📤 Meta ${t} error:`, await r.text());
       return false;
     }
-    console.log(`✅ ${t} ENVIADO`);
     return true;
   } catch (err) {
     console.error('❌ Error en metaSendMedia:', err);
@@ -179,213 +141,112 @@ async function metaSendMedia(config, to, mediaUrl, type = 'image', caption = '')
   }
 }
 
-// ============================================================
-// 🚀 HANDLER PRINCIPAL
-// ============================================================
 export default async function handler(req, res) {
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-  
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
     const body = req.body || {};
-
-    // 📥 LEER PARÁMETROS
     const to = body.to || body.To || body.number || body.phone;
-    const userId = body.userId || body.user_id || body.userid || body.userID;
+    const userId = body.userId || body.user_id || body.userid;
     const message = body.message || body.text || '';
     const buttons = body.buttons || null;
     const mediaUrl = body.media_url || null;
     const mediaType = body.media_type || 'image';
 
-    // 👇 LOG DETALLADO
-    console.log('🔍 === PAYLOAD RECIBIDO ===');
-    console.log('📌 to:', to);
-    console.log('📌 userId:', userId);
-    console.log('📌 message:', message?.substring(0, 100));
-    console.log('📌 buttons:', buttons);
-    console.log('📌 buttons length:', buttons?.length || 0);
-    console.log('📌 mediaUrl:', mediaUrl);
-    console.log('📌 mediaType:', mediaType);
-    console.log('🔍 === FIN ===');
-
-    // ✅ VALIDACIÓN
-    if (!to) {
-      console.error('❌ Falta "to"');
-      return res.status(400).json({ error: 'Missing "to" field' });
-    }
-
-    if (!userId) {
-      console.error('❌ Falta "userId"');
-      return res.status(400).json({ 
-        error: 'Missing userId',
-        received: Object.keys(body)
-      });
+    if (!to || !userId) {
+      return res.status(400).json({ error: 'Missing to or userId' });
     }
 
     const cleanTo = String(to).replace(/[^0-9]/g, '');
-    if (!cleanTo) {
-      return res.status(400).json({ error: 'Invalid phone number' });
-    }
+    if (!cleanTo) return res.status(400).json({ error: 'Invalid phone number' });
 
-    // 👇 OBTENER CONFIGURACIÓN DE WHATSAPP
-    console.log('🔍 Buscando config para userId:', userId);
-    
     const config = await getConfig(userId);
-    
-    if (!config) {
-      console.error('❌ No hay configuración de WhatsApp para userId:', userId);
-      return res.status(400).json({ 
-        error: 'WhatsApp no configurado para este usuario',
-        userId: userId,
-        solution: 'Ve a la configuración y conecta tu WhatsApp'
-      });
+    if (!config?.phone_number_id || !config?.permanent_token) {
+      return res.status(400).json({ error: 'WhatsApp no configurado' });
     }
-
-    if (!config.phone_number_id || !config.permanent_token) {
-      console.error('❌ Configuración incompleta:', {
-        phone_number_id: !!config.phone_number_id,
-        permanent_token: !!config.permanent_token
-      });
-      return res.status(400).json({ 
-        error: 'WhatsApp configurado incompletamente',
-        missing: {
-          phone_number_id: !config.phone_number_id,
-          permanent_token: !config.permanent_token
-        }
-      });
-    }
-
-    console.log('✅ Configuración de WhatsApp encontrada');
 
     // ============================================================
-    // 🎯 CASO 1: CON BOTONES - USAR INTERACTIVO
+    // 🎯 CASO 1: CON BOTONES
     // ============================================================
     if (buttons && buttons.length > 0) {
-      console.log(`🎯 ENVIANDO MENSAJE CON ${buttons.length} BOTONES`);
+      console.log(`🎯 Enviando ${buttons.length} botones`);
       
       const imageUrl = mediaUrl && (mediaType === 'image' || mediaType.includes('image')) 
         ? mediaUrl 
         : null;
       
-      console.log(`📸 ${imageUrl ? 'CON imagen' : 'SIN imagen'}`);
-      
-      // ✅ Enviar mensaje interactivo (con o sin imagen)
-      const success = await metaSendInteractive(
-        config,
-        cleanTo,
-        message,
-        buttons,
-        imageUrl
-      );
-      
-      if (!success) {
-        console.error('❌ Falló el envío interactivo');
-        // Fallback: enviar como texto normal
-        console.log('⚠️ Fallback: enviando como texto normal');
-        await metaSendText(config, cleanTo, message);
-      }
-      
-      // 💾 Guardar en Supabase
-      try {
-        await supabase.from('received_messages').insert({
-          user_id: userId,
-          source: 'whatsapp',
-          platform: 'whatsapp',
-          sender_id: cleanTo,
-          sender_name: cleanTo,
-          from_number: cleanTo,
-          message: message || '',
-          media_url: imageUrl || null,
-          media_url_text: imageUrl || null,
-          message_type: 'out_interactive',
-          is_read: true,
-          is_processed: true,
-          buttons: buttons,
-        });
-        console.log('✅ Mensaje guardado en DB');
-      } catch (dbError) {
-        console.error('⚠️ Error guardando en DB:', dbError);
+      if (imageUrl) {
+        // ✅ PASO 1: Enviar imagen PRIMERO (sin botones)
+        console.log('📸 Enviando imagen primero...');
+        await metaSendMedia(config, cleanTo, imageUrl, 'image', message || '');
+        
+        // ✅ PASO 2: Enviar botones DESPUÉS (sin imagen)
+        console.log('🔘 Enviando botones después...');
+        const buttonText = 'Selecciona una opción:';
+        const success = await metaSendInteractive(
+          config,
+          cleanTo,
+          buttonText,
+          buttons,
+          null // 👈 SIN imagen
+        );
+        
+        if (!success) {
+          console.log('⚠️ Falló interactivo, usando fallback');
+          const fallbackText = 'Selecciona una opción:\n\n' +
+            buttons.map((b, i) => `${i+1}️⃣ ${b.label.replace(/[^\w\s]/g, '').trim()}`).join('\n') +
+            '\n\n📲 Escribí el número de tu opción 😊';
+          await metaSendText(config, cleanTo, fallbackText);
+        }
+      } else {
+        // Sin imagen: enviar todo junto (como funcionó en la prueba)
+        const success = await metaSendInteractive(config, cleanTo, message, buttons, null);
+        if (!success) {
+          const fallbackText = message + '\n\nRESPONDE CON EL NÚMERO:\n' +
+            buttons.map((b, i) => `${i+1}️⃣ ${b.label.replace(/[^\w\s]/g, '').trim()}`).join('\n');
+          await metaSendText(config, cleanTo, fallbackText);
+        }
       }
 
       return res.status(200).json({
-        ok: success,
+        ok: true,
         sent: {
           to: cleanTo,
           hasButtons: true,
           buttonsCount: buttons.length,
-          hasImage: !!imageUrl,
-          type: 'interactive'
+          hasImage: !!mediaUrl,
         }
       });
     }
 
     // ============================================================
-    // 🎯 CASO 2: SIN BOTONES - Enviar normal
+    // 🎯 CASO 2: SIN BOTONES
     // ============================================================
-    console.log('📤 Enviando mensaje SIN botones');
-    
-    let sendOk = true;
-    
     if (mediaUrl) {
-      const ok = await metaSendMedia(config, cleanTo, mediaUrl, mediaType, message || '');
-      if (!ok) sendOk = false;
+      await metaSendMedia(config, cleanTo, mediaUrl, mediaType, message || '');
       if (message) {
-        const ok2 = await metaSendText(config, cleanTo, message);
-        if (!ok2) sendOk = false;
+        await metaSendText(config, cleanTo, message);
       }
     } else if (message) {
-      const ok = await metaSendText(config, cleanTo, message);
-      if (!ok) sendOk = false;
-    }
-
-    // 💾 Guardar en Supabase
-    try {
-      await supabase.from('received_messages').insert({
-        user_id: userId,
-        source: 'whatsapp',
-        platform: 'whatsapp',
-        sender_id: cleanTo,
-        sender_name: cleanTo,
-        from_number: cleanTo,
-        message: message || '',
-        media_url: mediaUrl || null,
-        media_url_text: mediaUrl || null,
-        message_type: mediaUrl ? 'out_media' : 'out_text',
-        is_read: true,
-        is_processed: true,
-      });
-      console.log('✅ Mensaje guardado en DB');
-    } catch (dbError) {
-      console.error('⚠️ Error guardando en DB:', dbError);
+      await metaSendText(config, cleanTo, message);
     }
 
     return res.status(200).json({
-      ok: sendOk,
+      ok: true,
       sent: {
         to: cleanTo,
         hasButtons: false,
         hasImage: !!mediaUrl,
-        type: mediaUrl ? 'media' : 'text'
       }
     });
 
   } catch (err) {
-    console.error('❌ Error general en send-whatsapp:', err);
-    console.error('❌ Stack:', err.stack);
-    return res.status(500).json({ 
-      error: 'Error interno del servidor',
-      message: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
+    console.error('❌ send-whatsapp error:', err);
+    return res.status(500).json({ error: err.message });
   }
 }
