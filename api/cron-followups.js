@@ -1,4 +1,5 @@
-// api/cron-followups.js
+// api/cron-followups.js - CORREGIDO
+
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -10,7 +11,6 @@ const BAILEYS_URL = process.env.BAILEYS_SERVER_URL;
 const CRON_SECRET = process.env.CRON_SECRET;
 
 export default async function handler(req, res) {
-  // Validar que viene de pg_cron / cron-job
   const auth = req.headers['authorization'] || req.query.secret;
   if (CRON_SECRET && auth !== `Bearer ${CRON_SECRET}` && auth !== CRON_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -19,7 +19,6 @@ export default async function handler(req, res) {
   try {
     const now = new Date().toISOString();
 
-    // 1) Procesar followup_queue (mensajes programados)
     const { data: pending } = await supabase
       .from('followup_queue')
       .select('*')
@@ -31,7 +30,6 @@ export default async function handler(req, res) {
 
     for (const item of pending || []) {
       try {
-        // Verificar que el usuario NO haya respondido después de programar
         const { data: laterMsg } = await supabase
           .from('inbox_messages')
           .select('id')
@@ -42,14 +40,13 @@ export default async function handler(req, res) {
           .limit(1);
 
         if (laterMsg && laterMsg.length > 0) {
-          // Cancelar: el usuario ya respondió
           await supabase.from('followup_queue').update({ status: 'cancelled' }).eq('id', item.id);
           continue;
         }
 
-        // Enviar el seguimiento
         if (item.template_id) {
-          await sendTemplate(item.template_id, item.sender_id, item.user_id);
+          // ✅ USAR LA NUEVA FUNCIÓN CON BOTONES
+          await sendTemplateWithButtons(item.template_id, item.sender_id, item.user_id);
         } else if (item.message) {
           await fetch(`${BAILEYS_URL}/send-message`, {
             method: 'POST',
@@ -80,9 +77,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 2) Detectar contactos sin respuesta hace >24h y programar remarketing
-    // (solo si tenés una tabla de campañas activas; opcional)
-
     return res.status(200).json({ ok: true, processed });
   } catch (err) {
     console.error('cron-followups error:', err);
@@ -90,34 +84,70 @@ export default async function handler(req, res) {
   }
 }
 
-async function sendTemplate(templateId, to, userId) {
+// ============================================================
+// 📤 NUEVA FUNCIÓN: Enviar plantilla CON BOTONES
+// ============================================================
+async function sendTemplateWithButtons(templateId, to, userId) {
   const { data: tpl } = await supabase
-    .from('templates').select('*').eq('id', templateId).single();
+    .from('templates')
+    .select('*')
+    .eq('id', templateId)
+    .single();
+  
   if (!tpl) return;
 
+  // 👇 OBTENER BOTONES DE LA PLANTILLA
+  const buttons = tpl.variables?.buttons || null;
   const media = tpl.variables?.media || {};
-  for (const url of (media.imageUrls || [])) {
-    await fetch(`${BAILEYS_URL}/send-media`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, mediaUrl: url, type: 'image' }),
-    });
+  
+  // 1️⃣ Obtener la primera imagen (para el header del mensaje interactivo)
+  let firstImage = null;
+  if (media.imageUrls && media.imageUrls.length > 0) {
+    firstImage = media.imageUrls[0];
   }
-  if (media.videoUrl) {
-    await fetch(`${BAILEYS_URL}/send-media`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, mediaUrl: media.videoUrl, type: 'video' }),
-    });
+
+  // 2️⃣ Construir el payload para la API send-whatsapp
+  const payload = {
+    to: to,
+    userId: userId,
+    message: tpl.content || '',
+    media_url: firstImage || null,
+    media_type: firstImage ? 'image' : null,
+    buttons: buttons || null, // 👈 ENVIAR BOTONES
+  };
+
+  console.log('📤 Enviando plantilla con botones desde cron:', {
+    templateId,
+    to,
+    hasButtons: !!buttons,
+    buttonsCount: buttons?.length || 0,
+    hasImage: !!firstImage,
+  });
+
+  // 3️⃣ Enviar a la API de WhatsApp (la misma que usa InboxPage)
+  const response = await fetch(
+    `${process.env.VERCEL_URL || 'https://bot-seller-skyline-2026.vercel.app'}/api/send-whatsapp`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('❌ Error enviando plantilla con botones:', errorText);
+    throw new Error(`Error sending template: ${response.status}`);
   }
-  if (media.gifUrl) {
-    await fetch(`${BAILEYS_URL}/send-media`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, mediaUrl: media.gifUrl, type: 'gif' }),
-    });
-  }
-  if (tpl.content) {
-    await fetch(`${BAILEYS_URL}/send-message`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, message: tpl.content }),
-    });
-  }
+
+  console.log('✅ Plantilla con botones enviada desde cron');
+}
+
+// ============================================================
+// ⚠️ FUNCIÓN ANTIGUA (se mantiene por compatibilidad, pero ya no se usa)
+// ============================================================
+async function sendTemplate(templateId, to, userId) {
+  // Esta función se mantiene para no romper código existente
+  // Pero ahora usamos sendTemplateWithButtons
+  return sendTemplateWithButtons(templateId, to, userId);
 }
