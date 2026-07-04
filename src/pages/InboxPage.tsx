@@ -244,23 +244,38 @@ export default function InboxPage() {
   }, []);
 
   // ============================================================
-  // SELECCIÓN DE PLANTILLA (CON BOTONES)
+  // SELECCIÓN DE PLANTILLA (CON BOTONES) - CORREGIDO ✅
   // ============================================================
   const handleSelectTemplate = (template: FullTemplate) => {
+    console.log('📌 Seleccionando plantilla:', template.name);
+    console.log('📌 Botones en plantilla:', template.variables?.buttons?.length || 0);
+    
     setMessageInput(template.content || "");
     
     const templateButtons = template.variables?.buttons || null;
     
+    // ✅ GUARDAR BOTONES SIEMPRE (CON O SIN IMAGEN)
     if (template.media_url && template.media_type) {
+      // Caso 1: Tiene imagen y botones (o solo imagen)
       setSelectedTemplateMedia({ 
         url: template.media_url, 
         type: template.media_type,
-        buttons: templateButtons
+        buttons: templateButtons || []
+      });
+      setSelectedFile(null);
+    } else if (templateButtons && templateButtons.length > 0) {
+      // Caso 2: NO tiene imagen, PERO tiene botones ✅
+      setSelectedTemplateMedia({ 
+        url: '', 
+        type: 'text',
+        buttons: templateButtons  // 👈 GUARDA LOS BOTONES
       });
       setSelectedFile(null);
     } else {
+      // Caso 3: Sin imagen y sin botones
       setSelectedTemplateMedia(null);
     }
+    
     setShowTemplates(false);
   };
 
@@ -606,6 +621,7 @@ export default function InboxPage() {
         ...payload,
         message: payload.message?.substring(0, 50),
         buttons: payload.buttons?.length || 0,
+        media: payload.media_url ? 'SÍ' : 'NO',
       });
 
       const response = await fetch("/api/send-whatsapp", {
