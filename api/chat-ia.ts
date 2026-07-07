@@ -57,7 +57,7 @@ type ParsedTraining = {
   cityCorrections: CityCorrection[];
 };
 
-// ============ PARSEO DEL ENTRENAMIENTO ============
+// ============ PARSEO DEL ENTRENAMIENTO (VERSIÓN MEJORADA) ============
 function parseTraining(training: string): ParsedTraining {
   const products: ProductItem[] = [];
   const cities: { alias: string; canonical: string }[] = [];
@@ -143,44 +143,73 @@ function parseTraining(training: string): ParsedTraining {
       }
     });
 
-  // --- PARSEAR ZONAS CON COBERTURA ---
-  const coverageSection =
-    training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
-    training.match(/🟢 ZONAS CON COBERTURA([\s\S]*?)🟡 ZONAS SIN COBERTURA/i)?.[1] ||
-    training.match(/📍 ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
-    "";
+  // --- PARSEAR ZONAS CON COBERTURA (MEJORADO) ---
+  // Buscar en todo el texto, con o sin emojis
+  let coverageSection = training.match(/🟢\s*ZONAS CON COBERTURA\s*\([^)]*\)\s*━━━*[━]*\s*([\s\S]*?)(?=🟡\s*ZONAS SIN COBERTURA|ZONAS SIN COBERTURA|━━━━|$)/i)?.[1] || "";
+  
+  if (!coverageSection) {
+    coverageSection = training.match(/ZONAS CON COBERTURA\s*\([^)]*\)\s*([\s\S]*?)(?=ZONAS SIN COBERTURA|━━━━|$)/i)?.[1] || "";
+  }
+  
+  if (!coverageSection) {
+    coverageSection = training.match(/ZONAS CON COBERTURA\s*([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] || "";
+  }
+  
+  if (!coverageSection) {
+    // Buscar la línea que contiene las ciudades después de "ZONAS CON COBERTURA"
+    const lines = training.split("\n");
+    let found = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (/ZONAS CON COBERTURA/i.test(lines[i]) || /🟢.*ZONAS CON COBERTURA/i.test(lines[i])) {
+        // Buscar la siguiente línea que no esté vacía y no sea un separador
+        for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+          const line = lines[j].trim();
+          if (line && !line.includes("━━") && !line.includes("ZONAS") && !line.includes("📍")) {
+            coverageSection = line;
+            found = true;
+            break;
+          }
+        }
+        if (found) break;
+      }
+    }
+  }
 
   // Extraer todas las ciudades de la sección de cobertura
   const coverageLines = coverageSection
     .split("\n")
     .map(clean)
-    .filter((l) => l.length > 0 && !l.includes("━━") && !l.includes("🟢") && !l.includes("📍") && !l.includes("ZONAS"));
+    .filter((l) => l.length > 0 && !l.includes("━━") && !l.includes("🟢") && !l.includes("📍") && !l.includes("ZONAS") && !l.includes("(") && !l.includes(")"));
 
-  // Procesar líneas con múltiples ciudades (separadas por coma o espacios)
+  // Palabras que no son ciudades (para filtrar)
+  const ignoreWords = ["es", "san", "Nte", "del", "la", "de", "y", "por", "para", "con", "sin", "sobre", "el", "los", "las", "un", "una", "unos", "unas", "al", "lo"];
+
   for (const line of coverageLines) {
     // Limpiar emojis y caracteres especiales
     const cleanedLine = line.replace(/[📍✅🟢]/g, "").trim();
-    // Dividir por comas o por espacios si no hay comas
+    // Dividir por comas
     const parts = cleanedLine.includes(",") 
       ? cleanedLine.split(",").map(clean).filter(Boolean)
       : cleanedLine.split(/\s+/).filter((p) => p.length > 2 && !p.includes("📍"));
     
     for (const part of parts) {
-      const city = clean(part);
-      if (city.length > 2 && !city.includes("📍") && !city.includes("✅")) {
-        // Verificar si es una ciudad con variantes
-        if (city.includes("(") || city.includes("→")) {
-          // Procesar variantes
-          const variants = city.replace(/[()]/g, "").split(/→|➜/).map(clean);
-          for (const v of variants) {
-            if (v.length > 2) {
-              coverageZones.push(v);
-              addCity(v, v);
-            }
-          }
-        } else {
-          coverageZones.push(city);
-          addCity(city, city);
+      let city = clean(part);
+      // Si la ciudad tiene variantes como "Limpio villa jardin", extraer solo el nombre principal
+      if (city.includes("villa") || city.includes("jardin")) {
+        const mainPart = city.split(" ")[0];
+        if (mainPart && mainPart.length > 2) {
+          city = mainPart;
+        }
+      }
+      // Filtrar palabras comunes que no son ciudades
+      if (city.length > 2 && !ignoreWords.includes(city.toLowerCase()) && !city.includes("📍") && !city.includes("✅") && !city.includes("(") && !city.includes(")")) {
+        // Normalizar: convertir a título
+        const normalizedCity = city.split(" ").map(word => 
+          word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+        ).join(" ");
+        if (normalizedCity.length > 2 && !ignoreWords.includes(normalizedCity.toLowerCase())) {
+          coverageZones.push(normalizedCity);
+          addCity(normalizedCity, normalizedCity);
         }
       }
     }
@@ -293,6 +322,23 @@ function parseTraining(training: string): ParsedTraining {
     const key = normalize(c.alias);
     if (key) cityMap.set(key, c);
   }
+
+  // Si no hay zonas de cobertura, usar todas las ciudades como cobertura
+  if (coverageZones.length === 0 && cityMap.size > 0) {
+    for (const [key, value] of cityMap) {
+      coverageZones.push(value.canonical);
+    }
+  }
+
+  console.log("📊 PARSER RESULTADO:");
+  console.log(`   Productos: ${products.length}`);
+  console.log(`   Ciudades: ${cityMap.size}`);
+  console.log(`   Zonas con cobertura: ${coverageZones.length}`);
+  console.log(`   Zonas sin cobertura: ${noCoverageZones.length}`);
+  console.log(`   Correcciones: ${cityCorrections.length}`);
+  console.log(`   Reglas: ${rules.length}`);
+  console.log(`   Ejemplos: ${examples.length}`);
+  console.log(`   Bancos: ${bankData.length}`);
 
   return {
     products,
@@ -439,8 +485,6 @@ function hasCoverage(city: string, parsed: ParsedTraining) {
   for (const cityAlias of parsed.cities) {
     const alias = normalize(cityAlias.alias);
     if (c === alias || c.includes(alias) || alias.includes(c)) {
-      // Si está en ciudades pero no en coverageZones, asumimos que sí tiene cobertura
-      // porque la lista de ciudades incluye todas las ciudades conocidas
       return true;
     }
   }
