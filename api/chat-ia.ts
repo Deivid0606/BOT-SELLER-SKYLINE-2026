@@ -57,7 +57,7 @@ type ParsedTraining = {
   cityCorrections: CityCorrection[];
 };
 
-// ============ PARSEO DEL ENTRENAMIENTO (VERSIÓN MEJORADA) ============
+// ============ PARSEO DEL ENTRENAMIENTO (VERSIÓN CORREGIDA) ============
 function parseTraining(training: string): ParsedTraining {
   const products: ProductItem[] = [];
   const cities: { alias: string; canonical: string }[] = [];
@@ -143,73 +143,94 @@ function parseTraining(training: string): ParsedTraining {
       }
     });
 
-  // --- PARSEAR ZONAS CON COBERTURA (MEJORADO) ---
-  // Buscar en todo el texto, con o sin emojis
-  let coverageSection = training.match(/🟢\s*ZONAS CON COBERTURA\s*\([^)]*\)\s*━━━*[━]*\s*([\s\S]*?)(?=🟡\s*ZONAS SIN COBERTURA|ZONAS SIN COBERTURA|━━━━|$)/i)?.[1] || "";
-  
-  if (!coverageSection) {
-    coverageSection = training.match(/ZONAS CON COBERTURA\s*\([^)]*\)\s*([\s\S]*?)(?=ZONAS SIN COBERTURA|━━━━|$)/i)?.[1] || "";
-  }
-  
-  if (!coverageSection) {
-    coverageSection = training.match(/ZONAS CON COBERTURA\s*([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] || "";
-  }
-  
-  if (!coverageSection) {
-    // Buscar la línea que contiene las ciudades después de "ZONAS CON COBERTURA"
-    const lines = training.split("\n");
-    let found = false;
-    for (let i = 0; i < lines.length; i++) {
-      if (/ZONAS CON COBERTURA/i.test(lines[i]) || /🟢.*ZONAS CON COBERTURA/i.test(lines[i])) {
-        // Buscar la siguiente línea que no esté vacía y no sea un separador
-        for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
-          const line = lines[j].trim();
-          if (line && !line.includes("━━") && !line.includes("ZONAS") && !line.includes("📍")) {
-            coverageSection = line;
-            found = true;
-            break;
-          }
+  // ============================================================
+  // --- PARSEAR ZONAS CON COBERTURA (VERSIÓN MEJORADA) ---
+  // ============================================================
+  let coverageText = "";
+
+  // Buscar línea por línea en todo el texto
+  const lines = training.split("\n");
+  let foundCoverage = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // Detectar cualquier variante de "ZONAS CON COBERTURA"
+    if (/ZONAS CON COBERTURA/i.test(line) || /🟢.*ZONAS CON COBERTURA/i.test(line) || /📍.*ZONAS CON COBERTURA/i.test(line)) {
+      // Recoger líneas siguientes hasta encontrar otra sección
+      for (let j = i + 1; j < lines.length; j++) {
+        const nextLine = lines[j];
+        // Detener si encuentra otra sección
+        if (/ZONAS SIN COBERTURA/i.test(nextLine) || /🟡.*ZONAS SIN COBERTURA/i.test(nextLine)) {
+          break;
         }
-        if (found) break;
+        // Limpiar la línea y agregar si tiene contenido útil
+        const cleanLine = nextLine.replace(/[📍✅🟢]/g, "").trim();
+        if (cleanLine && !cleanLine.includes("━━") && !cleanLine.includes("ZONAS") && !cleanLine.includes("(") && !cleanLine.includes(")")) {
+          coverageText += " " + cleanLine;
+        }
+      }
+      foundCoverage = true;
+      break;
+    }
+  }
+
+  // Si no encontró con el método anterior, usar regex como fallback
+  if (!foundCoverage) {
+    const coverageMatch = training.match(/ZONAS CON COBERTURA[^━]*━+[^━]*([\s\S]*?)(?:ZONAS SIN COBERTURA|━━━━)/i);
+    if (coverageMatch) {
+      coverageText = coverageMatch[1];
+    }
+  }
+
+  // Si aún no hay texto, buscar en todo el texto por ciudades conocidas
+  if (!coverageText || coverageText.length < 10) {
+    // Buscar en la sección de cobertura del entrenamiento original
+    const altMatch = training.match(/📍\s*Altos,\s*Aregua,\s*Asunción/i);
+    if (altMatch) {
+      // Encontrar la línea completa que contiene las ciudades
+      for (const line of lines) {
+        if (line.includes("Altos") && line.includes("Aregua") && line.includes("Asunción")) {
+          coverageText = line.replace(/[📍]/g, "").trim();
+          break;
+        }
       }
     }
   }
 
-  // Extraer todas las ciudades de la sección de cobertura
-  const coverageLines = coverageSection
-    .split("\n")
-    .map(clean)
-    .filter((l) => l.length > 0 && !l.includes("━━") && !l.includes("🟢") && !l.includes("📍") && !l.includes("ZONAS") && !l.includes("(") && !l.includes(")"));
-
-  // Palabras que no son ciudades (para filtrar)
-  const ignoreWords = ["es", "san", "Nte", "del", "la", "de", "y", "por", "para", "con", "sin", "sobre", "el", "los", "las", "un", "una", "unos", "unas", "al", "lo"];
-
-  for (const line of coverageLines) {
-    // Limpiar emojis y caracteres especiales
-    const cleanedLine = line.replace(/[📍✅🟢]/g, "").trim();
-    // Dividir por comas
-    const parts = cleanedLine.includes(",") 
-      ? cleanedLine.split(",").map(clean).filter(Boolean)
-      : cleanedLine.split(/\s+/).filter((p) => p.length > 2 && !p.includes("📍"));
+  // Extraer todas las ciudades del texto de cobertura
+  if (coverageText && coverageText.length > 5) {
+    // Palabras que no son ciudades
+    const ignoreWords = ["es", "san", "nte", "del", "la", "de", "y", "por", "para", "con", "sin", "sobre", "el", "los", "las", "un", "una", "unos", "unas", "al", "lo", "villa", "jardin", "fdo", "moran"];
     
-    for (const part of parts) {
-      let city = clean(part);
-      // Si la ciudad tiene variantes como "Limpio villa jardin", extraer solo el nombre principal
-      if (city.includes("villa") || city.includes("jardin")) {
-        const mainPart = city.split(" ")[0];
-        if (mainPart && mainPart.length > 2) {
-          city = mainPart;
-        }
+    // Dividir por comas y limpiar
+    const citiesRaw = coverageText
+      .replace(/[📍✅🟢]/g, "")
+      .split(/[,，\n]/)
+      .map(clean)
+      .filter(c => c.length > 2 && !ignoreWords.includes(c.toLowerCase()));
+
+    // Procesar cada ciudad
+    for (let city of citiesRaw) {
+      // Si tiene "villa jardin" o similar, extraer solo el nombre principal
+      if (city.toLowerCase().includes("villa") || city.toLowerCase().includes("jardin")) {
+        const parts = city.split(" ");
+        city = parts[0];
       }
-      // Filtrar palabras comunes que no son ciudades
-      if (city.length > 2 && !ignoreWords.includes(city.toLowerCase()) && !city.includes("📍") && !city.includes("✅") && !city.includes("(") && !city.includes(")")) {
-        // Normalizar: convertir a título
-        const normalizedCity = city.split(" ").map(word => 
-          word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-        ).join(" ");
-        if (normalizedCity.length > 2 && !ignoreWords.includes(normalizedCity.toLowerCase())) {
-          coverageZones.push(normalizedCity);
-          addCity(normalizedCity, normalizedCity);
+      // Si tiene "Fdo de la mora", convertir a "Fernando de la Mora"
+      if (city.toLowerCase().includes("fdo") || city.toLowerCase().includes("fernando")) {
+        city = "Fernando de la Mora";
+      }
+      // Normalizar: convertir a título
+      const normalized = city.split(" ").map(w => 
+        w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+      ).join(" ");
+      
+      if (normalized.length > 2 && !ignoreWords.includes(normalized.toLowerCase()) && !ignoreWords.includes(normalized.split(" ")[0]?.toLowerCase() || "")) {
+        // Verificar que no sea una palabra genérica
+        const firstWord = normalized.split(" ")[0]?.toLowerCase() || "";
+        if (!["la", "las", "los", "las", "del", "al", "el", "un", "una"].includes(firstWord)) {
+          coverageZones.push(normalized);
+          addCity(normalized, normalized);
         }
       }
     }
@@ -244,9 +265,9 @@ function parseTraining(training: string): ParsedTraining {
   if (cityListSection) {
     const cityBlocks = cityListSection.split(/📍\s*/g).filter(Boolean);
     for (const block of cityBlocks) {
-      const lines = block.split("\n").map(clean).filter(Boolean);
-      const canonical = lines[0]?.replace(/[📍✅]/g, "").trim();
-      const variantsLine = lines.find((l) => l.startsWith("✅"));
+      const lines2 = block.split("\n").map(clean).filter(Boolean);
+      const canonical = lines2[0]?.replace(/[📍✅]/g, "").trim();
+      const variantsLine = lines2.find((l) => l.startsWith("✅"));
 
       if (canonical && variantsLine) {
         addCity(canonical, canonical);
