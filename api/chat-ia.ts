@@ -1,42 +1,21 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO - Mega Todo Store
+ * CHAT IA VENDEDOR AUTÓNOMO V3 - Mega Todo Store / One Store
  *
- * Objetivo:
- * - La IA VENDE y conversa de forma fluida.
- * - El backend NO vende con textos rígidos, solo:
- *   1) Lee entrenamiento.
- *   2) Detecta producto, promo, ciudad, cantidad y datos.
- *   3) Calcula precios/totales.
- *   4) Valida reglas duras.
- *   5) Guarda pedido.
- *   6) Le entrega a Gemini un ESTADO claro para que redacte.
+ * Soluciona:
+ * 1) La IA vende sola y redacta fluido.
+ * 2) El backend solo detecta, valida, calcula, guarda y protege reglas.
+ * 3) NO reutiliza ciudad/datos viejos cuando entra una nueva campaña/producto.
+ * 4) Si el cliente responde "quiero" desde una promo, respeta la promo.
+ * 5) Si el cliente responde "quiero uno", "una unidad", "solo 1", desbloquea la promo.
+ * 6) Nunca inventa ciudad, nombre, dirección, teléfono, banco ni catálogo.
+ * 7) No se salta ciudad ni cantidad.
  *
- * Requisitos en training_data:
- *
- * CATALOGO_PRODUCTOS
- * PRODUCTO: Afilador
- * NOMBRE_CANONICO: Afilador
- * ALIAS: afiladores, afilador de cuchillo
- * PRECIO_1: 59000
- * PRECIO_2: 99000
- * PRECIO_3: 139000
- * FIN_CATALOGO_PRODUCTOS
- *
- * ZONAS CON COBERTURA
- * Asunción, San Lorenzo, Capiatá
- * ZONAS SIN COBERTURA
- *
- * DATOS_TRANSFERENCIA
- * Titular: ...
- * CI: ...
- * Entidad: ...
- * N° de cuenta: ...
- * Alias: ...
- * FIN_DATOS_TRANSFERENCIA
- *
- * CATALOGO_URL: https://...
+ * IMPORTANTE:
+ * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
+ *   o agregá una columna jsonb:
+ *   alter table orders add column if not exists locked_offer jsonb;
  */
 
 const supabase = createClient(
@@ -111,6 +90,18 @@ type ConversationState = {
   hardInstruction: string;
 };
 
+function emptyOrder(): OrderData {
+  return {
+    product: "",
+    quantity: 0,
+    city: "",
+    customer_name: "",
+    address: "",
+    phone: "",
+    locked_offer: null,
+  };
+}
+
 function sanitizeQuantity(q: any) {
   const n = Number(q);
   if (!Number.isFinite(n)) return 0;
@@ -134,7 +125,7 @@ function isPriceQuery(text: string) {
 
 function isBuyIntent(text: string) {
   const m = normalize(text);
-  return /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo|me interesa|lo quiero|quiero ese|quiero eso)\b/.test(m);
+  return /\b(si|sí|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo|me interesa|lo quiero|quiero ese|quiero eso|ese quiero)\b/.test(m);
 }
 
 function isGenericBuyReply(text: string) {
@@ -150,7 +141,11 @@ function isGenericBuyReply(text: string) {
 
   if (exact.includes(m)) return true;
 
-  return /^(si\s+)?(quiero|lo quiero|me interesa|comprar|compro|dale|ok|listo|confirmo|ese quiero|quiero ese|quiero eso)(\s+(1|2|3|una|uno|dos|tres|unidad|unidades))?$/.test(m);
+  return /^(si\s+)?(quiero|lo quiero|me interesa|comprar|compro|dale|ok|listo|confirmo|ese quiero|quiero ese|quiero eso)$/.test(m);
+}
+
+function hasExplicitQuantity(text: string) {
+  return extractQuantity(text) > 0;
 }
 
 async function getAllTrainingData(userId: string) {
@@ -639,7 +634,7 @@ function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
     customer_name: ext.name || old.customer_name || "",
     phone: ext.phone || old.phone || "",
     address: ext.address || old.address || "",
-    locked_offer: ext.locked_offer || old.locked_offer || null,
+    locked_offer: ext.locked_offer !== undefined ? ext.locked_offer : old.locked_offer || null,
   };
 }
 
@@ -759,6 +754,17 @@ function getOfferFromLastPromotion(history: any[], parsed: ParsedTraining): Offe
   return null;
 }
 
+function isPromotionLikeMessage(text: string) {
+  const c = clean(text);
+  const n = normalize(c);
+  return (
+    c.includes("🔥") ||
+    c.includes("🚨") ||
+    c.includes("👉") ||
+    /\b(oferta|ofertas|promo|promocion|promoción|ultimas unidades|últimas unidades|garantia|garantía|solo hoy|escribi quiero|escribí quiero|unidades)\b/.test(n)
+  );
+}
+
 function isRespondingToPromotion(text: string, history: any[]) {
   if (!isBuyIntent(text) && !isGenericBuyReply(text)) return false;
 
@@ -766,20 +772,54 @@ function isRespondingToPromotion(text: string, history: any[]) {
     .slice(-4)
     .filter((h: any) => h.role === "assistant" || h.role === "model");
 
-  return lastBotMessages.some((item) => {
-    const content = clean(item?.content);
-    return (
-      content.includes("Oferta") ||
-      content.includes("oferta") ||
-      content.includes("promoción") ||
-      content.includes("promo") ||
-      content.includes("🔥") ||
-      content.includes("HOY") ||
-      content.includes("antes") ||
-      content.includes("llevate") ||
-      content.includes("por")
-    );
-  });
+  return lastBotMessages.some((item) => isPromotionLikeMessage(clean(item?.content)));
+}
+
+/**
+ * Regla anti-datos-viejos:
+ * Si el cliente entra con interés/producto o responde QUIERO a una promo/campaña,
+ * se inicia pedido limpio. Solo se conserva producto/promo, NO ciudad/nombre/dirección/teléfono viejos.
+ */
+function shouldStartFreshOrder({
+  texto,
+  context,
+  oldOrder,
+  productFromMessage,
+  lockedProductByContext,
+  promoResponse,
+  parsed,
+}: {
+  texto: string;
+  context: any;
+  oldOrder: OrderData;
+  productFromMessage: string;
+  lockedProductByContext: ProductItem | null;
+  promoResponse: boolean;
+  parsed: ParsedTraining;
+}) {
+  const msg = normalize(texto);
+  const explicitInterest =
+    /\b(me interesa|precio|cuanto|cuanto sale|quiero informacion|info|informacion|quiero saber|consulta)\b/.test(msg);
+
+  const productChanged =
+    !!productFromMessage &&
+    !!oldOrder.product &&
+    normalize(productFromMessage) !== normalize(oldOrder.product);
+
+  const campaignClick =
+    explicitInterest &&
+    !!productFromMessage;
+
+  const genericWantsPromo =
+    (isGenericBuyReply(texto) || isBuyIntent(texto)) &&
+    promoResponse &&
+    !!lockedProductByContext;
+
+  const contextWasConfirmed = context?.step === "pedido_confirmado";
+
+  const stale = isOrderStale(oldOrder, context?.updated_at || new Date().toISOString());
+
+  return Boolean(productChanged || campaignClick || genericWantsPromo || contextWasConfirmed || stale);
 }
 
 function getLockedProductFromContext(
@@ -910,19 +950,19 @@ function productsSummary(parsed: ParsedTraining) {
 }
 
 function buildHardInstruction(state: ConversationState) {
-  const { order, coverage, missing, step } = state;
+  const { order, coverage, missing } = state;
 
   if (!order.product) {
     return "Vender: presentar opciones del catálogo y preguntar qué producto le interesa. No pedir ciudad todavía si no hay producto.";
   }
 
   if (!order.city) {
-    return "Confirmar el producto/precio/promo y preguntar ciudad de envío. No pedir cantidad todavía si falta ciudad.";
+    return "Confirmar producto/precio/promo y preguntar SOLO ciudad de envío. No inventar ciudad. No pedir nombre/dirección/teléfono todavía.";
   }
 
   if (!order.quantity) {
     if (coverage === false) {
-      return "Informar con tacto que no tiene contra-entrega, que se envía por transportadora con pago anticipado, PERO pedir primero cantidad. No mostrar datos bancarios hasta tener cantidad.";
+      return "Informar con tacto que no tiene contra-entrega y que se envía por transportadora con pago anticipado, PERO pedir primero cantidad. No mostrar datos bancarios hasta tener cantidad.";
     }
     return "Confirmar cobertura/envío gratis si aplica y preguntar cuántas unidades quiere llevar. No pedir datos personales todavía.";
   }
@@ -938,7 +978,7 @@ function buildHardInstruction(state: ConversationState) {
     return `Pedir SOLO lo faltante: ${missing.join(", ")}. No repetir lo que ya está completo.`;
   }
 
-  return "Confirmar pedido completo con producto, cantidad, total, datos del cliente, envío y forma de pago.";
+  return "Confirmar pedido completo con producto, cantidad, total, cliente, ciudad, teléfono y dirección si aplica.";
 }
 
 function buildState(order: OrderData, parsed: ParsedTraining): ConversationState {
@@ -1008,6 +1048,7 @@ async function safeUpsertOrder(
     updated_at: new Date().toISOString(),
   };
 
+  // Si no tenés esta columna jsonb, comentá esta línea.
   if (order.locked_offer) payload.locked_offer = order.locked_offer;
 
   const IN_PROGRESS_STATUSES = [
@@ -1140,11 +1181,55 @@ async function transcribeAudioWithGemini({
   });
 }
 
+
+function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
+  const o = state.order;
+  const addressPart = o.address ? ` — ${o.address}` : "";
+  const paymentBlock =
+    state.coverage === false
+      ? `🚚 Su encomienda será enviada por transportadora.
+
+📎 Una vez depositado el costo del delivery, le estaremos enviando su comprobante de envío.
+
+⏰ Oferta válida hoy
+
+¡Gracias por elegirnos!!! 💜✨
+
+💵 Pago anticipado por transferencia.
+
+${bankDataText(parsed)}`
+      : `🚚 Envío GRATIS · Pagás al recibir
+
+🚚 Tu pedido queda agendado para la próxima ronda de envíos. Si pagás al recibir, el delivery lo confirma al llegar a tu zona.
+
+⏰ Oferta válida hoy
+
+¡Gracias por elegirnos!!! 💜✨
+
+💵 Podés pagar en EFECTIVO o TRANSFERENCIA AL DELIVERY cuando recibas tu producto. ¡Como te quede más cómodo! 🚚
+
+¡Gracias por tu compra! 🛍️✨
+
+
+Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
+
+  return `✅ PEDIDO CONFIRMADO
+
+✅ Producto: ${o.product}
+✅ Cliente: ${o.customer_name}
+✅ Ubicación: ${o.city}${addressPart}
+✅ Contacto: ${o.phone}
+✅ Cantidad: ${o.quantity} u.
+💰 Total: ${formatGs(state.total)} Gs
+
+${paymentBlock}`;
+}
+
 function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState) {
   const o = state.order;
 
   return `
-Sos la IA vendedora de Mega Todo Store.
+Sos la IA vendedora de Mega Todo Store / One Store.
 Tu trabajo es vender de forma natural, amable, segura y breve por WhatsApp.
 
 REGLA PRINCIPAL:
@@ -1185,15 +1270,18 @@ REGLAS DURAS:
 - No digas que sos IA.
 - No menciones backend, sistema ni estado interno.
 - No inventes productos, precios, bancos, cuentas, enlaces, ciudades ni tiempos.
+- PROHIBIDO inventar ciudad. Si Ciudad = faltante, preguntá ciudad.
+- PROHIBIDO usar ciudad vieja si no aparece en ESTADO DEL PEDIDO.
 - Si falta producto, ofrecé catálogo/productos.
 - Si falta ciudad, preguntá ciudad.
 - Si falta cantidad, preguntá cantidad.
-- Si falta nombre/dirección/teléfono, pedí SOLO lo faltante.
+- Si faltan datos, pedí SOLO lo faltante.
 - Si no hay cobertura y todavía falta cantidad, NO muestres datos bancarios.
 - Si no hay cobertura y ya hay cantidad, podés mostrar datos de transferencia.
 - Si hay cobertura, indicar envío gratis contra-entrega cuando corresponda.
 - Si el cliente pregunta precio, respondé precio y guiá al siguiente paso.
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
+- Si no hay promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
 - Para confirmación final, incluir producto, cantidad, total, cliente, ciudad, teléfono y dirección si aplica.
 `.trim();
@@ -1213,12 +1301,12 @@ ${productsSummary(parsed)}
   }
 
   if (!o.city) {
-    return `¡Buenísimo! 🔥
+    return `¡Excelente elección! 🔥
 
 ${state.productInfo?.canonical || o.product}
 ${productPriceText(state.productInfo, o.locked_offer)}
 
-¿Para qué ciudad sería el envío? 😊`;
+📍 ¿Para qué ciudad sería el envío? 😊`;
   }
 
   if (!o.quantity) {
@@ -1318,92 +1406,89 @@ export default async function handler(req: any, res: any) {
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
 
-    if (context?.step === "pedido_confirmado") {
-      const msgNorm = normalize(texto);
-      const hasNewProduct = !!detectProduct(texto, parsed, "");
-      const isNewPurchase = /\b(compro|comprar|precio|cuanto|cuestan|cuanto sale|quiero|interesa|promo|descuento|oferta)\b/.test(msgNorm);
-
-      if (!hasNewProduct && !isNewPurchase) {
-        const response = `🚚 Tu pedido de *${context.order_data?.product || "tu producto"}* está agendado para la próxima ronda de envíos. El delivery te confirma al llegar a tu zona. 😊`;
-        return res.json({
-          response,
-          context: { ...context, updated_at: new Date().toISOString() },
-        });
-      }
-
-      oldOrder = {
-        product: "",
-        quantity: 0,
-        city: "",
-        customer_name: "",
-        address: "",
-        phone: "",
-        locked_offer: null,
-      };
-    }
-
-    if (isOrderStale(oldOrder, context?.updated_at || new Date().toISOString())) {
-      oldOrder = {
-        product: "",
-        quantity: 0,
-        city: "",
-        customer_name: "",
-        address: "",
-        phone: "",
-        locked_offer: null,
-      };
-    }
-
-    const lockedProductByContext = getLockedProductFromContext(context, oldOrder, history, parsed);
-    const lockedOfferByContext = getLockedOfferFromContext(context, oldOrder, history, parsed);
-
-    const productFromMessage = detectProduct(texto, parsed, "");
-    const isGenericBuy = isGenericBuyReply(texto);
+    const productFromMessageInitial = detectProduct(texto, parsed, "");
+    const lockedProductInitial = getLockedProductFromContext(context, oldOrder, history, parsed);
     const promoResponse = isRespondingToPromotion(texto, history);
 
-    let productToUse = productFromMessage;
+    const freshOrder = shouldStartFreshOrder({
+      texto,
+      context,
+      oldOrder,
+      productFromMessage: productFromMessageInitial,
+      lockedProductByContext: lockedProductInitial,
+      promoResponse,
+      parsed,
+    });
 
-    if (!productToUse && (isGenericBuy || promoResponse || isBuyIntent(texto))) {
-      productToUse = lockedProductByContext?.canonical || "";
+    if (freshOrder) {
+      oldOrder = emptyOrder();
     }
 
-    if (!productToUse) {
+    let lockedOfferByContext = freshOrder
+      ? getOfferFromLastPromotion(history, parsed)
+      : getLockedOfferFromContext(context, oldOrder, history, parsed);
+
+    let productToUse = productFromMessageInitial;
+
+    if (!productToUse && (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))) {
+      productToUse = lockedProductInitial?.canonical || getProductFromLastPromotion(history, parsed)?.canonical || "";
+    }
+
+    if (!productToUse && !freshOrder) {
       productToUse = oldOrder.product || "";
     }
 
     const product = detectProduct(texto, parsed, productToUse);
-
-    let lockedOffer: OfferItem | null =
-      lockedOfferByContext && product && normalize(lockedOfferByContext.product) === normalize(product)
-        ? lockedOfferByContext
-        : null;
-
     const productInfo = getProductInfo(product, parsed);
 
-    if (!lockedOffer && productInfo) {
-      const qFromMsg = extractQuantity(texto);
-      const catalogOffer = qFromMsg ? getCatalogOffer(productInfo, qFromMsg) : null;
-      if (catalogOffer) lockedOffer = catalogOffer;
-    }
+    const explicitQty = extractQuantity(texto);
 
-    if (!lockedOffer && productInfo && promoResponse) {
-      const offerFromPromo = getOfferFromLastPromotion(history, parsed);
-      if (offerFromPromo && normalize(offerFromPromo.product) === normalize(productInfo.canonical)) {
-        lockedOffer = offerFromPromo;
+    /**
+     * Promo locking/unlocking:
+     * - "quiero" desde promo => bloquea promo y cantidad de la promo.
+     * - "quiero uno"/"1 unidad" => desbloquea promo y usa cantidad explícita.
+     * - "quiero dos" => usa promo catálogo si existe o promo plantilla si coincide.
+     */
+    let lockedOffer: OfferItem | null = null;
+
+    if (productInfo) {
+      const promoFromHistory = getOfferFromLastPromotion(history, parsed);
+      const promoMatchesProduct = promoFromHistory && normalize(promoFromHistory.product) === normalize(productInfo.canonical);
+
+      if (explicitQty > 0) {
+        const catalogOffer = getCatalogOffer(productInfo, explicitQty);
+        if (catalogOffer) {
+          lockedOffer = catalogOffer;
+        } else if (
+          promoMatchesProduct &&
+          promoFromHistory.quantity === explicitQty
+        ) {
+          lockedOffer = promoFromHistory;
+        } else {
+          lockedOffer = null;
+        }
+      } else if ((isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto)) && promoMatchesProduct) {
+        lockedOffer = promoFromHistory;
+      } else if (
+        lockedOfferByContext &&
+        normalize(lockedOfferByContext.product) === normalize(productInfo.canonical)
+      ) {
+        lockedOffer = lockedOfferByContext;
       }
     }
 
     const cityStatement = extractCityStatement(texto);
-    const detectedCityRaw = detectCity(texto, parsed, "");
-    const prevStep = context?.step || "";
+    const prevStep = freshOrder ? "" : context?.step || "";
     const isCityStep = prevStep === "collecting_city";
     const isDataCollectionStep = ["collecting_name", "collecting_address", "collecting_phone", "collecting_quantity"].includes(prevStep);
+
+    const detectedCityRaw = detectCity(texto, parsed, "");
 
     const detectedCity =
       detectedCityRaw ||
       (cityStatement && !extractQuantity(texto) && !extractPhone(texto)
         ? cityStatement
-        : isDataCollectionStep && oldOrder.city
+        : !freshOrder && isDataCollectionStep && oldOrder.city
         ? oldOrder.city
         : isCityStep &&
           !extractQuantity(texto) &&
@@ -1411,11 +1496,12 @@ export default async function handler(req: any, res: any) {
           !detectProduct(texto, parsed, "") &&
           normalize(texto).split(/\s+/).length <= 6
         ? clean(texto) || detectCity(texto, parsed, oldOrder.city)
-        : detectCity(texto, parsed, oldOrder.city));
+        : !freshOrder
+        ? detectCity(texto, parsed, oldOrder.city)
+        : "");
 
     const phone = extractPhone(texto);
-    const qty = extractQuantity(texto);
-
+    const qty = explicitQty;
     const name = extractName(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone, parsed);
     const address = extractAddress(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone, name);
 
@@ -1423,17 +1509,28 @@ export default async function handler(req: any, res: any) {
       oldOrder,
       {
         quantity: qty,
-        city: detectedCity !== oldOrder.city ? detectedCity : "",
+        city: detectedCity && detectedCity !== oldOrder.city ? detectedCity : "",
         phone,
         name,
         address,
-        locked_offer: lockedOffer || oldOrder.locked_offer || null,
+        locked_offer: lockedOffer,
       },
       product
     );
 
-    if (orderData.locked_offer && orderData.quantity === 0 && (isGenericBuy || promoResponse)) {
+    // Si el cliente dijo "quiero" en una promo sin cantidad explícita, se toma la cantidad de la promo.
+    if (orderData.locked_offer && orderData.quantity === 0 && !hasExplicitQuantity(texto) && (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))) {
       orderData.quantity = orderData.locked_offer.quantity;
+    }
+
+    // Si hay cantidad explícita que no coincide con la promo, se desbloquea la promo.
+    if (orderData.locked_offer && explicitQty > 0 && explicitQty !== orderData.locked_offer.quantity) {
+      orderData.locked_offer = null;
+      if (productInfo) {
+        const catalogOffer = getCatalogOffer(productInfo, explicitQty);
+        if (catalogOffer) orderData.locked_offer = catalogOffer;
+      }
+      orderData.quantity = explicitQty;
     }
 
     if (orderData.product && !getProductInfo(orderData.product, parsed)) {
@@ -1457,6 +1554,42 @@ export default async function handler(req: any, res: any) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, confirm);
     }
 
+    if (confirm) {
+      const fixedConfirmation = finalConfirmationMessage(finalState, parsed);
+
+      return res.json({
+        response: fixedConfirmation,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || null,
+          last_topic: orderData.product || context?.last_topic || null,
+          last_ad_offer: orderData.locked_offer || null,
+          order_data: orderData,
+          step: "pedido_confirmado",
+          updated_at: new Date().toISOString(),
+        },
+        debug: process.env.NODE_ENV === "development"
+          ? {
+              freshOrder,
+              parsed_products: parsed.products.length,
+              parsed_cities: parsed.cities.length,
+              product: orderData.product,
+              quantity: orderData.quantity,
+              city: orderData.city,
+              coverage: finalState.coverage,
+              total: finalState.total,
+              missing: finalState.missing,
+              step: finalState.step,
+              confirm,
+              locked_offer: orderData.locked_offer,
+              productFromMessageInitial,
+              promoResponse,
+              fixed_confirmation: true,
+            }
+          : undefined,
+      });
+    }
+
     const system = buildSalesSystemPrompt(parsed, finalState);
 
     const contents = (history || [])
@@ -1471,7 +1604,7 @@ export default async function handler(req: any, res: any) {
 Mensaje del cliente:
 ${texto || "(mensaje sin texto)"}
 
-Respondé ahora como vendedor. Seguí la instrucción obligatoria y no inventes datos.
+Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes ciudad ni datos.
 `.trim();
 
     contents.push({
@@ -1498,13 +1631,14 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria y no inventes 
         ...(context || {}),
         current_product: orderData.product || null,
         last_topic: orderData.product || context?.last_topic || null,
-        last_ad_offer: orderData.locked_offer || context?.last_ad_offer || null,
+        last_ad_offer: orderData.locked_offer || null,
         order_data: orderData,
         step: confirm ? "pedido_confirmado" : finalState.step,
         updated_at: new Date().toISOString(),
       },
       debug: process.env.NODE_ENV === "development"
         ? {
+            freshOrder,
             parsed_products: parsed.products.length,
             parsed_cities: parsed.cities.length,
             product: orderData.product,
@@ -1516,11 +1650,13 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria y no inventes 
             step: finalState.step,
             confirm,
             locked_offer: orderData.locked_offer,
+            productFromMessageInitial,
+            promoResponse,
           }
         : undefined,
     });
   } catch (error: any) {
-    console.error("❌ chat-ia-vendedor:", error);
+    console.error("❌ chat-ia-vendedor-v3:", error);
     return res.status(500).json({
       error: error.message || "Error interno",
     });
