@@ -926,7 +926,10 @@ function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferIt
     lockedOffer.quantity > 0 &&
     lockedOffer.total > 0
   ) {
-    return `Promo confirmada: ${lockedOffer.quantity} unidades por ${formatGs(lockedOffer.total)} Gs.`;
+    return [
+      `1 unidad: ${formatGs(productInfo.price1)} Gs`,
+      `Promo ${lockedOffer.quantity} unidades: ${formatGs(lockedOffer.total)} Gs`,
+    ].join("\n");
   }
 
   const lines = [`1 unidad: ${formatGs(productInfo.price1)} Gs`];
@@ -961,10 +964,16 @@ function buildHardInstruction(state: ConversationState) {
   }
 
   if (!order.quantity) {
+    const promoText =
+      order.locked_offer && order.locked_offer.quantity > 1
+        ? ` Preguntar explícitamente si quiere 1 unidad o la promo de ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs.`
+        : " Preguntar explícitamente si quiere 1 unidad o más unidades según las promos disponibles.";
+
     if (coverage === false) {
-      return "Informar con tacto que no tiene contra-entrega y que se envía por transportadora con pago anticipado, PERO pedir primero cantidad. No mostrar datos bancarios hasta tener cantidad.";
+      return "Informar con tacto que no tiene contra-entrega y que se envía por transportadora con pago anticipado, PERO pedir primero cantidad." + promoText + " No mostrar datos bancarios hasta tener cantidad.";
     }
-    return "Confirmar cobertura/envío gratis si aplica y preguntar cuántas unidades quiere llevar. No pedir datos personales todavía.";
+
+    return "Confirmar cobertura/envío gratis si aplica y preguntar cantidad antes de pedir datos personales." + promoText + " No pedir nombre, dirección ni teléfono todavía.";
   }
 
   if (coverage === false && order.quantity > 0) {
@@ -1275,6 +1284,7 @@ REGLAS DURAS:
 - Si falta producto, ofrecé catálogo/productos.
 - Si falta ciudad, preguntá ciudad.
 - Si falta cantidad, preguntá cantidad.
+- Si hay promo de 2 unidades y el cliente no especificó cantidad, NO asumas 1 unidad ni 2 unidades: preguntá si quiere 1 unidad o la promo.
 - Si faltan datos, pedí SOLO lo faltante.
 - Si no hay cobertura y todavía falta cantidad, NO muestres datos bancarios.
 - Si no hay cobertura y ya hay cantidad, podés mostrar datos de transferencia.
@@ -1310,15 +1320,20 @@ ${productPriceText(state.productInfo, o.locked_offer)}
   }
 
   if (!o.quantity) {
+    const qtyQuestion =
+      o.locked_offer && o.locked_offer.quantity > 1
+        ? `¿Querés 1 unidad por ${formatGs(state.productInfo?.price1 || 0)} Gs o la promo de ${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs? 😊`
+        : "¿Cuántas unidades querés llevar? 😊";
+
     if (state.coverage === false) {
       return `ℹ️ ${o.city} no entra en nuestra zona de contra-entrega, pero sí podemos enviarte por transportadora 🚚
 
-Antes de pasarte el total y los datos de pago, decime: ¿cuántas unidades querés llevar? 😊`;
+Antes de pasarte el total y los datos de pago, decime: ${qtyQuestion}`;
     }
 
     return `✅ Perfecto, ${o.city} tiene envío gratis contra-entrega 🚚
 
-¿Cuántas unidades querés llevar?`;
+${qtyQuestion}`;
   }
 
   if (state.missing.length) {
@@ -1518,8 +1533,16 @@ export default async function handler(req: any, res: any) {
       product
     );
 
-    // Si el cliente dijo "quiero" en una promo sin cantidad explícita, se toma la cantidad de la promo.
-    if (orderData.locked_offer && orderData.quantity === 0 && !hasExplicitQuantity(texto) && (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))) {
+    // Si el cliente dijo "quiero" en una promo sin cantidad explícita,
+    // NO asumimos cantidad. Primero se le pregunta si quiere 1 unidad o la promo.
+    // Solo usamos la cantidad de la promo cuando el cliente la escribe explícitamente
+    // o cuando viene ya confirmada desde un botón/variable externa.
+    if (
+      orderData.locked_offer &&
+      orderData.quantity === 0 &&
+      !hasExplicitQuantity(texto) &&
+      context?.force_offer_quantity === true
+    ) {
       orderData.quantity = orderData.locked_offer.quantity;
     }
 
