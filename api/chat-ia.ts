@@ -984,7 +984,7 @@ function buildHardInstruction(state: ConversationState) {
   }
 
   if (missing.length > 0) {
-    return `Pedir SOLO lo faltante: ${missing.join(", ")}. No repetir lo que ya está completo.`;
+    return `Pedir SOLO lo faltante: ${missing.join(", ")}. No repetir lo que ya está completo. Si la ciudad ya está cargada como "${order.city}", NO vuelvas a preguntar ciudad. Usá emojis y tono amable de vendedor.`;
   }
 
   return "Confirmar pedido completo con producto, cantidad, total, cliente, ciudad, teléfono y dirección si aplica.";
@@ -1234,6 +1234,50 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 ${paymentBlock}`;
 }
 
+
+function deterministicAfterQuantityMessage(state: ConversationState) {
+  const o = state.order;
+  if (!o.product || !o.city || !o.quantity) return "";
+
+  if (state.step !== "collecting_name" && state.step !== "collecting_address" && state.step !== "collecting_phone") {
+    return "";
+  }
+
+  if (state.missing.includes("ciudad")) return "";
+
+  const promoLine =
+    o.locked_offer && o.locked_offer.quantity === o.quantity
+      ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(state.total)} Gs`
+      : `💰 Total: ${formatGs(state.total)} Gs`;
+
+  if (state.coverage === false) {
+    return `🎉 ¡Perfecto! Queda seleccionado:
+
+📦 ${o.product}
+🔢 Cantidad: ${o.quantity}
+${promoLine}
+📍 Ciudad: ${o.city}
+
+🚚 Para tu zona hacemos envío por transportadora.
+Para confirmar, enviame:
+✅ nombre completo
+✅ número de celular
+✅ comprobante de transferencia 📲`;
+  }
+
+  return `🎉 ¡Excelente elección! Queda seleccionado:
+
+📦 ${o.product}
+🔢 Cantidad: ${o.quantity}
+${promoLine}
+📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚
+
+Ahora solo necesito:
+✅ nombre y apellido
+✅ dirección exacta o ubicación
+✅ número de celular 📲`;
+}
+
 function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState) {
   const o = state.order;
 
@@ -1274,12 +1318,13 @@ ${bankDataText(parsed)}
 
 REGLAS DURAS:
 - Respondé en español paraguayo/neutro, estilo WhatsApp.
-- Sé vendedor, pero no exageres.
+- Sé vendedor amable, cálido y fluido. Usá emojis comerciales moderados: 😊🔥🚚✅📦💰📍📲.
 - Máximo 6 a 10 líneas salvo confirmación final.
 - No digas que sos IA.
 - No menciones backend, sistema ni estado interno.
 - No inventes productos, precios, bancos, cuentas, enlaces, ciudades ni tiempos.
 - PROHIBIDO inventar ciudad. Si Ciudad = faltante, preguntá ciudad.
+- Si Ciudad ya tiene valor en ESTADO DEL PEDIDO, PROHIBIDO volver a preguntar ciudad.
 - PROHIBIDO usar ciudad vieja si no aparece en ESTADO DEL PEDIDO.
 - Si falta producto, ofrecé catálogo/productos.
 - Si falta ciudad, preguntá ciudad.
@@ -1337,13 +1382,20 @@ ${qtyQuestion}`;
   }
 
   if (state.missing.length) {
-    return `🔥 Perfecto.
+    const promoLine =
+      o.locked_offer && o.locked_offer.quantity === o.quantity
+        ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(state.total)} Gs\n`
+        : "";
 
-📦 ${o.product}
-🔢 Cantidad: ${o.quantity}
+    return `🎉 ¡Perfecto! Queda avanzado tu pedido 😊
+
+📦 Producto: ${o.product}
+${promoLine}🔢 Cantidad: ${o.quantity}
 💰 Total: ${formatGs(state.total)} Gs
+📍 Ciudad: ${o.city}
 
-Me falta: ${state.missing.join(", ")} 😊`;
+Para agendarlo, me falta:
+✅ ${state.missing.join("\n✅ ")} 📲`;
   }
 
   return `✅ PEDIDO CONFIRMADO
@@ -1500,20 +1552,24 @@ export default async function handler(req: any, res: any) {
     const detectedCityRaw = detectCity(texto, parsed, "");
 
     const detectedCity =
-      detectedCityRaw ||
-      (cityStatement && !extractQuantity(texto) && !extractPhone(texto)
-        ? cityStatement
-        : !freshOrder && isDataCollectionStep && oldOrder.city
+      // Si estamos esperando cantidad/datos y ya había ciudad, conservarla SIEMPRE.
+      // Esto evita que al responder "2 quiero" vuelva a pedir ciudad.
+      (!freshOrder && oldOrder.city && ["collecting_quantity", "collecting_name", "collecting_address", "collecting_phone"].includes(prevStep))
         ? oldOrder.city
-        : isCityStep &&
-          !extractQuantity(texto) &&
-          !extractPhone(texto) &&
-          !detectProduct(texto, parsed, "") &&
-          normalize(texto).split(/\s+/).length <= 6
-        ? clean(texto) || detectCity(texto, parsed, oldOrder.city)
-        : !freshOrder
-        ? detectCity(texto, parsed, oldOrder.city)
-        : "");
+        : detectedCityRaw ||
+          (cityStatement && !extractQuantity(texto) && !extractPhone(texto)
+            ? cityStatement
+            : !freshOrder && isDataCollectionStep && oldOrder.city
+            ? oldOrder.city
+            : isCityStep &&
+              !extractQuantity(texto) &&
+              !extractPhone(texto) &&
+              !detectProduct(texto, parsed, "") &&
+              normalize(texto).split(/\s+/).length <= 6
+            ? clean(texto) || detectCity(texto, parsed, oldOrder.city)
+            : !freshOrder
+            ? detectCity(texto, parsed, oldOrder.city)
+            : "");
 
     const phone = extractPhone(texto);
     const qty = explicitQty;
@@ -1532,6 +1588,11 @@ export default async function handler(req: any, res: any) {
       },
       product
     );
+
+    // Protección extra: si el cliente está respondiendo cantidad, no perder ciudad previa.
+    if (!orderData.city && oldOrder.city && qty > 0) {
+      orderData.city = oldOrder.city;
+    }
 
     // Si el cliente dijo "quiero" en una promo sin cantidad explícita,
     // NO asumimos cantidad. Primero se le pregunta si quiere 1 unidad o la promo.
@@ -1575,6 +1636,38 @@ export default async function handler(req: any, res: any) {
 
     if (orderData.product) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, confirm);
+    }
+
+    if (!confirm && prevStep === "collecting_quantity" && qty > 0 && orderData.city) {
+      const deterministicQtyResponse = deterministicAfterQuantityMessage(finalState);
+      if (deterministicQtyResponse) {
+        return res.json({
+          response: deterministicQtyResponse,
+          context: {
+            ...(context || {}),
+            current_product: orderData.product || null,
+            last_topic: orderData.product || context?.last_topic || null,
+            last_ad_offer: orderData.locked_offer || null,
+            order_data: orderData,
+            step: finalState.step,
+            updated_at: new Date().toISOString(),
+          },
+          debug: process.env.NODE_ENV === "development"
+            ? {
+                deterministic_quantity_response: true,
+                freshOrder,
+                product: orderData.product,
+                quantity: orderData.quantity,
+                city: orderData.city,
+                coverage: finalState.coverage,
+                total: finalState.total,
+                missing: finalState.missing,
+                step: finalState.step,
+                locked_offer: orderData.locked_offer,
+              }
+            : undefined,
+        });
+      }
     }
 
     if (confirm) {
