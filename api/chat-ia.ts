@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import Fuse from 'fuse.js';
 
 const supabase = createClient(
   process.env.SUPABASE_URL as string,
@@ -205,26 +206,97 @@ function getProductInfo(productName: string, parsed: ParsedTraining) {
   );
 }
 
+// ============================================
+// 🆕 NUEVA FUNCIÓN: BÚSQUEDA DIFUSA CON FUSE.JS
+// ============================================
+function findProductWithFuzzy(text: string, parsed: ParsedTraining): ProductItem | null {
+  const msg = normalize(text);
+  if (!msg || msg.length < 2) return null;
+  
+  // Construir array de búsqueda con todos los alias
+  const searchItems: { name: string; product: ProductItem }[] = [];
+  
+  parsed.products.forEach(p => {
+    // Añadir el nombre canónico
+    searchItems.push({ name: p.canonical, product: p });
+    // Añadir el producto
+    searchItems.push({ name: p.product, product: p });
+    // Añadir todos los alias
+    p.aliases.forEach(alias => {
+      searchItems.push({ name: alias, product: p });
+    });
+  });
+
+  const options = {
+    includeScore: true,
+    threshold: 0.4, // 0 = exacto, 1 = muy difuso
+    minMatchCharLength: 2,
+    keys: ['name']
+  };
+
+  const fuse = new Fuse(searchItems, options);
+  const results = fuse.search(msg);
+  
+  if (results.length > 0 && results[0].score < 0.5) {
+    return results[0].item.product;
+  }
+  
+  return null;
+}
+
+// ============================================
+// 🆕 NUEVA FUNCIÓN: BÚSQUEDA DIFUSA PARA CIUDADES
+// ============================================
+function findCityWithFuzzy(text: string, parsed: ParsedTraining): string | null {
+  const msg = normalize(text);
+  if (!msg || msg.length < 2) return null;
+  
+  const searchItems = parsed.cities.map(c => ({
+    name: c.alias,
+    canonical: c.canonical
+  }));
+  
+  const options = {
+    includeScore: true,
+    threshold: 0.35,
+    minMatchCharLength: 2,
+    keys: ['name']
+  };
+  
+  const fuse = new Fuse(searchItems, options);
+  const results = fuse.search(msg);
+  
+  if (results.length > 0 && results[0].score < 0.4) {
+    return results[0].item.canonical;
+  }
+  return null;
+}
+
+// ============================================
+// 🆕 MEJORADA: detectProduct CON FUZZY SEARCH
+// ============================================
 function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
   const msg = normalize(text);
   const prevOk = getProductInfo(prev || "", parsed);
 
   if (!msg) return prevOk?.canonical || "";
 
+  // 1. BÚSQUEDA EXACTA (más rápida)
   let best: ProductItem | null = null;
   let bestScore = 0;
 
   for (const p of parsed.products) {
     for (const alias of p.aliases) {
       const a = normalize(alias);
-      if (!a || a.length < 3) continue;
+      if (!a || a.length < 2) continue;
 
       let score = 0;
       if (msg === a) score += 100;
       if (msg.includes(a)) score += 80;
-      if (a.includes(msg) && msg.length >= 4) score += 50;
+      if (a.includes(msg) && msg.length >= 3) score += 50;
 
-      for (const w of a.split(" ").filter((x) => x.length >= 5)) {
+      // Palabras clave
+      for (const w of a.split(" ").filter((x) => x.length >= 4)) {
         if (new RegExp(`\\b${w}\\b`).test(msg)) score += 15;
       }
 
@@ -235,19 +307,28 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
     }
   }
 
+  // Si el score es alto, devolver el producto
   if (best && bestScore >= 15) return best.canonical;
+
+  // 2. BÚSQUEDA DIFUSA (fallback)
+  const fuzzyResult = findProductWithFuzzy(text, parsed);
+  if (fuzzyResult) return fuzzyResult.canonical;
+
   return prevOk?.canonical || "";
 }
 
+// ============================================
+// 🆕 MEJORADA: detectCity CON FUZZY SEARCH
+// ============================================
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const msg = normalize(text);
   if (!msg) return clean(prev || "");
 
   let best = "";
   let bestScore = 0;
-
   const msgWords = msg.split(/\s+/);
 
+  // 1. BÚSQUEDA EXACTA
   for (const c of parsed.cities) {
     const a = normalize(c.alias);
     if (!a || a.length < 2) continue;
@@ -280,6 +361,11 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   }
 
   if (bestScore >= 50) return best;
+
+  // 2. BÚSQUEDA DIFUSA (fallback)
+  const fuzzyResult = findCityWithFuzzy(text, parsed);
+  if (fuzzyResult) return fuzzyResult;
+
   return clean(prev || "");
 }
 
@@ -314,11 +400,30 @@ function hasCoverage(city: string, parsed: ParsedTraining) {
   });
 }
 
-function isBuyIntent(text: string) {
+// ============================================
+// 🆕 MEJORADA: isBuyIntent con detección de producto
+// ============================================
+function isBuyIntent(text: string, parsed?: ParsedTraining) {
   const m = normalize(text);
-  return /\b(si|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo)\b/.test(
-    m
-  );
+  
+  // Palabras que indican compra
+  const buyWords = /\b(si|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo|me interesa|me llevo)\b/;
+  
+  // Si menciona un producto, es compra específica
+  if (parsed) {
+    const hasProduct = parsed.products.some(p => {
+      const productName = normalize(p.canonical);
+      return m.includes(productName) || p.aliases.some(a => m.includes(normalize(a)));
+    });
+    
+    // Si menciona producto Y tiene intención de compra
+    if (hasProduct && buyWords.test(m)) return true;
+  }
+  
+  // Si solo tiene intención de compra (sin producto)
+  if (buyWords.test(m)) return true;
+  
+  return false;
 }
 
 function extractQuantity(text: string) {
@@ -982,6 +1087,47 @@ Tenemos el **${productInfo.canonical}** en oferta:
 📍 ¿Para qué ciudad sería el envío? 😊`;
 }
 
+// ============================================
+// 🆕 NUEVA FUNCIÓN: DECIDIR QUÉ PRODUCTO USAR
+// ============================================
+function decideProduct(text: string, context: any, oldOrder: any, history: any[], parsed: ParsedTraining): string {
+  const productFromMessage = detectProduct(text, parsed, "");
+  const lockedProduct = getLockedProductFromContext(context, oldOrder, history, parsed);
+  
+  // REGLA 1: Si el mensaje menciona un producto, SIEMPRE usarlo (sobrescribe)
+  if (productFromMessage) {
+    return productFromMessage;
+  }
+  
+  // REGLA 2: Si hay un producto en el contexto, usarlo
+  if (lockedProduct) {
+    return lockedProduct.canonical;
+  }
+  
+  // REGLA 3: Si hay un producto en el pedido anterior, usarlo
+  if (oldOrder.product) {
+    return oldOrder.product;
+  }
+  
+  // REGLA 4: Si todo falla, buscar en el historial de mensajes del bot
+  const lastBotProduct = inferProductFromLastBotMessage(history, parsed);
+  if (lastBotProduct) {
+    return lastBotProduct;
+  }
+  
+  return "";
+}
+
+// ============================================
+// 🆕 NUEVA FUNCIÓN: DETECTAR SI ES UNA COMPRA QUE CAMBIA DE PRODUCTO
+// ============================================
+function isProductChange(text: string, currentProduct: string, parsed: ParsedTraining): boolean {
+  const productFromMessage = detectProduct(text, parsed, "");
+  if (!productFromMessage) return false;
+  if (!currentProduct) return false;
+  return normalize(productFromMessage) !== normalize(currentProduct);
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1041,7 +1187,9 @@ export default async function handler(req: any, res: any) {
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
 
-    // ✅ FIX 2: Bloqueo post-pedido
+    // ============================================
+    // 🆕 MEJORADO: Bloqueo post-pedido con detección de nuevo producto
+    // ============================================
     if (context?.step === "pedido_confirmado") {
       const msgNorm = normalize(texto);
       const isFollowUp =
@@ -1052,8 +1200,43 @@ export default async function handler(req: any, res: any) {
         /\b(gracias|muchas gracias|grax|grac|bueno gracias|buenas gracias|dale gracias|ok|dale|perfecto|listo|genial|excelente|buenisimo|buenísimo|de nada|chevere|chévere|okey)\b/.test(
           msgNorm
         ) || /^(👍|🙏|😊|✅)/.test(msgNorm);
+      
+      // ✅ DETECTAR NUEVO PRODUCTO (para cambiar de producto después de confirmado)
       const hasNewProduct = !!detectProduct(texto, parsed, "");
       const isPromoResponse = isRespondingToPromotion(texto, history);
+      const wantsNewProduct = /^(quiero|comprar|me interesa|el|la)\s+(.+)/i.test(texto) && hasNewProduct;
+
+      // Si el cliente quiere cambiar de producto después de confirmado
+      if (wantsNewProduct && !isPromoResponse) {
+        const newProduct = detectProduct(texto, parsed, "");
+        if (newProduct) {
+          // Resetear pedido para el nuevo producto
+          oldOrder = { product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" };
+          const resetOrder = {
+            product: newProduct,
+            quantity: 0,
+            city: "",
+            customer_name: "",
+            phone: "",
+            address: "",
+          };
+          
+          const productInfo = getProductInfo(newProduct, parsed);
+          if (productInfo) {
+            return res.json({
+              response: productOfferReply(productInfo),
+              context: {
+                ...(context || {}),
+                current_product: newProduct,
+                last_topic: newProduct,
+                order_data: resetOrder,
+                step: "collecting_city",
+                updated_at: new Date().toISOString(),
+              },
+            });
+          }
+        }
+      }
 
       if (!isPromoResponse && isGratitude) {
         return res.json({
@@ -1160,15 +1343,53 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
       });
     }
 
-    const buyIntent = isBuyIntent(texto);
+    // ============================================
+    // 🆕 MEJORADO: LÓGICA DE DETECCIÓN DE PRODUCTO
+    // ============================================
+    const buyIntent = isBuyIntent(texto, parsed);
     const hasProductInMessage = parsed.products.some(
       (p) =>
         normalize(texto).includes(normalize(p.canonical)) ||
         p.aliases.some((a) => normalize(texto).includes(normalize(a)))
     );
 
-    // ✅ FIX 100%: Si el cliente responde un botón o texto genérico como "QUIERO",
-    // NO cambiar de producto. Primero se bloquea el producto actual de la plantilla/contexto.
+    // 🆕 DETECTAR SI EL CLIENTE CAMBIA DE PRODUCTO EXPLÍCITAMENTE
+    const currentProduct = oldOrder.product || context?.current_product || "";
+    const isChangingProduct = isProductChange(texto, currentProduct, parsed);
+
+    // Si el cliente menciona un producto explícitamente, cambiar a ese producto
+    if (hasProductInMessage && isChangingProduct) {
+      const newProduct = detectProduct(texto, parsed, "");
+      if (newProduct) {
+        const productInfo = getProductInfo(newProduct, parsed);
+        if (productInfo) {
+          const resetOrder = {
+            product: newProduct,
+            quantity: 0,
+            city: oldOrder.city || "",
+            customer_name: "",
+            phone: "",
+            address: "",
+          };
+
+          console.log(`🔄 Cambio de producto detectado: "${currentProduct}" → "${newProduct}"`);
+
+          return res.json({
+            response: productOfferReply(productInfo),
+            context: {
+              ...(context || {}),
+              current_product: newProduct,
+              last_topic: newProduct,
+              order_data: resetOrder,
+              step: resetOrder.city ? "collecting_quantity" : "collecting_city",
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
+      }
+    }
+
+    // 🆕 Si el cliente responde un botón o texto genérico como "QUIERO" con producto en contexto
     if ((buyIntent || isGenericBuyReply(texto)) && !hasProductInMessage) {
       const lockedProduct = getLockedProductFromContext(context, oldOrder, history, parsed);
 
@@ -1225,8 +1446,7 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
         }
       }
 
-      // Antes el código caía al producto por defecto y podía cambiar a otro producto.
-      // Ahora, si no hay contexto real, se pregunta cuál producto quiere.
+      // Si no hay contexto, preguntar cuál producto quiere
       const resetOrder = {
         product: "",
         quantity: 0,
@@ -1236,11 +1456,19 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
         address: "",
       };
 
-      return res.json({
-        response: `😊 Perfecto. ¿Cuál producto querés llevar?
+      // 🆕 Mostrar productos disponibles cuando no hay contexto
+      const productList = parsed.products.length > 0 
+        ? parsed.products.map((p, i) => {
+            return `${i+1}. *${p.canonical}* - ${formatGs(p.price1)} Gs`;
+          }).join("\n")
+        : null;
 
-📋 Podés escribir el nombre del producto o mirar el catálogo:
-${CATALOG_URL}`,
+      const responseMsg = productList 
+        ? `😊 ¡Hola! Te ayudo con tu pedido.\n\n📦 *Productos disponibles:*\n\n${productList}\n\n📲 Escribí el nombre del producto que te interesa o mirá nuestro catálogo:\n${CATALOG_URL}`
+        : `😊 Perfecto. ¿Cuál producto querés llevar?\n\n📋 Podés escribir el nombre del producto o mirar el catálogo:\n${CATALOG_URL}`;
+
+      return res.json({
+        response: responseMsg,
         context: {
           ...(context || {}),
           current_product: null,
@@ -1252,12 +1480,15 @@ ${CATALOG_URL}`,
       });
     }
 
+    // ============================================
+    // 🆕 USAR decideProduct para determinar el producto
+    // ============================================
     const productFromMessage = detectProduct(texto, parsed, "");
     const lockedProduct = getLockedProductFromContext(context, oldOrder, history, parsed);
 
     // ✅ Si el mensaje NO menciona otro producto, mantener el producto actual.
     // Solo se cambia si el cliente escribe explícitamente otro producto válido.
-    const productToUse = productFromMessage || lockedProduct?.canonical || oldOrder.product || "";
+    const productToUse = decideProduct(texto, context, oldOrder, history, parsed);
     const product = detectProduct(texto, parsed, productToUse);
 
     const cityStatement = extractCityStatement(texto);
