@@ -7,8 +7,8 @@ const supabase = createClient(
 
 const CATALOG_URL = "https://cat-logomegatodo-com.vercel.app/";
 
+// ============ UTILIDADES DE LIMPIEZA ============
 const clean = (v: any) => String(v || "").trim();
-
 const normalize = (v: any) =>
   clean(v)
     .toLowerCase()
@@ -19,6 +19,7 @@ const normalize = (v: any) =>
     .replace(/\s+/g, " ")
     .trim();
 
+// ============ TIPOS ============
 type ProductItem = {
   product: string;
   canonical: string;
@@ -26,82 +27,48 @@ type ProductItem = {
   price1: number;
   price2?: number;
   price3?: number;
+  requires_calce?: boolean;
+  calces_disponibles?: number[];
+  mensaje_venta?: string;
+};
+
+type BankData = {
+  titular: string;
+  ci?: string;
+  entidad: string;
+  cuenta: string;
+  alias?: string;
+  tipo?: string;
+};
+
+type CityCorrection = {
+  wrong: string;
+  correct: string;
 };
 
 type ParsedTraining = {
   products: ProductItem[];
   cities: { alias: string; canonical: string }[];
+  bankData: BankData[];
+  coverageZones: string[];
+  noCoverageZones: string[];
+  rules: string[];
+  examples: string[];
+  cityCorrections: CityCorrection[];
 };
 
-function sanitizeQuantity(q: any) {
-  const n = Number(q);
-  if (!Number.isFinite(n)) return 0;
-  if (n < 1) return 0;
-  if (n > 100) return 100;
-  return n;
-}
-
-function isOrderStale(order: any, lastActivity: string) {
-  const hasProduct = !!order?.product;
-  const hasCity = !!order?.city;
-  const hasQuantity = order?.quantity > 0;
-  const hasCustomerData = !!(order?.customer_name || order?.address || order?.phone);
-
-  const now = new Date();
-  const last = new Date(lastActivity);
-  const diffMinutes = (now.getTime() - last.getTime()) / (1000 * 60);
-
-  return hasProduct && hasCity && hasQuantity && !hasCustomerData && diffMinutes > 10;
-}
-
-function isPriceQuery(text: string) {
-  const m = normalize(text);
-  return /\b(cuanto cuesta|precio|valor|costo|cuanto sale|cuanto vale)\b/.test(m);
-}
-
-function isNewConversation(context: any, history: any[]) {
-  if (!history || history.length < 3) return true;
-
-  const lastMessageTime = context?.updated_at;
-  if (lastMessageTime) {
-    const now = new Date();
-    const last = new Date(lastMessageTime);
-    const diffMinutes = (now.getTime() - last.getTime()) / (1000 * 60);
-    if (diffMinutes > 30) return true;
-  }
-
-  return false;
-}
-
-async function getAllTrainingData(userId: string) {
-  const { data, error } = await supabase
-    .from("training_data")
-    .select("id, intent, examples, response, is_active")
-    .eq("user_id", userId)
-    .eq("is_active", true)
-    .order("created_at", { ascending: false });
-
-  if (error) {
-    console.error("❌ training_data:", error);
-    return [];
-  }
-
-  return data || [];
-}
-
-function buildTrainingText(items: any[]) {
-  return items
-    .map((i) => {
-      const examples = Array.isArray(i.examples) ? i.examples.join("\n") : "";
-      return `${i.intent || ""}\n${examples}\n${i.response || ""}`;
-    })
-    .join("\n\n---\n\n");
-}
-
+// ============ PARSEO DEL ENTRENAMIENTO ============
 function parseTraining(training: string): ParsedTraining {
   const products: ProductItem[] = [];
   const cities: { alias: string; canonical: string }[] = [];
+  const bankData: BankData[] = [];
+  const coverageZones: string[] = [];
+  const noCoverageZones: string[] = [];
+  const rules: string[] = [];
+  const examples: string[] = [];
+  const cityCorrections: CityCorrection[] = [];
 
+  // --- PARSEAR PRODUCTOS ---
   const catalog =
     training.match(/CATALOGO_PRODUCTOS([\s\S]*?)FIN_CATALOGO_PRODUCTOS/i)?.[1] || "";
 
@@ -124,6 +91,14 @@ function parseTraining(training: string): ParsedTraining {
     const price2 = Number(clean(block.match(/^PRECIO_2:\s*(\d+)/im)?.[1]) || 0);
     const price3 = Number(clean(block.match(/^PRECIO_3:\s*(\d+)/im)?.[1]) || 0);
 
+    const requires_calce = /REQUIERE_CALCE:\s*true/i.test(block);
+    const calcesRaw = clean(block.match(/^CALCES_DISPONIBLES:\s*(.+)$/im)?.[1]);
+    const calces_disponibles = calcesRaw
+      ? calcesRaw.split(",").map(Number).filter((n) => n > 0)
+      : [];
+
+    const mensaje_venta = clean(block.match(/^MENSAJE_VENTA:\s*([\s\S]*?)(?=PRODUCTO:|FIN_CATALOGO|$)/im)?.[1]);
+
     if (product && canonical && price1 > 0) {
       products.push({
         product,
@@ -132,10 +107,14 @@ function parseTraining(training: string): ParsedTraining {
         price1,
         price2: price2 || undefined,
         price3: price3 || undefined,
+        requires_calce: requires_calce || false,
+        calces_disponibles: calces_disponibles.length > 0 ? calces_disponibles : undefined,
+        mensaje_venta: mensaje_venta || undefined,
       });
     }
   }
 
+  // --- PARSEAR CIUDADES ---
   const addCity = (alias: string, canonical?: string) => {
     const a = clean(alias);
     const c = clean(canonical || alias);
@@ -143,45 +122,173 @@ function parseTraining(training: string): ParsedTraining {
     cities.push({ alias: a, canonical: c });
   };
 
-  const citySection =
-    training.match(/LISTA COMPLETA POR CIUDAD([\s\S]*?)⚙️ INSTRUCCIÓN FINAL/i)?.[1] ||
-    training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
+  // --- PARSEAR TABLA DE ERRORES COMUNES ---
+  const correctionsSection =
+    training.match(/📋 TABLA DE ERRORES COMUNES Y CORRECCIONES([\s\S]*?)(?=📍 LISTA COMPLETA|ZONAS CON COBERTURA|━━━━)/i)?.[1] ||
+    training.match(/TABLA DE ERRORES COMUNES([\s\S]*?)(?=📍 LISTA COMPLETA|ZONAS CON COBERTURA|━━━━)/i)?.[1] ||
     "";
 
-  const cityBlocks = citySection.split(/📍\s*/g).filter(Boolean);
+  correctionsSection
+    .split("\n")
+    .map(clean)
+    .filter((l) => l.includes("→") || l.includes("➜"))
+    .forEach((line) => {
+      const parts = line.split(/→|➜/).map(clean);
+      if (parts.length >= 2) {
+        const wrong = parts[0].replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ\s]/g, "").trim();
+        const correct = parts[1].replace(/[^a-zA-ZáéíóúÁÉÍÓÚñÑ\s]/g, "").trim();
+        if (wrong && correct) {
+          cityCorrections.push({ wrong: normalize(wrong), correct });
+        }
+      }
+    });
 
-  for (const block of cityBlocks) {
-    const lines = block.split("\n").map(clean).filter(Boolean);
-    const canonical = lines[0];
-    const variantsLine = lines.find((l) => l.startsWith("✅"));
+  // --- PARSEAR ZONAS CON COBERTURA ---
+  const coverageSection =
+    training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
+    training.match(/🟢 ZONAS CON COBERTURA([\s\S]*?)🟡 ZONAS SIN COBERTURA/i)?.[1] ||
+    training.match(/📍 ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
+    "";
 
-    if (canonical && variantsLine) {
-      addCity(canonical, canonical);
+  // Extraer todas las ciudades de la sección de cobertura
+  const coverageLines = coverageSection
+    .split("\n")
+    .map(clean)
+    .filter((l) => l.length > 0 && !l.includes("━━") && !l.includes("🟢") && !l.includes("📍") && !l.includes("ZONAS"));
 
-      variantsLine
-        .replace(/^✅\s*/, "")
-        .split(",")
-        .map(clean)
-        .filter(Boolean)
-        .forEach((v) => addCity(v, canonical));
+  // Procesar líneas con múltiples ciudades (separadas por coma o espacios)
+  for (const line of coverageLines) {
+    // Limpiar emojis y caracteres especiales
+    const cleanedLine = line.replace(/[📍✅🟢]/g, "").trim();
+    // Dividir por comas o por espacios si no hay comas
+    const parts = cleanedLine.includes(",") 
+      ? cleanedLine.split(",").map(clean).filter(Boolean)
+      : cleanedLine.split(/\s+/).filter((p) => p.length > 2 && !p.includes("📍"));
+    
+    for (const part of parts) {
+      const city = clean(part);
+      if (city.length > 2 && !city.includes("📍") && !city.includes("✅")) {
+        // Verificar si es una ciudad con variantes
+        if (city.includes("(") || city.includes("→")) {
+          // Procesar variantes
+          const variants = city.replace(/[()]/g, "").split(/→|➜/).map(clean);
+          for (const v of variants) {
+            if (v.length > 2) {
+              coverageZones.push(v);
+              addCity(v, v);
+            }
+          }
+        } else {
+          coverageZones.push(city);
+          addCity(city, city);
+        }
+      }
     }
   }
 
-  const simpleCoverage =
-    training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] || "";
+  // --- PARSEAR ZONAS SIN COBERTURA ---
+  const noCoverageSection =
+    training.match(/ZONAS SIN COBERTURA([\s\S]*?)(?=DATOS PARA TRANSFERENCIA|📲 DATOS|━━━━|$)/i)?.[1] ||
+    training.match(/🟡 ZONAS SIN COBERTURA([\s\S]*?)(?=DATOS PARA TRANSFERENCIA|📲 DATOS|━━━━|$)/i)?.[1] ||
+    "";
 
-  simpleCoverage
+  if (noCoverageSection) {
+    const noCoverageCities = noCoverageSection
+      .split(/[,，\n]/)
+      .map(clean)
+      .filter((c) => c.length > 2 && !c.includes("(") && !c.includes(")") && !c.includes("ZONAS") && !c.includes("🟡"));
+    
+    for (const city of noCoverageCities) {
+      if (city.length > 2) {
+        noCoverageZones.push(city);
+        addCity(city, city);
+      }
+    }
+  }
+
+  // --- PARSEAR LISTA COMPLETA POR CIUDAD (para alias) ---
+  const cityListSection =
+    training.match(/📍 LISTA COMPLETA POR CIUDAD([\s\S]*?)(?=ZONAS CON COBERTURA|ZONAS SIN|━━━━|$)/i)?.[1] ||
+    training.match(/LISTA COMPLETA POR CIUDAD([\s\S]*?)(?=ZONAS CON COBERTURA|ZONAS SIN|━━━━|$)/i)?.[1] ||
+    "";
+
+  if (cityListSection) {
+    const cityBlocks = cityListSection.split(/📍\s*/g).filter(Boolean);
+    for (const block of cityBlocks) {
+      const lines = block.split("\n").map(clean).filter(Boolean);
+      const canonical = lines[0]?.replace(/[📍✅]/g, "").trim();
+      const variantsLine = lines.find((l) => l.startsWith("✅"));
+
+      if (canonical && variantsLine) {
+        addCity(canonical, canonical);
+        variantsLine
+          .replace(/^✅\s*/, "")
+          .split(/[,，]/)
+          .map(clean)
+          .filter(Boolean)
+          .forEach((v) => addCity(v, canonical));
+      }
+    }
+  }
+
+  // --- PARSEAR DATOS BANCARIOS ---
+  const bankSection =
+    training.match(/📲 DATOS PARA TRANSFERENCIA([\s\S]*?)(?=━━━━|$)/i)?.[1] ||
+    training.match(/DATOS PARA TRANSFERENCIA([\s\S]*?)(?=━━━━|$)/i)?.[1] ||
+    training.match(/💵 Pago anticipado por transferencia([\s\S]*?)(?=━━━━|$)/i)?.[1] ||
+    "";
+
+  const bankLines = bankSection.split("\n").map(clean).filter(Boolean);
+
+  let currentBank: Partial<BankData> = {};
+  for (const line of bankLines) {
+    if (/titular|Titular/i.test(line) && !line.includes("📲")) {
+      if (currentBank.titular) {
+        bankData.push(currentBank as BankData);
+        currentBank = {};
+      }
+      currentBank.titular = line.replace(/titular\s*[:;]\s*/i, "").replace(/Titular\s*[:;]\s*/i, "").trim();
+    } else if (/ci\s*[:;]/i.test(line) || /CI\s*[:;]/i.test(line)) {
+      currentBank.ci = line.replace(/ci\s*[:;]\s*/i, "").replace(/CI\s*[:;]\s*/i, "").trim();
+    } else if (/entidad\s*[:;]/i.test(line) || /Entidad\s*[:;]/i.test(line)) {
+      currentBank.entidad = line.replace(/entidad\s*[:;]\s*/i, "").replace(/Entidad\s*[:;]\s*/i, "").trim();
+    } else if (/cuenta\s*[:;]/i.test(line) || /Cuenta\s*[:;]/i.test(line) || /N° de cuenta/i.test(line)) {
+      currentBank.cuenta = line.replace(/cuenta\s*[:;]\s*/i, "").replace(/Cuenta\s*[:;]\s*/i, "").replace(/N° de cuenta\s*[:;]\s*/i, "").trim();
+    } else if (/alias\s*[:;]/i.test(line) || /Alias\s*[:;]/i.test(line)) {
+      currentBank.alias = line.replace(/alias\s*[:;]\s*/i, "").replace(/Alias\s*[:;]\s*/i, "").trim();
+    }
+  }
+  if (currentBank.titular) {
+    bankData.push(currentBank as BankData);
+  }
+
+  // --- PARSEAR REGLAS ---
+  const rulesSection =
+    training.match(/📌 REGLAS A RECORDAR([\s\S]*?)(?=━━━━|$)/i)?.[1] ||
+    training.match(/REGLAS_PARA_EL_PARSER_DEL_BOT([\s\S]*?)(?=ENTRENAMIENTO_COMPLETO|━━━━)/i)?.[1] ||
+    "";
+
+  rulesSection
     .split("\n")
-    .filter((l) => l.includes(","))
-    .join(",")
-    .replace(/📍/g, "")
-    .split(",")
     .map(clean)
-    .filter((c) => c.length > 2 && !c.includes("━━"))
-    .forEach((c) => addCity(c, c));
+    .filter((l) => l.length > 5 && (l.startsWith("-") || l.startsWith("❌") || l.startsWith("✅")))
+    .forEach((r) => rules.push(r));
 
+  // --- PARSEAR EJEMPLOS ---
+  const examplesSection =
+    training.match(/✅ EJEMPLO DE FLUJO CORRECTO([\s\S]*?)(?=━━━━|$)/i)?.[1] ||
+    training.match(/📝 EJEMPLOS PRÁCTICOS([\s\S]*?)(?=━━━━|$)/i)?.[1] ||
+    training.match(/✅ EJEMPLOS CORRECTOS([\s\S]*?)(?=━━━━|$)/i)?.[1] ||
+    "";
+
+  examplesSection
+    .split("\n")
+    .map(clean)
+    .filter((l) => l.length > 10 && (l.startsWith("Cliente:") || l.startsWith("Asistente:") || l.includes("→")))
+    .forEach((e) => examples.push(e));
+
+  // --- UNIFICAR CIUDADES ---
   const cityMap = new Map<string, { alias: string; canonical: string }>();
-
   for (const c of cities) {
     const key = normalize(c.alias);
     if (key) cityMap.set(key, c);
@@ -190,9 +297,38 @@ function parseTraining(training: string): ParsedTraining {
   return {
     products,
     cities: Array.from(cityMap.values()),
+    bankData,
+    coverageZones: Array.from(new Set(coverageZones)),
+    noCoverageZones: Array.from(new Set(noCoverageZones)),
+    rules,
+    examples,
+    cityCorrections,
   };
 }
 
+// ============ FUNCIONES DE CORRECCIÓN DE CIUDADES ============
+function correctCity(text: string, parsed: ParsedTraining): string {
+  const normalized = normalize(text);
+  
+  // Buscar en la tabla de correcciones
+  for (const correction of parsed.cityCorrections) {
+    if (normalized === correction.wrong || normalized.includes(correction.wrong)) {
+      return correction.correct;
+    }
+  }
+  
+  // Buscar coincidencia parcial en ciudades
+  for (const city of parsed.cities) {
+    const cityNorm = normalize(city.alias);
+    if (cityNorm && (normalized === cityNorm || normalized.includes(cityNorm) || cityNorm.includes(normalized))) {
+      return city.canonical;
+    }
+  }
+  
+  return text;
+}
+
+// ============ FUNCIONES DE DETECCIÓN ============
 function getProductInfo(productName: string, parsed: ParsedTraining) {
   const p = normalize(productName);
   if (!p) return null;
@@ -243,6 +379,10 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const msg = normalize(text);
   if (!msg) return clean(prev || "");
 
+  // Primero corregir la ciudad si está en la tabla de errores
+  const corrected = correctCity(msg, parsed);
+  if (corrected !== msg) return corrected;
+
   let best = "";
   let bestScore = 0;
 
@@ -283,42 +423,29 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   return clean(prev || "");
 }
 
-function extractCityStatement(text: string): string {
-  const raw = clean(text);
-  const norm = normalize(raw);
-
-  if (!raw || raw.length < 3 || /^[\p{Emoji}\s]+$/u.test(raw)) return "";
-  if (/^\p{Emoji}/u.test(raw)) return "";
-
-  const GREETINGS = /^(hola|buenas|buenos|buen dia|buen dia|hi|hey|buenas noches|buenas tardes|saludos|ok|dale|si|no|gracias|de nada|listo|perfecto)[\s!.]*$/;
-  if (GREETINGS.test(norm)) return "";
-
-  const match = norm.match(
-    /^(?:soy de|vivo en|estoy en|ya estoy en|ya esty en|soy de la ciudad de|de la ciudad de|ciudad de|mi ciudad es|para la ciudad de)\s+(.+)$/
-  );
-  if (match) {
-    return clean(match[1]);
-  }
-
-  return "";
-}
-
 function hasCoverage(city: string, parsed: ParsedTraining) {
   const c = normalize(city);
   if (!c) return false;
 
-  return parsed.cities.some((x) => {
-    const a = normalize(x.alias);
-    const cn = normalize(x.canonical);
-    return c === a || c === cn || c.includes(a) || a.includes(c);
-  });
-}
+  // Verificar en zona de cobertura
+  for (const zone of parsed.coverageZones) {
+    const z = normalize(zone);
+    if (c === z || c.includes(z) || z.includes(c)) {
+      return true;
+    }
+  }
 
-function isBuyIntent(text: string) {
-  const m = normalize(text);
-  return /\b(si|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo)\b/.test(
-    m
-  );
+  // Verificar en ciudades (alias)
+  for (const cityAlias of parsed.cities) {
+    const alias = normalize(cityAlias.alias);
+    if (c === alias || c.includes(alias) || alias.includes(c)) {
+      // Si está en ciudades pero no en coverageZones, asumimos que sí tiene cobertura
+      // porque la lista de ciudades incluye todas las ciudades conocidas
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function extractQuantity(text: string) {
@@ -371,13 +498,8 @@ function extractPhone(text: string) {
   return match?.[0] || "";
 }
 
-function toTitleCase(str: string): string {
-  return str.replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const raw = clean(text);
-
   if (!raw) return "";
 
   if (extractQuantity(raw) > 0) return "";
@@ -391,24 +513,17 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     if (isCity) return "";
   }
 
-  const isMultiLine = raw.includes("\n");
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
 
   const forbidden = [
     "quiero", "comprar", "me interesa", "precio", "delivery",
     "envio", "ok", "dale", "si", "hola", "buenas", "gracias",
     "cuanto", "cuando", "dia", "llega", "llego", "pedido",
-    "cancelar", "no", "nebulizador", "raqueta", "que",
-    "estado", "seguimiento", "ya", "fue", "como", "donde",
-    "unidad", "unidades", "und", "unds", "una unidad", "dos unidades",
+    "cancelar", "no", "que", "estado", "seguimiento",
+    "ya", "fue", "como", "donde",
+    "unidad", "unidades", "und", "unds",
     "una", "uno", "dos", "tres", "cuatro", "cinco",
-    "traen", "trae", "traes", "mandan", "manda", "mandas",
-    "cdo", "xq", "xfa", "xfavor", "porfavor", "porfa",
-    "me", "te", "se", "lo", "la", "les", "nos",
-    "para", "con", "por", "del", "mas",
   ];
-
-  const QUESTION_VERBS = /\b(traen|trae|mandan|llegan|llega|entrega|viene|vienen|cuesta|cobran|demora|tarda)\b/;
 
   const isValidNameLine = (line: string): boolean => {
     const cleaned = clean(line);
@@ -419,17 +534,9 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     if (/\d/.test(cleaned)) return false;
     if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)) return false;
     if (cleaned.length < 4 || cleaned.length > 60) return false;
-    if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|san pedro|santa|bario)\b/i.test(normLine)) return false;
-    if (QUESTION_VERBS.test(normLine)) return false;
 
     if (detectedCity && normalize(cleaned) === normalize(detectedCity)) return false;
-
-    if (forbidden.some((f) => normLine === normalize(f) || normLine.startsWith(normalize(f) + " ") || normLine.endsWith(" " + normalize(f)))) return false;
-
-    if (words[0].length === 1) return false;
-
-    if (/^(y |ese |esta |este |eso |esa |aqui |ahi |ya |igual |listo |ok |dale )/i.test(normLine)) return false;
-    if (/\b(este es|ese es|eso es|este soy|soy yo|ese soy)\b/.test(normLine)) return false;
+    if (forbidden.some((f) => normLine === normalize(f))) return false;
 
     return true;
   };
@@ -439,18 +546,9 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   )?.[1];
   if (explicit) return toTitleCase(clean(explicit));
 
-  const beforeSoy = raw.match(/^([a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,4})\s+soy\b/i)?.[1];
-  if (beforeSoy && isValidNameLine(beforeSoy)) return toTitleCase(clean(beforeSoy));
-
-  if (isMultiLine) {
-    for (const line of lines) {
-      const cleaned = clean(line);
-      if (/\d{7,}/.test(cleaned)) continue;
-      if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|rca|colombia|republica|nro|manzana)\b/i.test(normalize(cleaned))) continue;
-
-      if (isValidNameLine(cleaned)) return toTitleCase(cleaned);
-    }
-    return "";
+  for (const line of lines) {
+    const cleaned = clean(line);
+    if (isValidNameLine(cleaned)) return toTitleCase(cleaned);
   }
 
   if (isValidNameLine(raw)) return toTitleCase(raw);
@@ -516,6 +614,70 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   return "";
 }
 
+function extractCalce(text: string, parsed: ParsedTraining) {
+  const m = normalize(text);
+  const numbers = m.match(/\b(35|36|37|38|39|40|41|42|43|44|45|46)\b/);
+  if (numbers) return Number(numbers[0]);
+  return null;
+}
+
+// ============ FUNCIONES DE UTILIDAD ============
+function sanitizeQuantity(q: any) {
+  const n = Number(q);
+  if (!Number.isFinite(n)) return 0;
+  if (n < 1) return 0;
+  if (n > 100) return 100;
+  return n;
+}
+
+function toTitleCase(str: string): string {
+  return str.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatGs(n: number) {
+  return Number(n || 0).toLocaleString("es-PY");
+}
+
+function calculateTotal(productName: string, quantity: number, parsed: ParsedTraining) {
+  const p = getProductInfo(productName, parsed);
+  if (!p) return 0;
+
+  const q = sanitizeQuantity(quantity);
+
+  if (q === 2 && p.price2) return p.price2;
+  if (q === 3 && p.price3) return p.price3;
+
+  return p.price1 * q;
+}
+
+// ============ FUNCIONES DE ORDEN ============
+function nextStep(o: any, parsed: ParsedTraining) {
+  if (!o.product) return "selling";
+  if (!o.city) return "collecting_city";
+  
+  const productInfo = getProductInfo(o.product, parsed);
+  if (productInfo?.requires_calce && !o.calce) return "collecting_calce";
+  
+  if (!o.quantity) return "collecting_quantity";
+  if (!o.customer_name) return "collecting_name";
+  if (!o.address) return "collecting_address";
+  if (!o.phone) return "collecting_phone";
+  return "confirm_order";
+}
+
+function isOrderStale(order: any, lastActivity: string) {
+  const hasProduct = !!order?.product;
+  const hasCity = !!order?.city;
+  const hasQuantity = order?.quantity > 0;
+  const hasCustomerData = !!(order?.customer_name || order?.address || order?.phone);
+
+  const now = new Date();
+  const last = new Date(lastActivity);
+  const diffMinutes = (now.getTime() - last.getTime()) / (1000 * 60);
+
+  return hasProduct && hasCity && hasQuantity && !hasCustomerData && diffMinutes > 10;
+}
+
 function sanitizeOldOrder(old: any, parsed: ParsedTraining) {
   const productInfo = getProductInfo(old?.product || "", parsed);
   const nameNorm = normalize(old?.customer_name || "");
@@ -539,10 +701,14 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining) {
         : "",
     phone: clean(old?.phone || ""),
     address: clean(old?.address || ""),
+    calce: old?.calce || null,
   };
 }
 
-function mergeOrderData(old: any, ext: any, product: string) {
+function mergeOrderData(old: any, ext: any, product: string, parsed: ParsedTraining) {
+  const productInfo = getProductInfo(product, parsed);
+  const calce = ext.calce || old.calce || null;
+  
   return {
     product: product || old.product || "",
     quantity: ext.quantity > 0 ? sanitizeQuantity(ext.quantity) : sanitizeQuantity(old.quantity || 0),
@@ -550,65 +716,195 @@ function mergeOrderData(old: any, ext: any, product: string) {
     customer_name: ext.name || old.customer_name || "",
     phone: ext.phone || old.phone || "",
     address: ext.address || old.address || "",
+    calce: productInfo?.requires_calce ? calce : null,
   };
 }
 
-function calculateTotal(productName: string, quantity: number, parsed: ParsedTraining) {
-  const p = getProductInfo(productName, parsed);
-  if (!p) return 0;
-
-  const q = sanitizeQuantity(quantity);
-
-  if (q === 2 && p.price2) return p.price2;
-  if (q === 3 && p.price3) return p.price3;
-
-  return p.price1 * q;
+function isBuyIntent(text: string) {
+  const m = normalize(text);
+  return /\b(si|quiero|llevo|comprar|compro|reservar|reserva|agendar|agendame|confirmo|confirmar|ok|dale|listo)\b/.test(
+    m
+  );
 }
 
-function formatGs(n: number) {
-  return Number(n || 0).toLocaleString("es-PY");
+function isPriceQuery(text: string) {
+  const m = normalize(text);
+  return /\b(cuanto cuesta|precio|valor|costo|cuanto sale|cuanto vale)\b/.test(m);
 }
 
-function nextStep(o: any) {
-  if (!o.product) return "selling";
-  if (!o.city) return "collecting_city";
-  if (!o.quantity) return "collecting_quantity";
-  if (!o.customer_name) return "collecting_name";
-  if (!o.address) return "collecting_address";
-  if (!o.phone) return "collecting_phone";
-  return "confirm_order";
+function isGenericBuyReply(text: string) {
+  const m = normalize(text);
+  if (!m) return false;
+
+  const exact = [
+    "quiero",
+    "si",
+    "si quiero",
+    "lo quiero",
+    "quiero comprar",
+    "quiero llevar",
+    "me interesa",
+    "comprar",
+    "compro",
+    "dale",
+    "ok",
+    "listo",
+    "confirmo",
+    "reservar",
+    "reservame",
+    "agendar",
+    "agendame",
+  ];
+
+  if (exact.includes(m)) return true;
+
+  return /^(si\s+)?(quiero|lo quiero|me interesa|comprar|compro|dale|ok|listo|confirmo)(\s+(1|2|3|una|uno|dos|tres|unidad|unidades))?$/.test(m);
 }
 
-function missingDataReply(o: any) {
-  const missing = [];
-  if (!o.customer_name) missing.push("nombre y apellido");
-  if (!o.address) missing.push("dirección exacta o ubicación");
-  if (!o.phone) missing.push("número de celular");
+function isRespondingToPromotion(text: string, history: any[]) {
+  const isBuy = isBuyIntent(text);
+  if (!isBuy) return false;
 
-  if (missing.length === 3) {
-    return `🔥 Perfecto 😊
+  const lastBotMessages = (history || [])
+    .slice(-3)
+    .filter((h: any) => h.role === "assistant" || h.role === "model");
 
-📎 Necesito tus datos para agendar la entrega:
+  for (const item of lastBotMessages) {
+    const content = clean(item?.content);
+    if (!content) continue;
 
-✅ nombre y apellido
-✅ dirección exacta o ubicación por Google Maps
-✅ número de celular
-
-📲 Podés enviarlo TODO JUNTO o de a uno, voy registrando 😊`;
+    if (
+      content.includes("Oferta") ||
+      content.includes("promoción") ||
+      content.includes("🔥") ||
+      content.includes("HOY") ||
+      content.includes("antes") ||
+      content.includes("llevate")
+    ) {
+      return true;
+    }
   }
 
-  return `✅ Ya voy registrando tus datos. Me falta: ${missing.join(", ")} 😊`;
+  return false;
+}
+
+function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
+  const lastBotMessages = (history || [])
+    .slice(-6)
+    .reverse()
+    .filter((h: any) => h.role === "assistant" || h.role === "model");
+
+  for (const item of lastBotMessages) {
+    const content = clean(item?.content);
+    if (!content) continue;
+
+    const contentNorm = normalize(content);
+
+    const sortedProducts = [...parsed.products].sort(
+      (a, b) => normalize(b.canonical).length - normalize(a.canonical).length
+    );
+
+    for (const product of sortedProducts) {
+      const canonicalNorm = normalize(product.canonical);
+      if (canonicalNorm.length >= 4 && contentNorm.includes(canonicalNorm)) {
+        return product;
+      }
+    }
+
+    for (const product of sortedProducts) {
+      const sortedAliases = [...product.aliases].sort(
+        (a, b) => normalize(b).length - normalize(a).length
+      );
+      for (const alias of sortedAliases) {
+        const aliasNorm = normalize(alias);
+        if (aliasNorm.length >= 5 && contentNorm.includes(aliasNorm)) {
+          return product;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function getLockedProductFromContext(
+  context: any,
+  oldOrder: any,
+  history: any[],
+  parsed: ParsedTraining
+): ProductItem | null {
+  const candidates = [
+    context?.current_product,
+    context?.last_topic,
+    context?.order_data?.product,
+    context?.last_ad_product,
+    oldOrder?.product,
+  ]
+    .map(clean)
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    const productInfo = getProductInfo(candidate, parsed);
+    if (productInfo) return productInfo;
+  }
+
+  return null;
+}
+
+function inferProductFromLastBotMessage(history: any[], parsed: ParsedTraining) {
+  const lastBotMessages = (history || [])
+    .slice(-6)
+    .reverse()
+    .filter((h: any) => h.role === "assistant" || h.role === "model");
+
+  for (const item of lastBotMessages) {
+    const content = clean(item?.content);
+    if (!content) continue;
+
+    const product = detectProduct(content, parsed, "");
+    if (product) return product;
+  }
+
+  return "";
+}
+
+// ============ RESPUESTAS ============
+function productOfferReply(productInfo: ProductItem) {
+  const promo2 = productInfo.price2
+    ? `\n🔥 Promo 2 unidades → ${formatGs(productInfo.price2)} Gs`
+    : "";
+  const promo3 = productInfo.price3
+    ? `\n🔥 Promo 3 unidades → ${formatGs(productInfo.price3)} Gs`
+    : "";
+
+  const calceMsg = productInfo.requires_calce
+    ? `\n\n📏 Calces disponibles: ${productInfo.calces_disponibles?.join(", ") || "35 a 46"}`
+    : "";
+
+  const mensaje = productInfo.mensaje_venta
+    ? `\n\n${productInfo.mensaje_venta}`
+    : "";
+
+  return `🔥 ¡Excelente decisión! 😊
+
+Tenemos el **${productInfo.canonical}** en oferta:
+
+💰 1 unidad → ${formatGs(productInfo.price1)} Gs${promo2}${promo3}${calceMsg}${mensaje}
+
+📍 ¿Para qué ciudad sería el envío? 😊`;
 }
 
 function confirmation(o: any, parsed: ParsedTraining) {
   const total = calculateTotal(o.product, o.quantity, parsed);
   const coverage = hasCoverage(o.city, parsed);
 
+  const calceMsg = o.calce ? `✅ Calce: ${o.calce}\n` : "";
+
   if (coverage) {
     return `✅ PEDIDO CONFIRMADO
 
 ✅ Producto: ${o.product}
-✅ Cliente: ${o.customer_name}
+${calceMsg}✅ Cliente: ${o.customer_name}
 ✅ Ubicación: ${o.city} — ${o.address}
 ✅ Contacto: ${o.phone}
 ✅ Cantidad: ${o.quantity} u.
@@ -633,10 +929,16 @@ Te dejo nuestro catálogo completo 👇
 Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
   }
 
+  const bankInfo = parsed.bankData.length > 0 
+    ? parsed.bankData.map(b => 
+        `Titular: ${b.titular}${b.ci ? `\nCI: ${b.ci}` : ''}\nEntidad: ${b.entidad}\nCuenta: ${b.cuenta}${b.alias ? `\nAlias: ${b.alias}` : ''}`
+      ).join('\n\n')
+    : 'Titular: [TU NOMBRE]\nEntidad: [TU BANCO]\nCuenta: [TU CUENTA]\nAlias: [TU ALIAS]';
+
   return `✅ PEDIDO CONFIRMADO
 
 ✅ Producto: ${o.product}
-✅ Cliente: ${o.customer_name}
+${calceMsg}✅ Cliente: ${o.customer_name}
 ✅ Ubicación: ${o.city}
 ✅ Contacto: ${o.phone}
 ✅ Cantidad: ${o.quantity} u.
@@ -654,12 +956,10 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 
 📲 DATOS PARA TRANSFERENCIA:
 
-Titular: DAVID AGUSTIN ALCARAZ AGUILAR
-Banco Familiar
-Cuenta: 81-4981442
-Alias: 0994130022`;
+${bankInfo}`;
 }
 
+// ============ FUNCIONES DE BASE DE DATOS ============
 async function safeUpsertOrder(
   userId: string,
   from: string,
@@ -670,7 +970,7 @@ async function safeUpsertOrder(
   if (!getProductInfo(order.product, parsed)) return null;
 
   const total = calculateTotal(order.product, order.quantity || 1, parsed);
-  const step = nextStep(order);
+  const step = nextStep(order, parsed);
 
   const status =
     confirm && step === "confirm_order"
@@ -691,6 +991,7 @@ async function safeUpsertOrder(
     address: order.address || null,
     quantity: order.quantity || 1,
     total_amount: total || null,
+    calce: order.calce || null,
     status,
     fecha: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -700,6 +1001,7 @@ async function safeUpsertOrder(
     "draft",
     "selling",
     "collecting_city",
+    "collecting_calce",
     "collecting_quantity",
     "collecting_name",
     "collecting_phone",
@@ -743,6 +1045,32 @@ async function safeUpsertOrder(
   return data?.id || null;
 }
 
+async function getAllTrainingData(userId: string) {
+  const { data, error } = await supabase
+    .from("training_data")
+    .select("id, intent, examples, response, is_active")
+    .eq("user_id", userId)
+    .eq("is_active", true)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("❌ training_data:", error);
+    return [];
+  }
+
+  return data || [];
+}
+
+function buildTrainingText(items: any[]) {
+  return items
+    .map((i) => {
+      const examples = Array.isArray(i.examples) ? i.examples.join("\n") : "";
+      return `${i.intent || ""}\n${examples}\n${i.response || ""}`;
+    })
+    .join("\n\n---\n\n");
+}
+
+// ============ FUNCIONES DE GEMINI ============
 async function fetchMediaAsBase64(url: string) {
   const r = await fetch(url);
   if (!r.ok) return null;
@@ -826,162 +1154,7 @@ async function transcribeAudioWithGemini({
   });
 }
 
-function inferProductFromLastBotMessage(history: any[], parsed: ParsedTraining) {
-  const lastBotMessages = (history || [])
-    .slice(-6)
-    .reverse()
-    .filter((h: any) => h.role === "assistant" || h.role === "model");
-
-  for (const item of lastBotMessages) {
-    const content = clean(item?.content);
-    if (!content) continue;
-
-    const product = detectProduct(content, parsed, "");
-    if (product) return product;
-  }
-
-  return "";
-}
-
-function isRespondingToPromotion(text: string, history: any[]) {
-  const isBuy = isBuyIntent(text);
-  if (!isBuy) return false;
-
-  const lastBotMessages = (history || [])
-    .slice(-3)
-    .filter((h: any) => h.role === "assistant" || h.role === "model");
-
-  for (const item of lastBotMessages) {
-    const content = clean(item?.content);
-    if (!content) continue;
-
-    if (
-      content.includes("Oferta") ||
-      content.includes("promoción") ||
-      content.includes("🔥") ||
-      content.includes("HOY") ||
-      content.includes("antes") ||
-      content.includes("llevate")
-    ) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
-  const lastBotMessages = (history || [])
-    .slice(-6)
-    .reverse()
-    .filter((h: any) => h.role === "assistant" || h.role === "model");
-
-  for (const item of lastBotMessages) {
-    const content = clean(item?.content);
-    if (!content) continue;
-
-    const contentNorm = normalize(content);
-
-    const sortedProducts = [...parsed.products].sort(
-      (a, b) => normalize(b.canonical).length - normalize(a.canonical).length
-    );
-
-    for (const product of sortedProducts) {
-      const canonicalNorm = normalize(product.canonical);
-      if (canonicalNorm.length >= 4 && contentNorm.includes(canonicalNorm)) {
-        return product;
-      }
-    }
-
-    for (const product of sortedProducts) {
-      const sortedAliases = [...product.aliases].sort(
-        (a, b) => normalize(b).length - normalize(a).length
-      );
-      for (const alias of sortedAliases) {
-        const aliasNorm = normalize(alias);
-        if (aliasNorm.length >= 5 && contentNorm.includes(aliasNorm)) {
-          return product;
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
-function getLockedProductFromContext(
-  context: any,
-  oldOrder: any,
-  history: any[],
-  parsed: ParsedTraining
-): ProductItem | null {
-  const candidates = [
-    context?.current_product,
-    context?.last_topic,
-    context?.order_data?.product,
-    context?.last_ad_product,
-    oldOrder?.product,
-    inferProductFromLastBotMessage(history, parsed),
-    getProductFromLastPromotion(history, parsed)?.canonical,
-  ]
-    .map(clean)
-    .filter(Boolean);
-
-  for (const candidate of candidates) {
-    const productInfo = getProductInfo(candidate, parsed);
-    if (productInfo) return productInfo;
-  }
-
-  return null;
-}
-
-function isGenericBuyReply(text: string) {
-  const m = normalize(text);
-
-  if (!m) return false;
-
-  const exact = [
-    "quiero",
-    "si",
-    "si quiero",
-    "lo quiero",
-    "quiero comprar",
-    "quiero llevar",
-    "me interesa",
-    "comprar",
-    "compro",
-    "dale",
-    "ok",
-    "listo",
-    "confirmo",
-    "reservar",
-    "reservame",
-    "agendar",
-    "agendame",
-  ];
-
-  if (exact.includes(m)) return true;
-
-  return /^(si\s+)?(quiero|lo quiero|me interesa|comprar|compro|dale|ok|listo|confirmo)(\s+(1|2|3|una|uno|dos|tres|unidad|unidades))?$/.test(m);
-}
-
-function productOfferReply(productInfo: ProductItem) {
-  const promo2 = productInfo.price2
-    ? `\n🔥 Promo 2 unidades → ${formatGs(productInfo.price2)} Gs`
-    : "";
-  const promo3 = productInfo.price3
-    ? `\n🔥 Promo 3 unidades → ${formatGs(productInfo.price3)} Gs`
-    : "";
-
-  return `🔥 ¡Excelente decisión! 😊
-
-Tenemos el **${productInfo.canonical}** en oferta:
-
-💰 1 unidad → ${formatGs(productInfo.price1)} Gs${promo2}${promo3}
-
-📍 ¿Para qué ciudad sería el envío? 😊`;
-}
-
+// ============ HANDLER PRINCIPAL ============
 export default async function handler(req: any, res: any) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -1026,6 +1199,7 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
+    // Procesar audio si viene
     if (media_url && media_type === "audio") {
       const fetched = await fetchMediaAsBase64(clean(media_url));
       if (fetched) {
@@ -1041,7 +1215,7 @@ export default async function handler(req: any, res: any) {
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
 
-    // ✅ FIX 2: Bloqueo post-pedido
+    // BLOQUEO POST-PEDIDO CONFIRMADO
     if (context?.step === "pedido_confirmado") {
       const msgNorm = normalize(texto);
       const isFollowUp =
@@ -1080,9 +1254,10 @@ export default async function handler(req: any, res: any) {
           });
         }
       }
-      oldOrder = { product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" };
+      oldOrder = { product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "", calce: null };
     }
 
+    // CONSULTA DE PRECIO
     if (isPriceQuery(texto)) {
       const productMentioned = detectProduct(texto, parsed, "");
       const lockedProductForPrice = getLockedProductFromContext(context, oldOrder, history, parsed);
@@ -1098,10 +1273,15 @@ export default async function handler(req: any, res: any) {
           customer_name: "",
           phone: "",
           address: "",
+          calce: null,
         };
 
+        const calceMsg = productInfo.requires_calce
+          ? `\n\n📏 Calces disponibles: ${productInfo.calces_disponibles?.join(", ") || "35 a 46"}`
+          : "";
+
         return res.json({
-          response: `💰 ${productInfo.canonical}: ${formatGs(productInfo.price1)} Gs${productInfo.price2 ? `\n🔥 Promo 2 unidades → ${formatGs(productInfo.price2)} Gs` : ""}
+          response: `💰 ${productInfo.canonical}: ${formatGs(productInfo.price1)} Gs${productInfo.price2 ? `\n🔥 Promo 2 unidades → ${formatGs(productInfo.price2)} Gs` : ""}${calceMsg}
 
 📍 ¿Para qué ciudad sería el envío? 😊`,
           context: {
@@ -1109,7 +1289,7 @@ export default async function handler(req: any, res: any) {
             current_product: productInfo.canonical,
             last_topic: productInfo.canonical,
             order_data: resetOrder,
-            step: "collecting_city",
+            step: productInfo.requires_calce ? "collecting_calce" : "collecting_city",
             updated_at: new Date().toISOString(),
           },
         });
@@ -1118,7 +1298,8 @@ export default async function handler(req: any, res: any) {
       if (parsed.products.length > 0) {
         const priceLines = parsed.products.map((p) => {
           const promo = p.price2 ? ` | 🔥 2x → ${formatGs(p.price2)} Gs` : "";
-          return `⭐ *${p.canonical}*: ${formatGs(p.price1)} Gs${promo}`;
+          const calce = p.requires_calce ? ` (calce ${p.calces_disponibles?.join(", ") || "35-46"})` : "";
+          return `⭐ *${p.canonical}*${calce}: ${formatGs(p.price1)} Gs${promo}`;
         });
 
         return res.json({
@@ -1126,7 +1307,7 @@ export default async function handler(req: any, res: any) {
           context: {
             ...(context || {}),
             current_product: null,
-            order_data: { product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "" },
+            order_data: { product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "", calce: null },
             step: "selling",
             updated_at: new Date().toISOString(),
           },
@@ -1134,6 +1315,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    // PEDIDO STALE
     if (isOrderStale(oldOrder, context?.updated_at || new Date().toISOString())) {
       oldOrder = {
         product: "",
@@ -1142,12 +1324,14 @@ export default async function handler(req: any, res: any) {
         customer_name: "",
         phone: "",
         address: "",
+        calce: null,
       };
 
+      const productNames = parsed.products.map(p => p.canonical).join(", ");
       return res.json({
         response: `🔄 Veo que tenías un pedido incompleto. Comencemos de nuevo.
 
-📋 ¿Qué producto te interesa? Tenemos el Nebulizador Portátil en oferta por 129.900 Gs.
+📋 ¿Qué producto te interesa? Tenemos: ${productNames}
 
 Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
         context: {
@@ -1160,6 +1344,7 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
       });
     }
 
+    // DETECCIÓN DE INTENCIÓN DE COMPRA
     const buyIntent = isBuyIntent(texto);
     const hasProductInMessage = parsed.products.some(
       (p) =>
@@ -1167,8 +1352,7 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
         p.aliases.some((a) => normalize(texto).includes(normalize(a)))
     );
 
-    // ✅ FIX 100%: Si el cliente responde un botón o texto genérico como "QUIERO",
-    // NO cambiar de producto. Primero se bloquea el producto actual de la plantilla/contexto.
+    // RESPUESTA A "QUIERO" GENÉRICO - USAR PRODUCTO BLOQUEADO
     if ((buyIntent || isGenericBuyReply(texto)) && !hasProductInMessage) {
       const lockedProduct = getLockedProductFromContext(context, oldOrder, history, parsed);
 
@@ -1180,9 +1364,12 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
           customer_name: "",
           phone: "",
           address: "",
+          calce: oldOrder.calce || null,
         };
 
-        console.log(`🛒 Compra genérica detectada. Producto bloqueado por contexto: "${lockedProduct.canonical}"`);
+        const productInfo = getProductInfo(lockedProduct.canonical, parsed);
+        const step = productInfo?.requires_calce && !resetOrder.calce ? "collecting_calce" : 
+                     resetOrder.city ? "collecting_quantity" : "collecting_city";
 
         return res.json({
           response: productOfferReply(lockedProduct),
@@ -1191,107 +1378,62 @@ Escribí el nombre o mirá el catálogo: ${CATALOG_URL}`,
             current_product: lockedProduct.canonical,
             last_topic: lockedProduct.canonical,
             order_data: resetOrder,
-            step: resetOrder.city ? "collecting_quantity" : "collecting_city",
+            step,
             updated_at: new Date().toISOString(),
           },
         });
       }
 
-      const isPromoResponse = isRespondingToPromotion(texto, history);
-      if (isPromoResponse) {
-        const promoProduct = getProductFromLastPromotion(history, parsed);
-
-        if (promoProduct) {
-          const resetOrder = {
-            product: promoProduct.canonical,
-            quantity: 0,
-            city: "",
-            customer_name: "",
-            phone: "",
-            address: "",
-          };
-
-          return res.json({
-            response: productOfferReply(promoProduct),
-            context: {
-              ...(context || {}),
-              current_product: promoProduct.canonical,
-              last_topic: promoProduct.canonical,
-              order_data: resetOrder,
-              step: "collecting_city",
-              updated_at: new Date().toISOString(),
-            },
-          });
-        }
-      }
-
-      // Antes el código caía al producto por defecto y podía cambiar a otro producto.
-      // Ahora, si no hay contexto real, se pregunta cuál producto quiere.
-      const resetOrder = {
-        product: "",
-        quantity: 0,
-        city: "",
-        customer_name: "",
-        phone: "",
-        address: "",
-      };
+      // Si no hay producto bloqueado, mostrar catálogo
+      const productLines = parsed.products.map(p => {
+        const promo = p.price2 ? ` | 🔥 2x → ${formatGs(p.price2)} Gs` : "";
+        return `⭐ *${p.canonical}*: ${formatGs(p.price1)} Gs${promo}`;
+      });
 
       return res.json({
         response: `😊 Perfecto. ¿Cuál producto querés llevar?
 
-📋 Podés escribir el nombre del producto o mirar el catálogo:
+📋 Nuestros productos:
+${productLines.join("\n")}
+
+Podés escribir el nombre del producto o mirar el catálogo:
 ${CATALOG_URL}`,
         context: {
           ...(context || {}),
           current_product: null,
           last_topic: null,
-          order_data: resetOrder,
+          order_data: { product: "", quantity: 0, city: "", customer_name: "", phone: "", address: "", calce: null },
           step: "selling",
           updated_at: new Date().toISOString(),
         },
       });
     }
 
+    // DETECTAR PRODUCTO Y CIUDAD
     const productFromMessage = detectProduct(texto, parsed, "");
     const lockedProduct = getLockedProductFromContext(context, oldOrder, history, parsed);
-
-    // ✅ Si el mensaje NO menciona otro producto, mantener el producto actual.
-    // Solo se cambia si el cliente escribe explícitamente otro producto válido.
     const productToUse = productFromMessage || lockedProduct?.canonical || oldOrder.product || "";
     const product = detectProduct(texto, parsed, productToUse);
 
-    const cityStatement = extractCityStatement(texto);
-    const detectedCityRaw = detectCity(texto, parsed, "");
-    const prevStep = context?.step || "";
-    const isCityStep = prevStep === "collecting_city";
-    const isDataCollectionStep = ["collecting_name", "collecting_address", "collecting_phone", "collecting_quantity"].includes(prevStep);
-    const detectedCity =
-      detectedCityRaw ||
-      (cityStatement && !extractQuantity(texto) && !extractPhone(texto) ? cityStatement :
-       (isDataCollectionStep && oldOrder.city ? oldOrder.city :
-        (isCityStep && !extractQuantity(texto) && !extractPhone(texto) && !detectProduct(texto, parsed, "") && normalize(texto).split(/\s+/).length <= 6
-          ? (clean(texto) || detectCity(texto, parsed, oldOrder.city))
-          : detectCity(texto, parsed, oldOrder.city))));
+    const detectedCity = detectCity(texto, parsed, oldOrder.city);
     const phone = extractPhone(texto);
     const qty = extractQuantity(texto);
-    const name = extractName(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone, parsed);
-    const address = extractAddress(
-      texto,
-      detectedCity !== oldOrder.city ? detectedCity : "",
-      phone,
-      name
-    );
+    const name = extractName(texto, detectedCity, phone, parsed);
+    const address = extractAddress(texto, detectedCity, phone, name);
+    const calce = extractCalce(texto, parsed);
 
     let orderData = mergeOrderData(
       oldOrder,
       {
         quantity: qty,
-        city: detectedCity !== oldOrder.city ? detectedCity : "",
+        city: detectedCity || "",
         phone,
         name,
         address,
+        calce,
       },
-      product
+      product,
+      parsed
     );
 
     orderData.quantity = sanitizeQuantity(orderData.quantity);
@@ -1302,23 +1444,18 @@ ${CATALOG_URL}`,
       orderData = { ...orderData, product: "" };
     }
 
+    // SI NO HAY PRODUCTO - MOSTRAR CATÁLOGO
     if (!orderData.product) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
-      const bestsellersLines = (parsed.products || []).map((p) => {
-        const price1Str = p.price1 ? `${formatGs(p.price1)} Gs` : "";
-        const price2Str = p.price2 ? `🔥 PROMO 2x → ${formatGs(p.price2)} Gs` : "";
-        const priceBlock = [price1Str ? `💰 1 unidad → ${price1Str}` : "", price2Str].filter(Boolean).join(" | ");
-        return `⭐ *${p.canonical}*${priceBlock ? `\n   ${priceBlock}` : ""}`;
+      const productLines = parsed.products.map(p => {
+        const promo = p.price2 ? ` | 🔥 2x → ${formatGs(p.price2)} Gs` : "";
+        const calce = p.requires_calce ? ` (calce ${p.calces_disponibles?.join(", ") || "35-46"})` : "";
+        return `⭐ *${p.canonical}*${calce}\n   💰 1 unidad → ${formatGs(p.price1)} Gs${promo}`;
       });
 
-      const bestsellersMsg =
-        bestsellersLines.length > 0
-          ? `🔥 *Estos son nuestros productos más vendidos* 😊\n\n${bestsellersLines.join("\n\n")}\n\n¿Cuál te interesa? ✨`
-          : `📋 ¿Qué producto te gustaría llevar?\n\n📦 Revisá nuestro catálogo:\n${CATALOG_URL}`;
-
       return res.json({
-        response: bestsellersMsg,
+        response: `🔥 *Estos son nuestros productos* 😊\n\n${productLines.join("\n\n")}\n\n¿Cuál te interesa? ✨`,
         context: {
           ...(context || {}),
           current_product: null,
@@ -1329,6 +1466,7 @@ ${CATALOG_URL}`,
       });
     }
 
+    // SI HAY PRODUCTO PERO NO CIUDAD
     if (orderData.product && !orderData.city) {
       const prevStep = context?.step || "";
       const IS_GREETING = /^(hola|buenas|buenos|hi|hey|buen dia|buenos dias|buenas tardes|buenas noches|saludos|ok|dale|si|no|gracias|listo|perfecto|okey)[\s!.]*$/i;
@@ -1343,16 +1481,44 @@ ${CATALOG_URL}`,
 
       if (looksLikeCity) {
         const rawCity = clean(texto);
-        orderData = { ...orderData, city: rawCity };
+        // Corregir la ciudad antes de guardarla
+        const correctedCity = correctCity(rawCity, parsed);
+        orderData = { ...orderData, city: correctedCity };
 
         await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
-        const promo = productInfo?.price2
-          ? `\n🔥 PROMO 2x → ${formatGs(productInfo.price2)} Gs`
+        const coverage = hasCoverage(correctedCity, parsed);
+        const productInfoLocal = getProductInfo(orderData.product, parsed);
+        const promo = productInfoLocal?.price2
+          ? `\n🔥 PROMO 2x → ${formatGs(productInfoLocal.price2)} Gs`
           : "";
 
+        if (coverage) {
+          return res.json({
+            response: `✅ Perfecto 😊 ${correctedCity} tiene ENVÍO GRATIS contra-entrega 🚚
+
+🔥 ${orderData.product}:
+• 1 unidad → ${formatGs(productInfoLocal?.price1 || 0)} Gs${promo}
+
+¿Cuántas unidades te gustaría llevar? ✨`,
+            context: {
+              ...(context || {}),
+              current_product: orderData.product,
+              order_data: orderData,
+              step: "collecting_quantity",
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
+
+        const bankInfo = parsed.bankData.length > 0 
+          ? parsed.bankData.map(b => 
+              `Titular: ${b.titular}${b.ci ? `\nCI: ${b.ci}` : ''}\nEntidad: ${b.entidad}\nCuenta: ${b.cuenta}${b.alias ? `\nAlias: ${b.alias}` : ''}`
+            ).join('\n\n')
+          : 'Titular: [TU NOMBRE]\nEntidad: [TU BANCO]\nCuenta: [TU CUENTA]\nAlias: [TU ALIAS]';
+
         return res.json({
-          response: `ℹ️ ${rawCity} no entra en nuestra zona de contra-entrega 😊
+          response: `ℹ️ ${correctedCity} no entra en nuestra zona de contra-entrega 😊
 
 Pero sí hacemos envíos seguros por transportadora:
 🚚 TSI / NASA / Occidental / MG Express / Multienvíos
@@ -1360,15 +1526,11 @@ Pero sí hacemos envíos seguros por transportadora:
 📦 En tu zona trabajamos con pago anticipado por transferencia.
 
 🔥 ${orderData.product}:
-• 1 unidad → ${formatGs(productInfo?.price1 || 0)} Gs${promo}
+• 1 unidad → ${formatGs(productInfoLocal?.price1 || 0)} Gs${promo}
 
 📲 DATOS PARA TRANSFERENCIA:
 
-Titular: David Agustin Alcaraz Aguilar
-CI: 5347454
-Entidad: ueno bank
-N° de cuenta: 18107326
-Alias: 5347454
+${bankInfo}
 
 📎 Enviame:
 ✅ comprobante
@@ -1388,20 +1550,41 @@ y confirmamos tu pedido 🚚✨`,
 
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
 
+      const calceMsg = productInfo?.requires_calce
+        ? `\n\n📏 Calces disponibles: ${productInfo.calces_disponibles?.join(", ") || "35 a 46"}`
+        : "";
+
       return res.json({
-        response: `💰 ${orderData.product}: ${formatGs(productInfo?.price1 || 0)} Gs
+        response: `💰 ${orderData.product}: ${formatGs(productInfo?.price1 || 0)} Gs${calceMsg}
 
 📍 ¿Para qué ciudad sería el envío? 😊`,
         context: {
           ...(context || {}),
           current_product: orderData.product,
           order_data: orderData,
-          step: "collecting_city",
+          step: productInfo?.requires_calce ? "collecting_calce" : "collecting_city",
           updated_at: new Date().toISOString(),
         },
       });
     }
 
+    // SI HAY PRODUCTO Y CIUDAD PERO FALTA CALCE (si requiere)
+    if (orderData.product && orderData.city && productInfo?.requires_calce && !orderData.calce) {
+      await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
+
+      return res.json({
+        response: `📏 Para el *${productInfo.canonical}*, necesito saber tu calce/talle.${productInfo.calces_disponibles ? `\n\nCalces disponibles: ${productInfo.calces_disponibles.join(", ")}` : ""}\n\n¿Qué número usás? 😊`,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product,
+          order_data: orderData,
+          step: "collecting_calce",
+          updated_at: new Date().toISOString(),
+        },
+      });
+    }
+
+    // SI HAY PRODUCTO Y CIUDAD PERO NO CANTIDAD
     if (orderData.product && orderData.city && !orderData.quantity) {
       const msgNormQty = normalize(texto);
       const isGratitudeHere = /\b(gracias|grax|grac|ok|dale|perfecto|listo|genial|excelente|de nada|chevere|okey|bueno|joya)\b/.test(msgNormQty);
@@ -1424,8 +1607,17 @@ y confirmamos tu pedido 🚚✨`,
       const promo = productInfo?.price2
         ? `\n🔥 PROMO 2x → ${formatGs(productInfo.price2)} Gs`
         : "";
+      const calceMsg2 = productInfo?.requires_calce
+        ? `\n📏 Calce: ${orderData.calce}`
+        : "";
 
       if (!coverage) {
+        const bankInfo = parsed.bankData.length > 0 
+          ? parsed.bankData.map(b => 
+              `Titular: ${b.titular}${b.ci ? `\nCI: ${b.ci}` : ''}\nEntidad: ${b.entidad}\nCuenta: ${b.cuenta}${b.alias ? `\nAlias: ${b.alias}` : ''}`
+            ).join('\n\n')
+          : 'Titular: [TU NOMBRE]\nEntidad: [TU BANCO]\nCuenta: [TU CUENTA]\nAlias: [TU ALIAS]';
+
         const sinCoberturaBlock = `ℹ️ ${orderData.city} no entra en nuestra zona de contra-entrega 😊
 
 Pero sí hacemos envíos seguros por transportadora:
@@ -1434,15 +1626,11 @@ Pero sí hacemos envíos seguros por transportadora:
 📦 En tu zona trabajamos con pago anticipado por transferencia.
 
 🔥 ${orderData.product}:
-• 1 unidad → ${formatGs(productInfo?.price1 || 0)} Gs${promo}
+• 1 unidad → ${formatGs(productInfo?.price1 || 0)} Gs${promo}${calceMsg2}
 
 📲 DATOS PARA TRANSFERENCIA:
 
-Titular: David Agustin Alcaraz Aguilar
-CI: 5347454
-Entidad: ueno bank
-N° de cuenta: 18107326
-Alias: 5347454
+${bankInfo}
 
 📎 Enviame:
 ✅ comprobante
@@ -1467,7 +1655,7 @@ y confirmamos tu pedido 🚚✨`;
 
           if (isDeliveryQuestion) {
             return res.json({
-              response: `🚚 Una vez que recibamos tu comprobante de transferencia y tus datos, coordinamos el envío con la transportadora (TSI / NASA / Occidental / MG Express).\n\nEl tiempo estimado suele ser de 2 a 5 días hábiles según tu zona. 😊\n\n📎 Enviame:\n✅ comprobante\n✅ nombre completo\n✅ teléfono`,
+              response: `🚚 Una vez que recibamos tu comprobante de transferencia y tus datos, coordinamos el envío con la transportadora.\n\nEl tiempo estimado suele ser de 2 a 5 días hábiles según tu zona. 😊\n\n📎 Enviame:\n✅ comprobante\n✅ nombre completo\n✅ teléfono`,
               context: sinCoberturaCtx,
             });
           }
@@ -1496,7 +1684,7 @@ y confirmamos tu pedido 🚚✨`;
         response: `✅ Perfecto 😊 ${orderData.city} tiene ENVÍO GRATIS contra-entrega 🚚
 
 🔥 ${orderData.product}
-• 1 unidad → ${formatGs(productInfo?.price1 || 0)} Gs${promo}
+• 1 unidad → ${formatGs(productInfo?.price1 || 0)} Gs${promo}${calceMsg2}
 
 ¿Cuántas unidades te gustaría llevar? ✨`,
         context: {
@@ -1509,6 +1697,7 @@ y confirmamos tu pedido 🚚✨`;
       });
     }
 
+    // SI FALTAN DATOS DEL CLIENTE (nombre, dirección, teléfono)
     if (
       orderData.product &&
       orderData.city &&
@@ -1525,6 +1714,8 @@ y confirmamos tu pedido 🚚✨`;
       if (!orderData.customer_name) missing.push("nombre y apellido");
       if (!orderData.address) missing.push("dirección exacta");
       if (!orderData.phone) missing.push("número de celular");
+
+      const calceMsg3 = orderData.calce ? `\n📏 Calce: ${orderData.calce}` : "";
 
       if (missing.length === 3) {
         const rawText = clean(message);
@@ -1625,7 +1816,7 @@ y confirmamos tu pedido 🚚✨`;
 
 📦 ${orderData.product}
 🔢 Cantidad: ${orderData.quantity}
-💰 Total: ${formatGs(total)} Gs
+💰 Total: ${formatGs(total)} Gs${calceMsg3}
 
 🚚 Envío GRATIS contra-entrega
 
@@ -1638,7 +1829,7 @@ y agendamos tu entrega ✨`,
             ...(context || {}),
             current_product: orderData.product,
             order_data: orderData,
-            step: nextStep(orderData),
+            step: nextStep(orderData, parsed),
             updated_at: new Date().toISOString(),
           },
         });
@@ -1649,7 +1840,7 @@ y agendamos tu entrega ✨`,
 
 📦 ${orderData.product}
 🔢 Cantidad: ${orderData.quantity}
-💰 Total: ${formatGs(total)} Gs
+💰 Total: ${formatGs(total)} Gs${calceMsg3}
 
 🚚 Envío GRATIS contra-entrega
 
@@ -1662,24 +1853,26 @@ y agendamos tu entrega ✨`,
           ...(context || {}),
           current_product: orderData.product,
           order_data: orderData,
-          step: nextStep(orderData),
+          step: nextStep(orderData, parsed),
           updated_at: new Date().toISOString(),
         },
       });
     }
 
+    // SI TODOS LOS DATOS ESTÁN COMPLETOS -> CONFIRMAR PEDIDO
     if (
       orderData.product &&
       orderData.city &&
       orderData.quantity > 0 &&
       orderData.customer_name &&
       orderData.address &&
-      orderData.phone
+      orderData.phone &&
+      (!productInfo?.requires_calce || orderData.calce)
     ) {
       if (!getProductInfo(orderData.product, parsed)) {
         return res.json({
           response:
-            "🙏 Para confirmar necesito saber qué producto querés. ¿Te referís al Nebulizador Portátil?",
+            "🙏 Para confirmar necesito saber qué producto querés. ¿Podés decirme el nombre?",
           context: {
             ...(context || {}),
             order_data: { ...orderData, product: "" },
@@ -1706,6 +1899,7 @@ y agendamos tu entrega ✨`,
       });
     }
 
+    // FALLBACK - USAR GEMINI
     const system = `
 Sos vendedor de Mega Todo Store.
 Usá SOLO este entrenamiento como fuente de verdad.
@@ -1755,7 +1949,7 @@ ${trainingText}
         ...(context || {}),
         current_product: orderData.product || null,
         order_data: orderData,
-        step: nextStep(orderData),
+        step: nextStep(orderData, parsed),
         updated_at: new Date().toISOString(),
       },
     });
