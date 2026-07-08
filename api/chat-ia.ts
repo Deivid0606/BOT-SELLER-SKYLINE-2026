@@ -999,6 +999,18 @@ function isShortAcknowledgement(text: string) {
   return /^(ok|okay|dale|listo|gracias|muchas gracias|perfecto|bueno|👍|👌|🙏|genial|excelente|joya)$/.test(n);
 }
 
+/**
+ * Detecta cuando el cliente ya cerró la conversación después de un pedido confirmado.
+ * Esto evita que el bot insista con preguntas tipo:
+ * “¿Querés consultar algo sobre entrega, pago o factura?”
+ */
+function isConversationClosing(text: string) {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return /^(nada mas|nada más|nada|solo eso|solo eso gracias|eso es todo|eso seria|eso sería|eso nomas|eso nomás|no gracias|no nada mas|no nada más|ninguna consulta|ninguna duda|sin consulta|sin dudas|todo bien|ya esta|ya está|gracias nada mas|gracias nada más|gracias eso es todo|ok gracias|dale gracias|listo gracias|perfecto gracias)$/.test(n);
+}
+
 function isPostSaleQuestion(text: string) {
   const n = normalize(text);
 
@@ -1919,20 +1931,32 @@ export default async function handler(req: any, res: any) {
 
     if (context?.step === "pedido_confirmado") {
       const msgNormClosed = normalize(texto);
-      const wantsNewPurchaseAfterConfirmed =
-        newTemplateSignal.isNew ||
-        /\b(precio|cuanto|cuánto|me interesa|quiero comprar|comprar|otro producto|catalogo|catálogo)\b/.test(msgNormClosed);
+
+      // ✅ Cierre real de conversación después de confirmar pedido.
+      // IMPORTANTE: esto va ANTES de detectar nueva compra, porque mensajes como
+      // "OK", "GRACIAS", "SOLO ESO GRACIAS" o "NADA MAS" no deben reabrir venta
+      // aunque el historial todavía tenga una promo reciente.
+      if (isShortAcknowledgement(texto) || isConversationClosing(texto)) {
+        return res.json({
+          response: `😊 ¡Perfecto, muchas gracias! Tu pedido ya quedó confirmado y agendado. 🚚📦`,
+          context: {
+            ...(context || {}),
+            step: "pedido_confirmado",
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
+
+      const hasCurrentTemplatePricing = !!currentTemplatePricing;
+      const productInClosedMessage = detectProduct(texto, parsed, "");
+      const explicitNewPurchaseAfterConfirmed =
+        hasCurrentTemplatePricing ||
+        (!!productInClosedMessage && /\b(precio|cuanto|cuánto|me interesa|quiero|quiero comprar|comprar|confirmar|agendar|otro producto)\b/.test(msgNormClosed)) ||
+        /\b(otro producto|nuevo pedido|hacer otro pedido|catalogo|catálogo|ver catalogo|ver catálogo|quiero comprar otra cosa)\b/.test(msgNormClosed);
+
+      const wantsNewPurchaseAfterConfirmed = explicitNewPurchaseAfterConfirmed;
 
       if (!wantsNewPurchaseAfterConfirmed) {
-        if (isShortAcknowledgement(texto)) {
-          return res.json({
-            response: `😊 ¡Gracias! Tu pedido ya quedó confirmado y agendado. 🚚📦`,
-            context: {
-              ...(context || {}),
-              updated_at: new Date().toISOString(),
-            },
-          });
-        }
 
         if (isPostSaleQuestion(texto)) {
           const postSaleSystem = buildPostSaleSystemPrompt(parsed, oldOrder);
@@ -1970,9 +1994,10 @@ export default async function handler(req: any, res: any) {
         }
 
         return res.json({
-          response: `😊 Tu pedido ya quedó confirmado y agendado. ¿Querés consultar algo sobre la entrega, pago o factura? 🚚📦`,
+          response: `😊 ¡Perfecto! Tu pedido ya quedó confirmado y agendado. Gracias por elegirnos 💜🚚`,
           context: {
             ...(context || {}),
+            step: "pedido_confirmado",
             updated_at: new Date().toISOString(),
           },
         });
