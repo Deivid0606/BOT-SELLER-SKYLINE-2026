@@ -21,6 +21,7 @@ import { createClient } from "@supabase/supabase-js";
  * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
  * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
  * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
+ * 18) FIX V11: si el cliente pidió explícitamente otro producto antes de una plantilla nueva, ese producto gana sobre contexto viejo.
  * 18) FIX V9: si el pedido ya tiene todos los datos obligatorios, confirma directo con bloque fijo backend; nunca pregunta “¿Confirmamos?”.
  * 18) FIX V8: después de postventa, si llega una nueva plantilla y el cliente responde "Quiero confirmar", inicia otra venta nueva.
  * 18) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
@@ -1199,6 +1200,78 @@ function getLastRealSalesTemplateProduct(history: any[], parsed: ParsedTraining)
   return null;
 }
 
+
+function historyText(item: any) {
+  return clean(item?.content || item?.message || item?.text || item?.body || "");
+}
+
+function extractExplicitProductInterest(text: string, parsed: ParsedTraining) {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw) return "";
+  if (isConfirmedOrderMessage(raw)) return "";
+  if (isGenericBuyReply(raw) || isStrongNewPurchaseReply(raw)) return "";
+
+  const hasInterestWords =
+    /\b(me interesa|quiero|precio|cuanto|cuánto|tenes|tenés|tienen|hay|consulta|info|informacion|información|comprar|compro|reservar|agendar)\b/.test(n);
+
+  if (!hasInterestWords) return "";
+
+  const product = detectProduct(raw, parsed, "");
+  const productInfo = getProductInfo(product, parsed);
+  return productInfo?.canonical || "";
+}
+
+function getRecentExplicitProductInterestAfterConfirmed(history: any[], parsed: ParsedTraining): { product: ProductItem; index: number } | null {
+  const items = history || [];
+
+  for (let i = items.length - 1; i >= 0; i--) {
+    const content = historyText(items[i]);
+    if (!content) continue;
+
+    const product = extractExplicitProductInterest(content, parsed);
+    const productInfo = getProductInfo(product, parsed);
+    if (productInfo) return { product: productInfo, index: i };
+
+    // No usar intereses viejos anteriores al último pedido confirmado.
+    if (isConfirmedOrderMessage(content)) break;
+  }
+
+  return null;
+}
+
+function getTemplatePricingAfterHistoryIndex(history: any[], parsed: ParsedTraining, startIndex: number): TemplatePricing | null {
+  const items = history || [];
+
+  for (let i = items.length - 1; i > startIndex; i--) {
+    const content = historyText(items[i]);
+    if (!content) continue;
+    if (isConfirmedOrderMessage(content)) continue;
+    if (!isRealSalesTemplateMessage(content) && !isSafeTemplatePricingMessage(content) && !isStructuredSalesTemplateMessage(content)) continue;
+
+    const pricing = detectTemplatePricingSmart(content, parsed);
+    if (pricing) return pricing;
+  }
+
+  return null;
+}
+
+function forceTemplatePricingProduct(templatePricing: TemplatePricing | null, product: ProductItem | string | null): TemplatePricing | null {
+  if (!templatePricing || !product) return templatePricing;
+
+  const productName = typeof product === "string" ? product : product.canonical;
+  if (!productName) return templatePricing;
+
+  return {
+    ...templatePricing,
+    product: productName,
+    offers: (templatePricing.offers || []).map((o) => ({
+      ...o,
+      product: productName,
+    })),
+  };
+}
+
 function isStrongNewPurchaseReply(text: string) {
   const n = normalize(text);
   // Después de un pedido confirmado, solo estas respuestas reabren venta desde la última plantilla real.
@@ -2296,7 +2369,21 @@ export default async function handler(req: any, res: any) {
     const trainingText = buildTrainingText(allTraining);
     const parsed = parseTraining(trainingText);
     const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
-    const templatePricing = currentTemplatePricing || getTemplatePricingFromHistory(history, parsed);
+
+    // ✅ FIX V11 mínimo:
+    // Si después de un pedido confirmado el cliente dice explícitamente "Quiero plumero"
+    // y luego responde "Quiero confirmar" a una plantilla nueva, ese producto explícito
+    // debe ganar sobre cualquier last_ad_product/current_product viejo del contexto.
+    const recentExplicitProductInterest = getRecentExplicitProductInterestAfterConfirmed(history, parsed);
+    const templateAfterExplicitProductInterest = recentExplicitProductInterest
+      ? getTemplatePricingAfterHistoryIndex(history, parsed, recentExplicitProductInterest.index)
+      : null;
+
+    let templatePricing =
+      currentTemplatePricing ||
+      (templateAfterExplicitProductInterest
+        ? forceTemplatePricingProduct(templateAfterExplicitProductInterest, recentExplicitProductInterest?.product || null)
+        : getTemplatePricingFromHistory(history, parsed));
 
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
@@ -2327,8 +2414,11 @@ export default async function handler(req: any, res: any) {
       const msgNormClosed = normalize(texto);
       const hasCurrentTemplatePricing = !!currentTemplatePricing;
       const productInClosedMessage = detectProduct(texto, parsed, "");
-      const lastRealSalesTemplatePricing = getLastRealSalesTemplatePricing(history, parsed);
-      const lastRealSalesTemplateProduct = lastRealSalesTemplatePricing?.product ? getProductInfo(lastRealSalesTemplatePricing.product, parsed) : getLastRealSalesTemplateProduct(history, parsed);
+      const lastRealSalesTemplatePricing =
+        templateAfterExplicitProductInterest && recentExplicitProductInterest
+          ? forceTemplatePricingProduct(templateAfterExplicitProductInterest, recentExplicitProductInterest.product)
+          : getLastRealSalesTemplatePricing(history, parsed);
+      const lastRealSalesTemplateProduct = recentExplicitProductInterest?.product || (lastRealSalesTemplatePricing?.product ? getProductInfo(lastRealSalesTemplatePricing.product, parsed) : getLastRealSalesTemplateProduct(history, parsed));
 
       // ✅ IMPORTANTE:
       // Primero se detecta si el cliente está comprando una NUEVA plantilla real.
@@ -2458,7 +2548,13 @@ export default async function handler(req: any, res: any) {
     // 2) última plantilla real del historial,
     // 3) producto explícito del mensaje,
     // 4) recién después contexto viejo / catálogo.
-    let productToUse = currentTemplatePricing?.product || templatePricing?.product || newTemplateSignal.product || productFromMessageInitial || "";
+    let productToUse =
+      currentTemplatePricing?.product ||
+      ((isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) ? recentExplicitProductInterest?.product?.canonical || "" : "") ||
+      templatePricing?.product ||
+      newTemplateSignal.product ||
+      productFromMessageInitial ||
+      "";
 
     if (!productToUse && (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))) {
       productToUse = templatePricing?.product || getProductFromLastPromotion(history, parsed)?.canonical || lockedProductInitial?.canonical || "";
@@ -2474,11 +2570,14 @@ export default async function handler(req: any, res: any) {
     // Si hay plantilla activa y el mensaje es genérico (QUIERO/CONFIRMO), forzar producto de plantilla.
     // Esto evita respuestas como: plantilla de Afilador + producto viejo Almohadillas.
     if (
-      templatePricing?.product &&
+      (recentExplicitProductInterest?.product?.canonical || templatePricing?.product) &&
       (isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) &&
       !detectProduct(texto, parsed, "")
     ) {
-      product = templatePricing.product;
+      product = recentExplicitProductInterest?.product?.canonical || templatePricing?.product || product;
+      if (templatePricing && recentExplicitProductInterest?.product?.canonical && normalize(templatePricing.product) !== normalize(recentExplicitProductInterest.product.canonical)) {
+        templatePricing = forceTemplatePricingProduct(templatePricing, recentExplicitProductInterest.product);
+      }
     }
 
     const productInfo = getProductInfo(product, parsed);
