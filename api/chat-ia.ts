@@ -18,6 +18,8 @@ import { createClient } from "@supabase/supabase-js";
  * 12) Si plantilla trae Producto + Cantidad + Precio, salta la pregunta de cantidad.
  * 13) Si llega plantilla/producto nuevo después de pedido_confirmado, inicia venta nueva.
  * 14) Postventa: después de confirmado responde preguntas normales sin reabrir pedido.
+ * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
+ * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -514,17 +516,25 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   if (!raw) return "";
   if (extractQuantity(raw) > 0) return "";
 
-  if (parsed) {
-    const normRaw = normalize(raw);
-    const isCity = parsed.cities.some((c) => {
-      const a = normalize(c.alias);
-      return a && (normRaw === a || normRaw.includes(a) || a.includes(normRaw));
-    });
-    if (isCity) return "";
-  }
-
   const isMultiLine = raw.includes("\n");
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
+
+  // ✅ FIX V4:
+  // Antes se rechazaba TODO el mensaje si contenía una ciudad.
+  // Ejemplo real:
+  // "Alexis Ortega\nCapiata, barrio san juan\n0988765433"
+  // Como contenía "Capiata", extractName devolvía vacío y el bot volvía a pedir nombre.
+  // Ahora solo rechazamos como nombre cuando el mensaje completo es una ciudad simple,
+  // no cuando viene un bloque multilinea con nombre + dirección + teléfono.
+  if (parsed && !isMultiLine && !extractPhone(raw)) {
+    const normRaw = normalize(raw);
+    const isOnlyCity = parsed.cities.some((c) => {
+      const a = normalize(c.alias);
+      const cn = normalize(c.canonical);
+      return a && (normRaw === a || normRaw === cn);
+    });
+    if (isOnlyCity) return "";
+  }
 
   const forbidden = [
     "quiero", "comprar", "me interesa", "precio", "delivery",
@@ -1090,6 +1100,46 @@ function isPostSaleQuestion(text: string) {
     /\?/.test(text) ||
     /\b(factura|boleta|comprobante|recibo|cuando|cuándo|llega|llego|llegaria|llegaría|entrega|delivery|envio|envío|demora|tarda|horario|hora|garantia|garantía|cambio|cambiar|direccion|dirección|telefono|teléfono|pagar|pago|efectivo|transferencia|delivery|seguimiento|estado|cancelar|anular)\b/.test(n)
   );
+}
+
+/**
+ * ✅ FIX V4 postventa determinística:
+ * Algunas consultas después de pedido_confirmado no deben quedar a criterio de Gemini,
+ * porque podía responder con estado de entrega aunque el cliente pidiera factura.
+ */
+function deterministicPostSaleResponse(text: string, order: OrderData, parsed: ParsedTraining) {
+  const n = normalize(text);
+
+  if (/\b(factura|boleta|ruc|razon social|razón social|cedula|cédula)\b/.test(n)) {
+    return `✅ Sí, contamos con FACTURA LEGAL 😊\n📎 Pasame tu RUC y Razón Social, o tu número de Cédula, y te la emitimos sin problema.`;
+  }
+
+  if (/\b(cuando|cuándo|llega|llego|llegaria|llegaría|entrega|delivery|envio|envío|demora|tarda|horario|hora|seguimiento|estado)\b/.test(n)) {
+    const product = order.product ? ` de ${order.product}` : "";
+    return `🚚 Tu pedido${product} ya quedó confirmado y agendado para la próxima ronda de envíos. El delivery te confirma cuando llegue a tu zona. 😊`;
+  }
+
+  if (/\b(pagar|pago|efectivo|transferencia|forma de pago|metodo de pago|método de pago)\b/.test(n)) {
+    if (hasCoverage(order.city || "", parsed)) {
+      return `💵 Podés pagar en EFECTIVO o por TRANSFERENCIA AL DELIVERY cuando recibas tu producto. Como te quede más cómodo 😊🚚`;
+    }
+
+    return `💵 Para tu zona el pago es anticipado por transferencia. Te paso los datos:\n\n${bankDataText(parsed)}`;
+  }
+
+  if (/\b(cambiar|cambio|direccion|dirección|ubicacion|ubicación|telefono|teléfono|celular|numero|número)\b/.test(n)) {
+    return `✅ Sin problema 😊 Pasame el dato nuevo que querés actualizar: dirección exacta/ubicación o número de celular.`;
+  }
+
+  if (/\b(cancelar|anular|cancela|cancele|ya no quiero)\b/.test(n)) {
+    return `Entiendo. Para cancelar el pedido, confirmame por favor escribiendo: CANCELAR PEDIDO.`;
+  }
+
+  if (/\b(garantia|garantía|cambio|devolucion|devolución|defecto|fallado|falla)\b/.test(n)) {
+    return `✅ Contamos con atención postventa 😊 Si el producto llega con algún inconveniente, escribinos con foto/video del producto y revisamos el caso.`;
+  }
+
+  return "";
 }
 
 function buildPostSaleSystemPrompt(parsed: ParsedTraining, order: OrderData) {
@@ -2034,6 +2084,19 @@ export default async function handler(req: any, res: any) {
         }
 
         if (isPostSaleQuestion(texto)) {
+          const deterministicPostSale = deterministicPostSaleResponse(texto, oldOrder, parsed);
+
+          if (deterministicPostSale) {
+            return res.json({
+              response: deterministicPostSale,
+              context: {
+                ...(context || {}),
+                step: "pedido_confirmado",
+                updated_at: new Date().toISOString(),
+              },
+            });
+          }
+
           const postSaleSystem = buildPostSaleSystemPrompt(parsed, oldOrder);
 
           const postSaleContents = (history || [])
