@@ -893,11 +893,35 @@ function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): Te
   const uniqueOffers = Array.from(unique.values()).sort((a, b) => a.quantity - b.quantity);
   if (!uniqueOffers.length) return null;
 
-  const hasFixed = uniqueOffers.some((o) => o.fixed_quantity) || fixedQuantity;
+  /**
+   * ✅ CORRECCIÓN V3:
+   * Si la plantilla trae UNA SOLA oferta y esa oferta ya dice cantidad + total
+   * (ej: "2 Unidades de Plumeros Extensibles por solo Gs. 99.000"),
+   * el sistema debe respetar esa promo como cantidad cerrada de la plantilla.
+   *
+   * Antes se trataba como promo opcional:
+   *   "¿Querés 1 o la promo de 2?"
+   * y si el cliente respondía "2", podía terminar calculando 99.000 x 2 = 198.000.
+   *
+   * Ahora:
+   * - No pregunta 1 o 2.
+   * - Bloquea cantidad 2.
+   * - Bloquea total 99.000.
+   * - Pide directamente ciudad/datos según corresponda.
+   *
+   * Importante: solo se marca fijo cuando la única oferta de plantilla es mayor a 1.
+   * Una plantilla de "1 unidad → 149.900" sigue siendo venta normal de 1 unidad.
+   */
+  const singleTemplatePackPromo =
+    uniqueOffers.length === 1 &&
+    uniqueOffers[0].quantity > 1 &&
+    uniqueOffers[0].source === "template";
+
+  const hasFixed = uniqueOffers.some((o) => o.fixed_quantity) || fixedQuantity || singleTemplatePackPromo;
 
   return {
     product,
-    // Si es pack fijo de 2/3/etc, NO guardamos price1 porque no existe venta por unidad.
+    // Si es pack fijo de 2/3/etc, NO guardamos price1 porque no existe venta por unidad en esta plantilla.
     price1: hasFixed ? undefined : uniqueOffers.find((o) => o.quantity === 1)?.total,
     offers: uniqueOffers.map((o) => ({ ...o, fixed_quantity: hasFixed ? true : o.fixed_quantity })),
     raw,
