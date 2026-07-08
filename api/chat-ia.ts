@@ -11,6 +11,7 @@ import { createClient } from "@supabase/supabase-js";
  * 5) Si el cliente responde "quiero uno", "una unidad", "solo 1", desbloquea la promo.
  * 6) Nunca inventa ciudad, nombre, dirección, teléfono, banco ni catálogo.
  * 7) No se salta ciudad ni cantidad.
+ * 8) Confirmación final 100% fija desde backend, nunca generada por Gemini.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -53,6 +54,13 @@ type OfferItem = {
   total: number;
   label?: string;
   source?: "template" | "catalog" | "context";
+};
+
+type TemplatePricing = {
+  product: string;
+  price1?: number;
+  offers: OfferItem[];
+  raw?: string;
 };
 
 type BankData = {
@@ -734,6 +742,96 @@ function detectOfferFromText(text: string, parsed: ParsedTraining): OfferItem | 
   return null;
 }
 
+
+function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): TemplatePricing | null {
+  const raw = clean(text);
+  if (!raw) return null;
+
+  const product = detectProduct(raw, parsed, "");
+  if (!product) return null;
+
+  const offers: OfferItem[] = [];
+
+  const linePatterns = [
+    /(?:^|\n|\*)\s*(\d+)\s*(?:unidad|unidades|u|und|unds)?\s*(?:→|->|-|:|=|por|x)?\s*(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/gi,
+    /(?:^|\n|\*)\s*(\d+)\s*(?:unidad|unidades|u|und|unds)\s*(?:por|a|sale|cuesta)?\s*(\d[\d.\s]{3,})/gi,
+  ];
+
+  for (const pattern of linePatterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(raw)) !== null) {
+      const quantity = sanitizeQuantity(Number(match[1]));
+      const total = parseNumberGs(match[2]);
+      if (quantity > 0 && total > 0) {
+        offers.push({
+          product,
+          quantity,
+          total,
+          label: `${quantity} unidad${quantity > 1 ? "es" : ""} por ${formatGs(total)} Gs`,
+          source: "template",
+        });
+      }
+    }
+  }
+
+  const ofertaHoy =
+    raw.match(/oferta\s*(?:hoy)?\s*[:\-]?\s*(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/i) ||
+    raw.match(/(?:precio|valor|sale|cuesta)\s*[:\-]?\s*(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/i);
+
+  const price1FromOffer = ofertaHoy ? parseNumberGs(ofertaHoy[1]) : 0;
+
+  if (price1FromOffer > 0 && !offers.some((o) => o.quantity === 1)) {
+    offers.push({
+      product,
+      quantity: 1,
+      total: price1FromOffer,
+      label: `1 unidad por ${formatGs(price1FromOffer)} Gs`,
+      source: "template",
+    });
+  }
+
+  const unique = new Map<number, OfferItem>();
+  for (const offer of offers) {
+    if (!unique.has(offer.quantity)) unique.set(offer.quantity, offer);
+  }
+
+  const uniqueOffers = Array.from(unique.values()).sort((a, b) => a.quantity - b.quantity);
+
+  if (!uniqueOffers.length) return null;
+
+  return {
+    product,
+    price1: uniqueOffers.find((o) => o.quantity === 1)?.total,
+    offers: uniqueOffers,
+    raw,
+  };
+}
+
+function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): TemplatePricing | null {
+  const lastBotMessages = (history || [])
+    .slice(-10)
+    .reverse()
+    .filter((h: any) => h.role === "assistant" || h.role === "model");
+
+  for (const item of lastBotMessages) {
+    const pricing = detectTemplatePricingFromText(clean(item?.content), parsed);
+    if (pricing) return pricing;
+  }
+
+  return null;
+}
+
+function getTemplateOfferForQuantity(templatePricing: TemplatePricing | null, product: string, quantity: number): OfferItem | null {
+  if (!templatePricing || !product || normalize(templatePricing.product) !== normalize(product)) return null;
+  const q = sanitizeQuantity(quantity);
+  return templatePricing.offers.find((o) => o.quantity === q) || null;
+}
+
+function getTemplatePrice1(templatePricing: TemplatePricing | null, product: string) {
+  if (!templatePricing || !product || normalize(templatePricing.product) !== normalize(product)) return 0;
+  return templatePricing.price1 || templatePricing.offers.find((o) => o.quantity === 1)?.total || 0;
+}
+
 function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
   const lastBotMessages = (history || [])
     .slice(-8)
@@ -955,8 +1053,20 @@ function bankDataText(parsed: ParsedTraining) {
   return b.raw || "Datos de transferencia no configurados en entrenamiento.";
 }
 
-function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferItem | null) {
+function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferItem | null, templatePricing?: TemplatePricing | null) {
   if (!productInfo) return "";
+
+  if (templatePricing && normalize(templatePricing.product) === normalize(productInfo.canonical)) {
+    const lines = templatePricing.offers
+      .sort((a, b) => a.quantity - b.quantity)
+      .map((o) =>
+        o.quantity === 1
+          ? `1 unidad: ${formatGs(o.total)} Gs`
+          : `Promo ${o.quantity} unidades: ${formatGs(o.total)} Gs`
+      );
+
+    if (lines.length) return lines.join("\n");
+  }
 
   if (
     lockedOffer &&
@@ -1050,7 +1160,21 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
 }
 
 function shouldConfirmOrder(state: ConversationState) {
-  return state.step === "confirm_order" && state.order.product && state.order.city && state.order.quantity > 0;
+  const o = state.order;
+
+  if (!o.product || !o.city || !o.quantity || !o.customer_name || !o.phone) {
+    return false;
+  }
+
+  if (state.coverage !== false && !o.address) {
+    return false;
+  }
+
+  if (state.coverage === false && !o.payment_proof_received) {
+    return false;
+  }
+
+  return state.step === "confirm_order";
 }
 
 function isOrderStale(order: OrderData, lastActivity: string) {
@@ -1252,11 +1376,20 @@ async function transcribeAudioWithGemini({
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
   const addressPart = o.address ? ` — ${o.address}` : "";
-  const paymentBlock =
-    state.coverage === false
-      ? `🚚 Su encomienda será enviada por transportadora.
 
-📎 Una vez depositado el costo del delivery, le estaremos enviando su comprobante de envío.
+  if (state.coverage === false) {
+    return `✅ PEDIDO CONFIRMADO
+
+✅ Producto: ${o.product}
+✅ Cliente: ${o.customer_name}
+✅ Ubicación: ${o.city}${addressPart}
+✅ Contacto: ${o.phone}
+✅ Cantidad: ${o.quantity} u.
+💰 Total: ${formatGs(state.total)} Gs
+
+🚚 Su encomienda será enviada por transportadora.
+
+📎 Ya recibimos tus datos y comprobante. Una vez procesado el envío, te estaremos enviando tu comprobante de despacho.
 
 ⏰ Oferta válida hoy
 
@@ -1264,8 +1397,22 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
 
 💵 Pago anticipado por transferencia.
 
-${bankDataText(parsed)}`
-      : `🚚 Envío GRATIS · Pagás al recibir
+¡Gracias por tu compra! 🛍️✨
+
+
+Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
+  }
+
+  return `✅ PEDIDO CONFIRMADO
+
+✅ Producto: ${o.product}
+✅ Cliente: ${o.customer_name}
+✅ Ubicación: ${o.city}${addressPart}
+✅ Contacto: ${o.phone}
+✅ Cantidad: ${o.quantity} u.
+💰 Total: ${formatGs(state.total)} Gs
+
+🚚 Envío GRATIS · Pagás al recibir
 
 🚚 Tu pedido queda agendado para la próxima ronda de envíos. Si pagás al recibir, el delivery lo confirma al llegar a tu zona.
 
@@ -1279,19 +1426,7 @@ ${bankDataText(parsed)}`
 
 
 Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
-
-  return `✅ PEDIDO CONFIRMADO
-
-✅ Producto: ${o.product}
-✅ Cliente: ${o.customer_name}
-✅ Ubicación: ${o.city}${addressPart}
-✅ Contacto: ${o.phone}
-✅ Cantidad: ${o.quantity} u.
-💰 Total: ${formatGs(state.total)} Gs
-
-${paymentBlock}`;
 }
-
 
 function deterministicAfterQuantityMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
@@ -1338,7 +1473,7 @@ Ahora solo necesito:
 ✅ número de celular 📲`;
 }
 
-function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState) {
+function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
   const o = state.order;
 
   return `
@@ -1365,7 +1500,7 @@ ESTADO DEL PEDIDO:
 - Promo bloqueada desde plantilla: ${o.locked_offer ? `${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs` : "no"}
 
 PRECIO DEL PRODUCTO ACTUAL:
-${productPriceText(state.productInfo, o.locked_offer) || "Sin producto actual."}
+${productPriceText(state.productInfo, o.locked_offer, templatePricing) || "Sin producto actual."}
 
 CATÁLOGO:
 ${productsSummary(parsed)}
@@ -1395,15 +1530,16 @@ REGLAS DURAS:
 - Si no hay cobertura y ya hay cantidad, podés mostrar datos de transferencia.
 - Si hay cobertura, indicar envío gratis contra-entrega cuando corresponda.
 - Si el cliente pregunta precio, respondé precio y guiá al siguiente paso.
+- PRIORIDAD DE PRECIOS: primero usar precios/promos de la plantilla o último mensaje promocional. Si la plantilla no trae precio/promo, recién ahí usar CATALOGO_PRODUCTOS del entrenamiento.
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
 - Si no hay promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
-- Nunca preguntes “¿Está todo correcto?” si ya están todos los datos. El pedido se confirma directamente con el formato fijo.
+- Nunca preguntes “¿Está todo correcto?” si ya están todos los datos. Si el pedido está completo, el backend responde directamente con ✅ PEDIDO CONFIRMADO y no se llama a Gemini.
 - En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
 `.trim();
 }
 
-function buildFallbackResponse(parsed: ParsedTraining, state: ConversationState) {
+function buildFallbackResponse(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
   const o = state.order;
 
   if (!o.product) {
@@ -1420,7 +1556,7 @@ ${productsSummary(parsed)}
     return `¡Excelente elección! 🔥
 
 ${state.productInfo?.canonical || o.product}
-${productPriceText(state.productInfo, o.locked_offer)}
+${productPriceText(state.productInfo, o.locked_offer, templatePricing)}
 
 📍 ¿Para qué ciudad sería el envío? 😊`;
   }
@@ -1428,7 +1564,7 @@ ${productPriceText(state.productInfo, o.locked_offer)}
   if (!o.quantity) {
     const qtyQuestion =
       o.locked_offer && o.locked_offer.quantity > 1
-        ? `¿Querés 1 unidad por ${formatGs(state.productInfo?.price1 || 0)} Gs o la promo de ${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs? 😊`
+        ? `¿Querés 1 unidad por ${formatGs(getTemplatePrice1(templatePricing || null, o.product) || state.productInfo?.price1 || 0)} Gs o la promo de ${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs? 😊`
         : "¿Cuántas unidades querés llevar? 😊";
 
     if (state.coverage === false) {
@@ -1515,6 +1651,7 @@ export default async function handler(req: any, res: any) {
     const allTraining = await getAllTrainingData(user_id);
     const trainingText = buildTrainingText(allTraining);
     const parsed = parseTraining(trainingText);
+    const templatePricing = getTemplatePricingFromHistory(history, parsed);
 
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
@@ -1600,8 +1737,12 @@ export default async function handler(req: any, res: any) {
       const promoMatchesProduct = promoFromHistory && normalize(promoFromHistory.product) === normalize(productInfo.canonical);
 
       if (explicitQty > 0) {
+        const templateOffer = getTemplateOfferForQuantity(templatePricing, productInfo.canonical, explicitQty);
         const catalogOffer = getCatalogOffer(productInfo, explicitQty);
-        if (catalogOffer) {
+
+        if (templateOffer) {
+          lockedOffer = templateOffer;
+        } else if (catalogOffer) {
           lockedOffer = catalogOffer;
         } else if (
           promoMatchesProduct &&
@@ -1710,9 +1851,24 @@ export default async function handler(req: any, res: any) {
     const state = buildState(orderData, parsed);
 
     if (state.productInfo && !orderData.locked_offer && orderData.quantity) {
+      const templateOffer = getTemplateOfferForQuantity(templatePricing, state.productInfo.canonical, orderData.quantity);
       const catalogOffer = getCatalogOffer(state.productInfo, orderData.quantity);
-      if (catalogOffer) {
+
+      if (templateOffer) {
+        orderData.locked_offer = templateOffer;
+      } else if (catalogOffer) {
         orderData.locked_offer = catalogOffer;
+      } else {
+        const templatePrice1 = getTemplatePrice1(templatePricing, state.productInfo.canonical);
+        if (orderData.quantity === 1 && templatePrice1 > 0) {
+          orderData.locked_offer = {
+            product: state.productInfo.canonical,
+            quantity: 1,
+            total: templatePrice1,
+            label: `1 unidad por ${formatGs(templatePrice1)} Gs`,
+            source: "template",
+          };
+        }
       }
     }
 
@@ -1721,6 +1877,42 @@ export default async function handler(req: any, res: any) {
 
     if (orderData.product) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, confirm);
+    }
+
+    // ✅ REGLA CRÍTICA:
+    // Si el pedido ya está completo, Gemini NO responde.
+    // El backend devuelve siempre el formato fijo oficial de PEDIDO CONFIRMADO.
+    if (confirm) {
+      const fixedConfirmation = finalConfirmationMessage(finalState, parsed);
+
+      return res.json({
+        response: fixedConfirmation,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || null,
+          last_topic: orderData.product || context?.last_topic || null,
+          last_ad_offer: orderData.locked_offer || null,
+          order_data: orderData,
+          order_id: orderData.order_id || null,
+          payment_proof_received: orderData.payment_proof_received || false,
+          step: "pedido_confirmado",
+          updated_at: new Date().toISOString(),
+        },
+        debug: process.env.NODE_ENV === "development"
+          ? {
+              fixed_backend_confirmation: true,
+              product: orderData.product,
+              quantity: orderData.quantity,
+              city: orderData.city,
+              coverage: finalState.coverage,
+              total: finalState.total,
+              missing: finalState.missing,
+              step: finalState.step,
+              confirm,
+              locked_offer: orderData.locked_offer,
+            }
+          : undefined,
+      });
     }
 
     if (!confirm && prevStep === "collecting_quantity" && qty > 0 && orderData.city) {
@@ -1756,44 +1948,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    if (confirm) {
-      const fixedConfirmation = finalConfirmationMessage(finalState, parsed);
-
-      return res.json({
-        response: fixedConfirmation,
-        context: {
-          ...(context || {}),
-          current_product: orderData.product || null,
-          last_topic: orderData.product || context?.last_topic || null,
-          last_ad_offer: orderData.locked_offer || null,
-          order_data: orderData,
-          order_id: orderData.order_id || null,
-          step: "pedido_confirmado",
-          updated_at: new Date().toISOString(),
-        },
-        debug: process.env.NODE_ENV === "development"
-          ? {
-              freshOrder,
-              parsed_products: parsed.products.length,
-              parsed_cities: parsed.cities.length,
-              product: orderData.product,
-              quantity: orderData.quantity,
-              city: orderData.city,
-              coverage: finalState.coverage,
-              total: finalState.total,
-              missing: finalState.missing,
-              step: finalState.step,
-              confirm,
-              locked_offer: orderData.locked_offer,
-              productFromMessageInitial,
-              promoResponse,
-              fixed_confirmation: true,
-            }
-          : undefined,
-      });
-    }
-
-    const system = buildSalesSystemPrompt(parsed, finalState);
+        const system = buildSalesSystemPrompt(parsed, finalState, templatePricing);
 
     const contents = (history || [])
       .slice(-12)
@@ -1825,7 +1980,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     });
 
     if (!aiResponse) {
-      aiResponse = buildFallbackResponse(parsed, finalState);
+      aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
     return res.json({
