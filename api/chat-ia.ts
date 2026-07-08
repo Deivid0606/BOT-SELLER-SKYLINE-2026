@@ -21,6 +21,7 @@ import { createClient } from "@supabase/supabase-js";
  * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
  * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
  * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
+ * 18) FIX V9: si el pedido ya tiene todos los datos obligatorios, confirma directo con bloque fijo backend; nunca pregunta “¿Confirmamos?”.
  * 18) FIX V8: después de postventa, si llega una nueva plantilla y el cliente responde "Quiero confirmar", inicia otra venta nueva.
  * 18) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
  * 18) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
@@ -1728,6 +1729,45 @@ function shouldConfirmOrder(state: ConversationState) {
   return state.step === "confirm_order";
 }
 
+/**
+ * ✅ FIX V9 CONFIRMACIÓN DIRECTA:
+ * Esta función NO depende del texto que genere Gemini ni del paso conversacional.
+ * Si el backend ya tiene todos los datos reales del pedido, debe confirmar SIEMPRE
+ * con finalConfirmationMessage().
+ *
+ * Evita el bug:
+ * "Ya tenemos todos tus datos... ¿Confirmamos tu pedido?"
+ *
+ * Regla:
+ * - Contra-entrega/cobertura: producto + ciudad + cantidad + nombre + dirección + teléfono.
+ * - Sin cobertura: producto + ciudad + cantidad + nombre + teléfono + comprobante.
+ */
+function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState) {
+  const o = state.order;
+
+  const hasBaseData = Boolean(
+    clean(o.product) &&
+    clean(o.city) &&
+    sanitizeQuantity(o.quantity) > 0 &&
+    clean(o.customer_name) &&
+    clean(o.phone)
+  );
+
+  if (!hasBaseData) return false;
+
+  // Seguridad: no confirmar si el producto no existe en catálogo/entrenamiento.
+  // La plantilla puede fijar precio/cantidad, pero el producto debe poder mapearse.
+  if (!state.productInfo) return false;
+
+  // Si hay cobertura contra-entrega, la dirección es obligatoria.
+  if (state.coverage !== false) {
+    return Boolean(clean(o.address));
+  }
+
+  // Si no hay cobertura, no se confirma hasta recibir comprobante.
+  return Boolean(o.payment_proof_received);
+}
+
 function isOrderStale(order: OrderData, lastActivity: string) {
   const hasProduct = !!order?.product;
   const hasCity = !!order?.city;
@@ -2640,7 +2680,12 @@ export default async function handler(req: any, res: any) {
     }
 
     const finalState = buildState(orderData, parsed);
-    const confirm = shouldConfirmOrder(finalState);
+    // ✅ FIX V9:
+    // Confirmar directo si el backend ya tiene todos los datos obligatorios.
+    // No depender únicamente de finalState.step porque Gemini nunca debe pedir
+    // una confirmación extra cuando los datos ya están completos.
+    const directConfirm = hasAllRequiredOrderDataForDirectConfirmation(finalState);
+    const confirm = shouldConfirmOrder(finalState) || directConfirm;
 
     if (orderData.product) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, confirm);
@@ -2676,6 +2721,7 @@ export default async function handler(req: any, res: any) {
               missing: finalState.missing,
               step: finalState.step,
               confirm,
+              direct_confirm: directConfirm,
               locked_offer: orderData.locked_offer,
             }
           : undefined,
@@ -2807,6 +2853,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
             missing: finalState.missing,
             step: finalState.step,
             confirm,
+            direct_confirm: directConfirm,
             locked_offer: orderData.locked_offer,
             productFromMessageInitial,
             promoResponse,
