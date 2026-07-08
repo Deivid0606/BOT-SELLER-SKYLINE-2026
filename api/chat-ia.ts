@@ -21,6 +21,7 @@ import { createClient } from "@supabase/supabase-js";
  * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
  * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
  * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
+ * 19) FIX V15: no confirma si solo llega teléfono + nombre sin dirección; evita tomar ciudad como nombre.
  * 18) FIX V13: active_template de corta duración. La última plantilla enviada/activa gana sobre contexto viejo.
  * 18) FIX V12: detección de producto ignora palabras genéricas como unidades y reconoce singular/plural.
  * 18) FIX V11: si el cliente pidió explícitamente otro producto antes de una plantilla nueva, ese producto gana sobre contexto viejo.
@@ -650,6 +651,38 @@ function extractPhone(text: string) {
   return match?.[0] || "";
 }
 
+function removePhoneLikeFromText(text: string, phone?: string) {
+  let result = clean(text);
+  if (!result) return "";
+
+  // Remueve celulares aunque vengan con espacios: "0975 530708 Graciela Ramos".
+  result = result.replace(/(?:\+?595[\s.\-]*)?0?9(?:[\s.\-]*\d){8,9}/g, " ");
+
+  const digits = clean(phone || "").replace(/\D/g, "");
+  if (digits.length >= 8) {
+    const flexibleDigits = digits.split("").map((d) => d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\s.\\-]*");
+    try {
+      result = result.replace(new RegExp(flexibleDigits, "g"), " ");
+    } catch {}
+
+    // También probar sin prefijo 595 o sin 0 inicial.
+    const variants = Array.from(new Set([
+      digits.replace(/^595/, "0"),
+      digits.replace(/^595/, ""),
+      digits.replace(/^0/, ""),
+    ])).filter((v) => v.length >= 8);
+
+    for (const variant of variants) {
+      const flex = variant.split("").join("[\\s.\\-]*");
+      try {
+        result = result.replace(new RegExp(flex, "g"), " ");
+      } catch {}
+    }
+  }
+
+  return clean(result.replace(/\s+/g, " "));
+}
+
 function toTitleCase(str: string): string {
   return str.replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -707,7 +740,14 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     if (cleaned.length < 4 || cleaned.length > 60) return false;
     if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|san pedro|santa|bario)\b/i.test(normLine)) return false;
     if (questionVerbs.test(normLine)) return false;
+    if (/\bsoy\b/.test(normLine)) return false;
     if (detectedCity && normalize(cleaned) === normalize(detectedCity)) return false;
+    if (parsed && parsed.cities.some((c) => {
+      const a = normalize(c.alias);
+      const cn = normalize(c.canonical);
+      return (a && a.length >= 3 && (normLine === a || normLine.startsWith(a + " ") || normLine.endsWith(" " + a) || normLine.includes(" " + a + " "))) ||
+             (cn && cn.length >= 3 && normLine === cn);
+    })) return false;
     if (forbidden.some((f) => normLine === normalize(f) || normLine.startsWith(normalize(f) + " ") || normLine.endsWith(" " + normalize(f)))) return false;
     if (words[0].length === 1) return false;
     if (/^(y |ese |esta |este |eso |esa |aqui |ahi |ya |igual |listo |ok |dale )/i.test(normLine)) return false;
@@ -720,6 +760,17 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
 
   const beforeSoy = raw.match(/^([a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,4})\s+soy\b/i)?.[1];
   if (beforeSoy && isValidNameLine(beforeSoy)) return toTitleCase(clean(beforeSoy));
+
+  // ✅ FIX V15:
+  // Si el cliente manda teléfono + nombre en una sola línea:
+  // "0975 530708 Graciela Ramos", extraer Graciela Ramos como nombre
+  // y NO usar todo el mensaje como dirección.
+  if (phone) {
+    const withoutPhone = removePhoneLikeFromText(raw, phone);
+    if (withoutPhone && withoutPhone !== raw && isValidNameLine(withoutPhone)) {
+      return toTitleCase(withoutPhone);
+    }
+  }
 
   if (isMultiLine) {
     for (const line of lines) {
@@ -740,6 +791,19 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
   if (/^\d+$/.test(raw)) return "";
 
+  const addressCue = /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|local|edificio|piso|departamento|dpto|referencia)\b/i;
+  const rawWithoutPhone = removePhoneLikeFromText(raw, phone);
+
+  // ✅ FIX V15:
+  // "0975 530708 Graciela Ramos" NO es dirección.
+  // Si al sacar el teléfono queda solo un nombre y no hay palabras de dirección,
+  // dejamos address vacío para que el bot pida ubicación exacta.
+  if (phone && rawWithoutPhone && !addressCue.test(normalize(rawWithoutPhone))) {
+    const onlyLetters = /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(rawWithoutPhone);
+    const shortHumanName = rawWithoutPhone.split(/\s+/).filter(Boolean).length >= 2 && rawWithoutPhone.split(/\s+/).filter(Boolean).length <= 5;
+    if (onlyLetters && shortHumanName) return "";
+  }
+
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
 
   const explicit = raw.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1];
@@ -751,7 +815,7 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
     const cleaned = clean(line);
     const normLine = normalize(cleaned);
 
-    if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/i.test(normLine)) {
+    if (addressCue.test(normLine)) {
       if (name && normalize(cleaned).includes(normalize(name))) continue;
       if (phone && cleaned.includes(phone)) continue;
       return cleaned;
@@ -759,7 +823,7 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   }
 
   if (/\d/.test(raw) && raw.length >= 8) {
-    let remaining = raw;
+    let remaining = removePhoneLikeFromText(raw, phone) || raw;
 
     if (name) {
       const namePattern = name
@@ -779,7 +843,12 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
       remaining = remaining.replace(new RegExp(`\\b${word}\\b`, "gi"), "").trim();
     }
 
-    if (remaining.length >= 5) return remaining;
+    if (remaining.length >= 5) {
+      const remainingNorm = normalize(remaining);
+      const onlyLetters = /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(remaining);
+      const looksOnlyLikeName = onlyLetters && remaining.split(/\s+/).filter(Boolean).length <= 5 && !addressCue.test(remainingNorm);
+      if (!looksOnlyLikeName) return remaining;
+    }
   }
 
   return "";
@@ -1330,19 +1399,6 @@ function getLastRealSalesTemplateProduct(history: any[], parsed: ParsedTraining)
     if (!isRealSalesTemplateMessage(content)) continue;
 
     const product = detectProduct(content, parsed, "");
-    // ✅ FIX V13 extra:
-    // Si hay interés explícito reciente y el mensaje actual es una aceptación genérica,
-    // ese producto gana definitivamente sobre cualquier producto viejo del contexto.
-    if (
-      recentExplicitProductInterest?.product?.canonical &&
-      (isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto) || isAffirmative(texto)) &&
-      templatePricing
-    ) {
-      product = recentExplicitProductInterest.product.canonical;
-      templatePricing = forceTemplatePricingProduct(templatePricing, recentExplicitProductInterest.product);
-      activeTemplateForContext = templatePricingToActiveTemplate(templatePricing) || activeTemplateForContext;
-    }
-
     const productInfo = getProductInfo(product, parsed);
     if (productInfo) return productInfo;
   }
@@ -1691,6 +1747,11 @@ function isPostSaleQuestion(text: string) {
   );
 }
 
+function isFiscalDataMessage(text: string) {
+  const n = normalize(text);
+  return /\d{5,}/.test(text) && /\b(ruc|razon social|razón social|cedula|cédula|ci|documento|mi cedula|mi cédula)\b/.test(n);
+}
+
 /**
  * ✅ FIX V4 postventa determinística:
  * Algunas consultas después de pedido_confirmado no deben quedar a criterio de Gemini,
@@ -1699,8 +1760,7 @@ function isPostSaleQuestion(text: string) {
 function deterministicPostSaleResponse(text: string, order: OrderData, parsed: ParsedTraining) {
   const n = normalize(text);
 
-  const hasFiscalData =
-    /\b(ruc|razon social|razón social|cedula|cédula|ci)\b/.test(n) && /\d{5,}/.test(text);
+  const hasFiscalData = isFiscalDataMessage(text);
 
   if (hasFiscalData) {
     return `✅ Perfecto, recibimos tus datos para la factura legal 😊\n📎 Los dejamos anotados para emitirla con tu pedido.`;
@@ -2844,6 +2904,20 @@ export default async function handler(req: any, res: any) {
         forceFreshOrderFromConfirmedTemplate = true;
         oldOrder = emptyOrder(makeOrderId(fromNumber));
       } else {
+        // ✅ FIX V15: datos fiscales como "301003 mi cédula" no son cierre;
+        // deben registrarse como respuesta de factura/postventa.
+        if (isFiscalDataMessage(texto)) {
+          const deterministicPostSale = deterministicPostSaleResponse(texto, oldOrder, parsed);
+          return res.json({
+            response: deterministicPostSale || `✅ Perfecto, recibimos tus datos para la factura legal 😊\n📎 Los dejamos anotados para emitirla con tu pedido.`,
+            context: {
+              ...(context || {}),
+              step: "pedido_confirmado",
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
+
         // ✅ Cierre real de conversación después de confirmar pedido.
         if (isShortAcknowledgement(texto) || isConversationClosing(texto)) {
           return res.json({
