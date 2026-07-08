@@ -994,6 +994,54 @@ function isPromotionLikeMessage(text: string) {
 
 
 
+function isConfirmedOrderMessage(text: string) {
+  const n = normalize(text);
+  return /\b(pedido confirmado|tu pedido ya quedo confirmado|tu pedido ya quedó confirmado|pedido ya quedo confirmado|pedido ya quedó confirmado|gracias por tu compra|queda agendado|quedo agendado|quedó agendado)\b/.test(n);
+}
+
+function isRealSalesTemplateMessage(text: string) {
+  const c = clean(text);
+  const n = normalize(c);
+  if (!c) return false;
+  if (isConfirmedOrderMessage(c)) return false;
+  if (/\b(factura legal|ruc|razon social|razón social|cedula|cédula|proxima ronda de envios|próxima ronda de envíos|delivery te confirma)\b/.test(n)) return false;
+
+  const hasSalesCue =
+    c.includes("👉") ||
+    c.includes("🔥") ||
+    c.includes("💰") ||
+    /\b(stock limitado|precio promocional|promocion especial|promoción especial|antes|ahora|escribi quiero|escribí quiero|te lo reservamos|envio gratis|envío gratis|pago al recibir)\b/.test(n);
+
+  const hasPrice = /(?:gs\.?|guaran[ií]es|\d[\d.\s]{3,})/i.test(c);
+  return hasSalesCue && hasPrice;
+}
+
+function getLastRealSalesTemplateProduct(history: any[], parsed: ParsedTraining) {
+  const lastBotMessages = (history || [])
+    .slice(-10)
+    .reverse()
+    .filter((h: any) => h.role === "assistant" || h.role === "model");
+
+  for (const item of lastBotMessages) {
+    const content = clean(item?.content);
+    if (!isRealSalesTemplateMessage(content)) continue;
+
+    const product = detectProduct(content, parsed, "");
+    const pricing = detectTemplatePricingFromText(content, parsed);
+    const productInfo = getProductInfo(product || pricing?.product || "", parsed);
+    if (productInfo) return productInfo;
+  }
+
+  return null;
+}
+
+function isStrongNewPurchaseReply(text: string) {
+  const n = normalize(text);
+  // Después de un pedido confirmado, solo estas respuestas reabren venta desde la última plantilla real.
+  // No incluye "ok", "listo" ni "gracias" porque normalmente cierran la conversación.
+  return /^(quiero|lo quiero|quiero ese|quiero eso|ese quiero|comprar|compro|quiero comprar|quiero llevar|llevo|reservar|reservame|agendar|agendame|confirmo)$/.test(n);
+}
+
 function isShortAcknowledgement(text: string) {
   const n = normalize(text);
   return /^(ok|okay|dale|listo|gracias|muchas gracias|perfecto|bueno|👍|👌|🙏|genial|excelente|joya)$/.test(n);
@@ -1926,37 +1974,40 @@ export default async function handler(req: any, res: any) {
     // ✅ Pedido cerrado / postventa:
     // Si llega plantilla/producto nuevo => venta nueva.
     // Si pregunta factura, llegada, pago, garantía, etc. => responder postventa sin reabrir pedido.
-    // Si solo dice ok/gracias => respuesta corta.
+    // Si solo dice ok/gracias/nada más => respuesta corta.
     const newTemplateSignal = isNewTemplateOrProductIntent(texto, parsed, history);
 
     if (context?.step === "pedido_confirmado") {
       const msgNormClosed = normalize(texto);
-
-      // ✅ Cierre real de conversación después de confirmar pedido.
-      // IMPORTANTE: esto va ANTES de detectar nueva compra, porque mensajes como
-      // "OK", "GRACIAS", "SOLO ESO GRACIAS" o "NADA MAS" no deben reabrir venta
-      // aunque el historial todavía tenga una promo reciente.
-      if (isShortAcknowledgement(texto) || isConversationClosing(texto)) {
-        return res.json({
-          response: `😊 ¡Perfecto, muchas gracias! Tu pedido ya quedó confirmado y agendado. 🚚📦`,
-          context: {
-            ...(context || {}),
-            step: "pedido_confirmado",
-            updated_at: new Date().toISOString(),
-          },
-        });
-      }
-
       const hasCurrentTemplatePricing = !!currentTemplatePricing;
       const productInClosedMessage = detectProduct(texto, parsed, "");
+      const lastRealSalesTemplateProduct = getLastRealSalesTemplateProduct(history, parsed);
+
+      // ✅ IMPORTANTE:
+      // Primero se detecta si el cliente está comprando una NUEVA plantilla real.
+      // Ejemplo: después de un pedido confirmado, el bot manda otra plantilla y el cliente responde "QUIERO".
+      // Eso debe iniciar venta nueva.
+      // Pero "OK", "GRACIAS", "NADA MAS" NO deben reabrir venta aunque haya promos viejas en el historial.
       const explicitNewPurchaseAfterConfirmed =
         hasCurrentTemplatePricing ||
         (!!productInClosedMessage && /\b(precio|cuanto|cuánto|me interesa|quiero|quiero comprar|comprar|confirmar|agendar|otro producto)\b/.test(msgNormClosed)) ||
-        /\b(otro producto|nuevo pedido|hacer otro pedido|catalogo|catálogo|ver catalogo|ver catálogo|quiero comprar otra cosa)\b/.test(msgNormClosed);
+        /\b(otro producto|nuevo pedido|hacer otro pedido|catalogo|catálogo|ver catalogo|ver catálogo|quiero comprar otra cosa)\b/.test(msgNormClosed) ||
+        (isStrongNewPurchaseReply(texto) && !!lastRealSalesTemplateProduct);
 
-      const wantsNewPurchaseAfterConfirmed = explicitNewPurchaseAfterConfirmed;
-
-      if (!wantsNewPurchaseAfterConfirmed) {
+      if (explicitNewPurchaseAfterConfirmed) {
+        oldOrder = emptyOrder(makeOrderId(fromNumber));
+      } else {
+        // ✅ Cierre real de conversación después de confirmar pedido.
+        if (isShortAcknowledgement(texto) || isConversationClosing(texto)) {
+          return res.json({
+            response: `😊 ¡Perfecto, muchas gracias! Tu pedido ya quedó confirmado y agendado. 🚚📦`,
+            context: {
+              ...(context || {}),
+              step: "pedido_confirmado",
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
 
         if (isPostSaleQuestion(texto)) {
           const postSaleSystem = buildPostSaleSystemPrompt(parsed, oldOrder);
@@ -2002,8 +2053,6 @@ export default async function handler(req: any, res: any) {
           },
         });
       }
-
-      oldOrder = emptyOrder(makeOrderId(fromNumber));
     }
 
     const productFromMessageInitial = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
