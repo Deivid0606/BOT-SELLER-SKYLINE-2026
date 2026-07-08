@@ -12,6 +12,7 @@ import { createClient } from "@supabase/supabase-js";
  * 6) Nunca inventa ciudad, nombre, dirección, teléfono, banco ni catálogo.
  * 7) No se salta ciudad ni cantidad.
  * 8) CONFIRMACIÓN AUTOMÁTICA: Al tener todos los datos, confirma sin preguntar.
+ * 9) PRECIOS EXACTOS: Siempre usa los precios del entrenamiento.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -961,6 +962,29 @@ function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferIt
   return lines.join("\n");
 }
 
+// ✅ NUEVA FUNCIÓN: Muestra precios exactos del producto desde el entrenamiento
+function getProductPricingText(productName: string, parsed: ParsedTraining): string {
+  const productInfo = getProductInfo(productName, parsed);
+  if (!productInfo) return "";
+  
+  const lines = [`📦 ${productInfo.canonical}`];
+  
+  // Precio unitario
+  lines.push(`💰 1 unidad: ${formatGs(productInfo.price1)} Gs`);
+  
+  // Promos si existen
+  if (productInfo.price2) {
+    const ahorro = (productInfo.price1 * 2) - productInfo.price2;
+    lines.push(`🔥 2 unidades: ${formatGs(productInfo.price2)} Gs (ahorrás ${formatGs(ahorro)} Gs)`);
+  }
+  if (productInfo.price3) {
+    const ahorro = (productInfo.price1 * 3) - productInfo.price3;
+    lines.push(`🔥 3 unidades: ${formatGs(productInfo.price3)} Gs (ahorrás ${formatGs(ahorro)} Gs)`);
+  }
+  
+  return lines.join("\n");
+}
+
 function productsSummary(parsed: ParsedTraining) {
   if (!parsed.products.length) return "No hay productos cargados.";
   return parsed.products
@@ -988,10 +1012,11 @@ function buildHardInstruction(state: ConversationState) {
   }
 
   if (!order.quantity) {
+    const productInfo = getProductInfo(order.product, state.productInfo?.canonical || "");
     const promoText =
       order.locked_offer && order.locked_offer.quantity > 1
-        ? ` Preguntar explícitamente si quiere 1 unidad o la promo de ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs.`
-        : " Preguntar explícitamente si quiere 1 unidad o más unidades según las promos disponibles.";
+        ? ` Preguntar explícitamente si quiere 1 unidad por ${formatGs(productInfo?.price1 || 0)} Gs o la promo de ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs.`
+        : ` Preguntar explícitamente si quiere 1 unidad o más unidades. Precio unitario: ${formatGs(productInfo?.price1 || 0)} Gs.`;
 
     if (coverage === false) {
       return "Informar con tacto que no tiene contra-entrega y que se envía por transportadora con pago anticipado, PERO pedir primero cantidad." + promoText + " No mostrar datos bancarios hasta tener cantidad.";
@@ -1270,6 +1295,7 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 ${paymentBlock}`;
 }
 
+// ✅ MODIFICADO: deterministicAfterQuantityMessage con precios del entrenamiento
 function deterministicAfterQuantityMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
   if (!o.product || !o.city || !o.quantity) return "";
@@ -1280,16 +1306,23 @@ function deterministicAfterQuantityMessage(state: ConversationState, parsed: Par
 
   if (state.missing.includes("ciudad")) return "";
 
-  const promoLine =
-    o.locked_offer && o.locked_offer.quantity === o.quantity
-      ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(state.total)} Gs`
-      : `💰 Total: ${formatGs(state.total)} Gs`;
+  // ✅ Calcular el total con los precios del entrenamiento
+  const total = calculateTotal(o.product, o.quantity, parsed, o.locked_offer);
+  const productInfo = getProductInfo(o.product, parsed);
+  
+  const promoLine = o.locked_offer && o.locked_offer.quantity === o.quantity
+    ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(total)} Gs`
+    : `💰 Total: ${formatGs(total)} Gs`;
+
+  // ✅ Mostrar el precio unitario también
+  const unitPrice = productInfo ? `💰 Precio unitario: ${formatGs(productInfo.price1)} Gs` : "";
 
   if (state.coverage === false) {
     return `🎉 ¡Perfecto! Queda seleccionado:
 
 📦 ${o.product}
 🔢 Cantidad: ${o.quantity}
+${unitPrice}
 ${promoLine}
 📍 Ciudad: ${o.city}
 
@@ -1306,6 +1339,7 @@ ${bankDataText(parsed)} 📲`;
 
 📦 ${o.product}
 🔢 Cantidad: ${o.quantity}
+${unitPrice}
 ${promoLine}
 📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚
 
@@ -1378,10 +1412,11 @@ REGLAS DURAS:
 - Nunca recalcules diferente al total calculado.
 - ✅ IMPORTANTE: Cuando el pedido esté completo (producto, ciudad, cantidad, nombre, dirección, teléfono), CONFIRMÁ DIRECTAMENTE sin preguntar "está todo correcto".
 - En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
+- ✅ Los precios y promociones deben venir SIEMPRE del entrenamiento, no los inventes.
 `.trim();
 }
 
-// ✅ MODIFICADO: Fallback con confirmación directa
+// ✅ MODIFICADO: Fallback con confirmación directa y precios del entrenamiento
 function buildFallbackResponse(parsed: ParsedTraining, state: ConversationState) {
   const o = state.order;
 
@@ -1396,19 +1431,25 @@ ${productsSummary(parsed)}
   }
 
   if (!o.city) {
+    // ✅ Mostrar precios EXACTOS del producto desde el entrenamiento
+    const pricingText = getProductPricingText(o.product || state.productInfo?.canonical || "", parsed);
+    
     return `¡Excelente elección! 🔥
 
-${state.productInfo?.canonical || o.product}
-${productPriceText(state.productInfo, o.locked_offer)}
+${pricingText || state.productInfo?.canonical || o.product}
 
 📍 ¿Para qué ciudad sería el envío? 😊`;
   }
 
   if (!o.quantity) {
-    const qtyQuestion =
-      o.locked_offer && o.locked_offer.quantity > 1
-        ? `¿Querés 1 unidad por ${formatGs(state.productInfo?.price1 || 0)} Gs o la promo de ${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs? 😊`
-        : "¿Cuántas unidades querés llevar? 😊";
+    const productInfo = getProductInfo(o.product, parsed);
+    const qtyQuestion = o.locked_offer && o.locked_offer.quantity > 1
+      ? `¿Querés 1 unidad por ${formatGs(productInfo?.price1 || 0)} Gs o la promo de ${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs? 😊`
+      : `¿Cuántas unidades querés llevar? 
+      
+💰 Precio unitario: ${formatGs(productInfo?.price1 || 0)} Gs
+${productInfo?.price2 ? `🔥 2 unidades: ${formatGs(productInfo.price2)} Gs` : ''}
+${productInfo?.price3 ? `🔥 3 unidades: ${formatGs(productInfo.price3)} Gs` : ''}`;
 
     if (state.coverage === false) {
       return `ℹ️ ${o.city} no entra en nuestra zona de contra-entrega, pero sí podemos enviarte por transportadora 🚚
@@ -1422,23 +1463,24 @@ ${qtyQuestion}`;
   }
 
   if (state.missing.length) {
-    const promoLine =
-      o.locked_offer && o.locked_offer.quantity === o.quantity
-        ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(state.total)} Gs\n`
-        : "";
+    // ✅ Mostrar el total calculado con los precios del entrenamiento
+    const total = calculateTotal(o.product, o.quantity, parsed, o.locked_offer);
+    const promoLine = o.locked_offer && o.locked_offer.quantity === o.quantity
+      ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(total)} Gs\n`
+      : `💰 Total: ${formatGs(total)} Gs\n`;
 
     return `🎉 ¡Perfecto! Queda avanzado tu pedido 😊
 
 📦 Producto: ${o.product}
 ${promoLine}🔢 Cantidad: ${o.quantity}
-💰 Total: ${formatGs(state.total)} Gs
 📍 Ciudad: ${o.city}
 
 Para agendarlo, me falta:
 ✅ ${state.missing.join("\n✅ ")} 📲`;
   }
 
-  // ✅ Confirmación directa cuando no falta nada
+  // ✅ Confirmación directa con precios del entrenamiento
+  const total = calculateTotal(o.product, o.quantity, parsed, o.locked_offer);
   const addressPart = o.address ? ` — ${o.address}` : "";
   const paymentBlock = state.coverage === false
     ? `🚚 Su encomienda será enviada por transportadora.
@@ -1473,7 +1515,7 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 ✅ Ubicación: ${o.city}${addressPart}
 ✅ Contacto: ${o.phone}
 ✅ Cantidad: ${o.quantity} u.
-💰 Total: ${formatGs(state.total)} Gs
+💰 Total: ${formatGs(total)} Gs
 
 ${paymentBlock}`;
 }
