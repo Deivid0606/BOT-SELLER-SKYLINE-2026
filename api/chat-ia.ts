@@ -15,6 +15,7 @@ import { createClient } from "@supabase/supabase-js";
  * 9) Precio de plantilla congelado: nunca toma números de dirección/teléfono como precio.
  * 10) Después de pedido confirmado, cierra el flujo y no vuelve a vender el mismo pedido.
  * 11) Detecta packs fijos genéricos para cualquier vendedor sin hardcodear precios/productos.
+ * 12) Si plantilla trae Producto + Cantidad + Precio, salta la pregunta de cantidad.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -769,8 +770,20 @@ function isSafeTemplatePricingMessage(text: string) {
 }
 
 function isFixedPackText(text: string) {
-  const n = normalize(text);
-  return /\b(no se vende por unidad|no vendemos por unidad|solo pack|solo por pack|pack fijo|combo fijo|unicamente por el pack|únicamente por el pack|promocion valida unicamente|promoción válida únicamente|valida unicamente por el pack|válida únicamente por el pack)\b/.test(n);
+  const raw = clean(text);
+  const n = normalize(raw);
+
+  const explicitFixed =
+    /\b(no se vende por unidad|no vendemos por unidad|solo pack|solo por pack|pack fijo|combo fijo|unicamente por el pack|únicamente por el pack|promocion valida unicamente|promoción válida únicamente|valida unicamente por el pack|válida únicamente por el pack)\b/.test(n);
+
+  // Si la plantilla viene estructurada con Producto + Cantidad + Precio,
+  // se interpreta como oferta/cantidad fija, no como promo seleccionable.
+  const structuredFixed =
+    /producto\s*:/i.test(raw) &&
+    /cantidad\s*:\s*\d+/i.test(raw) &&
+    /precio\s*:\s*(?:gs\.?\s*)?\d/i.test(raw);
+
+  return explicitFixed || structuredFixed;
 }
 
 function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): TemplatePricing | null {
@@ -800,6 +813,17 @@ function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): Te
       fixed_quantity: fixed,
     });
   };
+
+  // Formato recomendado multi-vendedor:
+  // Producto: X
+  // Cantidad: 2 unidades
+  // Precio: Gs. 99.000
+  const structuredQty = raw.match(/cantidad\s*:\s*(\d+)\s*(?:unidad|unidades|u|und|unds|piezas|pieza)?/i);
+  const structuredPrice = raw.match(/precio\s*:\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/i);
+
+  if (structuredQty && structuredPrice) {
+    addOffer(Number(structuredQty[1]), parseNumberGs(structuredPrice[1]), true);
+  }
 
   // Casos genéricos:
   // "2 Afiladores ... por solo Gs. 99.000"
@@ -871,8 +895,9 @@ function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): Te
 
   return {
     product,
-    price1: uniqueOffers.find((o) => o.quantity === 1)?.total,
-    offers: uniqueOffers.map((o) => ({ ...o, fixed_quantity: hasFixed ? o.fixed_quantity || uniqueOffers.length === 1 : o.fixed_quantity })),
+    // Si es pack fijo de 2/3/etc, NO guardamos price1 porque no existe venta por unidad.
+    price1: hasFixed ? undefined : uniqueOffers.find((o) => o.quantity === 1)?.total,
+    offers: uniqueOffers.map((o) => ({ ...o, fixed_quantity: hasFixed ? true : o.fixed_quantity })),
     raw,
     fixed_quantity: hasFixed,
   };
@@ -1085,6 +1110,13 @@ function hasPaymentProof(context: any, text: string, mediaUrl?: string, mediaTyp
 function nextStep(order: OrderData, coverage: boolean | null) {
   if (!order.product) return "selling";
   if (!order.city) return "collecting_city";
+
+  // Pack/cantidad fija: si la plantilla ya trae cantidad y precio,
+  // no se pregunta cantidad. Se usa la cantidad bloqueada.
+  if (!order.quantity && order.locked_offer?.fixed_quantity) {
+    order.quantity = order.locked_offer.quantity;
+  }
+
   if (!order.quantity) return "collecting_quantity";
 
   if (coverage === false) {
@@ -1104,7 +1136,7 @@ function getMissing(order: OrderData, coverage: boolean | null) {
   const missing: string[] = [];
   if (!order.product) missing.push("producto");
   if (!order.city) missing.push("ciudad");
-  if (!order.quantity) missing.push("cantidad");
+  if (!order.quantity && !order.locked_offer?.fixed_quantity) missing.push("cantidad");
 
   if (order.product && order.city && order.quantity) {
     if (!order.customer_name) missing.push("nombre y apellido");
@@ -1521,6 +1553,42 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
 }
 
+
+function deterministicAfterCityFixedOfferMessage(state: ConversationState) {
+  const o = state.order;
+  if (!o.product || !o.city || !o.locked_offer?.fixed_quantity) return "";
+
+  const total = o.locked_offer.total;
+
+  if (state.coverage === false) {
+    return `✅ Perfecto 😊
+
+📦 Promo confirmada:
+${o.locked_offer.quantity} unidades de ${o.product}
+💰 Total: ${formatGs(total)} Gs
+
+📍 ${o.city} no cuenta con contra-entrega, pero hacemos envío por transportadora 🚚
+
+Para avanzar, necesito:
+✅ nombre completo
+✅ número de celular
+✅ comprobante de transferencia 📲`;
+  }
+
+  return `✅ Perfecto 😊
+
+📦 Promo confirmada:
+${o.locked_offer.quantity} unidades de ${o.product}
+💰 Total: ${formatGs(total)} Gs
+
+📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚
+
+Ahora solo necesito:
+✅ nombre y apellido
+✅ dirección exacta o ubicación
+✅ número de celular 📲`;
+}
+
 function deterministicAfterQuantityMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
   if (!o.product || !o.city || !o.quantity) return "";
@@ -1617,7 +1685,7 @@ REGLAS DURAS:
 - Si falta producto, ofrecé catálogo/productos.
 - Si falta ciudad, preguntá ciudad.
 - Si falta cantidad, preguntá cantidad.
-- Si la plantilla dice pack fijo, combo fijo, no se vende por unidad o únicamente por pack: NO preguntes cantidad, respetá cantidad y precio de la plantilla.
+- Si la plantilla dice Producto + Cantidad + Precio, pack fijo, combo fijo, no se vende por unidad o únicamente por pack: NO preguntes cantidad, respetá cantidad y precio de la plantilla.
 - Si hay promo variable de 2 unidades y el cliente no especificó cantidad, NO asumas 1 unidad ni 2 unidades: preguntá si quiere 1 unidad o la promo.
 - Si faltan datos, pedí SOLO lo faltante.
 - Si no hay cobertura y todavía falta cantidad, NO muestres datos bancarios.
@@ -1854,7 +1922,7 @@ export default async function handler(req: any, res: any) {
 
       if (fixedTemplateOffer) {
         lockedOffer = fixedTemplateOffer;
-        if (explicitQty === 0) explicitQty = fixedTemplateOffer.quantity;
+        explicitQty = fixedTemplateOffer.quantity;
       } else if (explicitQty > 0) {
         const templateOffer = getTemplateOfferForQuantity(templatePricing, productInfo.canonical, explicitQty);
         const templatePrice1 = getTemplatePrice1(templatePricing, productInfo.canonical);
@@ -2061,6 +2129,37 @@ export default async function handler(req: any, res: any) {
             }
           : undefined,
       });
+    }
+
+    if (!confirm && prevStep === "collecting_city" && orderData.city && orderData.locked_offer?.fixed_quantity) {
+      const fixedCityResponse = deterministicAfterCityFixedOfferMessage(finalState);
+      if (fixedCityResponse) {
+        return res.json({
+          response: fixedCityResponse,
+          context: {
+            ...(context || {}),
+            current_product: orderData.product || null,
+            last_topic: orderData.product || context?.last_topic || null,
+            last_ad_offer: orderData.locked_offer || null,
+            order_data: orderData,
+            order_id: orderData.order_id || null,
+            payment_proof_received: orderData.payment_proof_received || false,
+            step: finalState.step,
+            updated_at: new Date().toISOString(),
+          },
+          debug: process.env.NODE_ENV === "development"
+            ? {
+                deterministic_fixed_city_response: true,
+                product: orderData.product,
+                quantity: orderData.quantity,
+                city: orderData.city,
+                total: finalState.total,
+                step: finalState.step,
+                locked_offer: orderData.locked_offer,
+              }
+            : undefined,
+        });
+      }
     }
 
     if (!confirm && prevStep === "collecting_quantity" && qty > 0 && orderData.city) {
