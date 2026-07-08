@@ -21,6 +21,7 @@ import { createClient } from "@supabase/supabase-js";
  * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
  * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
  * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
+ * 18) FIX V12: detección de producto ignora palabras genéricas como unidades y reconoce singular/plural.
  * 18) FIX V11: si el cliente pidió explícitamente otro producto antes de una plantilla nueva, ese producto gana sobre contexto viejo.
  * 18) FIX V9: si el pedido ya tiene todos los datos obligatorios, confirma directo con bloque fijo backend; nunca pregunta “¿Confirmamos?”.
  * 18) FIX V8: después de postventa, si llega una nueva plantilla y el cliente responde "Quiero confirmar", inicia otra venta nueva.
@@ -359,11 +360,28 @@ function getProductInfo(productName: string, parsed: ParsedTraining) {
   );
 }
 
+function isGenericProductWord(word: string) {
+  const w = normalize(word);
+  return /^(unidad|unidades|u|und|unds|pack|combo|promo|promocion|promoción|oferta|ofertas|profesional|profesionales|producto|productos|precio|especial|gratis|delivery|envio|envío|pago|recibir|central|pais|país|solo|solamente|antes|ahora|black|friday|x\d+|\d+x\d+)$/.test(w);
+}
+
+function singularizeProductWord(word: string) {
+  let w = normalize(word);
+  if (w.length > 5 && w.endsWith("es")) w = w.slice(0, -2);
+  else if (w.length > 4 && w.endsWith("s")) w = w.slice(0, -1);
+  return w;
+}
+
 function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
   const msg = normalize(text);
   const prevOk = getProductInfo(prev || "", parsed);
 
   if (!msg) return prevOk?.canonical || "";
+
+  const msgWords = msg
+    .split(/\s+/)
+    .map(singularizeProductWord)
+    .filter((w) => w.length >= 4 && !isGenericProductWord(w));
 
   let best: ProductItem | null = null;
   let bestScore = 0;
@@ -378,8 +396,25 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
       if (msg.includes(a)) score += 80;
       if (a.includes(msg) && msg.length >= 4) score += 50;
 
-      for (const w of a.split(" ").filter((x) => x.length >= 5)) {
-        if (new RegExp(`\\b${w}\\b`).test(msg)) score += 15;
+      // ✅ FIX V12:
+      // No usar palabras genéricas como "unidades" para detectar producto.
+      // Caso real: plantilla de Plumero contenía "2 Unidades", y el sistema podía
+      // elegir erróneamente "Almohadillas Antivibración x4 unidades" solo por esa palabra.
+      // También igualamos singular/plural: plumero/plumeros, extensible/extensibles.
+      const aliasWords = a
+        .split(/\s+/)
+        .map(singularizeProductWord)
+        .filter((w) => w.length >= 4 && !isGenericProductWord(w));
+
+      const matched = Array.from(new Set(aliasWords)).filter((w) =>
+        msgWords.some((mw) => mw === w || mw.startsWith(w) || w.startsWith(mw))
+      );
+
+      if (matched.length > 0) {
+        score += matched.length * 30;
+        if (aliasWords.length > 0 && matched.length >= Math.ceil(aliasWords.length * 0.5)) {
+          score += 25;
+        }
       }
 
       if (score > bestScore) {
@@ -389,7 +424,7 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
     }
   }
 
-  if (best && bestScore >= 15) return best.canonical;
+  if (best && bestScore >= 30) return best.canonical;
   return prevOk?.canonical || "";
 }
 
