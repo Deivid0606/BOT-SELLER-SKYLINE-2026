@@ -20,6 +20,7 @@ import { createClient } from "@supabase/supabase-js";
  * 14) Postventa: después de confirmado responde preguntas normales sin reabrir pedido.
  * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
  * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
+ * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -938,6 +939,85 @@ function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): Te
     fixed_quantity: hasFixed,
   };
 }
+
+/**
+ * ✅ FIX V5:
+ * Fallback para plantillas pegadas por el cliente después de un pedido confirmado.
+ * A veces el texto llega sin emojis o con el botón/interactive concatenado:
+ *
+ * Producto: Afilador de Cuchillos
+ * Cantidad: 2 unidades
+ * Precio: Gs. 99.000
+ * Quiero
+ *
+ * En esos casos igual debe detectarse como NUEVA plantilla y no como postventa/cierre.
+ */
+function isStructuredSalesTemplateMessage(text: string) {
+  const raw = clean(text);
+  if (!raw) return false;
+
+  return (
+    /producto\s*:/i.test(raw) &&
+    /cantidad\s*:\s*\d+/i.test(raw) &&
+    /precio\s*:\s*(?:gs\.?\s*)?\d/i.test(raw)
+  );
+}
+
+function hasTemplateBuyIntent(text: string) {
+  const n = normalize(text);
+  return /\b(quiero|confirmar|quiero confirmar|me interesa|comprar|compro|reservar|reservame|agendar|agendame|lo quiero)\b/.test(n);
+}
+
+function detectStructuredTemplatePricingFallback(text: string, parsed: ParsedTraining): TemplatePricing | null {
+  const raw = clean(text);
+  if (!isStructuredSalesTemplateMessage(raw)) return null;
+
+  const productLine = clean(raw.match(/producto\s*:\s*(.+)$/im)?.[1]);
+  const qtyLine = raw.match(/cantidad\s*:\s*(\d+)\s*(?:unidad|unidades|u|und|unds|piezas|pieza)?/i);
+  const priceLine = raw.match(/precio\s*:\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/i);
+
+  const product = detectProduct(productLine || raw, parsed, "");
+  const quantity = qtyLine ? sanitizeQuantity(Number(qtyLine[1])) : 0;
+  const total = priceLine ? parseNumberGs(priceLine[1]) : 0;
+
+  if (!product || !quantity || !total || total < 10000 || total > 10000000) return null;
+
+  const offer: OfferItem = {
+    product,
+    quantity,
+    total,
+    label: `${quantity} unidad${quantity > 1 ? "es" : ""} por ${formatGs(total)} Gs`,
+    source: "template",
+    fixed_quantity: true,
+  };
+
+  return {
+    product,
+    price1: quantity === 1 ? total : undefined,
+    offers: [offer],
+    raw,
+    fixed_quantity: true,
+  };
+}
+
+function detectTemplatePricingSmart(text: string, parsed: ParsedTraining): TemplatePricing | null {
+  return detectTemplatePricingFromText(text, parsed) || detectStructuredTemplatePricingFallback(text, parsed);
+}
+
+function isNewPastedTemplatePurchase(text: string, parsed: ParsedTraining) {
+  const raw = clean(text);
+  if (!raw) return false;
+
+  const pricing = detectTemplatePricingSmart(raw, parsed);
+  if (pricing) return true;
+
+  return (
+    hasTemplateBuyIntent(raw) &&
+    (isStructuredSalesTemplateMessage(raw) || isSafeTemplatePricingMessage(raw)) &&
+    /(?:gs\.?|guaran[ií]es|\d[\d.\s]{3,})/i.test(raw)
+  );
+}
+
 function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): TemplatePricing | null {
   const lastBotMessages = (history || [])
     .slice(-12)
@@ -1176,7 +1256,7 @@ function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, hist
   const n = normalize(raw);
 
   const productInMessage = detectProduct(raw, parsed, "");
-  const pricingInMessage = detectTemplatePricingFromText(raw, parsed);
+  const pricingInMessage = detectTemplatePricingSmart(raw, parsed);
 
   // Cliente/operador pega la plantilla completa + QUIERO.
   const pastedTemplate =
@@ -2024,7 +2104,7 @@ export default async function handler(req: any, res: any) {
     const allTraining = await getAllTrainingData(user_id);
     const trainingText = buildTrainingText(allTraining);
     const parsed = parseTraining(trainingText);
-    const currentTemplatePricing = detectTemplatePricingFromText(texto, parsed);
+    const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
     const templatePricing = currentTemplatePricing || getTemplatePricingFromHistory(history, parsed);
 
     const apiKey = iaConfig.api_key;
@@ -2050,6 +2130,7 @@ export default async function handler(req: any, res: any) {
     // Si pregunta factura, llegada, pago, garantía, etc. => responder postventa sin reabrir pedido.
     // Si solo dice ok/gracias/nada más => respuesta corta.
     const newTemplateSignal = isNewTemplateOrProductIntent(texto, parsed, history);
+    let forceFreshOrderFromConfirmedTemplate = false;
 
     if (context?.step === "pedido_confirmado") {
       const msgNormClosed = normalize(texto);
@@ -2063,12 +2144,17 @@ export default async function handler(req: any, res: any) {
       // Eso debe iniciar venta nueva.
       // Pero "OK", "GRACIAS", "NADA MAS" NO deben reabrir venta aunque haya promos viejas en el historial.
       const explicitNewPurchaseAfterConfirmed =
+        // Plantilla/precio pegado en el mensaje actual: SIEMPRE venta nueva.
         hasCurrentTemplatePricing ||
+        isNewPastedTemplatePurchase(texto, parsed) ||
+        // Producto nuevo explícito: “me interesa el afilador”, “precio del afilador”, etc.
         (!!productInClosedMessage && /\b(precio|cuanto|cuánto|me interesa|quiero|quiero comprar|comprar|confirmar|agendar|otro producto)\b/.test(msgNormClosed)) ||
         /\b(otro producto|nuevo pedido|hacer otro pedido|catalogo|catálogo|ver catalogo|ver catálogo|quiero comprar otra cosa)\b/.test(msgNormClosed) ||
+        // “QUIERO” después de una plantilla REAL reciente enviada por el bot.
         (isStrongNewPurchaseReply(texto) && !!lastRealSalesTemplateProduct);
 
       if (explicitNewPurchaseAfterConfirmed) {
+        forceFreshOrderFromConfirmedTemplate = true;
         oldOrder = emptyOrder(makeOrderId(fromNumber));
       } else {
         // ✅ Cierre real de conversación después de confirmar pedido.
@@ -2157,7 +2243,7 @@ export default async function handler(req: any, res: any) {
     });
 
     // Si el mensaje actual trae una plantilla/precio/producto nuevo, siempre iniciar nuevo pedido.
-    if (newTemplateSignal.isNew && context?.step === "pedido_confirmado") {
+    if ((newTemplateSignal.isNew || forceFreshOrderFromConfirmedTemplate) && context?.step === "pedido_confirmado") {
       freshOrder = true;
     }
 
@@ -2165,11 +2251,15 @@ export default async function handler(req: any, res: any) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
     }
 
+    const currentTemplateLockedOffer = templatePricing?.product
+      ? (getFixedTemplateOffer(templatePricing, templatePricing.product) || templatePricing.offers[0] || null)
+      : null;
+
     let lockedOfferByContext = freshOrder
-      ? getOfferFromLastPromotion(history, parsed)
+      ? (currentTemplateLockedOffer || getOfferFromLastPromotion(history, parsed))
       : getLockedOfferFromContext(context, oldOrder, history, parsed);
 
-    let productToUse = productFromMessageInitial || templatePricing?.product || "";
+    let productToUse = productFromMessageInitial || currentTemplatePricing?.product || newTemplateSignal.product || templatePricing?.product || "";
 
     if (!productToUse && (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))) {
       productToUse = lockedProductInitial?.canonical || getProductFromLastPromotion(history, parsed)?.canonical || templatePricing?.product || "";
