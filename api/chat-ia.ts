@@ -22,6 +22,7 @@ import { createClient } from "@supabase/supabase-js";
  * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
  * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
  * 19) FIX V15: no confirma si solo llega teléfono + nombre sin dirección; evita tomar ciudad como nombre.
+ * 19) FIX V16: clientes viejos en pedido_confirmado con interés/producto nuevo o QUIERO posterior reinician venta; nunca cierran pedido viejo.
  * 18) FIX V13: active_template de corta duración. La última plantilla enviada/activa gana sobre contexto viejo.
  * 18) FIX V12: detección de producto ignora palabras genéricas como unidades y reconoce singular/plural.
  * 18) FIX V11: si el cliente pidió explícitamente otro producto antes de una plantilla nueva, ese producto gana sobre contexto viejo.
@@ -2890,18 +2891,48 @@ export default async function handler(req: any, res: any) {
       // Ejemplo: después de un pedido confirmado, el bot manda otra plantilla y el cliente responde "QUIERO".
       // Eso debe iniciar venta nueva.
       // Pero "OK", "GRACIAS", "NADA MAS" NO deben reabrir venta aunque haya promos viejas en el historial.
+      const genericPurchaseReplyAfterConfirmed =
+        isGenericBuyReply(texto) ||
+        isStrongNewPurchaseReply(texto) ||
+        hasTemplateBuyIntent(texto) ||
+        isAffirmative(texto);
+
+      const explicitProductInterestInCurrentMessage =
+        !!productInClosedMessage &&
+        /\b(precio|cuanto|cuánto|me interesa|quiero|quiero comprar|comprar|confirmar|agendar|otro producto|tenes|tenés|tienes|hay|necesito)\b/.test(msgNormClosed);
+
+      const recentProductInterestAfterConfirmed = !!recentExplicitProductInterest?.product?.canonical;
+
       const explicitNewPurchaseAfterConfirmed =
         // Plantilla/precio pegado en el mensaje actual: SIEMPRE venta nueva.
         hasCurrentTemplatePricing ||
         isNewPastedTemplatePurchase(texto, parsed) ||
         // Producto nuevo explícito: “me interesa el afilador”, “precio del afilador”, etc.
-        (!!productInClosedMessage && /\b(precio|cuanto|cuánto|me interesa|quiero|quiero comprar|comprar|confirmar|agendar|otro producto|tenes|tenés|tienes|hay|necesito)\b/.test(msgNormClosed)) ||
+        explicitProductInterestInCurrentMessage ||
         /\b(otro producto|nuevo pedido|hacer otro pedido|catalogo|catálogo|ver catalogo|ver catálogo|quiero comprar otra cosa)\b/.test(msgNormClosed) ||
+        // ✅ FIX V16:
+        // Cliente viejo con pedido_confirmado: si primero dijo “Me interesa el afilador”
+        // y luego responde “Quiero”, NO cerrar el pedido viejo. Reiniciar venta aunque
+        // la plantilla multimedia no haya quedado guardada en el historial/contexto.
+        (genericPurchaseReplyAfterConfirmed && recentProductInterestAfterConfirmed) ||
         // “QUIERO” / “QUIERO CONFIRMAR” después de una plantilla REAL reciente enviada por el bot.
-        ((isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) && !!lastRealSalesTemplateProduct && !!lastRealSalesTemplatePricing);
+        (genericPurchaseReplyAfterConfirmed && !!lastRealSalesTemplateProduct && !!lastRealSalesTemplatePricing);
 
       if (explicitNewPurchaseAfterConfirmed) {
         forceFreshOrderFromConfirmedTemplate = true;
+
+        // ✅ FIX V16:
+        // Al reiniciar desde un cliente viejo, si el mensaje actual es solo “Quiero”
+        // pero existe un interés explícito reciente (“Me interesa el afilador”),
+        // ese producto debe guiar la nueva venta. Si no hay plantilla/precio legible,
+        // seguimos con catálogo/entrenamiento, pero nunca cerramos el pedido anterior.
+        if (!templatePricing && recentExplicitProductInterest?.product?.canonical) {
+          activeTemplateForContext = null;
+        } else if (templatePricing && recentExplicitProductInterest?.product?.canonical) {
+          templatePricing = forceTemplatePricingProduct(templatePricing, recentExplicitProductInterest.product);
+          activeTemplateForContext = templatePricingToActiveTemplate(templatePricing) || activeTemplateForContext;
+        }
+
         oldOrder = emptyOrder(makeOrderId(fromNumber));
       } else {
         // ✅ FIX V15: datos fiscales como "301003 mi cédula" no son cierre;
