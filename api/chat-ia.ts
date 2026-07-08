@@ -21,6 +21,7 @@ import { createClient } from "@supabase/supabase-js";
  * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
  * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
  * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
+ * 18) FIX V13: active_template de corta duración. La última plantilla enviada/activa gana sobre contexto viejo.
  * 18) FIX V12: detección de producto ignora palabras genéricas como unidades y reconoce singular/plural.
  * 18) FIX V11: si el cliente pidió explícitamente otro producto antes de una plantilla nueva, ese producto gana sobre contexto viejo.
  * 18) FIX V9: si el pedido ya tiene todos los datos obligatorios, confirma directo con bloque fijo backend; nunca pregunta “¿Confirmamos?”.
@@ -1228,6 +1229,19 @@ function getLastRealSalesTemplateProduct(history: any[], parsed: ParsedTraining)
     if (!isRealSalesTemplateMessage(content)) continue;
 
     const product = detectProduct(content, parsed, "");
+    // ✅ FIX V13 extra:
+    // Si hay interés explícito reciente y el mensaje actual es una aceptación genérica,
+    // ese producto gana definitivamente sobre cualquier producto viejo del contexto.
+    if (
+      recentExplicitProductInterest?.product?.canonical &&
+      (isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto) || isAffirmative(texto)) &&
+      templatePricing
+    ) {
+      product = recentExplicitProductInterest.product.canonical;
+      templatePricing = forceTemplatePricingProduct(templatePricing, recentExplicitProductInterest.product);
+      activeTemplateForContext = templatePricingToActiveTemplate(templatePricing) || activeTemplateForContext;
+    }
+
     const productInfo = getProductInfo(product, parsed);
     if (productInfo) return productInfo;
   }
@@ -1237,7 +1251,105 @@ function getLastRealSalesTemplateProduct(history: any[], parsed: ParsedTraining)
 
 
 function historyText(item: any) {
-  return clean(item?.content || item?.message || item?.text || item?.body || "");
+  /**
+   * ✅ FIX V13:
+   * Algunas integraciones no guardan la plantilla multimedia en `content`.
+   * Puede venir como caption, template_text, body.text, interactive.body, etc.
+   * Si no leemos esos campos, el bot termina usando un producto viejo del contexto.
+   */
+  const direct = clean(
+    item?.content ||
+    item?.message ||
+    item?.text ||
+    item?.body ||
+    item?.caption ||
+    item?.template_text ||
+    item?.templateText ||
+    item?.description ||
+    item?.title ||
+    item?.payload?.text ||
+    item?.payload?.body ||
+    item?.payload?.caption ||
+    item?.interactive?.body ||
+    item?.interactive?.title ||
+    item?.message?.text ||
+    item?.message?.body ||
+    item?.message?.caption ||
+    ""
+  );
+
+  if (direct) return direct;
+
+  const seen = new Set<any>();
+  const parts: string[] = [];
+
+  const walk = (value: any, depth = 0) => {
+    if (depth > 3 || value == null) return;
+    if (typeof value === "string") {
+      const v = clean(value);
+      if (v && v.length >= 3) parts.push(v);
+      return;
+    }
+    if (typeof value !== "object" || seen.has(value)) return;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      value.slice(0, 12).forEach((x) => walk(x, depth + 1));
+      return;
+    }
+
+    const priorityKeys = [
+      "content", "message", "text", "body", "caption", "template", "template_text",
+      "templateText", "interactive", "payload", "title", "description", "button", "buttons"
+    ];
+
+    for (const k of priorityKeys) {
+      if (k in value) walk(value[k], depth + 1);
+    }
+  };
+
+  walk(item);
+  return clean(Array.from(new Set(parts)).join("\n"));
+}
+
+function incomingTemplateEnvelopeText(body: any, texto: string) {
+  /**
+   * ✅ FIX V13 adicional:
+   * En algunos proveedores, cuando el cliente toca un botón, `message` trae solo
+   * “Quiero confirmar”, pero la plantilla/caption original viene en quoted_message,
+   * interactive, template_text, etc. Leemos solo campos seguros, no todo el context viejo.
+   */
+  const candidates = [
+    texto,
+    body?.caption,
+    body?.template_text,
+    body?.templateText,
+    body?.template?.text,
+    body?.template?.body,
+    body?.template?.caption,
+    body?.interactive?.body,
+    body?.interactive?.title,
+    body?.button?.text,
+    body?.button?.title,
+    body?.quoted_message?.text,
+    body?.quoted_message?.body,
+    body?.quoted_message?.caption,
+    body?.quoted_message?.content,
+    body?.quotedMessage?.text,
+    body?.quotedMessage?.body,
+    body?.quotedMessage?.caption,
+    body?.reply_context?.text,
+    body?.reply_context?.body,
+    body?.reply_context?.caption,
+    body?.context_message?.text,
+    body?.context_message?.body,
+    body?.context_message?.caption,
+    body?.message_context?.text,
+    body?.message_context?.body,
+    body?.message_context?.caption,
+  ];
+
+  return clean(candidates.map(clean).filter(Boolean).join("\n"));
 }
 
 function extractExplicitProductInterest(text: string, parsed: ParsedTraining) {
@@ -1304,6 +1416,144 @@ function forceTemplatePricingProduct(templatePricing: TemplatePricing | null, pr
       ...o,
       product: productName,
     })),
+  };
+}
+
+type ActiveTemplate = {
+  product: string;
+  quantity: number;
+  total: number;
+  label?: string;
+  source?: "template" | "catalog" | "context";
+  fixed_quantity?: boolean;
+  raw?: string;
+  created_at?: string;
+};
+
+function activeTemplateIsFresh(activeTemplate: any, maxMinutes = 240) {
+  if (!activeTemplate) return false;
+  if (!activeTemplate.created_at) return true;
+
+  const created = new Date(activeTemplate.created_at);
+  if (Number.isNaN(created.getTime())) return true;
+
+  const diffMinutes = (Date.now() - created.getTime()) / (1000 * 60);
+  return diffMinutes >= 0 && diffMinutes <= maxMinutes;
+}
+
+function templatePricingToActiveTemplate(templatePricing: TemplatePricing | null | undefined): ActiveTemplate | null {
+  if (!templatePricing?.product || !templatePricing.offers?.length) return null;
+
+  const fixed = getFixedTemplateOffer(templatePricing, templatePricing.product);
+  const offer = fixed || [...templatePricing.offers].sort((a, b) => b.quantity - a.quantity)[0];
+  if (!offer?.quantity || !offer?.total) return null;
+
+  return {
+    product: templatePricing.product,
+    quantity: sanitizeQuantity(offer.quantity),
+    total: Number(offer.total),
+    label: offer.label || `${offer.quantity} unidad${offer.quantity > 1 ? "es" : ""} por ${formatGs(offer.total)} Gs`,
+    source: "template",
+    fixed_quantity: templatePricing.fixed_quantity || offer.fixed_quantity || templatePricing.offers.length === 1,
+    raw: templatePricing.raw || offer.label || "",
+    created_at: new Date().toISOString(),
+  };
+}
+
+function activeTemplateToTemplatePricing(activeTemplate: any, parsed: ParsedTraining): TemplatePricing | null {
+  if (!activeTemplate || !activeTemplateIsFresh(activeTemplate)) return null;
+
+  const productInfo = getProductInfo(activeTemplate.product || "", parsed);
+  if (!productInfo) return null;
+
+  const quantity = sanitizeQuantity(activeTemplate.quantity);
+  const total = Number(activeTemplate.total || 0);
+  if (!quantity || !total || total < 10000 || total > 10000000) return null;
+
+  const offer: OfferItem = {
+    product: productInfo.canonical,
+    quantity,
+    total,
+    label: activeTemplate.label || `${quantity} unidad${quantity > 1 ? "es" : ""} por ${formatGs(total)} Gs`,
+    source: "template",
+    fixed_quantity: activeTemplate.fixed_quantity !== false,
+  };
+
+  return {
+    product: productInfo.canonical,
+    price1: quantity === 1 ? total : undefined,
+    offers: [offer],
+    raw: activeTemplate.raw || offer.label,
+    fixed_quantity: offer.fixed_quantity,
+  };
+}
+
+function getActiveTemplatePricingFromContext(context: any, parsed: ParsedTraining): TemplatePricing | null {
+  return activeTemplateToTemplatePricing(context?.active_template || context?.last_active_template, parsed);
+}
+
+function productMatchesTemplate(product: ProductItem | string | null | undefined, templatePricing: TemplatePricing | null | undefined) {
+  if (!product || !templatePricing?.product) return false;
+  const productName = typeof product === "string" ? product : product.canonical;
+  return normalize(productName) === normalize(templatePricing.product);
+}
+
+function chooseTemplatePricingForTurn({
+  currentTemplatePricing,
+  templateAfterExplicitProductInterest,
+  recentExplicitProductInterest,
+  activeTemplatePricing,
+  historyTemplatePricing,
+  texto,
+}: {
+  currentTemplatePricing: TemplatePricing | null;
+  templateAfterExplicitProductInterest: TemplatePricing | null;
+  recentExplicitProductInterest: { product: ProductItem; index: number } | null;
+  activeTemplatePricing: TemplatePricing | null;
+  historyTemplatePricing: TemplatePricing | null;
+  texto: string;
+}) {
+  // 1) Si la plantilla viene pegada en el mensaje actual, manda sí o sí.
+  if (currentTemplatePricing) return currentTemplatePricing;
+
+  // 2) Si el cliente dijo recientemente “Plumero tenés/Quiero plumero”,
+  // la plantilla posterior debe forzarse a ese producto.
+  if (recentExplicitProductInterest && templateAfterExplicitProductInterest) {
+    return forceTemplatePricingProduct(templateAfterExplicitProductInterest, recentExplicitProductInterest.product);
+  }
+
+  // 3) Si hay active_template guardada por la integración, usarla para respuestas genéricas.
+  // Pero si hay interés explícito reciente por otro producto, no dejar que active_template vieja gane.
+  if (activeTemplatePricing && (isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto) || isAffirmative(texto))) {
+    if (!recentExplicitProductInterest || productMatchesTemplate(recentExplicitProductInterest.product, activeTemplatePricing)) {
+      return activeTemplatePricing;
+    }
+  }
+
+  // 4) Última plantilla real del historial.
+  if (historyTemplatePricing) return historyTemplatePricing;
+
+  // 5) Active template como último recurso, pero solo si no hay contradicción explícita.
+  if (activeTemplatePricing && (!recentExplicitProductInterest || productMatchesTemplate(recentExplicitProductInterest.product, activeTemplatePricing))) {
+    return activeTemplatePricing;
+  }
+
+  return null;
+}
+
+function contextWithActiveTemplate(context: any, orderData: OrderData, finalStateStep: string, activeTemplate: ActiveTemplate | null, confirm = false) {
+  return {
+    ...(context || {}),
+    current_product: orderData.product || null,
+    last_topic: orderData.product || context?.last_topic || null,
+    last_ad_product: orderData.product || context?.last_ad_product || null,
+    last_ad_offer: orderData.locked_offer || null,
+    active_template: confirm ? null : activeTemplate || context?.active_template || null,
+    order_data: orderData,
+    order_id: orderData.order_id || null,
+    payment_proof_received: orderData.payment_proof_received || false,
+    step: confirm ? "pedido_confirmado" : finalStateStep,
+    updated_at: new Date().toISOString(),
   };
 }
 
@@ -2403,22 +2653,32 @@ export default async function handler(req: any, res: any) {
     const allTraining = await getAllTrainingData(user_id);
     const trainingText = buildTrainingText(allTraining);
     const parsed = parseTraining(trainingText);
-    const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
+    const incomingTemplateText = incomingTemplateEnvelopeText(req.body, texto);
+    const currentTemplatePricing = detectTemplatePricingSmart(incomingTemplateText, parsed) || detectTemplatePricingSmart(texto, parsed);
 
-    // ✅ FIX V11 mínimo:
-    // Si después de un pedido confirmado el cliente dice explícitamente "Quiero plumero"
-    // y luego responde "Quiero confirmar" a una plantilla nueva, ese producto explícito
-    // debe ganar sobre cualquier last_ad_product/current_product viejo del contexto.
+    // ✅ FIX V13:
+    // Fuente corta de verdad para plantillas.
+    // Si la integración guarda context.active_template, el botón “Quiero/Quiero confirmar/Sí”
+    // continúa ESA plantilla aunque el pedido anterior tenga otro producto.
+    // Además se lee mejor el historial multimedia/caption para detectar plantillas nuevas.
     const recentExplicitProductInterest = getRecentExplicitProductInterestAfterConfirmed(history, parsed);
     const templateAfterExplicitProductInterest = recentExplicitProductInterest
       ? getTemplatePricingAfterHistoryIndex(history, parsed, recentExplicitProductInterest.index)
       : null;
+    const activeTemplatePricing = getActiveTemplatePricingFromContext(context, parsed);
+    const historyTemplatePricing = getTemplatePricingFromHistory(history, parsed);
 
-    let templatePricing =
-      currentTemplatePricing ||
-      (templateAfterExplicitProductInterest
-        ? forceTemplatePricingProduct(templateAfterExplicitProductInterest, recentExplicitProductInterest?.product || null)
-        : getTemplatePricingFromHistory(history, parsed));
+    let templatePricing = chooseTemplatePricingForTurn({
+      currentTemplatePricing,
+      templateAfterExplicitProductInterest,
+      recentExplicitProductInterest,
+      activeTemplatePricing,
+      historyTemplatePricing,
+      texto,
+    });
+
+    let activeTemplateForContext = templatePricingToActiveTemplate(templatePricing) ||
+      (activeTemplatePricing ? templatePricingToActiveTemplate(activeTemplatePricing) : null);
 
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
@@ -2449,11 +2709,20 @@ export default async function handler(req: any, res: any) {
       const msgNormClosed = normalize(texto);
       const hasCurrentTemplatePricing = !!currentTemplatePricing;
       const productInClosedMessage = detectProduct(texto, parsed, "");
-      const lastRealSalesTemplatePricing =
-        templateAfterExplicitProductInterest && recentExplicitProductInterest
-          ? forceTemplatePricingProduct(templateAfterExplicitProductInterest, recentExplicitProductInterest.product)
-          : getLastRealSalesTemplatePricing(history, parsed);
+      const lastRealSalesTemplatePricing = chooseTemplatePricingForTurn({
+        currentTemplatePricing,
+        templateAfterExplicitProductInterest,
+        recentExplicitProductInterest,
+        activeTemplatePricing,
+        historyTemplatePricing: getLastRealSalesTemplatePricing(history, parsed),
+        texto,
+      });
       const lastRealSalesTemplateProduct = recentExplicitProductInterest?.product || (lastRealSalesTemplatePricing?.product ? getProductInfo(lastRealSalesTemplatePricing.product, parsed) : getLastRealSalesTemplateProduct(history, parsed));
+
+      if (lastRealSalesTemplatePricing) {
+        templatePricing = lastRealSalesTemplatePricing;
+        activeTemplateForContext = templatePricingToActiveTemplate(templatePricing) || activeTemplateForContext;
+      }
 
       // ✅ IMPORTANTE:
       // Primero se detecta si el cliente está comprando una NUEVA plantilla real.
@@ -2465,7 +2734,7 @@ export default async function handler(req: any, res: any) {
         hasCurrentTemplatePricing ||
         isNewPastedTemplatePurchase(texto, parsed) ||
         // Producto nuevo explícito: “me interesa el afilador”, “precio del afilador”, etc.
-        (!!productInClosedMessage && /\b(precio|cuanto|cuánto|me interesa|quiero|quiero comprar|comprar|confirmar|agendar|otro producto)\b/.test(msgNormClosed)) ||
+        (!!productInClosedMessage && /\b(precio|cuanto|cuánto|me interesa|quiero|quiero comprar|comprar|confirmar|agendar|otro producto|tenes|tenés|tienes|hay|necesito)\b/.test(msgNormClosed)) ||
         /\b(otro producto|nuevo pedido|hacer otro pedido|catalogo|catálogo|ver catalogo|ver catálogo|quiero comprar otra cosa)\b/.test(msgNormClosed) ||
         // “QUIERO” / “QUIERO CONFIRMAR” después de una plantilla REAL reciente enviada por el bot.
         ((isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) && !!lastRealSalesTemplateProduct && !!lastRealSalesTemplatePricing);
@@ -2585,8 +2854,9 @@ export default async function handler(req: any, res: any) {
     // 4) recién después contexto viejo / catálogo.
     let productToUse =
       currentTemplatePricing?.product ||
-      ((isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) ? recentExplicitProductInterest?.product?.canonical || "" : "") ||
+      ((isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto) || isAffirmative(texto)) ? recentExplicitProductInterest?.product?.canonical || "" : "") ||
       templatePricing?.product ||
+      activeTemplatePricing?.product ||
       newTemplateSignal.product ||
       productFromMessageInitial ||
       "";
@@ -2840,17 +3110,7 @@ export default async function handler(req: any, res: any) {
 
       return res.json({
         response: fixedConfirmation,
-        context: {
-          ...(context || {}),
-          current_product: orderData.product || null,
-          last_topic: orderData.product || context?.last_topic || null,
-          last_ad_offer: orderData.locked_offer || null,
-          order_data: orderData,
-          order_id: orderData.order_id || null,
-          payment_proof_received: orderData.payment_proof_received || false,
-          step: "pedido_confirmado",
-          updated_at: new Date().toISOString(),
-        },
+        context: contextWithActiveTemplate(context, orderData, "pedido_confirmado", activeTemplateForContext, true),
         debug: process.env.NODE_ENV === "development"
           ? {
               fixed_backend_confirmation: true,
@@ -2874,17 +3134,7 @@ export default async function handler(req: any, res: any) {
       if (fixedCityResponse) {
         return res.json({
           response: fixedCityResponse,
-          context: {
-            ...(context || {}),
-            current_product: orderData.product || null,
-            last_topic: orderData.product || context?.last_topic || null,
-            last_ad_offer: orderData.locked_offer || null,
-            order_data: orderData,
-            order_id: orderData.order_id || null,
-            payment_proof_received: orderData.payment_proof_received || false,
-            step: finalState.step,
-            updated_at: new Date().toISOString(),
-          },
+          context: contextWithActiveTemplate(context, orderData, finalState.step, activeTemplateForContext, false),
           debug: process.env.NODE_ENV === "development"
             ? {
                 deterministic_fixed_city_response: true,
@@ -2905,16 +3155,7 @@ export default async function handler(req: any, res: any) {
       if (deterministicQtyResponse) {
         return res.json({
           response: deterministicQtyResponse,
-          context: {
-            ...(context || {}),
-            current_product: orderData.product || null,
-            last_topic: orderData.product || context?.last_topic || null,
-            last_ad_offer: orderData.locked_offer || null,
-            order_data: orderData,
-            order_id: orderData.order_id || null,
-            step: finalState.step,
-            updated_at: new Date().toISOString(),
-          },
+          context: contextWithActiveTemplate(context, orderData, finalState.step, activeTemplateForContext, false),
           debug: process.env.NODE_ENV === "development"
             ? {
                 deterministic_quantity_response: true,
@@ -2970,17 +3211,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
 
     return res.json({
       response: postProcessResponse(aiResponse),
-      context: {
-        ...(context || {}),
-        current_product: orderData.product || null,
-        last_topic: orderData.product || context?.last_topic || null,
-        last_ad_offer: orderData.locked_offer || null,
-        order_data: orderData,
-        order_id: orderData.order_id || null,
-        payment_proof_received: (orderData as any).payment_proof_received || false,
-        step: confirm ? "pedido_confirmado" : finalState.step,
-        updated_at: new Date().toISOString(),
-      },
+      context: contextWithActiveTemplate(context, orderData, finalState.step, activeTemplateForContext, confirm),
       debug: process.env.NODE_ENV === "development"
         ? {
             freshOrder,
