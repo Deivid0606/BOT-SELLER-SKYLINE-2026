@@ -21,6 +21,7 @@ import { createClient } from "@supabase/supabase-js";
  * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
  * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
  * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
+ * 18) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
  * 18) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
  *
  * IMPORTANTE:
@@ -1020,15 +1021,32 @@ function isNewPastedTemplatePurchase(text: string, parsed: ParsedTraining) {
 }
 
 function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): TemplatePricing | null {
-  const lastBotMessages = (history || [])
-    .slice(-12)
+  /**
+   * ✅ FIX V7:
+   * La última plantilla real del historial debe ganar sobre cualquier producto viejo guardado
+   * en context.current_product / last_ad_product / order_data.
+   *
+   * Además, algunas integraciones guardan la plantilla enviada como "assistant", "model",
+   * "bot" o incluso sin rol estándar. Por eso revisamos el contenido reciente completo,
+   * pero filtramos fuerte con isRealSalesTemplateMessage / structured template para no tomar
+   * confirmaciones de pedido, factura, delivery o datos del cliente como plantilla.
+   */
+  const recentMessages = (history || [])
+    .slice(-20)
     .reverse()
-    .filter((h: any) => h.role === "assistant" || h.role === "model");
+    .filter((h: any) => clean(h?.content));
 
-  for (const item of lastBotMessages) {
+  for (const item of recentMessages) {
     const content = clean(item?.content);
-    if (!isPromotionLikeMessage(content) && !isSafeTemplatePricingMessage(content)) continue;
-    const pricing = detectTemplatePricingFromText(content, parsed);
+
+    const looksLikeTemplate =
+      isStructuredSalesTemplateMessage(content) ||
+      isRealSalesTemplateMessage(content) ||
+      isSafeTemplatePricingMessage(content);
+
+    if (!looksLikeTemplate) continue;
+
+    const pricing = detectTemplatePricingSmart(content, parsed);
     if (pricing) return pricing;
   }
 
@@ -1058,13 +1076,26 @@ function getFixedTemplateOffer(templatePricing: TemplatePricing | null, product:
 }
 
 function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
-  const lastBotMessages = (history || [])
-    .slice(-8)
-    .reverse()
-    .filter((h: any) => h.role === "assistant" || h.role === "model");
+  /**
+   * ✅ FIX V7:
+   * Primero intentar tomar el producto desde la plantilla/precio detectado.
+   * Esto evita que un producto viejo del contexto/historial, por ejemplo
+   * "Almohadillas Antivibración", gane cuando la plantilla nueva dice
+   * "Producto: Afilador de Cuchillos".
+   */
+  const templatePricing = getTemplatePricingFromHistory(history, parsed);
+  const templateProduct = getProductInfo(templatePricing?.product || "", parsed);
+  if (templateProduct) return templateProduct;
 
-  for (const item of lastBotMessages) {
+  const recentMessages = (history || [])
+    .slice(-20)
+    .reverse()
+    .filter((h: any) => clean(h?.content));
+
+  for (const item of recentMessages) {
     const content = clean(item?.content);
+    if (!isRealSalesTemplateMessage(content) && !isPromotionLikeMessage(content) && !isSafeTemplatePricingMessage(content)) continue;
+
     const contentNorm = normalize(content);
     if (!contentNorm) continue;
 
@@ -1084,7 +1115,6 @@ function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
 
   return null;
 }
-
 function getOfferFromLastPromotion(history: any[], parsed: ParsedTraining): OfferItem | null {
   const templatePricing = getTemplatePricingFromHistory(history, parsed);
   if (!templatePricing) return null;
@@ -1258,6 +1288,9 @@ function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, hist
 
   const productInMessage = detectProduct(raw, parsed, "");
   const pricingInMessage = detectTemplatePricingSmart(raw, parsed);
+  const pricingFromHistory = getTemplatePricingFromHistory(history, parsed);
+  const lastTemplateProduct = getProductFromLastPromotion(history, parsed)?.canonical || "";
+  const effectivePricing = pricingInMessage || pricingFromHistory;
 
   // Cliente/operador pega la plantilla completa + QUIERO.
   const pastedTemplate =
@@ -1273,15 +1306,15 @@ function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, hist
   // Respuesta "QUIERO" justo después de una plantilla nueva enviada por el bot.
   const wantsLastTemplate =
     (isGenericBuyReply(raw) || isBuyIntent(raw)) &&
-    !!getProductFromLastPromotion(history, parsed);
+    !!lastTemplateProduct;
 
   return {
     isNew: Boolean(pastedTemplate || productInterest || wantsLastTemplate),
-    product: productInMessage || getProductFromLastPromotion(history, parsed)?.canonical || "",
-    pricing: pricingInMessage || getTemplatePricingFromHistory(history, parsed),
+    // ✅ FIX V7: si hay plantilla con precio, el producto de la plantilla gana.
+    product: effectivePricing?.product || productInMessage || lastTemplateProduct || "",
+    pricing: effectivePricing,
   };
 }
-
 function isRespondingToPromotion(text: string, history: any[]) {
   if (!isBuyIntent(text) && !isGenericBuyReply(text)) return false;
 
@@ -2352,17 +2385,36 @@ export default async function handler(req: any, res: any) {
       ? (currentTemplateLockedOffer || getOfferFromLastPromotion(history, parsed))
       : getLockedOfferFromContext(context, oldOrder, history, parsed);
 
-    let productToUse = productFromMessageInitial || currentTemplatePricing?.product || newTemplateSignal.product || templatePricing?.product || "";
+    // ✅ FIX V7:
+    // Para respuestas genéricas como "QUIERO", nunca dejar que un producto viejo del contexto
+    // gane sobre la plantilla activa. La prioridad correcta es:
+    // 1) plantilla actual pegada en el mensaje,
+    // 2) última plantilla real del historial,
+    // 3) producto explícito del mensaje,
+    // 4) recién después contexto viejo / catálogo.
+    let productToUse = currentTemplatePricing?.product || templatePricing?.product || newTemplateSignal.product || productFromMessageInitial || "";
 
     if (!productToUse && (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))) {
-      productToUse = lockedProductInitial?.canonical || getProductFromLastPromotion(history, parsed)?.canonical || templatePricing?.product || "";
+      productToUse = templatePricing?.product || getProductFromLastPromotion(history, parsed)?.canonical || lockedProductInitial?.canonical || "";
     }
 
     if (!productToUse && !freshOrder) {
       productToUse = oldOrder.product || "";
     }
 
-    const product = detectProduct(texto, parsed, productToUse);
+    let product = detectProduct(texto, parsed, productToUse);
+
+    // ✅ FIX V7 extra:
+    // Si hay plantilla activa y el mensaje es genérico (QUIERO/CONFIRMO), forzar producto de plantilla.
+    // Esto evita respuestas como: plantilla de Afilador + producto viejo Almohadillas.
+    if (
+      templatePricing?.product &&
+      (isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) &&
+      !detectProduct(texto, parsed, "")
+    ) {
+      product = templatePricing.product;
+    }
+
     const productInfo = getProductInfo(product, parsed);
 
     if (product && !oldOrder.order_id) {
