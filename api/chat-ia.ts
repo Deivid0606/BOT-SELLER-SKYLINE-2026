@@ -21,16 +21,12 @@ import { createClient } from "@supabase/supabase-js";
  * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
  * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
  * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
- * 19) FIX V15: no confirma si solo llega teléfono + nombre sin dirección; evita tomar ciudad como nombre.
- * 19) FIX V16: clientes viejos en pedido_confirmado con interés/producto nuevo o QUIERO posterior reinician venta; nunca cierran pedido viejo.
- * 18) FIX V13: active_template de corta duración. La última plantilla enviada/activa gana sobre contexto viejo.
  * 18) FIX V12: detección de producto ignora palabras genéricas como unidades y reconoce singular/plural.
  * 18) FIX V11: si el cliente pidió explícitamente otro producto antes de una plantilla nueva, ese producto gana sobre contexto viejo.
  * 18) FIX V9: si el pedido ya tiene todos los datos obligatorios, confirma directo con bloque fijo backend; nunca pregunta “¿Confirmamos?”.
  * 18) FIX V8: después de postventa, si llega una nueva plantilla y el cliente responde "Quiero confirmar", inicia otra venta nueva.
  * 18) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
  * 18) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
- * 19) FIX V14: guarda en orders también cuando Gemini confirma con formato flexible de IA.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -158,106 +154,6 @@ function formatGs(n: number) {
 
 function parseNumberGs(raw: string) {
   return Number(clean(raw).replace(/[^\d]/g, "") || 0);
-}
-
-/**
- * ✅ FIX V14:
- * Detecta confirmaciones generadas por IA con formato flexible, por ejemplo:
- *
- * ¡Genial, David! Ya tenemos todos tus datos. ✅
- *
- * **Confirmamos tu pedido:**
- * * **Producto:** 2x Procesador de Alimentos Premium RAF PRO
- * * **Total:** 309.800 Gs
- * * **Envío:** Gratis a Asunción (Caballero casi República de Colombia)
- * * **Pago:** Contra entrega
- *
- * ¡Tu pedido está confirmado!
- *
- * Esto permite guardar el pedido en orders aunque Gemini no use el bloque fijo
- * "✅ PEDIDO CONFIRMADO".
- */
-function parseFlexibleAiConfirmation(text: string) {
-  const raw = clean(text);
-  const n = normalize(raw);
-
-  const isConfirmed =
-    /\b(confirmamos tu pedido|pedido confirmado|tu pedido esta confirmado|tu pedido está confirmado|ya tenemos todos tus datos|tu pedido ha sido confirmado|tu pedido esta listo|tu pedido está listo)\b/.test(n);
-
-  if (!isConfirmed) return null;
-
-  const customerNameRaw =
-    raw.match(/(?:^|\n)\s*[¡!]?(?:genial|perfecto|excelente|listo|muy bien)\s*,\s*([a-zA-ZÁÉÍÓÚáéíóúÑñ ]{2,50})[!.✅\n]/i)?.[1] ||
-    "";
-
-  const productRaw =
-    raw.match(/\*\s*\*\*\s*Producto\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
-    raw.match(/\*\*\s*Producto\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
-    raw.match(/Producto\s*:\s*(.+)$/im)?.[1] ||
-    "";
-
-  const totalRaw =
-    raw.match(/\*\s*\*\*\s*Total\s*:\s*\*\*\s*(?:Gs\.?\s*)?([\d.\s]+)\s*(?:Gs)?/im)?.[1] ||
-    raw.match(/\*\*\s*Total\s*:\s*\*\*\s*(?:Gs\.?\s*)?([\d.\s]+)\s*(?:Gs)?/im)?.[1] ||
-    raw.match(/Total\s*:\s*(?:Gs\.?\s*)?([\d.\s]+)\s*(?:Gs)?/im)?.[1] ||
-    "";
-
-  const envioRaw =
-    raw.match(/\*\s*\*\*\s*Env[ií]o\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
-    raw.match(/\*\*\s*Env[ií]o\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
-    raw.match(/Env[ií]o\s*:\s*(.+)$/im)?.[1] ||
-    "";
-
-  const pagoRaw =
-    raw.match(/\*\s*\*\*\s*Pago\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
-    raw.match(/\*\*\s*Pago\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
-    raw.match(/Pago\s*:\s*(.+)$/im)?.[1] ||
-    "";
-
-  if (!productRaw || !totalRaw) return null;
-
-  let quantity = 1;
-  let product = clean(productRaw)
-    .replace(/^[-*•]+\s*/, "")
-    .replace(/\*+/g, "")
-    .trim();
-
-  const qtyMatch =
-    product.match(/^(\d+)\s*x\s*(.+)$/i) ||
-    product.match(/^x\s*(\d+)\s+(.+)$/i) ||
-    product.match(/^(\d+)\s+(?:unidades?\s+de\s+)?(.+)$/i);
-
-  if (qtyMatch) {
-    quantity = sanitizeQuantity(Number(qtyMatch[1])) || 1;
-    product = clean(qtyMatch[2]);
-  }
-
-  const total = parseNumberGs(totalRaw);
-
-  let city = "";
-  let address = "";
-
-  const cityAddressMatch =
-    envioRaw.match(/(?:gratis\s+)?(?:a|en)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+)\s*\((.+?)\)/i);
-
-  if (cityAddressMatch) {
-    city = clean(cityAddressMatch[1]);
-    address = clean(cityAddressMatch[2]);
-  } else {
-    const cityOnly =
-      envioRaw.match(/(?:gratis\s+)?(?:a|en)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+)/i)?.[1] || "";
-    city = clean(cityOnly);
-  }
-
-  return {
-    product,
-    quantity,
-    total,
-    city,
-    address,
-    customer_name: clean(customerNameRaw),
-    payment_method: clean(pagoRaw),
-  };
 }
 
 function isPriceQuery(text: string) {
@@ -652,38 +548,6 @@ function extractPhone(text: string) {
   return match?.[0] || "";
 }
 
-function removePhoneLikeFromText(text: string, phone?: string) {
-  let result = clean(text);
-  if (!result) return "";
-
-  // Remueve celulares aunque vengan con espacios: "0975 530708 Graciela Ramos".
-  result = result.replace(/(?:\+?595[\s.\-]*)?0?9(?:[\s.\-]*\d){8,9}/g, " ");
-
-  const digits = clean(phone || "").replace(/\D/g, "");
-  if (digits.length >= 8) {
-    const flexibleDigits = digits.split("").map((d) => d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\s.\\-]*");
-    try {
-      result = result.replace(new RegExp(flexibleDigits, "g"), " ");
-    } catch {}
-
-    // También probar sin prefijo 595 o sin 0 inicial.
-    const variants = Array.from(new Set([
-      digits.replace(/^595/, "0"),
-      digits.replace(/^595/, ""),
-      digits.replace(/^0/, ""),
-    ])).filter((v) => v.length >= 8);
-
-    for (const variant of variants) {
-      const flex = variant.split("").join("[\\s.\\-]*");
-      try {
-        result = result.replace(new RegExp(flex, "g"), " ");
-      } catch {}
-    }
-  }
-
-  return clean(result.replace(/\s+/g, " "));
-}
-
 function toTitleCase(str: string): string {
   return str.replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -741,14 +605,7 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     if (cleaned.length < 4 || cleaned.length > 60) return false;
     if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|san pedro|santa|bario)\b/i.test(normLine)) return false;
     if (questionVerbs.test(normLine)) return false;
-    if (/\bsoy\b/.test(normLine)) return false;
     if (detectedCity && normalize(cleaned) === normalize(detectedCity)) return false;
-    if (parsed && parsed.cities.some((c) => {
-      const a = normalize(c.alias);
-      const cn = normalize(c.canonical);
-      return (a && a.length >= 3 && (normLine === a || normLine.startsWith(a + " ") || normLine.endsWith(" " + a) || normLine.includes(" " + a + " "))) ||
-             (cn && cn.length >= 3 && normLine === cn);
-    })) return false;
     if (forbidden.some((f) => normLine === normalize(f) || normLine.startsWith(normalize(f) + " ") || normLine.endsWith(" " + normalize(f)))) return false;
     if (words[0].length === 1) return false;
     if (/^(y |ese |esta |este |eso |esa |aqui |ahi |ya |igual |listo |ok |dale )/i.test(normLine)) return false;
@@ -761,17 +618,6 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
 
   const beforeSoy = raw.match(/^([a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,4})\s+soy\b/i)?.[1];
   if (beforeSoy && isValidNameLine(beforeSoy)) return toTitleCase(clean(beforeSoy));
-
-  // ✅ FIX V15:
-  // Si el cliente manda teléfono + nombre en una sola línea:
-  // "0975 530708 Graciela Ramos", extraer Graciela Ramos como nombre
-  // y NO usar todo el mensaje como dirección.
-  if (phone) {
-    const withoutPhone = removePhoneLikeFromText(raw, phone);
-    if (withoutPhone && withoutPhone !== raw && isValidNameLine(withoutPhone)) {
-      return toTitleCase(withoutPhone);
-    }
-  }
 
   if (isMultiLine) {
     for (const line of lines) {
@@ -792,19 +638,6 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
   if (/^\d+$/.test(raw)) return "";
 
-  const addressCue = /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|local|edificio|piso|departamento|dpto|referencia)\b/i;
-  const rawWithoutPhone = removePhoneLikeFromText(raw, phone);
-
-  // ✅ FIX V15:
-  // "0975 530708 Graciela Ramos" NO es dirección.
-  // Si al sacar el teléfono queda solo un nombre y no hay palabras de dirección,
-  // dejamos address vacío para que el bot pida ubicación exacta.
-  if (phone && rawWithoutPhone && !addressCue.test(normalize(rawWithoutPhone))) {
-    const onlyLetters = /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(rawWithoutPhone);
-    const shortHumanName = rawWithoutPhone.split(/\s+/).filter(Boolean).length >= 2 && rawWithoutPhone.split(/\s+/).filter(Boolean).length <= 5;
-    if (onlyLetters && shortHumanName) return "";
-  }
-
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
 
   const explicit = raw.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1];
@@ -816,7 +649,7 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
     const cleaned = clean(line);
     const normLine = normalize(cleaned);
 
-    if (addressCue.test(normLine)) {
+    if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/i.test(normLine)) {
       if (name && normalize(cleaned).includes(normalize(name))) continue;
       if (phone && cleaned.includes(phone)) continue;
       return cleaned;
@@ -824,7 +657,7 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   }
 
   if (/\d/.test(raw) && raw.length >= 8) {
-    let remaining = removePhoneLikeFromText(raw, phone) || raw;
+    let remaining = raw;
 
     if (name) {
       const namePattern = name
@@ -844,12 +677,7 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
       remaining = remaining.replace(new RegExp(`\\b${word}\\b`, "gi"), "").trim();
     }
 
-    if (remaining.length >= 5) {
-      const remainingNorm = normalize(remaining);
-      const onlyLetters = /^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(remaining);
-      const looksOnlyLikeName = onlyLetters && remaining.split(/\s+/).filter(Boolean).length <= 5 && !addressCue.test(remainingNorm);
-      if (!looksOnlyLikeName) return remaining;
-    }
+    if (remaining.length >= 5) return remaining;
   }
 
   return "";
@@ -976,7 +804,11 @@ function detectOfferFromText(text: string, parsed: ParsedTraining): OfferItem | 
 
 function looksLikeCustomerDataOrAddress(text: string) {
   const n = normalize(text);
-  return /\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|direccion|dirección|ubicacion|ubicación|telefono|teléfono|celular)\b/.test(n);
+  // ✅ FIX V19: "casa", "frente", "lado" y "bo" son palabras demasiado genéricas
+  // que aparecen en textos de venta normales (ej. "pagás al recibir en tu casa"),
+  // lo que hacía que isSafeTemplatePricingMessage descartara plantillas reales
+  // por error y el bot terminara usando el precio de un producto viejo/cerrado.
+  return /\b(calle|avda|avenida|ruta|km|barrio|esquina|casi|numero|nro|manzana|mz|lote|direccion|dirección|ubicacion|ubicación|telefono|teléfono|celular)\b/.test(n);
 }
 
 function isSafeTemplatePricingMessage(text: string) {
@@ -1409,105 +1241,7 @@ function getLastRealSalesTemplateProduct(history: any[], parsed: ParsedTraining)
 
 
 function historyText(item: any) {
-  /**
-   * ✅ FIX V13:
-   * Algunas integraciones no guardan la plantilla multimedia en `content`.
-   * Puede venir como caption, template_text, body.text, interactive.body, etc.
-   * Si no leemos esos campos, el bot termina usando un producto viejo del contexto.
-   */
-  const direct = clean(
-    item?.content ||
-    item?.message ||
-    item?.text ||
-    item?.body ||
-    item?.caption ||
-    item?.template_text ||
-    item?.templateText ||
-    item?.description ||
-    item?.title ||
-    item?.payload?.text ||
-    item?.payload?.body ||
-    item?.payload?.caption ||
-    item?.interactive?.body ||
-    item?.interactive?.title ||
-    item?.message?.text ||
-    item?.message?.body ||
-    item?.message?.caption ||
-    ""
-  );
-
-  if (direct) return direct;
-
-  const seen = new Set<any>();
-  const parts: string[] = [];
-
-  const walk = (value: any, depth = 0) => {
-    if (depth > 3 || value == null) return;
-    if (typeof value === "string") {
-      const v = clean(value);
-      if (v && v.length >= 3) parts.push(v);
-      return;
-    }
-    if (typeof value !== "object" || seen.has(value)) return;
-    seen.add(value);
-
-    if (Array.isArray(value)) {
-      value.slice(0, 12).forEach((x) => walk(x, depth + 1));
-      return;
-    }
-
-    const priorityKeys = [
-      "content", "message", "text", "body", "caption", "template", "template_text",
-      "templateText", "interactive", "payload", "title", "description", "button", "buttons"
-    ];
-
-    for (const k of priorityKeys) {
-      if (k in value) walk(value[k], depth + 1);
-    }
-  };
-
-  walk(item);
-  return clean(Array.from(new Set(parts)).join("\n"));
-}
-
-function incomingTemplateEnvelopeText(body: any, texto: string) {
-  /**
-   * ✅ FIX V13 adicional:
-   * En algunos proveedores, cuando el cliente toca un botón, `message` trae solo
-   * “Quiero confirmar”, pero la plantilla/caption original viene en quoted_message,
-   * interactive, template_text, etc. Leemos solo campos seguros, no todo el context viejo.
-   */
-  const candidates = [
-    texto,
-    body?.caption,
-    body?.template_text,
-    body?.templateText,
-    body?.template?.text,
-    body?.template?.body,
-    body?.template?.caption,
-    body?.interactive?.body,
-    body?.interactive?.title,
-    body?.button?.text,
-    body?.button?.title,
-    body?.quoted_message?.text,
-    body?.quoted_message?.body,
-    body?.quoted_message?.caption,
-    body?.quoted_message?.content,
-    body?.quotedMessage?.text,
-    body?.quotedMessage?.body,
-    body?.quotedMessage?.caption,
-    body?.reply_context?.text,
-    body?.reply_context?.body,
-    body?.reply_context?.caption,
-    body?.context_message?.text,
-    body?.context_message?.body,
-    body?.context_message?.caption,
-    body?.message_context?.text,
-    body?.message_context?.body,
-    body?.message_context?.caption,
-  ];
-
-  return clean(candidates.map(clean).filter(Boolean).join("\n"));
+  return clean(item?.content || item?.message || item?.text || item?.body || "");
 }
 
 function extractExplicitProductInterest(text: string, parsed: ParsedTraining) {
@@ -1577,144 +1311,6 @@ function forceTemplatePricingProduct(templatePricing: TemplatePricing | null, pr
   };
 }
 
-type ActiveTemplate = {
-  product: string;
-  quantity: number;
-  total: number;
-  label?: string;
-  source?: "template" | "catalog" | "context";
-  fixed_quantity?: boolean;
-  raw?: string;
-  created_at?: string;
-};
-
-function activeTemplateIsFresh(activeTemplate: any, maxMinutes = 240) {
-  if (!activeTemplate) return false;
-  if (!activeTemplate.created_at) return true;
-
-  const created = new Date(activeTemplate.created_at);
-  if (Number.isNaN(created.getTime())) return true;
-
-  const diffMinutes = (Date.now() - created.getTime()) / (1000 * 60);
-  return diffMinutes >= 0 && diffMinutes <= maxMinutes;
-}
-
-function templatePricingToActiveTemplate(templatePricing: TemplatePricing | null | undefined): ActiveTemplate | null {
-  if (!templatePricing?.product || !templatePricing.offers?.length) return null;
-
-  const fixed = getFixedTemplateOffer(templatePricing, templatePricing.product);
-  const offer = fixed || [...templatePricing.offers].sort((a, b) => b.quantity - a.quantity)[0];
-  if (!offer?.quantity || !offer?.total) return null;
-
-  return {
-    product: templatePricing.product,
-    quantity: sanitizeQuantity(offer.quantity),
-    total: Number(offer.total),
-    label: offer.label || `${offer.quantity} unidad${offer.quantity > 1 ? "es" : ""} por ${formatGs(offer.total)} Gs`,
-    source: "template",
-    fixed_quantity: templatePricing.fixed_quantity || offer.fixed_quantity || templatePricing.offers.length === 1,
-    raw: templatePricing.raw || offer.label || "",
-    created_at: new Date().toISOString(),
-  };
-}
-
-function activeTemplateToTemplatePricing(activeTemplate: any, parsed: ParsedTraining): TemplatePricing | null {
-  if (!activeTemplate || !activeTemplateIsFresh(activeTemplate)) return null;
-
-  const productInfo = getProductInfo(activeTemplate.product || "", parsed);
-  if (!productInfo) return null;
-
-  const quantity = sanitizeQuantity(activeTemplate.quantity);
-  const total = Number(activeTemplate.total || 0);
-  if (!quantity || !total || total < 10000 || total > 10000000) return null;
-
-  const offer: OfferItem = {
-    product: productInfo.canonical,
-    quantity,
-    total,
-    label: activeTemplate.label || `${quantity} unidad${quantity > 1 ? "es" : ""} por ${formatGs(total)} Gs`,
-    source: "template",
-    fixed_quantity: activeTemplate.fixed_quantity !== false,
-  };
-
-  return {
-    product: productInfo.canonical,
-    price1: quantity === 1 ? total : undefined,
-    offers: [offer],
-    raw: activeTemplate.raw || offer.label,
-    fixed_quantity: offer.fixed_quantity,
-  };
-}
-
-function getActiveTemplatePricingFromContext(context: any, parsed: ParsedTraining): TemplatePricing | null {
-  return activeTemplateToTemplatePricing(context?.active_template || context?.last_active_template, parsed);
-}
-
-function productMatchesTemplate(product: ProductItem | string | null | undefined, templatePricing: TemplatePricing | null | undefined) {
-  if (!product || !templatePricing?.product) return false;
-  const productName = typeof product === "string" ? product : product.canonical;
-  return normalize(productName) === normalize(templatePricing.product);
-}
-
-function chooseTemplatePricingForTurn({
-  currentTemplatePricing,
-  templateAfterExplicitProductInterest,
-  recentExplicitProductInterest,
-  activeTemplatePricing,
-  historyTemplatePricing,
-  texto,
-}: {
-  currentTemplatePricing: TemplatePricing | null;
-  templateAfterExplicitProductInterest: TemplatePricing | null;
-  recentExplicitProductInterest: { product: ProductItem; index: number } | null;
-  activeTemplatePricing: TemplatePricing | null;
-  historyTemplatePricing: TemplatePricing | null;
-  texto: string;
-}) {
-  // 1) Si la plantilla viene pegada en el mensaje actual, manda sí o sí.
-  if (currentTemplatePricing) return currentTemplatePricing;
-
-  // 2) Si el cliente dijo recientemente “Plumero tenés/Quiero plumero”,
-  // la plantilla posterior debe forzarse a ese producto.
-  if (recentExplicitProductInterest && templateAfterExplicitProductInterest) {
-    return forceTemplatePricingProduct(templateAfterExplicitProductInterest, recentExplicitProductInterest.product);
-  }
-
-  // 3) Si hay active_template guardada por la integración, usarla para respuestas genéricas.
-  // Pero si hay interés explícito reciente por otro producto, no dejar que active_template vieja gane.
-  if (activeTemplatePricing && (isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto) || isAffirmative(texto))) {
-    if (!recentExplicitProductInterest || productMatchesTemplate(recentExplicitProductInterest.product, activeTemplatePricing)) {
-      return activeTemplatePricing;
-    }
-  }
-
-  // 4) Última plantilla real del historial.
-  if (historyTemplatePricing) return historyTemplatePricing;
-
-  // 5) Active template como último recurso, pero solo si no hay contradicción explícita.
-  if (activeTemplatePricing && (!recentExplicitProductInterest || productMatchesTemplate(recentExplicitProductInterest.product, activeTemplatePricing))) {
-    return activeTemplatePricing;
-  }
-
-  return null;
-}
-
-function contextWithActiveTemplate(context: any, orderData: OrderData, finalStateStep: string, activeTemplate: ActiveTemplate | null, confirm = false) {
-  return {
-    ...(context || {}),
-    current_product: orderData.product || null,
-    last_topic: orderData.product || context?.last_topic || null,
-    last_ad_product: orderData.product || context?.last_ad_product || null,
-    last_ad_offer: orderData.locked_offer || null,
-    active_template: confirm ? null : activeTemplate || context?.active_template || null,
-    order_data: orderData,
-    order_id: orderData.order_id || null,
-    payment_proof_received: orderData.payment_proof_received || false,
-    step: confirm ? "pedido_confirmado" : finalStateStep,
-    updated_at: new Date().toISOString(),
-  };
-}
-
 function isStrongNewPurchaseReply(text: string) {
   const n = normalize(text);
   // Después de un pedido confirmado, solo estas respuestas reabren venta desde la última plantilla real.
@@ -1748,11 +1344,6 @@ function isPostSaleQuestion(text: string) {
   );
 }
 
-function isFiscalDataMessage(text: string) {
-  const n = normalize(text);
-  return /\d{5,}/.test(text) && /\b(ruc|razon social|razón social|cedula|cédula|ci|documento|mi cedula|mi cédula)\b/.test(n);
-}
-
 /**
  * ✅ FIX V4 postventa determinística:
  * Algunas consultas después de pedido_confirmado no deben quedar a criterio de Gemini,
@@ -1761,7 +1352,8 @@ function isFiscalDataMessage(text: string) {
 function deterministicPostSaleResponse(text: string, order: OrderData, parsed: ParsedTraining) {
   const n = normalize(text);
 
-  const hasFiscalData = isFiscalDataMessage(text);
+  const hasFiscalData =
+    /\b(ruc|razon social|razón social|cedula|cédula|ci)\b/.test(n) && /\d{5,}/.test(text);
 
   if (hasFiscalData) {
     return `✅ Perfecto, recibimos tus datos para la factura legal 😊\n📎 Los dejamos anotados para emitirla con tu pedido.`;
@@ -2815,32 +2407,22 @@ export default async function handler(req: any, res: any) {
     const allTraining = await getAllTrainingData(user_id);
     const trainingText = buildTrainingText(allTraining);
     const parsed = parseTraining(trainingText);
-    const incomingTemplateText = incomingTemplateEnvelopeText(req.body, texto);
-    const currentTemplatePricing = detectTemplatePricingSmart(incomingTemplateText, parsed) || detectTemplatePricingSmart(texto, parsed);
+    const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
 
-    // ✅ FIX V13:
-    // Fuente corta de verdad para plantillas.
-    // Si la integración guarda context.active_template, el botón “Quiero/Quiero confirmar/Sí”
-    // continúa ESA plantilla aunque el pedido anterior tenga otro producto.
-    // Además se lee mejor el historial multimedia/caption para detectar plantillas nuevas.
+    // ✅ FIX V11 mínimo:
+    // Si después de un pedido confirmado el cliente dice explícitamente "Quiero plumero"
+    // y luego responde "Quiero confirmar" a una plantilla nueva, ese producto explícito
+    // debe ganar sobre cualquier last_ad_product/current_product viejo del contexto.
     const recentExplicitProductInterest = getRecentExplicitProductInterestAfterConfirmed(history, parsed);
     const templateAfterExplicitProductInterest = recentExplicitProductInterest
       ? getTemplatePricingAfterHistoryIndex(history, parsed, recentExplicitProductInterest.index)
       : null;
-    const activeTemplatePricing = getActiveTemplatePricingFromContext(context, parsed);
-    const historyTemplatePricing = getTemplatePricingFromHistory(history, parsed);
 
-    let templatePricing = chooseTemplatePricingForTurn({
-      currentTemplatePricing,
-      templateAfterExplicitProductInterest,
-      recentExplicitProductInterest,
-      activeTemplatePricing,
-      historyTemplatePricing,
-      texto,
-    });
-
-    let activeTemplateForContext = templatePricingToActiveTemplate(templatePricing) ||
-      (activeTemplatePricing ? templatePricingToActiveTemplate(activeTemplatePricing) : null);
+    let templatePricing =
+      currentTemplatePricing ||
+      (templateAfterExplicitProductInterest
+        ? forceTemplatePricingProduct(templateAfterExplicitProductInterest, recentExplicitProductInterest?.product || null)
+        : getTemplatePricingFromHistory(history, parsed));
 
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
@@ -2871,84 +2453,31 @@ export default async function handler(req: any, res: any) {
       const msgNormClosed = normalize(texto);
       const hasCurrentTemplatePricing = !!currentTemplatePricing;
       const productInClosedMessage = detectProduct(texto, parsed, "");
-      const lastRealSalesTemplatePricing = chooseTemplatePricingForTurn({
-        currentTemplatePricing,
-        templateAfterExplicitProductInterest,
-        recentExplicitProductInterest,
-        activeTemplatePricing,
-        historyTemplatePricing: getLastRealSalesTemplatePricing(history, parsed),
-        texto,
-      });
+      const lastRealSalesTemplatePricing =
+        templateAfterExplicitProductInterest && recentExplicitProductInterest
+          ? forceTemplatePricingProduct(templateAfterExplicitProductInterest, recentExplicitProductInterest.product)
+          : getLastRealSalesTemplatePricing(history, parsed);
       const lastRealSalesTemplateProduct = recentExplicitProductInterest?.product || (lastRealSalesTemplatePricing?.product ? getProductInfo(lastRealSalesTemplatePricing.product, parsed) : getLastRealSalesTemplateProduct(history, parsed));
-
-      if (lastRealSalesTemplatePricing) {
-        templatePricing = lastRealSalesTemplatePricing;
-        activeTemplateForContext = templatePricingToActiveTemplate(templatePricing) || activeTemplateForContext;
-      }
 
       // ✅ IMPORTANTE:
       // Primero se detecta si el cliente está comprando una NUEVA plantilla real.
       // Ejemplo: después de un pedido confirmado, el bot manda otra plantilla y el cliente responde "QUIERO".
       // Eso debe iniciar venta nueva.
       // Pero "OK", "GRACIAS", "NADA MAS" NO deben reabrir venta aunque haya promos viejas en el historial.
-      const genericPurchaseReplyAfterConfirmed =
-        isGenericBuyReply(texto) ||
-        isStrongNewPurchaseReply(texto) ||
-        hasTemplateBuyIntent(texto) ||
-        isAffirmative(texto);
-
-      const explicitProductInterestInCurrentMessage =
-        !!productInClosedMessage &&
-        /\b(precio|cuanto|cuánto|me interesa|quiero|quiero comprar|comprar|confirmar|agendar|otro producto|tenes|tenés|tienes|hay|necesito)\b/.test(msgNormClosed);
-
-      const recentProductInterestAfterConfirmed = !!recentExplicitProductInterest?.product?.canonical;
-
       const explicitNewPurchaseAfterConfirmed =
         // Plantilla/precio pegado en el mensaje actual: SIEMPRE venta nueva.
         hasCurrentTemplatePricing ||
         isNewPastedTemplatePurchase(texto, parsed) ||
         // Producto nuevo explícito: “me interesa el afilador”, “precio del afilador”, etc.
-        explicitProductInterestInCurrentMessage ||
+        (!!productInClosedMessage && /\b(precio|cuanto|cuánto|me interesa|quiero|quiero comprar|comprar|confirmar|agendar|otro producto)\b/.test(msgNormClosed)) ||
         /\b(otro producto|nuevo pedido|hacer otro pedido|catalogo|catálogo|ver catalogo|ver catálogo|quiero comprar otra cosa)\b/.test(msgNormClosed) ||
-        // ✅ FIX V16:
-        // Cliente viejo con pedido_confirmado: si primero dijo “Me interesa el afilador”
-        // y luego responde “Quiero”, NO cerrar el pedido viejo. Reiniciar venta aunque
-        // la plantilla multimedia no haya quedado guardada en el historial/contexto.
-        (genericPurchaseReplyAfterConfirmed && recentProductInterestAfterConfirmed) ||
         // “QUIERO” / “QUIERO CONFIRMAR” después de una plantilla REAL reciente enviada por el bot.
-        (genericPurchaseReplyAfterConfirmed && !!lastRealSalesTemplateProduct && !!lastRealSalesTemplatePricing);
+        ((isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) && !!lastRealSalesTemplateProduct && !!lastRealSalesTemplatePricing);
 
       if (explicitNewPurchaseAfterConfirmed) {
         forceFreshOrderFromConfirmedTemplate = true;
-
-        // ✅ FIX V16:
-        // Al reiniciar desde un cliente viejo, si el mensaje actual es solo “Quiero”
-        // pero existe un interés explícito reciente (“Me interesa el afilador”),
-        // ese producto debe guiar la nueva venta. Si no hay plantilla/precio legible,
-        // seguimos con catálogo/entrenamiento, pero nunca cerramos el pedido anterior.
-        if (!templatePricing && recentExplicitProductInterest?.product?.canonical) {
-          activeTemplateForContext = null;
-        } else if (templatePricing && recentExplicitProductInterest?.product?.canonical) {
-          templatePricing = forceTemplatePricingProduct(templatePricing, recentExplicitProductInterest.product);
-          activeTemplateForContext = templatePricingToActiveTemplate(templatePricing) || activeTemplateForContext;
-        }
-
         oldOrder = emptyOrder(makeOrderId(fromNumber));
       } else {
-        // ✅ FIX V15: datos fiscales como "301003 mi cédula" no son cierre;
-        // deben registrarse como respuesta de factura/postventa.
-        if (isFiscalDataMessage(texto)) {
-          const deterministicPostSale = deterministicPostSaleResponse(texto, oldOrder, parsed);
-          return res.json({
-            response: deterministicPostSale || `✅ Perfecto, recibimos tus datos para la factura legal 😊\n📎 Los dejamos anotados para emitirla con tu pedido.`,
-            context: {
-              ...(context || {}),
-              step: "pedido_confirmado",
-              updated_at: new Date().toISOString(),
-            },
-          });
-        }
-
         // ✅ Cierre real de conversación después de confirmar pedido.
         if (isShortAcknowledgement(texto) || isConversationClosing(texto)) {
           return res.json({
@@ -3060,9 +2589,8 @@ export default async function handler(req: any, res: any) {
     // 4) recién después contexto viejo / catálogo.
     let productToUse =
       currentTemplatePricing?.product ||
-      ((isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto) || isAffirmative(texto)) ? recentExplicitProductInterest?.product?.canonical || "" : "") ||
+      ((isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) ? recentExplicitProductInterest?.product?.canonical || "" : "") ||
       templatePricing?.product ||
-      activeTemplatePricing?.product ||
       newTemplateSignal.product ||
       productFromMessageInitial ||
       "";
@@ -3316,7 +2844,17 @@ export default async function handler(req: any, res: any) {
 
       return res.json({
         response: fixedConfirmation,
-        context: contextWithActiveTemplate(context, orderData, "pedido_confirmado", activeTemplateForContext, true),
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || null,
+          last_topic: orderData.product || context?.last_topic || null,
+          last_ad_offer: orderData.locked_offer || null,
+          order_data: orderData,
+          order_id: orderData.order_id || null,
+          payment_proof_received: orderData.payment_proof_received || false,
+          step: "pedido_confirmado",
+          updated_at: new Date().toISOString(),
+        },
         debug: process.env.NODE_ENV === "development"
           ? {
               fixed_backend_confirmation: true,
@@ -3340,7 +2878,17 @@ export default async function handler(req: any, res: any) {
       if (fixedCityResponse) {
         return res.json({
           response: fixedCityResponse,
-          context: contextWithActiveTemplate(context, orderData, finalState.step, activeTemplateForContext, false),
+          context: {
+            ...(context || {}),
+            current_product: orderData.product || null,
+            last_topic: orderData.product || context?.last_topic || null,
+            last_ad_offer: orderData.locked_offer || null,
+            order_data: orderData,
+            order_id: orderData.order_id || null,
+            payment_proof_received: orderData.payment_proof_received || false,
+            step: finalState.step,
+            updated_at: new Date().toISOString(),
+          },
           debug: process.env.NODE_ENV === "development"
             ? {
                 deterministic_fixed_city_response: true,
@@ -3361,7 +2909,16 @@ export default async function handler(req: any, res: any) {
       if (deterministicQtyResponse) {
         return res.json({
           response: deterministicQtyResponse,
-          context: contextWithActiveTemplate(context, orderData, finalState.step, activeTemplateForContext, false),
+          context: {
+            ...(context || {}),
+            current_product: orderData.product || null,
+            last_topic: orderData.product || context?.last_topic || null,
+            last_ad_offer: orderData.locked_offer || null,
+            order_data: orderData,
+            order_id: orderData.order_id || null,
+            step: finalState.step,
+            updated_at: new Date().toISOString(),
+          },
           debug: process.env.NODE_ENV === "development"
             ? {
                 deterministic_quantity_response: true,
@@ -3415,68 +2972,19 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
-    // ✅ FIX V14:
-    // Si Gemini confirma con formato flexible, también guardar en orders.
-    // Mantiene intacto el flujo fijo del backend; esto solo cubre respuestas tipo:
-    // "Confirmamos tu pedido: Producto, Total, Envío, Pago".
-    const flexibleConfirmation = parseFlexibleAiConfirmation(aiResponse);
-
-    if (flexibleConfirmation) {
-      const flexibleOrder: OrderData = {
-        ...orderData,
-        order_id: orderData.order_id || makeOrderId(fromNumber),
-        product: flexibleConfirmation.product || orderData.product,
-        quantity: flexibleConfirmation.quantity || orderData.quantity || 1,
-        city: flexibleConfirmation.city || orderData.city,
-        address: flexibleConfirmation.address || orderData.address,
-        customer_name: orderData.customer_name || flexibleConfirmation.customer_name || "",
-        phone: orderData.phone || fromNumber,
-        locked_offer: {
-          product: flexibleConfirmation.product || orderData.product,
-          quantity: flexibleConfirmation.quantity || orderData.quantity || 1,
-          total: flexibleConfirmation.total,
-          source: "template",
-          fixed_quantity: true,
-        },
-        payment_proof_received: orderData.payment_proof_received || false,
-      };
-
-      const savedOrderId = await safeUpsertOrder(user_id, fromNumber, flexibleOrder, parsed, true);
-
-      if (savedOrderId && flexibleConfirmation.payment_method) {
-        const { error: metodoPagoError } = await supabase
-          .from("orders")
-          .update({ metodo_pago: flexibleConfirmation.payment_method } as any)
-          .eq("id", savedOrderId);
-
-        if (metodoPagoError) {
-          console.error("⚠️ metodo_pago update:", metodoPagoError);
-        }
-      }
-
-      return res.json({
-        response: postProcessResponse(aiResponse),
-        context: contextWithActiveTemplate(context, flexibleOrder, "pedido_confirmado", activeTemplateForContext, true),
-        debug: process.env.NODE_ENV === "development"
-          ? {
-              flexible_ai_confirmation_saved: true,
-              saved_order_id: savedOrderId,
-              product: flexibleOrder.product,
-              quantity: flexibleOrder.quantity,
-              city: flexibleOrder.city,
-              address: flexibleOrder.address,
-              customer_name: flexibleOrder.customer_name,
-              phone: flexibleOrder.phone,
-              total: flexibleConfirmation.total,
-              payment_method: flexibleConfirmation.payment_method,
-            }
-          : undefined,
-      });
-    }
-
     return res.json({
       response: postProcessResponse(aiResponse),
-      context: contextWithActiveTemplate(context, orderData, finalState.step, activeTemplateForContext, confirm),
+      context: {
+        ...(context || {}),
+        current_product: orderData.product || null,
+        last_topic: orderData.product || context?.last_topic || null,
+        last_ad_offer: orderData.locked_offer || null,
+        order_data: orderData,
+        order_id: orderData.order_id || null,
+        payment_proof_received: (orderData as any).payment_proof_received || false,
+        step: confirm ? "pedido_confirmado" : finalState.step,
+        updated_at: new Date().toISOString(),
+      },
       debug: process.env.NODE_ENV === "development"
         ? {
             freshOrder,
