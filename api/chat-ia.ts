@@ -11,13 +11,14 @@ import { createClient } from "@supabase/supabase-js";
  * 5) Si el cliente responde "quiero uno", "una unidad", "solo 1", desbloquea la promo.
  * 6) Nunca inventa ciudad, nombre, dirección, teléfono, banco ni catálogo.
  * 7) No se salta ciudad ni cantidad.
- * 8) CONFIRMACIÓN AUTOMÁTICA: Al tener todos los datos, confirma sin preguntar.
- * 9) PRECIOS EXACTOS: Siempre usa los precios del entrenamiento.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
  *   o agregá una columna jsonb:
  *   alter table orders add column if not exists locked_offer jsonb;
+ *   alter table orders add column if not exists order_id text;
+ *   alter table orders add column if not exists payment_proof_received boolean default false;
+ *   create unique index if not exists orders_user_order_id_unique on orders(user_id, order_id);
  */
 
 const supabase = createClient(
@@ -73,6 +74,7 @@ type ParsedTraining = {
 };
 
 type OrderData = {
+  order_id?: string;
   product: string;
   quantity: number;
   city: string;
@@ -93,8 +95,15 @@ type ConversationState = {
   hardInstruction: string;
 };
 
-function emptyOrder(): OrderData {
+function makeOrderId(fromNumber: string) {
+  const safeFrom = clean(fromNumber).replace(/\D/g, "").slice(-8) || "chat";
+  const rand = Math.random().toString(36).slice(2, 8).toUpperCase();
+  return `ORD-${Date.now()}-${safeFrom}-${rand}`;
+}
+
+function emptyOrder(orderId?: string): OrderData {
   return {
+    order_id: orderId || "",
     product: "",
     quantity: 0,
     city: "",
@@ -146,6 +155,11 @@ function isGenericBuyReply(text: string) {
   if (exact.includes(m)) return true;
 
   return /^(si\s+)?(quiero|lo quiero|me interesa|comprar|compro|dale|ok|listo|confirmo|ese quiero|quiero ese|quiero eso)$/.test(m);
+}
+
+function isAffirmative(text: string) {
+  const m = normalize(text);
+  return /^(si|sí|sii|siii|ok|dale|listo|correcto|asi es|así es|confirmo|exacto|eso|ese|quiero)$/.test(m);
 }
 
 function hasExplicitQuantity(text: string) {
@@ -617,6 +631,7 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
     nameNorm.split(" ").length > 5;
 
   return {
+    order_id: clean(old?.order_id || ""),
     product: productInfo?.canonical || "",
     quantity: sanitizeQuantity(old?.quantity || 0),
     city: clean(old?.city || ""),
@@ -627,12 +642,13 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
     phone: clean(old?.phone || ""),
     address: clean(old?.address || ""),
     locked_offer: old?.locked_offer || null,
-    payment_proof_received: old?.payment_proof_received || false,
-  };
+    payment_proof_received: !!old?.payment_proof_received,
+  } as OrderData;
 }
 
 function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
   return {
+    order_id: ext.order_id || old.order_id || "",
     product: product || old.product || "",
     quantity: ext.quantity > 0 ? sanitizeQuantity(ext.quantity) : sanitizeQuantity(old.quantity || 0),
     city: ext.city || old.city || "",
@@ -640,7 +656,7 @@ function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
     phone: ext.phone || old.phone || "",
     address: ext.address || old.address || "",
     locked_offer: ext.locked_offer !== undefined ? ext.locked_offer : old.locked_offer || null,
-    payment_proof_received: ext.payment_proof_received || old.payment_proof_received || false,
+    payment_proof_received: ext.payment_proof_received !== undefined ? !!ext.payment_proof_received : !!old.payment_proof_received,
   };
 }
 
@@ -874,6 +890,7 @@ function getLockedOfferFromContext(context: any, oldOrder: OrderData, history: a
   return getOfferFromLastPromotion(history, parsed);
 }
 
+
 function hasPaymentProofText(text: string) {
   const n = normalize(text);
   return /\b(comprobante|transferi|transferí|transferencia hecha|ya pague|ya pagué|deposito|depósito|pague|pagué|adjunto|envio comprobante|envío comprobante|recibo)\b/.test(n);
@@ -887,7 +904,6 @@ function hasPaymentProof(context: any, text: string, mediaUrl?: string, mediaTyp
   return false;
 }
 
-// ✅ MODIFICADO: Confirmación automática sin preguntar "está todo ok"
 function nextStep(order: OrderData, coverage: boolean | null) {
   if (!order.product) return "selling";
   if (!order.city) return "collecting_city";
@@ -903,8 +919,6 @@ function nextStep(order: OrderData, coverage: boolean | null) {
   if (!order.customer_name) return "collecting_name";
   if (!order.address) return "collecting_address";
   if (!order.phone) return "collecting_phone";
-  
-  // ✅ TODOS los datos completos → confirmar directo
   return "confirm_order";
 }
 
@@ -962,29 +976,6 @@ function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferIt
   return lines.join("\n");
 }
 
-// ✅ NUEVA FUNCIÓN: Muestra precios exactos del producto desde el entrenamiento
-function getProductPricingText(productName: string, parsed: ParsedTraining): string {
-  const productInfo = getProductInfo(productName, parsed);
-  if (!productInfo) return "";
-  
-  const lines = [`📦 ${productInfo.canonical}`];
-  
-  // Precio unitario
-  lines.push(`💰 1 unidad: ${formatGs(productInfo.price1)} Gs`);
-  
-  // Promos si existen
-  if (productInfo.price2) {
-    const ahorro = (productInfo.price1 * 2) - productInfo.price2;
-    lines.push(`🔥 2 unidades: ${formatGs(productInfo.price2)} Gs (ahorrás ${formatGs(ahorro)} Gs)`);
-  }
-  if (productInfo.price3) {
-    const ahorro = (productInfo.price1 * 3) - productInfo.price3;
-    lines.push(`🔥 3 unidades: ${formatGs(productInfo.price3)} Gs (ahorrás ${formatGs(ahorro)} Gs)`);
-  }
-  
-  return lines.join("\n");
-}
-
 function productsSummary(parsed: ParsedTraining) {
   if (!parsed.products.length) return "No hay productos cargados.";
   return parsed.products
@@ -999,7 +990,6 @@ function productsSummary(parsed: ParsedTraining) {
     .join("\n");
 }
 
-// ✅ MODIFICADO: Instrucción para confirmar automáticamente sin preguntar
 function buildHardInstruction(state: ConversationState) {
   const { order, coverage, missing } = state;
 
@@ -1012,11 +1002,10 @@ function buildHardInstruction(state: ConversationState) {
   }
 
   if (!order.quantity) {
-    const productInfo = getProductInfo(order.product, state.productInfo?.canonical || "");
     const promoText =
       order.locked_offer && order.locked_offer.quantity > 1
-        ? ` Preguntar explícitamente si quiere 1 unidad por ${formatGs(productInfo?.price1 || 0)} Gs o la promo de ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs.`
-        : ` Preguntar explícitamente si quiere 1 unidad o más unidades. Precio unitario: ${formatGs(productInfo?.price1 || 0)} Gs.`;
+        ? ` Preguntar explícitamente si quiere 1 unidad o la promo de ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs.`
+        : " Preguntar explícitamente si quiere 1 unidad o más unidades según las promos disponibles.";
 
     if (coverage === false) {
       return "Informar con tacto que no tiene contra-entrega y que se envía por transportadora con pago anticipado, PERO pedir primero cantidad." + promoText + " No mostrar datos bancarios hasta tener cantidad.";
@@ -1029,15 +1018,14 @@ function buildHardInstruction(state: ConversationState) {
     if (missing.length > 0) {
       return "Informar total, explicar envío por transportadora y pago anticipado. Mostrar datos de transferencia porque ya hay cantidad. Pedir SOLO lo faltante: nombre completo, teléfono y/o comprobante de transferencia. IMPORTANTE: no confirmar el pedido hasta recibir comprobante.";
     }
-    return "CONFIRMAR PEDIDO DIRECTAMENTE. No preguntes 'está todo correcto'. Usá el mensaje de confirmación final con todos los datos del pedido. Mostrá el resumen completo y confirmá el pedido automáticamente.";
+    return "Confirmar el pedido por transportadora porque ya se recibió comprobante y datos.";
   }
 
   if (missing.length > 0) {
     return `Pedir SOLO lo faltante: ${missing.join(", ")}. No repetir lo que ya está completo. Si la ciudad ya está cargada como "${order.city}", NO vuelvas a preguntar ciudad. Usá emojis y tono amable de vendedor.`;
   }
 
-  // ✅ Si no falta nada, CONFIRMAR DIRECTAMENTE sin preguntar "está todo ok"
-  return "CONFIRMAR PEDIDO DIRECTAMENTE. No preguntes 'está todo correcto'. Usá el mensaje de confirmación final con todos los datos del pedido. Mostrá el resumen completo y confirmá el pedido automáticamente.";
+  return "Confirmar pedido completo. No preguntes si está todo correcto. El backend responde con el formato fijo de PEDIDO CONFIRMADO.";
 }
 
 function buildState(order: OrderData, parsed: ParsedTraining): ConversationState {
@@ -1061,19 +1049,8 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
   return state;
 }
 
-// ✅ MODIFICADO: Confirmación automática
 function shouldConfirmOrder(state: ConversationState) {
-  // Confirmar directamente si el paso es confirm_order
-  if (state.step === "confirm_order" && state.order.product && state.order.city && state.order.quantity > 0) {
-    return true;
-  }
-  
-  // Para ciudades sin cobertura, necesitamos comprobante
-  if (state.step === "confirm_order" && state.coverage === false) {
-    return !!(state.order.payment_proof_received);
-  }
-  
-  return false;
+  return state.step === "confirm_order" && state.order.product && state.order.city && state.order.quantity > 0;
 }
 
 function isOrderStale(order: OrderData, lastActivity: string) {
@@ -1101,8 +1078,10 @@ async function safeUpsertOrder(
   const state = buildState(order, parsed);
   const status = confirm && state.step === "confirm_order" ? "confirmed" : state.step === "confirm_order" ? "confirm_pending" : state.step;
 
+  const orderId = clean(order.order_id);
   const payload: any = {
     user_id: userId,
+    order_id: orderId || null,
     from_number: from,
     phone: order.phone || from,
     product: order.product,
@@ -1121,6 +1100,21 @@ async function safeUpsertOrder(
   if (order.locked_offer) payload.locked_offer = order.locked_offer;
   if (order.payment_proof_received) payload.payment_proof_received = true;
 
+  if (orderId) {
+    const { data: existingByOrderId } = await supabase
+      .from("orders")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("order_id", orderId)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingByOrderId?.id) {
+      await supabase.from("orders").update(payload).eq("id", existingByOrderId.id);
+      return existingByOrderId.id;
+    }
+  }
+
   const IN_PROGRESS_STATUSES = [
     "draft",
     "selling",
@@ -1129,12 +1123,13 @@ async function safeUpsertOrder(
     "collecting_name",
     "collecting_phone",
     "collecting_address",
+    "waiting_payment_proof",
     "confirm_pending",
   ];
 
   const { data: inProgress } = await supabase
     .from("orders")
-    .select("id")
+    .select("id, order_id")
     .eq("user_id", userId)
     .eq("from_number", from)
     .in("status", IN_PROGRESS_STATUSES)
@@ -1143,28 +1138,30 @@ async function safeUpsertOrder(
     .maybeSingle();
 
   if (inProgress?.id) {
-    await supabase.from("orders").update(payload).eq("id", inProgress.id);
+    const updatePayload = {
+      ...payload,
+      order_id: orderId || inProgress.order_id || makeOrderId(from),
+    };
+    await supabase.from("orders").update(updatePayload).eq("id", inProgress.id);
     return inProgress.id;
   }
 
-  if (confirm) {
-    const { data: lastConfirmed } = await supabase
-      .from("orders")
-      .select("id, product")
-      .eq("user_id", userId)
-      .eq("from_number", from)
-      .in("status", ["confirmed", "confirmado", "pedido_confirmado", "confirm_pending"])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+  const insertPayload = {
+    ...payload,
+    order_id: orderId || makeOrderId(from),
+  };
 
-    if (lastConfirmed?.id && lastConfirmed.product === order.product) {
-      await supabase.from("orders").update(payload).eq("id", lastConfirmed.id);
-      return lastConfirmed.id;
-    }
+  const { data, error } = await supabase
+    .from("orders")
+    .upsert(insertPayload, { onConflict: "user_id,order_id" })
+    .select("id")
+    .single();
+
+  if (error) {
+    console.error("❌ orders upsert:", error);
+    return null;
   }
 
-  const { data } = await supabase.from("orders").insert(payload).select("id").single();
   return data?.id || null;
 }
 
@@ -1251,7 +1248,7 @@ async function transcribeAudioWithGemini({
   });
 }
 
-// ✅ MENSAJE DE CONFIRMACIÓN FINAL CON EL FORMATO EXACTO QUE NECESITAS
+
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
   const addressPart = o.address ? ` — ${o.address}` : "";
@@ -1295,7 +1292,7 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 ${paymentBlock}`;
 }
 
-// ✅ MODIFICADO: deterministicAfterQuantityMessage con precios del entrenamiento
+
 function deterministicAfterQuantityMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
   if (!o.product || !o.city || !o.quantity) return "";
@@ -1306,23 +1303,16 @@ function deterministicAfterQuantityMessage(state: ConversationState, parsed: Par
 
   if (state.missing.includes("ciudad")) return "";
 
-  // ✅ Calcular el total con los precios del entrenamiento
-  const total = calculateTotal(o.product, o.quantity, parsed, o.locked_offer);
-  const productInfo = getProductInfo(o.product, parsed);
-  
-  const promoLine = o.locked_offer && o.locked_offer.quantity === o.quantity
-    ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(total)} Gs`
-    : `💰 Total: ${formatGs(total)} Gs`;
-
-  // ✅ Mostrar el precio unitario también
-  const unitPrice = productInfo ? `💰 Precio unitario: ${formatGs(productInfo.price1)} Gs` : "";
+  const promoLine =
+    o.locked_offer && o.locked_offer.quantity === o.quantity
+      ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(state.total)} Gs`
+      : `💰 Total: ${formatGs(state.total)} Gs`;
 
   if (state.coverage === false) {
     return `🎉 ¡Perfecto! Queda seleccionado:
 
 📦 ${o.product}
 🔢 Cantidad: ${o.quantity}
-${unitPrice}
 ${promoLine}
 📍 Ciudad: ${o.city}
 
@@ -1339,7 +1329,6 @@ ${bankDataText(parsed)} 📲`;
 
 📦 ${o.product}
 🔢 Cantidad: ${o.quantity}
-${unitPrice}
 ${promoLine}
 📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚
 
@@ -1374,7 +1363,6 @@ ESTADO DEL PEDIDO:
 - Total calculado: ${state.total ? `${formatGs(state.total)} Gs` : "aún no corresponde"}
 - Faltante: ${state.missing.length ? state.missing.join(", ") : "nada"}
 - Promo bloqueada desde plantilla: ${o.locked_offer ? `${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs` : "no"}
-- Comprobante recibido: ${o.payment_proof_received ? "sí" : "no"}
 
 PRECIO DEL PRODUCTO ACTUAL:
 ${productPriceText(state.productInfo, o.locked_offer) || "Sin producto actual."}
@@ -1410,13 +1398,11 @@ REGLAS DURAS:
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
 - Si no hay promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
-- ✅ IMPORTANTE: Cuando el pedido esté completo (producto, ciudad, cantidad, nombre, dirección, teléfono), CONFIRMÁ DIRECTAMENTE sin preguntar "está todo correcto".
+- Nunca preguntes “¿Está todo correcto?” si ya están todos los datos. El pedido se confirma directamente con el formato fijo.
 - En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
-- ✅ Los precios y promociones deben venir SIEMPRE del entrenamiento, no los inventes.
 `.trim();
 }
 
-// ✅ MODIFICADO: Fallback con confirmación directa y precios del entrenamiento
 function buildFallbackResponse(parsed: ParsedTraining, state: ConversationState) {
   const o = state.order;
 
@@ -1431,25 +1417,19 @@ ${productsSummary(parsed)}
   }
 
   if (!o.city) {
-    // ✅ Mostrar precios EXACTOS del producto desde el entrenamiento
-    const pricingText = getProductPricingText(o.product || state.productInfo?.canonical || "", parsed);
-    
     return `¡Excelente elección! 🔥
 
-${pricingText || state.productInfo?.canonical || o.product}
+${state.productInfo?.canonical || o.product}
+${productPriceText(state.productInfo, o.locked_offer)}
 
 📍 ¿Para qué ciudad sería el envío? 😊`;
   }
 
   if (!o.quantity) {
-    const productInfo = getProductInfo(o.product, parsed);
-    const qtyQuestion = o.locked_offer && o.locked_offer.quantity > 1
-      ? `¿Querés 1 unidad por ${formatGs(productInfo?.price1 || 0)} Gs o la promo de ${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs? 😊`
-      : `¿Cuántas unidades querés llevar? 
-      
-💰 Precio unitario: ${formatGs(productInfo?.price1 || 0)} Gs
-${productInfo?.price2 ? `🔥 2 unidades: ${formatGs(productInfo.price2)} Gs` : ''}
-${productInfo?.price3 ? `🔥 3 unidades: ${formatGs(productInfo.price3)} Gs` : ''}`;
+    const qtyQuestion =
+      o.locked_offer && o.locked_offer.quantity > 1
+        ? `¿Querés 1 unidad por ${formatGs(state.productInfo?.price1 || 0)} Gs o la promo de ${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs? 😊`
+        : "¿Cuántas unidades querés llevar? 😊";
 
     if (state.coverage === false) {
       return `ℹ️ ${o.city} no entra en nuestra zona de contra-entrega, pero sí podemos enviarte por transportadora 🚚
@@ -1463,61 +1443,32 @@ ${qtyQuestion}`;
   }
 
   if (state.missing.length) {
-    // ✅ Mostrar el total calculado con los precios del entrenamiento
-    const total = calculateTotal(o.product, o.quantity, parsed, o.locked_offer);
-    const promoLine = o.locked_offer && o.locked_offer.quantity === o.quantity
-      ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(total)} Gs\n`
-      : `💰 Total: ${formatGs(total)} Gs\n`;
+    const promoLine =
+      o.locked_offer && o.locked_offer.quantity === o.quantity
+        ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(state.total)} Gs\n`
+        : "";
 
     return `🎉 ¡Perfecto! Queda avanzado tu pedido 😊
 
 📦 Producto: ${o.product}
 ${promoLine}🔢 Cantidad: ${o.quantity}
+💰 Total: ${formatGs(state.total)} Gs
 📍 Ciudad: ${o.city}
 
 Para agendarlo, me falta:
 ✅ ${state.missing.join("\n✅ ")} 📲`;
   }
 
-  // ✅ Confirmación directa con precios del entrenamiento
-  const total = calculateTotal(o.product, o.quantity, parsed, o.locked_offer);
-  const addressPart = o.address ? ` — ${o.address}` : "";
-  const paymentBlock = state.coverage === false
-    ? `🚚 Su encomienda será enviada por transportadora.
-
-📎 Una vez depositado el costo del delivery, le estaremos enviando su comprobante de envío.
-
-⏰ Oferta válida hoy
-
-¡Gracias por elegirnos!!! 💜✨
-
-💵 Pago anticipado por transferencia.
-
-${bankDataText(parsed)}`
-    : `🚚 Envío GRATIS · Pagás al recibir
-
-🚚 Tu pedido queda agendado para la próxima ronda de envíos. Si pagás al recibir, el delivery lo confirma al llegar a tu zona.
-
-⏰ Oferta válida hoy
-
-¡Gracias por elegirnos!!! 💜✨
-
-💵 Podés pagar en EFECTIVO o TRANSFERENCIA AL DELIVERY cuando recibas tu producto. ¡Como te quede más cómodo! 🚚
-
-¡Gracias por tu compra! 🛍️✨
-
-Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
-
   return `✅ PEDIDO CONFIRMADO
 
-✅ Producto: ${o.product}
-✅ Cliente: ${o.customer_name}
-✅ Ubicación: ${o.city}${addressPart}
-✅ Contacto: ${o.phone}
-✅ Cantidad: ${o.quantity} u.
-💰 Total: ${formatGs(total)} Gs
+📦 Producto: ${o.product}
+🔢 Cantidad: ${o.quantity}
+💰 Total: ${formatGs(state.total)} Gs
+👤 Cliente: ${o.customer_name}
+📍 Ciudad: ${o.city}
+📞 Teléfono: ${o.phone}${o.address ? `\n🏠 Dirección: ${o.address}` : ""}
 
-${paymentBlock}`;
+¡Gracias por tu compra! 💜`;
 }
 
 function postProcessResponse(resp: string) {
@@ -1598,7 +1549,7 @@ export default async function handler(req: any, res: any) {
     });
 
     if (freshOrder) {
-      oldOrder = emptyOrder();
+      oldOrder = emptyOrder(makeOrderId(fromNumber));
     }
 
     let lockedOfferByContext = freshOrder
@@ -1618,8 +1569,30 @@ export default async function handler(req: any, res: any) {
     const product = detectProduct(texto, parsed, productToUse);
     const productInfo = getProductInfo(product, parsed);
 
-    const explicitQty = extractQuantity(texto);
+    if (product && !oldOrder.order_id) {
+      oldOrder.order_id = makeOrderId(fromNumber);
+    }
 
+    let explicitQty = extractQuantity(texto);
+
+    if (
+      explicitQty === 0 &&
+      isAffirmative(texto) &&
+      context?.step === "collecting_quantity" &&
+      productInfo &&
+      !oldOrder.locked_offer &&
+      !productInfo.price2 &&
+      !productInfo.price3
+    ) {
+      explicitQty = 1;
+    }
+
+    /**
+     * Promo locking/unlocking:
+     * - "quiero" desde promo => bloquea promo y cantidad de la promo.
+     * - "quiero uno"/"1 unidad" => desbloquea promo y usa cantidad explícita.
+     * - "quiero dos" => usa promo catálogo si existe o promo plantilla si coincide.
+     */
     let lockedOffer: OfferItem | null = null;
 
     if (productInfo) {
@@ -1656,6 +1629,8 @@ export default async function handler(req: any, res: any) {
     const detectedCityRaw = detectCity(texto, parsed, "");
 
     const detectedCity =
+      // Si estamos esperando cantidad/datos y ya había ciudad, conservarla SIEMPRE.
+      // Esto evita que al responder "2 quiero" vuelva a pedir ciudad.
       (!freshOrder && oldOrder.city && ["collecting_quantity", "collecting_name", "collecting_address", "collecting_phone"].includes(prevStep))
         ? oldOrder.city
         : detectedCityRaw ||
@@ -1681,6 +1656,7 @@ export default async function handler(req: any, res: any) {
     let orderData = mergeOrderData(
       oldOrder,
       {
+        order_id: oldOrder.order_id || makeOrderId(fromNumber),
         quantity: qty,
         city: detectedCity && detectedCity !== oldOrder.city ? detectedCity : "",
         phone,
@@ -1691,10 +1667,15 @@ export default async function handler(req: any, res: any) {
       product
     );
 
+    // Protección extra: si el cliente está respondiendo cantidad, no perder ciudad previa.
     if (!orderData.city && oldOrder.city && qty > 0) {
       orderData.city = oldOrder.city;
     }
 
+    // Si el cliente dijo "quiero" en una promo sin cantidad explícita,
+    // NO asumimos cantidad. Primero se le pregunta si quiere 1 unidad o la promo.
+    // Solo usamos la cantidad de la promo cuando el cliente la escribe explícitamente
+    // o cuando viene ya confirmada desde un botón/variable externa.
     if (
       orderData.locked_offer &&
       orderData.quantity === 0 &&
@@ -1704,6 +1685,7 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = orderData.locked_offer.quantity;
     }
 
+    // Si hay cantidad explícita que no coincide con la promo, se desbloquea la promo.
     if (orderData.locked_offer && explicitQty > 0 && explicitQty !== orderData.locked_offer.quantity) {
       orderData.locked_offer = null;
       if (productInfo) {
@@ -1716,7 +1698,7 @@ export default async function handler(req: any, res: any) {
     const proofReceived = hasPaymentProof(context, texto, media_url, media_type || mime_type);
     if (proofReceived) {
       orderData.payment_proof_received = true;
-    } else if (oldOrder.payment_proof_received) {
+    } else if ((oldOrder as any).payment_proof_received) {
       orderData.payment_proof_received = true;
     }
 
@@ -1752,6 +1734,7 @@ export default async function handler(req: any, res: any) {
             last_topic: orderData.product || context?.last_topic || null,
             last_ad_offer: orderData.locked_offer || null,
             order_data: orderData,
+            order_id: orderData.order_id || null,
             step: finalState.step,
             updated_at: new Date().toISOString(),
           },
@@ -1773,7 +1756,6 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // ✅ CONFIRMACIÓN AUTOMÁTICA: Cuando confirm es true, usar el mensaje exacto
     if (confirm) {
       const fixedConfirmation = finalConfirmationMessage(finalState, parsed);
 
@@ -1785,6 +1767,7 @@ export default async function handler(req: any, res: any) {
           last_topic: orderData.product || context?.last_topic || null,
           last_ad_offer: orderData.locked_offer || null,
           order_data: orderData,
+          order_id: orderData.order_id || null,
           step: "pedido_confirmado",
           updated_at: new Date().toISOString(),
         },
@@ -1853,7 +1836,8 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
         last_topic: orderData.product || context?.last_topic || null,
         last_ad_offer: orderData.locked_offer || null,
         order_data: orderData,
-        payment_proof_received: orderData.payment_proof_received || false,
+        order_id: orderData.order_id || null,
+        payment_proof_received: (orderData as any).payment_proof_received || false,
         step: confirm ? "pedido_confirmado" : finalState.step,
         updated_at: new Date().toISOString(),
       },
