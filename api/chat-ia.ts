@@ -21,6 +21,7 @@ import { createClient } from "@supabase/supabase-js";
  * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
  * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
  * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
+ * 18) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -1459,10 +1460,13 @@ function bankDataText(parsed: ParsedTraining) {
 function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferItem | null, templatePricing?: TemplatePricing | null) {
   if (!productInfo) return "";
 
+  // ✅ FIX V6:
+  // Si hay precio/pack de plantilla para este producto, NO se muestran precios del catálogo.
+  // La plantilla es la única fuente de verdad para producto/cantidad/precio del pedido actual.
   if (templatePricing && normalize(templatePricing.product) === normalize(productInfo.canonical)) {
     const fixed = getFixedTemplateOffer(templatePricing, productInfo.canonical);
     if (fixed) {
-      return `Pack fijo: ${fixed.quantity} unidades por ${formatGs(fixed.total)} Gs. No se vende por unidad.`;
+      return `Pack fijo: ${fixed.quantity} unidades por ${formatGs(fixed.total)} Gs. No ofrecer otra cantidad ni usar catálogo.`;
     }
 
     const lines = templatePricing.offers
@@ -1471,10 +1475,23 @@ function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferIt
       .map((o) =>
         o.quantity === 1
           ? `1 unidad: ${formatGs(o.total)} Gs`
-          : `Promo ${o.quantity} unidades: ${formatGs(o.total)} Gs`
+          : `${o.quantity} unidades: ${formatGs(o.total)} Gs`
       );
 
     if (lines.length) return lines.join("\n");
+  }
+
+  // ✅ Si la oferta bloqueada viene de plantilla, tampoco mezclar con precio unitario del catálogo.
+  if (
+    lockedOffer &&
+    lockedOffer.source === "template" &&
+    normalize(lockedOffer.product) === normalize(productInfo.canonical) &&
+    lockedOffer.quantity > 0 &&
+    lockedOffer.total > 0
+  ) {
+    return lockedOffer.fixed_quantity
+      ? `Pack fijo: ${lockedOffer.quantity} unidades por ${formatGs(lockedOffer.total)} Gs. No ofrecer otra cantidad ni usar catálogo.`
+      : `${lockedOffer.quantity} unidad${lockedOffer.quantity > 1 ? "es" : ""}: ${formatGs(lockedOffer.total)} Gs`;
   }
 
   if (
@@ -1507,6 +1524,73 @@ function productsSummary(parsed: ParsedTraining) {
       return `- ${p.canonical}: ${promos}`;
     })
     .join("\n");
+}
+
+
+/**
+ * ✅ FIX V6 - Fuente de verdad para precios:
+ * Cuando hay plantilla activa, el catálogo/entrenamiento NO compite.
+ * El entrenamiento queda solo para cobertura, bancos, factura, tono y reglas generales.
+ */
+function hasTemplateForProduct(templatePricing: TemplatePricing | null | undefined, productName: string) {
+  return Boolean(
+    templatePricing &&
+    productName &&
+    normalize(templatePricing.product) === normalize(productName) &&
+    Array.isArray(templatePricing.offers) &&
+    templatePricing.offers.length > 0
+  );
+}
+
+function hasActiveTemplatePricing(templatePricing: TemplatePricing | null | undefined, order?: OrderData | null) {
+  return Boolean(order?.product && hasTemplateForProduct(templatePricing, order.product));
+}
+
+function templatePricingSummary(templatePricing: TemplatePricing | null | undefined) {
+  if (!templatePricing?.offers?.length) return "No hay plantilla activa.";
+
+  return templatePricing.offers
+    .filter((o) => o.total >= 10000)
+    .sort((a, b) => a.quantity - b.quantity)
+    .map((o) => {
+      const fixed = o.fixed_quantity ? " PACK FIJO" : "";
+      return `- ${o.quantity} unidad${o.quantity > 1 ? "es" : ""}: ${formatGs(o.total)} Gs${fixed}`;
+    })
+    .join("\n");
+}
+
+function catalogForPrompt(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
+  if (hasActiveTemplatePricing(templatePricing, state.order)) {
+    return `
+MODO PLANTILLA ACTIVA:
+- Hay una plantilla/promoción activa para este pedido.
+- Producto, cantidad, promo y precio salen EXCLUSIVAMENTE de la plantilla.
+- NO usar CATALOGO_PRODUCTOS ni precios del entrenamiento para este pedido.
+- NO ofrecer unidades, packs ni promos que no aparezcan en la plantilla.
+- NO ofrecer 1 unidad si la plantilla solo muestra pack de 2.
+- NO recalcular total multiplicando precio de plantilla por cantidad.
+- Si la plantilla trae una sola oferta, respetar esa oferta.
+- Si la plantilla trae Producto + Cantidad + Precio, respetar exactamente esos datos.
+
+DATOS DE LA PLANTILLA ACTIVA:
+Producto: ${templatePricing?.product || state.order.product}
+Ofertas detectadas:
+${templatePricingSummary(templatePricing)}
+`.trim();
+  }
+
+  return `
+MODO CATÁLOGO / ENTRENAMIENTO:
+- No hay plantilla activa.
+- Usar la lista de precios del entrenamiento.
+- Podés ofrecer productos y promos del catálogo.
+
+CATÁLOGO:
+${productsSummary(parsed)}
+
+URL CATÁLOGO:
+${parsed.catalogUrl || "No configurado."}
+`.trim();
 }
 
 function buildHardInstruction(state: ConversationState) {
@@ -1951,14 +2035,11 @@ ESTADO DEL PEDIDO:
 - Faltante: ${state.missing.length ? state.missing.join(", ") : "nada"}
 - Promo bloqueada desde plantilla: ${o.locked_offer ? `${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs` : "no"}
 
-PRECIO DEL PRODUCTO ACTUAL:
+FUENTE DE PRODUCTO / CANTIDAD / PRECIO:
+${catalogForPrompt(parsed, state, templatePricing)}
+
+PRECIO/PROMO DEL PRODUCTO ACTUAL:
 ${productPriceText(state.productInfo, o.locked_offer, templatePricing) || "Sin producto actual."}
-
-CATÁLOGO:
-${productsSummary(parsed)}
-
-URL CATÁLOGO:
-${parsed.catalogUrl || "No configurado."}
 
 DATOS DE TRANSFERENCIA:
 ${bankDataText(parsed)}
@@ -1983,9 +2064,18 @@ REGLAS DURAS:
 - Si no hay cobertura y ya hay cantidad, podés mostrar datos de transferencia.
 - Si hay cobertura, indicar envío gratis contra-entrega cuando corresponda.
 - Si el cliente pregunta precio, respondé precio y guiá al siguiente paso.
-- PRIORIDAD DE PRECIOS: primero usar precios/promos de la plantilla actual o último mensaje promocional. Si la plantilla no trae precio/promo, recién ahí usar CATALOGO_PRODUCTOS del entrenamiento. Nunca uses números de dirección, teléfono o calle como precio. Nunca inventes otro producto. Si llegó plantilla nueva, es venta nueva. Después de pedido confirmado, responder postventa si pregunta factura/entrega/pago/garantía.
+- PRIORIDAD DE PRECIOS:
+  1) Si hay plantilla activa, usá SOLO producto, cantidad y precio de la plantilla.
+  2) Mientras haya plantilla activa, PROHIBIDO usar CATALOGO_PRODUCTOS del entrenamiento para precio/cantidad/producto.
+  3) No ofrezcas 1 unidad si la plantilla solo muestra pack de 2.
+  4) No ofrezcas packs/promos del entrenamiento si no aparecen en la plantilla.
+  5) No recalcules total multiplicando precio de plantilla por cantidad.
+  6) Solo usá el catálogo del entrenamiento cuando NO exista plantilla activa.
+- Nunca uses números de dirección, teléfono o calle como precio.
+- Nunca inventes otro producto. Si llegó plantilla nueva, es venta nueva.
+- Después de pedido confirmado, responder postventa si pregunta factura/entrega/pago/garantía.
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
-- Si no hay promo bloqueada, mostrar precios del catálogo.
+- Si no hay plantilla activa ni promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
 - Nunca preguntes “¿Está todo correcto?” si ya están todos los datos. Si el pedido está completo, el backend responde directamente con ✅ PEDIDO CONFIRMADO y no se llama a Gemini.
 - En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
@@ -2015,8 +2105,11 @@ ${productPriceText(state.productInfo, o.locked_offer, templatePricing)}
   }
 
   if (!o.quantity) {
-    const qtyQuestion =
-      o.locked_offer && o.locked_offer.quantity > 1
+    const templateActive = hasActiveTemplatePricing(templatePricing, o);
+
+    const qtyQuestion = templateActive
+      ? `¿Cuál de estas opciones de la plantilla querés confirmar?\n${templatePricingSummary(templatePricing)} 😊`
+      : o.locked_offer && o.locked_offer.quantity > 1
         ? `¿Querés 1 unidad por ${formatGs(getTemplatePrice1(templatePricing || null, o.product) || state.productInfo?.price1 || 0)} Gs o la promo de ${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs? 😊`
         : "¿Cuántas unidades querés llevar? 😊";
 
@@ -2311,6 +2404,8 @@ export default async function handler(req: any, res: any) {
         const templatePrice1 = getTemplatePrice1(templatePricing, productInfo.canonical);
         const catalogOffer = getCatalogOffer(productInfo, explicitQty);
 
+        const templateActiveForProduct = hasTemplateForProduct(templatePricing, productInfo.canonical);
+
         if (templateOffer) {
           lockedOffer = templateOffer;
         } else if (explicitQty === 1 && templatePrice1 > 0) {
@@ -2321,7 +2416,7 @@ export default async function handler(req: any, res: any) {
             label: `1 unidad por ${formatGs(templatePrice1)} Gs`,
             source: "template",
           };
-        } else if (catalogOffer) {
+        } else if (!templateActiveForProduct && catalogOffer) {
           lockedOffer = catalogOffer;
         } else if (
           promoMatchesProduct &&
@@ -2423,7 +2518,8 @@ export default async function handler(req: any, res: any) {
         orderData.locked_offer = null;
         if (productInfo) {
           const templateOffer = getTemplateOfferForQuantity(templatePricing, productInfo.canonical, explicitQty);
-          const catalogOffer = getCatalogOffer(productInfo, explicitQty);
+          const templateActiveForProduct = hasTemplateForProduct(templatePricing, productInfo.canonical);
+          const catalogOffer = templateActiveForProduct ? null : getCatalogOffer(productInfo, explicitQty);
           if (templateOffer) orderData.locked_offer = templateOffer;
           else if (catalogOffer) orderData.locked_offer = catalogOffer;
         }
@@ -2451,7 +2547,8 @@ export default async function handler(req: any, res: any) {
 
     if (state.productInfo && !orderData.locked_offer && orderData.quantity) {
       const templateOffer = getTemplateOfferForQuantity(templatePricing, state.productInfo.canonical, orderData.quantity);
-      const catalogOffer = getCatalogOffer(state.productInfo, orderData.quantity);
+      const templateActiveForProduct = hasTemplateForProduct(templatePricing, state.productInfo.canonical);
+      const catalogOffer = templateActiveForProduct ? null : getCatalogOffer(state.productInfo, orderData.quantity);
 
       if (templateOffer) {
         orderData.locked_offer = templateOffer;
