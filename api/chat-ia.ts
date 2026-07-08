@@ -18,7 +18,6 @@ import { createClient } from "@supabase/supabase-js";
  * 12) Si plantilla trae Producto + Cantidad + Precio, salta la pregunta de cantidad.
  * 13) Si llega plantilla/producto nuevo después de pedido_confirmado, inicia venta nueva.
  * 14) Postventa: después de confirmado responde preguntas normales sin reabrir pedido.
- * 15) Congela producto/precio/promo: no mezcla historial viejo ni cambia producto durante una venta activa.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -1038,54 +1037,6 @@ ${parsed.raw}
 `.trim();
 }
 
-
-function hasActiveOrder(order: OrderData) {
-  return !!(order?.product || order?.city || order?.quantity || order?.customer_name || order?.address || order?.phone);
-}
-
-function isOrderInProgressStep(step: string) {
-  return [
-    "selling",
-    "collecting_city",
-    "collecting_quantity",
-    "collecting_name",
-    "collecting_address",
-    "collecting_phone",
-    "waiting_payment_proof",
-    "confirm_pending",
-  ].includes(clean(step));
-}
-
-function isLikelyCorrectionToCurrentProduct(text: string) {
-  const n = normalize(text);
-  return /\b(no|no es|no era|me equivoque|me equivoqué|quiero la|quiero el|es la|es el|yo quiero)\b/.test(n);
-}
-
-function shouldAllowProductChange(text: string, oldOrder: OrderData, parsed: ParsedTraining, context: any) {
-  const newProduct = detectProduct(text, parsed, "");
-  if (!newProduct) return false;
-  if (!oldOrder.product) return true;
-  if (normalize(newProduct) === normalize(oldOrder.product)) return false;
-
-  const currentPricing = detectTemplatePricingFromText(text, parsed);
-  return Boolean(currentPricing || isLikelyCorrectionToCurrentProduct(text) || context?.step === "pedido_confirmado");
-}
-
-function safeTemplatePricingForCurrentOrder(
-  currentTemplatePricing: TemplatePricing | null,
-  historyPricing: TemplatePricing | null,
-  product: string
-) {
-  if (product) {
-    if (currentTemplatePricing && normalize(currentTemplatePricing.product) === normalize(product)) {
-      return currentTemplatePricing;
-    }
-    return null;
-  }
-
-  return currentTemplatePricing || historyPricing || null;
-}
-
 function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, history: any[]) {
   const raw = clean(text);
   const n = normalize(raw);
@@ -1818,7 +1769,7 @@ REGLAS DURAS:
 - Si no hay cobertura y ya hay cantidad, podés mostrar datos de transferencia.
 - Si hay cobertura, indicar envío gratis contra-entrega cuando corresponda.
 - Si el cliente pregunta precio, respondé precio y guiá al siguiente paso.
-- PRIORIDAD DE PRECIOS: primero usar precios/promos de la plantilla actual. Si no hay plantilla actual y no hay pedido activo, usar último mensaje promocional. Si no hay nada, usar CATALOGO_PRODUCTOS del entrenamiento. Nunca uses números de dirección, teléfono o calle como precio. Nunca inventes otro producto ni cambies el producto activo. Si llegó plantilla nueva, es venta nueva. Después de pedido confirmado, responder postventa si pregunta factura/entrega/pago/garantía.
+- PRIORIDAD DE PRECIOS: primero usar precios/promos de la plantilla actual o último mensaje promocional. Si la plantilla no trae precio/promo, recién ahí usar CATALOGO_PRODUCTOS del entrenamiento. Nunca uses números de dirección, teléfono o calle como precio. Nunca inventes otro producto. Si llegó plantilla nueva, es venta nueva. Después de pedido confirmado, responder postventa si pregunta factura/entrega/pago/garantía.
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
 - Si no hay promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
@@ -1940,8 +1891,7 @@ export default async function handler(req: any, res: any) {
     const trainingText = buildTrainingText(allTraining);
     const parsed = parseTraining(trainingText);
     const currentTemplatePricing = detectTemplatePricingFromText(texto, parsed);
-    const historyTemplatePricing = getTemplatePricingFromHistory(history, parsed);
-    let templatePricing: TemplatePricing | null = currentTemplatePricing || historyTemplatePricing;
+    const templatePricing = currentTemplatePricing || getTemplatePricingFromHistory(history, parsed);
 
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
@@ -2031,16 +1981,7 @@ export default async function handler(req: any, res: any) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
     }
 
-    let productFromMessageInitial = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
-
-    if (
-      oldOrder.product &&
-      isOrderInProgressStep(context?.step || "") &&
-      !shouldAllowProductChange(texto, oldOrder, parsed, context)
-    ) {
-      productFromMessageInitial = oldOrder.product;
-    }
-
+    const productFromMessageInitial = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
     const lockedProductInitial = getLockedProductFromContext(context, oldOrder, history, parsed);
     const promoResponse = isRespondingToPromotion(texto, history);
 
@@ -2063,45 +2004,21 @@ export default async function handler(req: any, res: any) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
     }
 
-    templatePricing = safeTemplatePricingForCurrentOrder(
-      currentTemplatePricing,
-      freshOrder || !oldOrder.product ? historyTemplatePricing : null,
-      oldOrder.product || productFromMessageInitial
-    );
-
     let lockedOfferByContext = freshOrder
-      ? (templatePricing?.offers?.find((o) => o.quantity > 1) || templatePricing?.offers?.[0] || null)
+      ? getOfferFromLastPromotion(history, parsed)
       : getLockedOfferFromContext(context, oldOrder, history, parsed);
 
-    if (
-      oldOrder.product &&
-      lockedOfferByContext &&
-      normalize(lockedOfferByContext.product) !== normalize(oldOrder.product)
-    ) {
-      lockedOfferByContext = null;
-    }
+    let productToUse = productFromMessageInitial || templatePricing?.product || "";
 
-    let productToUse = oldOrder.product || productFromMessageInitial || templatePricing?.product || "";
-
-    if (!oldOrder.product && !productToUse && (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))) {
-      const lastPromoProduct = freshOrder ? getProductFromLastPromotion(history, parsed)?.canonical : "";
-      productToUse = lockedProductInitial?.canonical || lastPromoProduct || templatePricing?.product || "";
+    if (!productToUse && (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))) {
+      productToUse = lockedProductInitial?.canonical || getProductFromLastPromotion(history, parsed)?.canonical || templatePricing?.product || "";
     }
 
     if (!productToUse && !freshOrder) {
       productToUse = oldOrder.product || "";
     }
 
-    let product = detectProduct(texto, parsed, productToUse);
-
-    if (
-      oldOrder.product &&
-      isOrderInProgressStep(context?.step || "") &&
-      !shouldAllowProductChange(texto, oldOrder, parsed, context)
-    ) {
-      product = oldOrder.product;
-    }
-
+    const product = detectProduct(texto, parsed, productToUse);
     const productInfo = getProductInfo(product, parsed);
 
     if (product && !oldOrder.order_id) {
@@ -2130,18 +2047,8 @@ export default async function handler(req: any, res: any) {
      */
     let lockedOffer: OfferItem | null = null;
 
-    if (
-      oldOrder.locked_offer &&
-      product &&
-      normalize(oldOrder.locked_offer.product) === normalize(product)
-    ) {
-      lockedOffer = oldOrder.locked_offer;
-    }
-
-    if (productInfo && (!lockedOffer || explicitQty > 0 || freshOrder || currentTemplatePricing)) {
-      const promoFromHistory = (!oldOrder.product || freshOrder)
-        ? getOfferFromLastPromotion(history, parsed)
-        : null;
+    if (productInfo) {
+      const promoFromHistory = getOfferFromLastPromotion(history, parsed);
       const promoMatchesProduct = promoFromHistory && normalize(promoFromHistory.product) === normalize(productInfo.canonical);
       const fixedTemplateOffer = getFixedTemplateOffer(templatePricing, productInfo.canonical);
 
@@ -2278,14 +2185,6 @@ export default async function handler(req: any, res: any) {
       orderData.payment_proof_received = true;
     } else if ((oldOrder as any).payment_proof_received) {
       orderData.payment_proof_received = true;
-    }
-
-    if (
-      orderData.locked_offer &&
-      orderData.product &&
-      normalize(orderData.locked_offer.product) !== normalize(orderData.product)
-    ) {
-      orderData.locked_offer = null;
     }
 
     if (orderData.locked_offer && orderData.locked_offer.total < 10000) {
