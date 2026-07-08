@@ -16,6 +16,7 @@ import { createClient } from "@supabase/supabase-js";
  * 10) Después de pedido confirmado, cierra el flujo y no vuelve a vender el mismo pedido.
  * 11) Detecta packs fijos genéricos para cualquier vendedor sin hardcodear precios/productos.
  * 12) Si plantilla trae Producto + Cantidad + Precio, salta la pregunta de cantidad.
+ * 13) Si llega plantilla/producto nuevo después de pedido_confirmado, inicia venta nueva.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -990,6 +991,37 @@ function isPromotionLikeMessage(text: string) {
   );
 }
 
+
+function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, history: any[]) {
+  const raw = clean(text);
+  const n = normalize(raw);
+
+  const productInMessage = detectProduct(raw, parsed, "");
+  const pricingInMessage = detectTemplatePricingFromText(raw, parsed);
+
+  // Cliente/operador pega la plantilla completa + QUIERO.
+  const pastedTemplate =
+    isPromotionLikeMessage(raw) ||
+    isSafeTemplatePricingMessage(raw) ||
+    !!pricingInMessage;
+
+  // Cliente pregunta por un producto nuevo.
+  const productInterest =
+    !!productInMessage &&
+    /\b(me interesa|precio|cuanto|cuánto|quiero|confirmar|comprar|consulta|info|informacion|información)\b/.test(n);
+
+  // Respuesta "QUIERO" justo después de una plantilla nueva enviada por el bot.
+  const wantsLastTemplate =
+    (isGenericBuyReply(raw) || isBuyIntent(raw)) &&
+    !!getProductFromLastPromotion(history, parsed);
+
+  return {
+    isNew: Boolean(pastedTemplate || productInterest || wantsLastTemplate),
+    product: productInMessage || getProductFromLastPromotion(history, parsed)?.canonical || "",
+    pricing: pricingInMessage || getTemplatePricingFromHistory(history, parsed),
+  };
+}
+
 function isRespondingToPromotion(text: string, history: any[]) {
   if (!isBuyIntent(text) && !isGenericBuyReply(text)) return false;
 
@@ -1692,7 +1724,7 @@ REGLAS DURAS:
 - Si no hay cobertura y ya hay cantidad, podés mostrar datos de transferencia.
 - Si hay cobertura, indicar envío gratis contra-entrega cuando corresponda.
 - Si el cliente pregunta precio, respondé precio y guiá al siguiente paso.
-- PRIORIDAD DE PRECIOS: primero usar precios/promos de la plantilla o último mensaje promocional. Si la plantilla no trae precio/promo, recién ahí usar CATALOGO_PRODUCTOS del entrenamiento. Nunca uses números de dirección, teléfono o calle como precio. Nunca inventes otro producto.
+- PRIORIDAD DE PRECIOS: primero usar precios/promos de la plantilla actual o último mensaje promocional. Si la plantilla no trae precio/promo, recién ahí usar CATALOGO_PRODUCTOS del entrenamiento. Nunca uses números de dirección, teléfono o calle como precio. Nunca inventes otro producto. Si llegó plantilla nueva, es venta nueva.
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
 - Si no hay promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
@@ -1813,7 +1845,8 @@ export default async function handler(req: any, res: any) {
     const allTraining = await getAllTrainingData(user_id);
     const trainingText = buildTrainingText(allTraining);
     const parsed = parseTraining(trainingText);
-    const templatePricing = getTemplatePricingFromHistory(history, parsed);
+    const currentTemplatePricing = detectTemplatePricingFromText(texto, parsed);
+    const templatePricing = currentTemplatePricing || getTemplatePricingFromHistory(history, parsed);
 
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
@@ -1833,12 +1866,15 @@ export default async function handler(req: any, res: any) {
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
 
-    // ✅ Pedido cerrado: no volver a procesar el mismo pedido.
+    // ✅ Pedido cerrado:
+    // Si el cliente solo dice "ok", "efectivo", "gracias", etc., no reabrimos el pedido.
+    // Pero si llegó una plantilla/producto/precio nuevo, limpiamos todo y arrancamos una venta nueva.
+    const newTemplateSignal = isNewTemplateOrProductIntent(texto, parsed, history);
+
     if (context?.step === "pedido_confirmado") {
       const msgNormClosed = normalize(texto);
-      const newProductAfterConfirmed = detectProduct(texto, parsed, "");
       const wantsNewPurchaseAfterConfirmed =
-        !!newProductAfterConfirmed ||
+        newTemplateSignal.isNew ||
         /\b(precio|cuanto|cuánto|me interesa|quiero comprar|comprar|otro producto|catalogo|catálogo)\b/.test(msgNormClosed);
 
       if (!wantsNewPurchaseAfterConfirmed) {
@@ -1854,11 +1890,11 @@ export default async function handler(req: any, res: any) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
     }
 
-    const productFromMessageInitial = detectProduct(texto, parsed, "");
+    const productFromMessageInitial = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
     const lockedProductInitial = getLockedProductFromContext(context, oldOrder, history, parsed);
     const promoResponse = isRespondingToPromotion(texto, history);
 
-    const freshOrder = shouldStartFreshOrder({
+    let freshOrder = shouldStartFreshOrder({
       texto,
       context,
       oldOrder,
@@ -1868,6 +1904,11 @@ export default async function handler(req: any, res: any) {
       parsed,
     });
 
+    // Si el mensaje actual trae una plantilla/precio/producto nuevo, siempre iniciar nuevo pedido.
+    if (newTemplateSignal.isNew && context?.step === "pedido_confirmado") {
+      freshOrder = true;
+    }
+
     if (freshOrder) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
     }
@@ -1876,10 +1917,10 @@ export default async function handler(req: any, res: any) {
       ? getOfferFromLastPromotion(history, parsed)
       : getLockedOfferFromContext(context, oldOrder, history, parsed);
 
-    let productToUse = productFromMessageInitial;
+    let productToUse = productFromMessageInitial || templatePricing?.product || "";
 
     if (!productToUse && (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))) {
-      productToUse = lockedProductInitial?.canonical || getProductFromLastPromotion(history, parsed)?.canonical || "";
+      productToUse = lockedProductInitial?.canonical || getProductFromLastPromotion(history, parsed)?.canonical || templatePricing?.product || "";
     }
 
     if (!productToUse && !freshOrder) {
