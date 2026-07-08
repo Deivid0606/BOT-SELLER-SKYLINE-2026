@@ -2139,7 +2139,7 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 }
 
 
-function deterministicAfterCityFixedOfferMessage(state: ConversationState) {
+function deterministicAfterCityFixedOfferMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
   if (!o.product || !o.city || !o.locked_offer?.fixed_quantity) return "";
 
@@ -2154,10 +2154,11 @@ ${o.locked_offer.quantity} unidades de ${o.product}
 
 📍 ${o.city} no cuenta con contra-entrega, pero hacemos envío por transportadora 🚚
 
-Para avanzar, necesito:
+💵 Para avanzar, realizá la transferencia y enviame el comprobante junto con:
 ✅ nombre completo
 ✅ número de celular
-✅ comprobante de transferencia 📲`;
+
+${bankDataText(parsed)} 📲`;
   }
 
   return `✅ Perfecto 😊
@@ -2874,7 +2875,7 @@ export default async function handler(req: any, res: any) {
     }
 
     if (!confirm && prevStep === "collecting_city" && orderData.city && orderData.locked_offer?.fixed_quantity) {
-      const fixedCityResponse = deterministicAfterCityFixedOfferMessage(finalState);
+      const fixedCityResponse = deterministicAfterCityFixedOfferMessage(finalState, parsed);
       if (fixedCityResponse) {
         return res.json({
           response: fixedCityResponse,
