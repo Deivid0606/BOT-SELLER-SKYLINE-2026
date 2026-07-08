@@ -1228,7 +1228,7 @@ function isPostSaleQuestion(text: string) {
 
   return (
     /\?/.test(text) ||
-    /\b(factura|boleta|comprobante|recibo|cuando|cuándo|llega|llego|llegaria|llegaría|entrega|delivery|envio|envío|demora|tarda|horario|hora|garantia|garantía|cambio|cambiar|direccion|dirección|telefono|teléfono|pagar|pago|efectivo|transferencia|delivery|seguimiento|estado|cancelar|anular)\b/.test(n)
+    /\b(factura|boleta|comprobante|recibo|ruc|razon social|razón social|cedula|cédula|ci|datos fiscales|cuando|cuándo|llega|llego|llegaria|llegaría|entrega|delivery|envio|envío|demora|tarda|horario|hora|garantia|garantía|cambio|cambiar|direccion|dirección|telefono|teléfono|pagar|pago|efectivo|transferencia|delivery|seguimiento|estado|cancelar|anular)\b/.test(n)
   );
 }
 
@@ -1239,6 +1239,13 @@ function isPostSaleQuestion(text: string) {
  */
 function deterministicPostSaleResponse(text: string, order: OrderData, parsed: ParsedTraining) {
   const n = normalize(text);
+
+  const hasFiscalData =
+    /\b(ruc|razon social|razón social|cedula|cédula|ci)\b/.test(n) && /\d{5,}/.test(text);
+
+  if (hasFiscalData) {
+    return `✅ Perfecto, recibimos tus datos para la factura legal 😊\n📎 Los dejamos anotados para emitirla con tu pedido.`;
+  }
 
   if (/\b(factura|boleta|ruc|razon social|razón social|cedula|cédula)\b/.test(n)) {
     return `✅ Sí, contamos con FACTURA LEGAL 😊\n📎 Pasame tu RUC y Razón Social, o tu número de Cédula, y te la emitimos sin problema.`;
@@ -1518,7 +1525,7 @@ function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferIt
   if (templatePricing && normalize(templatePricing.product) === normalize(productInfo.canonical)) {
     const fixed = getFixedTemplateOffer(templatePricing, productInfo.canonical);
     if (fixed) {
-      return `Pack fijo: ${fixed.quantity} unidades por ${formatGs(fixed.total)} Gs. No ofrecer otra cantidad ni usar catálogo.`;
+      return `Pack fijo: ${fixed.quantity} unidades por ${formatGs(fixed.total)} Gs. No se vende por unidad.`;
     }
 
     const lines = templatePricing.offers
@@ -1542,7 +1549,7 @@ function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferIt
     lockedOffer.total > 0
   ) {
     return lockedOffer.fixed_quantity
-      ? `Pack fijo: ${lockedOffer.quantity} unidades por ${formatGs(lockedOffer.total)} Gs. No ofrecer otra cantidad ni usar catálogo.`
+      ? `Pack fijo: ${lockedOffer.quantity} unidades por ${formatGs(lockedOffer.total)} Gs. No se vende por unidad.`
       : `${lockedOffer.quantity} unidad${lockedOffer.quantity > 1 ? "es" : ""}: ${formatGs(lockedOffer.total)} Gs`;
   }
 
