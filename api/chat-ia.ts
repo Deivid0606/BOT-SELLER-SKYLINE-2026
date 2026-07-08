@@ -21,8 +21,6 @@ import { createClient } from "@supabase/supabase-js";
  * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
  * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
  * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
- * 18) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
- * 18) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -1021,32 +1019,15 @@ function isNewPastedTemplatePurchase(text: string, parsed: ParsedTraining) {
 }
 
 function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): TemplatePricing | null {
-  /**
-   * ✅ FIX V7:
-   * La última plantilla real del historial debe ganar sobre cualquier producto viejo guardado
-   * en context.current_product / last_ad_product / order_data.
-   *
-   * Además, algunas integraciones guardan la plantilla enviada como "assistant", "model",
-   * "bot" o incluso sin rol estándar. Por eso revisamos el contenido reciente completo,
-   * pero filtramos fuerte con isRealSalesTemplateMessage / structured template para no tomar
-   * confirmaciones de pedido, factura, delivery o datos del cliente como plantilla.
-   */
-  const recentMessages = (history || [])
-    .slice(-20)
+  const lastBotMessages = (history || [])
+    .slice(-12)
     .reverse()
-    .filter((h: any) => clean(h?.content));
+    .filter((h: any) => h.role === "assistant" || h.role === "model");
 
-  for (const item of recentMessages) {
+  for (const item of lastBotMessages) {
     const content = clean(item?.content);
-
-    const looksLikeTemplate =
-      isStructuredSalesTemplateMessage(content) ||
-      isRealSalesTemplateMessage(content) ||
-      isSafeTemplatePricingMessage(content);
-
-    if (!looksLikeTemplate) continue;
-
-    const pricing = detectTemplatePricingSmart(content, parsed);
+    if (!isPromotionLikeMessage(content) && !isSafeTemplatePricingMessage(content)) continue;
+    const pricing = detectTemplatePricingFromText(content, parsed);
     if (pricing) return pricing;
   }
 
@@ -1076,26 +1057,13 @@ function getFixedTemplateOffer(templatePricing: TemplatePricing | null, product:
 }
 
 function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
-  /**
-   * ✅ FIX V7:
-   * Primero intentar tomar el producto desde la plantilla/precio detectado.
-   * Esto evita que un producto viejo del contexto/historial, por ejemplo
-   * "Almohadillas Antivibración", gane cuando la plantilla nueva dice
-   * "Producto: Afilador de Cuchillos".
-   */
-  const templatePricing = getTemplatePricingFromHistory(history, parsed);
-  const templateProduct = getProductInfo(templatePricing?.product || "", parsed);
-  if (templateProduct) return templateProduct;
-
-  const recentMessages = (history || [])
-    .slice(-20)
+  const lastBotMessages = (history || [])
+    .slice(-8)
     .reverse()
-    .filter((h: any) => clean(h?.content));
+    .filter((h: any) => h.role === "assistant" || h.role === "model");
 
-  for (const item of recentMessages) {
+  for (const item of lastBotMessages) {
     const content = clean(item?.content);
-    if (!isRealSalesTemplateMessage(content) && !isPromotionLikeMessage(content) && !isSafeTemplatePricingMessage(content)) continue;
-
     const contentNorm = normalize(content);
     if (!contentNorm) continue;
 
@@ -1115,6 +1083,7 @@ function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
 
   return null;
 }
+
 function getOfferFromLastPromotion(history: any[], parsed: ParsedTraining): OfferItem | null {
   const templatePricing = getTemplatePricingFromHistory(history, parsed);
   if (!templatePricing) return null;
@@ -1288,9 +1257,6 @@ function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, hist
 
   const productInMessage = detectProduct(raw, parsed, "");
   const pricingInMessage = detectTemplatePricingSmart(raw, parsed);
-  const pricingFromHistory = getTemplatePricingFromHistory(history, parsed);
-  const lastTemplateProduct = getProductFromLastPromotion(history, parsed)?.canonical || "";
-  const effectivePricing = pricingInMessage || pricingFromHistory;
 
   // Cliente/operador pega la plantilla completa + QUIERO.
   const pastedTemplate =
@@ -1306,15 +1272,15 @@ function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, hist
   // Respuesta "QUIERO" justo después de una plantilla nueva enviada por el bot.
   const wantsLastTemplate =
     (isGenericBuyReply(raw) || isBuyIntent(raw)) &&
-    !!lastTemplateProduct;
+    !!getProductFromLastPromotion(history, parsed);
 
   return {
     isNew: Boolean(pastedTemplate || productInterest || wantsLastTemplate),
-    // ✅ FIX V7: si hay plantilla con precio, el producto de la plantilla gana.
-    product: effectivePricing?.product || productInMessage || lastTemplateProduct || "",
-    pricing: effectivePricing,
+    product: productInMessage || getProductFromLastPromotion(history, parsed)?.canonical || "",
+    pricing: pricingInMessage || getTemplatePricingFromHistory(history, parsed),
   };
 }
+
 function isRespondingToPromotion(text: string, history: any[]) {
   if (!isBuyIntent(text) && !isGenericBuyReply(text)) return false;
 
@@ -1493,13 +1459,10 @@ function bankDataText(parsed: ParsedTraining) {
 function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferItem | null, templatePricing?: TemplatePricing | null) {
   if (!productInfo) return "";
 
-  // ✅ FIX V6:
-  // Si hay precio/pack de plantilla para este producto, NO se muestran precios del catálogo.
-  // La plantilla es la única fuente de verdad para producto/cantidad/precio del pedido actual.
   if (templatePricing && normalize(templatePricing.product) === normalize(productInfo.canonical)) {
     const fixed = getFixedTemplateOffer(templatePricing, productInfo.canonical);
     if (fixed) {
-      return `Pack fijo: ${fixed.quantity} unidades por ${formatGs(fixed.total)} Gs. No ofrecer otra cantidad ni usar catálogo.`;
+      return `Pack fijo: ${fixed.quantity} unidades por ${formatGs(fixed.total)} Gs. No se vende por unidad.`;
     }
 
     const lines = templatePricing.offers
@@ -1508,23 +1471,10 @@ function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferIt
       .map((o) =>
         o.quantity === 1
           ? `1 unidad: ${formatGs(o.total)} Gs`
-          : `${o.quantity} unidades: ${formatGs(o.total)} Gs`
+          : `Promo ${o.quantity} unidades: ${formatGs(o.total)} Gs`
       );
 
     if (lines.length) return lines.join("\n");
-  }
-
-  // ✅ Si la oferta bloqueada viene de plantilla, tampoco mezclar con precio unitario del catálogo.
-  if (
-    lockedOffer &&
-    lockedOffer.source === "template" &&
-    normalize(lockedOffer.product) === normalize(productInfo.canonical) &&
-    lockedOffer.quantity > 0 &&
-    lockedOffer.total > 0
-  ) {
-    return lockedOffer.fixed_quantity
-      ? `Pack fijo: ${lockedOffer.quantity} unidades por ${formatGs(lockedOffer.total)} Gs. No ofrecer otra cantidad ni usar catálogo.`
-      : `${lockedOffer.quantity} unidad${lockedOffer.quantity > 1 ? "es" : ""}: ${formatGs(lockedOffer.total)} Gs`;
   }
 
   if (
@@ -1557,73 +1507,6 @@ function productsSummary(parsed: ParsedTraining) {
       return `- ${p.canonical}: ${promos}`;
     })
     .join("\n");
-}
-
-
-/**
- * ✅ FIX V6 - Fuente de verdad para precios:
- * Cuando hay plantilla activa, el catálogo/entrenamiento NO compite.
- * El entrenamiento queda solo para cobertura, bancos, factura, tono y reglas generales.
- */
-function hasTemplateForProduct(templatePricing: TemplatePricing | null | undefined, productName: string) {
-  return Boolean(
-    templatePricing &&
-    productName &&
-    normalize(templatePricing.product) === normalize(productName) &&
-    Array.isArray(templatePricing.offers) &&
-    templatePricing.offers.length > 0
-  );
-}
-
-function hasActiveTemplatePricing(templatePricing: TemplatePricing | null | undefined, order?: OrderData | null) {
-  return Boolean(order?.product && hasTemplateForProduct(templatePricing, order.product));
-}
-
-function templatePricingSummary(templatePricing: TemplatePricing | null | undefined) {
-  if (!templatePricing?.offers?.length) return "No hay plantilla activa.";
-
-  return templatePricing.offers
-    .filter((o) => o.total >= 10000)
-    .sort((a, b) => a.quantity - b.quantity)
-    .map((o) => {
-      const fixed = o.fixed_quantity ? " PACK FIJO" : "";
-      return `- ${o.quantity} unidad${o.quantity > 1 ? "es" : ""}: ${formatGs(o.total)} Gs${fixed}`;
-    })
-    .join("\n");
-}
-
-function catalogForPrompt(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
-  if (hasActiveTemplatePricing(templatePricing, state.order)) {
-    return `
-MODO PLANTILLA ACTIVA:
-- Hay una plantilla/promoción activa para este pedido.
-- Producto, cantidad, promo y precio salen EXCLUSIVAMENTE de la plantilla.
-- NO usar CATALOGO_PRODUCTOS ni precios del entrenamiento para este pedido.
-- NO ofrecer unidades, packs ni promos que no aparezcan en la plantilla.
-- NO ofrecer 1 unidad si la plantilla solo muestra pack de 2.
-- NO recalcular total multiplicando precio de plantilla por cantidad.
-- Si la plantilla trae una sola oferta, respetar esa oferta.
-- Si la plantilla trae Producto + Cantidad + Precio, respetar exactamente esos datos.
-
-DATOS DE LA PLANTILLA ACTIVA:
-Producto: ${templatePricing?.product || state.order.product}
-Ofertas detectadas:
-${templatePricingSummary(templatePricing)}
-`.trim();
-  }
-
-  return `
-MODO CATÁLOGO / ENTRENAMIENTO:
-- No hay plantilla activa.
-- Usar la lista de precios del entrenamiento.
-- Podés ofrecer productos y promos del catálogo.
-
-CATÁLOGO:
-${productsSummary(parsed)}
-
-URL CATÁLOGO:
-${parsed.catalogUrl || "No configurado."}
-`.trim();
 }
 
 function buildHardInstruction(state: ConversationState) {
@@ -2068,11 +1951,14 @@ ESTADO DEL PEDIDO:
 - Faltante: ${state.missing.length ? state.missing.join(", ") : "nada"}
 - Promo bloqueada desde plantilla: ${o.locked_offer ? `${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs` : "no"}
 
-FUENTE DE PRODUCTO / CANTIDAD / PRECIO:
-${catalogForPrompt(parsed, state, templatePricing)}
-
-PRECIO/PROMO DEL PRODUCTO ACTUAL:
+PRECIO DEL PRODUCTO ACTUAL:
 ${productPriceText(state.productInfo, o.locked_offer, templatePricing) || "Sin producto actual."}
+
+CATÁLOGO:
+${productsSummary(parsed)}
+
+URL CATÁLOGO:
+${parsed.catalogUrl || "No configurado."}
 
 DATOS DE TRANSFERENCIA:
 ${bankDataText(parsed)}
@@ -2097,18 +1983,9 @@ REGLAS DURAS:
 - Si no hay cobertura y ya hay cantidad, podés mostrar datos de transferencia.
 - Si hay cobertura, indicar envío gratis contra-entrega cuando corresponda.
 - Si el cliente pregunta precio, respondé precio y guiá al siguiente paso.
-- PRIORIDAD DE PRECIOS:
-  1) Si hay plantilla activa, usá SOLO producto, cantidad y precio de la plantilla.
-  2) Mientras haya plantilla activa, PROHIBIDO usar CATALOGO_PRODUCTOS del entrenamiento para precio/cantidad/producto.
-  3) No ofrezcas 1 unidad si la plantilla solo muestra pack de 2.
-  4) No ofrezcas packs/promos del entrenamiento si no aparecen en la plantilla.
-  5) No recalcules total multiplicando precio de plantilla por cantidad.
-  6) Solo usá el catálogo del entrenamiento cuando NO exista plantilla activa.
-- Nunca uses números de dirección, teléfono o calle como precio.
-- Nunca inventes otro producto. Si llegó plantilla nueva, es venta nueva.
-- Después de pedido confirmado, responder postventa si pregunta factura/entrega/pago/garantía.
+- PRIORIDAD DE PRECIOS: primero usar precios/promos de la plantilla actual o último mensaje promocional. Si la plantilla no trae precio/promo, recién ahí usar CATALOGO_PRODUCTOS del entrenamiento. Nunca uses números de dirección, teléfono o calle como precio. Nunca inventes otro producto. Si llegó plantilla nueva, es venta nueva. Después de pedido confirmado, responder postventa si pregunta factura/entrega/pago/garantía.
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
-- Si no hay plantilla activa ni promo bloqueada, mostrar precios del catálogo.
+- Si no hay promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
 - Nunca preguntes “¿Está todo correcto?” si ya están todos los datos. Si el pedido está completo, el backend responde directamente con ✅ PEDIDO CONFIRMADO y no se llama a Gemini.
 - En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
@@ -2138,11 +2015,8 @@ ${productPriceText(state.productInfo, o.locked_offer, templatePricing)}
   }
 
   if (!o.quantity) {
-    const templateActive = hasActiveTemplatePricing(templatePricing, o);
-
-    const qtyQuestion = templateActive
-      ? `¿Cuál de estas opciones de la plantilla querés confirmar?\n${templatePricingSummary(templatePricing)} 😊`
-      : o.locked_offer && o.locked_offer.quantity > 1
+    const qtyQuestion =
+      o.locked_offer && o.locked_offer.quantity > 1
         ? `¿Querés 1 unidad por ${formatGs(getTemplatePrice1(templatePricing || null, o.product) || state.productInfo?.price1 || 0)} Gs o la promo de ${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs? 😊`
         : "¿Cuántas unidades querés llevar? 😊";
 
@@ -2385,36 +2259,17 @@ export default async function handler(req: any, res: any) {
       ? (currentTemplateLockedOffer || getOfferFromLastPromotion(history, parsed))
       : getLockedOfferFromContext(context, oldOrder, history, parsed);
 
-    // ✅ FIX V7:
-    // Para respuestas genéricas como "QUIERO", nunca dejar que un producto viejo del contexto
-    // gane sobre la plantilla activa. La prioridad correcta es:
-    // 1) plantilla actual pegada en el mensaje,
-    // 2) última plantilla real del historial,
-    // 3) producto explícito del mensaje,
-    // 4) recién después contexto viejo / catálogo.
-    let productToUse = currentTemplatePricing?.product || templatePricing?.product || newTemplateSignal.product || productFromMessageInitial || "";
+    let productToUse = productFromMessageInitial || currentTemplatePricing?.product || newTemplateSignal.product || templatePricing?.product || "";
 
     if (!productToUse && (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))) {
-      productToUse = templatePricing?.product || getProductFromLastPromotion(history, parsed)?.canonical || lockedProductInitial?.canonical || "";
+      productToUse = lockedProductInitial?.canonical || getProductFromLastPromotion(history, parsed)?.canonical || templatePricing?.product || "";
     }
 
     if (!productToUse && !freshOrder) {
       productToUse = oldOrder.product || "";
     }
 
-    let product = detectProduct(texto, parsed, productToUse);
-
-    // ✅ FIX V7 extra:
-    // Si hay plantilla activa y el mensaje es genérico (QUIERO/CONFIRMO), forzar producto de plantilla.
-    // Esto evita respuestas como: plantilla de Afilador + producto viejo Almohadillas.
-    if (
-      templatePricing?.product &&
-      (isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) &&
-      !detectProduct(texto, parsed, "")
-    ) {
-      product = templatePricing.product;
-    }
-
+    const product = detectProduct(texto, parsed, productToUse);
     const productInfo = getProductInfo(product, parsed);
 
     if (product && !oldOrder.order_id) {
@@ -2456,8 +2311,6 @@ export default async function handler(req: any, res: any) {
         const templatePrice1 = getTemplatePrice1(templatePricing, productInfo.canonical);
         const catalogOffer = getCatalogOffer(productInfo, explicitQty);
 
-        const templateActiveForProduct = hasTemplateForProduct(templatePricing, productInfo.canonical);
-
         if (templateOffer) {
           lockedOffer = templateOffer;
         } else if (explicitQty === 1 && templatePrice1 > 0) {
@@ -2468,7 +2321,7 @@ export default async function handler(req: any, res: any) {
             label: `1 unidad por ${formatGs(templatePrice1)} Gs`,
             source: "template",
           };
-        } else if (!templateActiveForProduct && catalogOffer) {
+        } else if (catalogOffer) {
           lockedOffer = catalogOffer;
         } else if (
           promoMatchesProduct &&
@@ -2570,8 +2423,7 @@ export default async function handler(req: any, res: any) {
         orderData.locked_offer = null;
         if (productInfo) {
           const templateOffer = getTemplateOfferForQuantity(templatePricing, productInfo.canonical, explicitQty);
-          const templateActiveForProduct = hasTemplateForProduct(templatePricing, productInfo.canonical);
-          const catalogOffer = templateActiveForProduct ? null : getCatalogOffer(productInfo, explicitQty);
+          const catalogOffer = getCatalogOffer(productInfo, explicitQty);
           if (templateOffer) orderData.locked_offer = templateOffer;
           else if (catalogOffer) orderData.locked_offer = catalogOffer;
         }
@@ -2599,8 +2451,7 @@ export default async function handler(req: any, res: any) {
 
     if (state.productInfo && !orderData.locked_offer && orderData.quantity) {
       const templateOffer = getTemplateOfferForQuantity(templatePricing, state.productInfo.canonical, orderData.quantity);
-      const templateActiveForProduct = hasTemplateForProduct(templatePricing, state.productInfo.canonical);
-      const catalogOffer = templateActiveForProduct ? null : getCatalogOffer(state.productInfo, orderData.quantity);
+      const catalogOffer = getCatalogOffer(state.productInfo, orderData.quantity);
 
       if (templateOffer) {
         orderData.locked_offer = templateOffer;
