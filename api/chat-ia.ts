@@ -889,17 +889,21 @@ function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): Te
   const uniqueOffers = Array.from(unique.values()).sort((a, b) => a.quantity - b.quantity);
   if (!uniqueOffers.length) return null;
 
-  // ✅ Si la plantilla tiene UNA sola oferta detectada, se considera promo/cantidad fija.
-  // Ejemplo: "2 Unidades de Plumeros por Gs. 99.000" => NO preguntar 1 unidad.
-  const hasFixed = uniqueOffers.some((o) => o.fixed_quantity) || fixedQuantity || uniqueOffers.length === 1;
+  // ✅ Pack fijo SOLO cuando la plantilla lo dice explícitamente.
+  // IMPORTANTE: una sola oferta NO significa "no se vende por unidad".
+  // Ejemplo 1: "Precio Promocional: Gs. 149.900" => 1 unidad normal.
+  // Ejemplo 2: "2 Unidades de Plumeros por Gs. 99.000" => promo única, se toma directo, pero NO se dice "no se vende por unidad".
+  const hasExplicitFixed = uniqueOffers.some((o) => o.fixed_quantity) || fixedQuantity;
 
   return {
     product,
-    // Si es pack fijo de 2/3/etc, NO guardamos price1 porque no existe venta por unidad.
-    price1: hasFixed ? undefined : uniqueOffers.find((o) => o.quantity === 1)?.total,
-    offers: uniqueOffers.map((o) => ({ ...o, fixed_quantity: hasFixed ? true : o.fixed_quantity })),
+    price1: !hasExplicitFixed ? uniqueOffers.find((o) => o.quantity === 1)?.total : undefined,
+    offers: uniqueOffers.map((o) => ({
+      ...o,
+      fixed_quantity: hasExplicitFixed ? true : !!o.fixed_quantity,
+    })),
     raw,
-    fixed_quantity: hasFixed,
+    fixed_quantity: hasExplicitFixed,
   };
 }
 function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): TemplatePricing | null {
@@ -1294,16 +1298,29 @@ function buildHardInstruction(state: ConversationState) {
   }
 
   if (!order.city) {
-    if (order.locked_offer?.fixed_quantity) {
-      return `Confirmar que la promo es un pack fijo de ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs, aclarar que no se vende por unidad y preguntar SOLO ciudad de envío. No pedir nombre/dirección/teléfono todavía.`;
+    if (order.locked_offer?.fixed_quantity && order.locked_offer.quantity > 1) {
+      return `Confirmar que la promo es de ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs. Solo aclarar que no se vende por unidad si la plantilla lo dijo explícitamente. Preguntar SOLO ciudad de envío. No pedir nombre/dirección/teléfono todavía.`;
     }
+
+    if (order.locked_offer?.quantity && order.locked_offer.total >= 10000) {
+      const qtyText = order.locked_offer.quantity === 1
+        ? `1 unidad por ${formatGs(order.locked_offer.total)} Gs`
+        : `${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs`;
+      return `Confirmar producto y precio de plantilla (${qtyText}) y preguntar SOLO ciudad de envío. NO digas pack de 1 unidad. NO digas que no se vende por unidad salvo que fixed_quantity sea true. No inventar ciudad. No pedir nombre/dirección/teléfono todavía.`;
+    }
+
     return "Confirmar producto/precio/promo y preguntar SOLO ciudad de envío. No inventar ciudad. No pedir nombre/dirección/teléfono todavía.";
   }
 
   if (!order.quantity) {
     if (order.locked_offer && order.locked_offer.quantity > 0 && order.locked_offer.total >= 10000) {
       order.quantity = order.locked_offer.quantity;
-      return `La promoción ya está definida por la plantilla: ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs. NO preguntes si quiere 1 unidad. NO menciones precios del entrenamiento. Avanzá pidiendo SOLO la ciudad si falta, o los datos faltantes si ya hay ciudad.`;
+
+      if (order.locked_offer.quantity === 1) {
+        return `El precio ya está definido por la plantilla: 1 unidad por ${formatGs(order.locked_offer.total)} Gs. NO digas pack. NO digas que no se vende por unidad. NO uses precios del entrenamiento. Avanzá pidiendo SOLO la ciudad si falta, o los datos faltantes si ya hay ciudad.`;
+      }
+
+      return `La promoción ya está definida por la plantilla: ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs. NO preguntes si quiere 1 unidad. NO menciones precios del entrenamiento. NO digas que no se vende por unidad salvo que fixed_quantity sea true. Avanzá pidiendo SOLO la ciudad si falta, o los datos faltantes si ya hay ciudad.`;
     }
 
     return "No hay cantidad/precio válido desde plantilla. Pedí que confirme la promoción enviada. No inventes precio ni uses precio del entrenamiento.";
@@ -1831,6 +1848,10 @@ Para agendarlo, me falta:
 
 function postProcessResponse(resp: string) {
   return clean(resp)
+    .replace(/pack de 1 unidad por/gi, "1 unidad por")
+    .replace(/la promo es un pack de 1 unidad por/gi, "el precio es de 1 unidad por")
+    .replace(/te aclaro que no se vende por unidad[.!¡!\s]*/gi, "")
+    .replace(/no se vende por unidad[.!¡!\s]*/gi, "")
     .replace(/\n{4,}/g, "\n\n")
     .slice(0, 4000);
 }
@@ -2157,7 +2178,7 @@ export default async function handler(req: any, res: any) {
           ...onlyOffer,
           product: templatePricing.product,
           source: "template",
-          fixed_quantity: true,
+          fixed_quantity: !!templatePricing.fixed_quantity && onlyOffer.quantity > 1,
         };
       }
     }
@@ -2231,7 +2252,7 @@ export default async function handler(req: any, res: any) {
             total: templatePrice1,
             label: `1 unidad por ${formatGs(templatePrice1)} Gs`,
             source: "template",
-            fixed_quantity: templatePricing?.offers.length === 1,
+            fixed_quantity: !!templatePricing?.fixed_quantity && orderData.quantity > 1,
           };
         }
       }
