@@ -17,6 +17,7 @@ import { createClient } from "@supabase/supabase-js";
  * 11) Detecta packs fijos genéricos para cualquier vendedor sin hardcodear precios/productos.
  * 12) Si plantilla trae Producto + Cantidad + Precio, salta la pregunta de cantidad.
  * 13) Si llega plantilla/producto nuevo después de pedido_confirmado, inicia venta nueva.
+ * 14) Postventa: después de confirmado responde preguntas normales sin reabrir pedido.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -992,6 +993,50 @@ function isPromotionLikeMessage(text: string) {
 }
 
 
+
+function isShortAcknowledgement(text: string) {
+  const n = normalize(text);
+  return /^(ok|okay|dale|listo|gracias|muchas gracias|perfecto|bueno|👍|👌|🙏|genial|excelente|joya)$/.test(n);
+}
+
+function isPostSaleQuestion(text: string) {
+  const n = normalize(text);
+
+  return (
+    /\?/.test(text) ||
+    /\b(factura|boleta|comprobante|recibo|cuando|cuándo|llega|llego|llegaria|llegaría|entrega|delivery|envio|envío|demora|tarda|horario|hora|garantia|garantía|cambio|cambiar|direccion|dirección|telefono|teléfono|pagar|pago|efectivo|transferencia|delivery|seguimiento|estado|cancelar|anular)\b/.test(n)
+  );
+}
+
+function buildPostSaleSystemPrompt(parsed: ParsedTraining, order: OrderData) {
+  return `
+Sos vendedor/postventa de Mega Todo Store / One Store por WhatsApp.
+El pedido del cliente YA ESTÁ CONFIRMADO. No vuelvas a confirmar el pedido salvo que te lo pida.
+
+DATOS DEL PEDIDO CONFIRMADO:
+- Producto: ${order.product || "no disponible"}
+- Cantidad: ${order.quantity || "no disponible"}
+- Ciudad: ${order.city || "no disponible"}
+- Dirección: ${order.address || "no disponible"}
+- Cliente: ${order.customer_name || "no disponible"}
+- Teléfono: ${order.phone || "no disponible"}
+
+REGLAS:
+- Respondé preguntas postventa de forma útil y amable.
+- Si pregunta por factura, respondé según entrenamiento. Si no hay dato específico, decí que podés consultar/solicitar factura con los datos fiscales.
+- Si pregunta cuándo llega, indicá que el pedido quedó agendado para la próxima ronda de envíos y que el delivery confirma al llegar a su zona. No inventes horarios exactos.
+- Si pregunta por pago, recordá que puede pagar en efectivo o transferencia al delivery si tiene contra-entrega.
+- Si quiere cambiar dirección o teléfono, pedile el dato nuevo.
+- Si quiere cancelar, pedí confirmación clara.
+- No crees un pedido nuevo.
+- No repitas el bloque de ✅ PEDIDO CONFIRMADO.
+- Sé breve, cálido y con emojis moderados.
+
+ENTRENAMIENTO:
+${parsed.raw}
+`.trim();
+}
+
 function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, history: any[]) {
   const raw = clean(text);
   const n = normalize(raw);
@@ -1724,7 +1769,7 @@ REGLAS DURAS:
 - Si no hay cobertura y ya hay cantidad, podés mostrar datos de transferencia.
 - Si hay cobertura, indicar envío gratis contra-entrega cuando corresponda.
 - Si el cliente pregunta precio, respondé precio y guiá al siguiente paso.
-- PRIORIDAD DE PRECIOS: primero usar precios/promos de la plantilla actual o último mensaje promocional. Si la plantilla no trae precio/promo, recién ahí usar CATALOGO_PRODUCTOS del entrenamiento. Nunca uses números de dirección, teléfono o calle como precio. Nunca inventes otro producto. Si llegó plantilla nueva, es venta nueva.
+- PRIORIDAD DE PRECIOS: primero usar precios/promos de la plantilla actual o último mensaje promocional. Si la plantilla no trae precio/promo, recién ahí usar CATALOGO_PRODUCTOS del entrenamiento. Nunca uses números de dirección, teléfono o calle como precio. Nunca inventes otro producto. Si llegó plantilla nueva, es venta nueva. Después de pedido confirmado, responder postventa si pregunta factura/entrega/pago/garantía.
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
 - Si no hay promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
@@ -1866,9 +1911,10 @@ export default async function handler(req: any, res: any) {
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
 
-    // ✅ Pedido cerrado:
-    // Si el cliente solo dice "ok", "efectivo", "gracias", etc., no reabrimos el pedido.
-    // Pero si llegó una plantilla/producto/precio nuevo, limpiamos todo y arrancamos una venta nueva.
+    // ✅ Pedido cerrado / postventa:
+    // Si llega plantilla/producto nuevo => venta nueva.
+    // Si pregunta factura, llegada, pago, garantía, etc. => responder postventa sin reabrir pedido.
+    // Si solo dice ok/gracias => respuesta corta.
     const newTemplateSignal = isNewTemplateOrProductIntent(texto, parsed, history);
 
     if (context?.step === "pedido_confirmado") {
@@ -1878,8 +1924,53 @@ export default async function handler(req: any, res: any) {
         /\b(precio|cuanto|cuánto|me interesa|quiero comprar|comprar|otro producto|catalogo|catálogo)\b/.test(msgNormClosed);
 
       if (!wantsNewPurchaseAfterConfirmed) {
+        if (isShortAcknowledgement(texto)) {
+          return res.json({
+            response: `😊 ¡Gracias! Tu pedido ya quedó confirmado y agendado. 🚚📦`,
+            context: {
+              ...(context || {}),
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
+
+        if (isPostSaleQuestion(texto)) {
+          const postSaleSystem = buildPostSaleSystemPrompt(parsed, oldOrder);
+
+          const postSaleContents = (history || [])
+            .slice(-8)
+            .filter((h: any) => clean(h?.content))
+            .map((h: any) => ({
+              role: h.role === "assistant" ? "model" : "user",
+              parts: [{ text: clean(h.content) }],
+            }));
+
+          postSaleContents.push({
+            role: "user",
+            parts: [{ text: texto }],
+          });
+
+          const postSaleResponse = await callGemini({
+            apiKey,
+            model,
+            system: postSaleSystem,
+            contents: postSaleContents,
+            temperature: iaConfig.temperature ?? 0.45,
+            maxTokens: Math.max(iaConfig.max_tokens ?? 0, 1024),
+          });
+
+          return res.json({
+            response: postProcessResponse(postSaleResponse || `😊 Tu pedido ya quedó confirmado y agendado. El delivery te confirma al llegar a tu zona. 🚚📦`),
+            context: {
+              ...(context || {}),
+              step: "pedido_confirmado",
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
+
         return res.json({
-          response: `😊 Perfecto, gracias. Tu pedido ya quedó confirmado y agendado. 🚚📦`,
+          response: `😊 Tu pedido ya quedó confirmado y agendado. ¿Querés consultar algo sobre la entrega, pago o factura? 🚚📦`,
           context: {
             ...(context || {}),
             updated_at: new Date().toISOString(),
