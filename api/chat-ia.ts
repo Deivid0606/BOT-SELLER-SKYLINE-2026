@@ -11,6 +11,7 @@ import { createClient } from "@supabase/supabase-js";
  * 5) Si el cliente responde "quiero uno", "una unidad", "solo 1", desbloquea la promo.
  * 6) Nunca inventa ciudad, nombre, dirección, teléfono, banco ni catálogo.
  * 7) No se salta ciudad ni cantidad.
+ * 8) CONFIRMACIÓN AUTOMÁTICA: Al tener todos los datos, confirma sin preguntar.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -78,6 +79,7 @@ type OrderData = {
   address: string;
   phone: string;
   locked_offer?: OfferItem | null;
+  payment_proof_received?: boolean;
 };
 
 type ConversationState = {
@@ -99,6 +101,7 @@ function emptyOrder(): OrderData {
     address: "",
     phone: "",
     locked_offer: null,
+    payment_proof_received: false,
   };
 }
 
@@ -623,8 +626,8 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
     phone: clean(old?.phone || ""),
     address: clean(old?.address || ""),
     locked_offer: old?.locked_offer || null,
-    ...(old?.payment_proof_received ? { payment_proof_received: true } : {}),
-  } as OrderData;
+    payment_proof_received: old?.payment_proof_received || false,
+  };
 }
 
 function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
@@ -636,6 +639,7 @@ function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
     phone: ext.phone || old.phone || "",
     address: ext.address || old.address || "",
     locked_offer: ext.locked_offer !== undefined ? ext.locked_offer : old.locked_offer || null,
+    payment_proof_received: ext.payment_proof_received || old.payment_proof_received || false,
   };
 }
 
@@ -869,7 +873,6 @@ function getLockedOfferFromContext(context: any, oldOrder: OrderData, history: a
   return getOfferFromLastPromotion(history, parsed);
 }
 
-
 function hasPaymentProofText(text: string) {
   const n = normalize(text);
   return /\b(comprobante|transferi|transferí|transferencia hecha|ya pague|ya pagué|deposito|depósito|pague|pagué|adjunto|envio comprobante|envío comprobante|recibo)\b/.test(n);
@@ -883,6 +886,7 @@ function hasPaymentProof(context: any, text: string, mediaUrl?: string, mediaTyp
   return false;
 }
 
+// ✅ MODIFICADO: Confirmación automática sin preguntar "está todo ok"
 function nextStep(order: OrderData, coverage: boolean | null) {
   if (!order.product) return "selling";
   if (!order.city) return "collecting_city";
@@ -891,13 +895,15 @@ function nextStep(order: OrderData, coverage: boolean | null) {
   if (coverage === false) {
     if (!order.customer_name) return "collecting_name";
     if (!order.phone) return "collecting_phone";
-    if (!(order as any).payment_proof_received) return "waiting_payment_proof";
+    if (!order.payment_proof_received) return "waiting_payment_proof";
     return "confirm_order";
   }
 
   if (!order.customer_name) return "collecting_name";
   if (!order.address) return "collecting_address";
   if (!order.phone) return "collecting_phone";
+  
+  // ✅ TODOS los datos completos → confirmar directo
   return "confirm_order";
 }
 
@@ -911,7 +917,7 @@ function getMissing(order: OrderData, coverage: boolean | null) {
     if (!order.customer_name) missing.push("nombre y apellido");
     if (coverage !== false && !order.address) missing.push("dirección exacta o ubicación");
     if (!order.phone) missing.push("número de celular");
-    if (coverage === false && !(order as any).payment_proof_received) missing.push("comprobante de transferencia");
+    if (coverage === false && !order.payment_proof_received) missing.push("comprobante de transferencia");
   }
 
   return missing;
@@ -969,6 +975,7 @@ function productsSummary(parsed: ParsedTraining) {
     .join("\n");
 }
 
+// ✅ MODIFICADO: Instrucción para confirmar automáticamente sin preguntar
 function buildHardInstruction(state: ConversationState) {
   const { order, coverage, missing } = state;
 
@@ -997,14 +1004,15 @@ function buildHardInstruction(state: ConversationState) {
     if (missing.length > 0) {
       return "Informar total, explicar envío por transportadora y pago anticipado. Mostrar datos de transferencia porque ya hay cantidad. Pedir SOLO lo faltante: nombre completo, teléfono y/o comprobante de transferencia. IMPORTANTE: no confirmar el pedido hasta recibir comprobante.";
     }
-    return "Confirmar el pedido por transportadora porque ya se recibió comprobante y datos.";
+    return "CONFIRMAR PEDIDO DIRECTAMENTE. No preguntes 'está todo correcto'. Usá el mensaje de confirmación final con todos los datos del pedido. Mostrá el resumen completo y confirmá el pedido automáticamente.";
   }
 
   if (missing.length > 0) {
     return `Pedir SOLO lo faltante: ${missing.join(", ")}. No repetir lo que ya está completo. Si la ciudad ya está cargada como "${order.city}", NO vuelvas a preguntar ciudad. Usá emojis y tono amable de vendedor.`;
   }
 
-  return "Confirmar pedido completo con producto, cantidad, total, cliente, ciudad, teléfono y dirección si aplica.";
+  // ✅ Si no falta nada, CONFIRMAR DIRECTAMENTE sin preguntar "está todo ok"
+  return "CONFIRMAR PEDIDO DIRECTAMENTE. No preguntes 'está todo correcto'. Usá el mensaje de confirmación final con todos los datos del pedido. Mostrá el resumen completo y confirmá el pedido automáticamente.";
 }
 
 function buildState(order: OrderData, parsed: ParsedTraining): ConversationState {
@@ -1028,8 +1036,19 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
   return state;
 }
 
+// ✅ MODIFICADO: Confirmación automática
 function shouldConfirmOrder(state: ConversationState) {
-  return state.step === "confirm_order" && state.order.product && state.order.city && state.order.quantity > 0;
+  // Confirmar directamente si el paso es confirm_order
+  if (state.step === "confirm_order" && state.order.product && state.order.city && state.order.quantity > 0) {
+    return true;
+  }
+  
+  // Para ciudades sin cobertura, necesitamos comprobante
+  if (state.step === "confirm_order" && state.coverage === false) {
+    return !!(state.order.payment_proof_received);
+  }
+  
+  return false;
 }
 
 function isOrderStale(order: OrderData, lastActivity: string) {
@@ -1074,9 +1093,8 @@ async function safeUpsertOrder(
     updated_at: new Date().toISOString(),
   };
 
-  // Si no tenés esta columna jsonb, comentá esta línea.
   if (order.locked_offer) payload.locked_offer = order.locked_offer;
-  if ((order as any).payment_proof_received) payload.payment_proof_received = true;
+  if (order.payment_proof_received) payload.payment_proof_received = true;
 
   const IN_PROGRESS_STATUSES = [
     "draft",
@@ -1208,7 +1226,7 @@ async function transcribeAudioWithGemini({
   });
 }
 
-
+// ✅ MENSAJE DE CONFIRMACIÓN FINAL CON EL FORMATO EXACTO QUE NECESITAS
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
   const addressPart = o.address ? ` — ${o.address}` : "";
@@ -1251,7 +1269,6 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 
 ${paymentBlock}`;
 }
-
 
 function deterministicAfterQuantityMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
@@ -1323,6 +1340,7 @@ ESTADO DEL PEDIDO:
 - Total calculado: ${state.total ? `${formatGs(state.total)} Gs` : "aún no corresponde"}
 - Faltante: ${state.missing.length ? state.missing.join(", ") : "nada"}
 - Promo bloqueada desde plantilla: ${o.locked_offer ? `${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs` : "no"}
+- Comprobante recibido: ${o.payment_proof_received ? "sí" : "no"}
 
 PRECIO DEL PRODUCTO ACTUAL:
 ${productPriceText(state.productInfo, o.locked_offer) || "Sin producto actual."}
@@ -1358,11 +1376,12 @@ REGLAS DURAS:
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
 - Si no hay promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
-- Para confirmación final, incluir producto, cantidad, total, cliente, ciudad, teléfono y dirección si aplica.
+- ✅ IMPORTANTE: Cuando el pedido esté completo (producto, ciudad, cantidad, nombre, dirección, teléfono), CONFIRMÁ DIRECTAMENTE sin preguntar "está todo correcto".
 - En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
 `.trim();
 }
 
+// ✅ MODIFICADO: Fallback con confirmación directa
 function buildFallbackResponse(parsed: ParsedTraining, state: ConversationState) {
   const o = state.order;
 
@@ -1419,16 +1438,44 @@ Para agendarlo, me falta:
 ✅ ${state.missing.join("\n✅ ")} 📲`;
   }
 
+  // ✅ Confirmación directa cuando no falta nada
+  const addressPart = o.address ? ` — ${o.address}` : "";
+  const paymentBlock = state.coverage === false
+    ? `🚚 Su encomienda será enviada por transportadora.
+
+📎 Una vez depositado el costo del delivery, le estaremos enviando su comprobante de envío.
+
+⏰ Oferta válida hoy
+
+¡Gracias por elegirnos!!! 💜✨
+
+💵 Pago anticipado por transferencia.
+
+${bankDataText(parsed)}`
+    : `🚚 Envío GRATIS · Pagás al recibir
+
+🚚 Tu pedido queda agendado para la próxima ronda de envíos. Si pagás al recibir, el delivery lo confirma al llegar a tu zona.
+
+⏰ Oferta válida hoy
+
+¡Gracias por elegirnos!!! 💜✨
+
+💵 Podés pagar en EFECTIVO o TRANSFERENCIA AL DELIVERY cuando recibas tu producto. ¡Como te quede más cómodo! 🚚
+
+¡Gracias por tu compra! 🛍️✨
+
+Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
+
   return `✅ PEDIDO CONFIRMADO
 
-📦 Producto: ${o.product}
-🔢 Cantidad: ${o.quantity}
+✅ Producto: ${o.product}
+✅ Cliente: ${o.customer_name}
+✅ Ubicación: ${o.city}${addressPart}
+✅ Contacto: ${o.phone}
+✅ Cantidad: ${o.quantity} u.
 💰 Total: ${formatGs(state.total)} Gs
-👤 Cliente: ${o.customer_name}
-📍 Ciudad: ${o.city}
-📞 Teléfono: ${o.phone}${o.address ? `\n🏠 Dirección: ${o.address}` : ""}
 
-¡Gracias por tu compra! 💜`;
+${paymentBlock}`;
 }
 
 function postProcessResponse(resp: string) {
@@ -1531,12 +1578,6 @@ export default async function handler(req: any, res: any) {
 
     const explicitQty = extractQuantity(texto);
 
-    /**
-     * Promo locking/unlocking:
-     * - "quiero" desde promo => bloquea promo y cantidad de la promo.
-     * - "quiero uno"/"1 unidad" => desbloquea promo y usa cantidad explícita.
-     * - "quiero dos" => usa promo catálogo si existe o promo plantilla si coincide.
-     */
     let lockedOffer: OfferItem | null = null;
 
     if (productInfo) {
@@ -1573,8 +1614,6 @@ export default async function handler(req: any, res: any) {
     const detectedCityRaw = detectCity(texto, parsed, "");
 
     const detectedCity =
-      // Si estamos esperando cantidad/datos y ya había ciudad, conservarla SIEMPRE.
-      // Esto evita que al responder "2 quiero" vuelva a pedir ciudad.
       (!freshOrder && oldOrder.city && ["collecting_quantity", "collecting_name", "collecting_address", "collecting_phone"].includes(prevStep))
         ? oldOrder.city
         : detectedCityRaw ||
@@ -1610,15 +1649,10 @@ export default async function handler(req: any, res: any) {
       product
     );
 
-    // Protección extra: si el cliente está respondiendo cantidad, no perder ciudad previa.
     if (!orderData.city && oldOrder.city && qty > 0) {
       orderData.city = oldOrder.city;
     }
 
-    // Si el cliente dijo "quiero" en una promo sin cantidad explícita,
-    // NO asumimos cantidad. Primero se le pregunta si quiere 1 unidad o la promo.
-    // Solo usamos la cantidad de la promo cuando el cliente la escribe explícitamente
-    // o cuando viene ya confirmada desde un botón/variable externa.
     if (
       orderData.locked_offer &&
       orderData.quantity === 0 &&
@@ -1628,7 +1662,6 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = orderData.locked_offer.quantity;
     }
 
-    // Si hay cantidad explícita que no coincide con la promo, se desbloquea la promo.
     if (orderData.locked_offer && explicitQty > 0 && explicitQty !== orderData.locked_offer.quantity) {
       orderData.locked_offer = null;
       if (productInfo) {
@@ -1640,9 +1673,9 @@ export default async function handler(req: any, res: any) {
 
     const proofReceived = hasPaymentProof(context, texto, media_url, media_type || mime_type);
     if (proofReceived) {
-      (orderData as any).payment_proof_received = true;
-    } else if ((oldOrder as any).payment_proof_received) {
-      (orderData as any).payment_proof_received = true;
+      orderData.payment_proof_received = true;
+    } else if (oldOrder.payment_proof_received) {
+      orderData.payment_proof_received = true;
     }
 
     if (orderData.product && !getProductInfo(orderData.product, parsed)) {
@@ -1698,6 +1731,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    // ✅ CONFIRMACIÓN AUTOMÁTICA: Cuando confirm es true, usar el mensaje exacto
     if (confirm) {
       const fixedConfirmation = finalConfirmationMessage(finalState, parsed);
 
@@ -1777,7 +1811,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
         last_topic: orderData.product || context?.last_topic || null,
         last_ad_offer: orderData.locked_offer || null,
         order_data: orderData,
-        payment_proof_received: (orderData as any).payment_proof_received || false,
+        payment_proof_received: orderData.payment_proof_received || false,
         step: confirm ? "pedido_confirmado" : finalState.step,
         updated_at: new Date().toISOString(),
       },
