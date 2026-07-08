@@ -14,6 +14,7 @@ import { createClient } from "@supabase/supabase-js";
  * 8) Confirmación final 100% fija desde backend, nunca generada por Gemini.
  * 9) Precio de plantilla congelado: nunca toma números de dirección/teléfono como precio.
  * 10) Después de pedido confirmado, cierra el flujo y no vuelve a vender el mismo pedido.
+ * 11) Detecta packs fijos genéricos para cualquier vendedor sin hardcodear precios/productos.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -56,6 +57,7 @@ type OfferItem = {
   total: number;
   label?: string;
   source?: "template" | "catalog" | "context";
+  fixed_quantity?: boolean;
 };
 
 type TemplatePricing = {
@@ -63,6 +65,7 @@ type TemplatePricing = {
   price1?: number;
   offers: OfferItem[];
   raw?: string;
+  fixed_quantity?: boolean;
 };
 
 type BankData = {
@@ -758,11 +761,16 @@ function isSafeTemplatePricingMessage(text: string) {
   if (looksLikeCustomerDataOrAddress(raw)) return false;
 
   return (
-    /\b(oferta|ofertas|promo|promocion|promoción|precio promocional|precio|antes|solo hoy|stock limitado|ultimas unidades|últimas unidades)\b/.test(n) ||
+    /\b(oferta|ofertas|promo|promocion|promoción|precio promocional|precio|antes|solo hoy|stock limitado|ultimas unidades|últimas unidades|pack|combo|no se vende por unidad|unicamente|únicamente|solo pack)\b/.test(n) ||
     raw.includes("🔥") ||
     raw.includes("💰") ||
     raw.includes("→")
   );
+}
+
+function isFixedPackText(text: string) {
+  const n = normalize(text);
+  return /\b(no se vende por unidad|no vendemos por unidad|solo pack|solo por pack|pack fijo|combo fijo|unicamente por el pack|únicamente por el pack|promocion valida unicamente|promoción válida únicamente|valida unicamente por el pack|válida únicamente por el pack)\b/.test(n);
 }
 
 function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): TemplatePricing | null {
@@ -772,13 +780,15 @@ function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): Te
   const product = detectProduct(raw, parsed, "");
   if (!product) return null;
 
+  const fixedQuantity = isFixedPackText(raw);
   const offers: OfferItem[] = [];
 
-  const addOffer = (quantity: number, total: number) => {
+  const addOffer = (quantity: number, total: number, fixed = false) => {
     const q = sanitizeQuantity(quantity);
     const t = Number(total || 0);
 
-    // Evita que direcciones como "Pirizal 1542" se conviertan en precio.
+    // Genérico: evita interpretar direcciones/teléfonos como precio.
+    // Ningún precio válido de producto debe quedar como 1.542 Gs.
     if (!q || !t || t < 10000 || t > 10000000) return;
 
     offers.push({
@@ -787,48 +797,84 @@ function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): Te
       total: t,
       label: `${q} unidad${q > 1 ? "es" : ""} por ${formatGs(t)} Gs`,
       source: "template",
+      fixed_quantity: fixed,
     });
   };
 
-  const unitPricePatterns = [
+  // Casos genéricos:
+  // "2 Afiladores ... por solo Gs. 99.000"
+  // "Pack de 2 afiladores = Gs. 99.000"
+  // "Combo 3 unidades por 149.900"
+  // "2 unidades → 129.900 Gs"
+  const explicitPackPatterns = [
+    /\b(?:pack|combo)\s*(?:de)?\s*(\d+)[^\n\r]{0,100}?(?:=|por|a|solo|solamente|→|->)\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/gi,
+    /\b(\d+)\s*(?:unidades|unidad|u|und|unds|piezas|pieza|productos)?[^\n\r]{0,100}?(?:por|a|solo|solamente|=|→|->)\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/gi,
     /(?:^|\n|\*)\s*(\d+)\s*(?:unidad|unidades|u|und|unds)?\s*(?:→|->|-|:|=|por|x|a)?\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/gi,
-    /(?:^|\n|\*)\s*(\d+)\s*(?:unidad|unidades|u|und|unds)\s*(?:por|a|sale|cuesta)?\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})/gi,
   ];
 
-  for (const pattern of unitPricePatterns) {
+  for (const pattern of explicitPackPatterns) {
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(raw)) !== null) {
-      addOffer(Number(match[1]), parseNumberGs(match[2]));
+      const quantity = Number(match[1]);
+      const total = parseNumberGs(match[2]);
+      addOffer(quantity, total, fixedQuantity || quantity > 1 && isFixedPackText(raw));
     }
   }
 
+  // Precio simple:
+  // "Precio Promocional: Gs. 149.900"
+  // "Oferta HOY: 169.900 Gs"
+  // Solo se toma como 1 unidad si NO dice pack fijo.
   const singlePricePatterns = [
     /precio\s*promocional\s*[:\-]?\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/i,
     /oferta\s*(?:hoy)?\s*[:\-]?\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/i,
     /(?:precio|valor|sale|cuesta)\s*[:\-]?\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/i,
   ];
 
-  for (const pattern of singlePricePatterns) {
-    const m = raw.match(pattern);
-    if (m) {
-      addOffer(1, parseNumberGs(m[1]));
-      break;
+  if (!fixedQuantity) {
+    for (const pattern of singlePricePatterns) {
+      const m = raw.match(pattern);
+      if (m) {
+        addOffer(1, parseNumberGs(m[1]), false);
+        break;
+      }
+    }
+  }
+
+  // Si hay texto de pack fijo y solo se detectó precio simple o el pack aparece textual,
+  // intenta tomar cantidad desde "pack de X", "X unidades", etc. y el precio más claro del mensaje.
+  if (fixedQuantity && !offers.some((o) => o.fixed_quantity)) {
+    const qMatch =
+      raw.match(/\b(?:pack|combo)\s*(?:de)?\s*(\d+)\b/i) ||
+      raw.match(/\b(\d+)\s*(?:unidades|unidad|u|und|unds|piezas|pieza)\b/i);
+
+    const pMatch =
+      raw.match(/(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/i);
+
+    if (qMatch && pMatch) {
+      addOffer(Number(qMatch[1]), parseNumberGs(pMatch[1]), true);
     }
   }
 
   const unique = new Map<number, OfferItem>();
   for (const offer of offers) {
-    if (!unique.has(offer.quantity)) unique.set(offer.quantity, offer);
+    const previous = unique.get(offer.quantity);
+    if (!previous || offer.fixed_quantity || offer.source === "template") {
+      unique.set(offer.quantity, offer);
+    }
   }
 
   const uniqueOffers = Array.from(unique.values()).sort((a, b) => a.quantity - b.quantity);
   if (!uniqueOffers.length) return null;
 
+  const hasFixed = uniqueOffers.some((o) => o.fixed_quantity) || fixedQuantity;
+
   return {
     product,
     price1: uniqueOffers.find((o) => o.quantity === 1)?.total,
-    offers: uniqueOffers,
+    offers: uniqueOffers.map((o) => ({ ...o, fixed_quantity: hasFixed ? o.fixed_quantity || uniqueOffers.length === 1 : o.fixed_quantity })),
     raw,
+    fixed_quantity: hasFixed,
   };
 }
 function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): TemplatePricing | null {
@@ -855,6 +901,18 @@ function getTemplateOfferForQuantity(templatePricing: TemplatePricing | null, pr
 function getTemplatePrice1(templatePricing: TemplatePricing | null, product: string) {
   if (!templatePricing || !product || normalize(templatePricing.product) !== normalize(product)) return 0;
   return templatePricing.price1 || templatePricing.offers.find((o) => o.quantity === 1)?.total || 0;
+}
+
+
+function getFixedTemplateOffer(templatePricing: TemplatePricing | null, product: string): OfferItem | null {
+  if (!templatePricing || !product || normalize(templatePricing.product) !== normalize(product)) return null;
+  if (!templatePricing.fixed_quantity) return null;
+
+  const fixed =
+    templatePricing.offers.find((o) => o.fixed_quantity) ||
+    templatePricing.offers.sort((a, b) => b.quantity - a.quantity)[0];
+
+  return fixed || null;
 }
 
 function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
@@ -888,6 +946,9 @@ function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
 function getOfferFromLastPromotion(history: any[], parsed: ParsedTraining): OfferItem | null {
   const templatePricing = getTemplatePricingFromHistory(history, parsed);
   if (!templatePricing) return null;
+
+  const fixed = getFixedTemplateOffer(templatePricing, templatePricing.product);
+  if (fixed) return fixed;
 
   return templatePricing.offers
     .filter((o) => o.quantity > 1)
@@ -1076,6 +1137,11 @@ function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferIt
   if (!productInfo) return "";
 
   if (templatePricing && normalize(templatePricing.product) === normalize(productInfo.canonical)) {
+    const fixed = getFixedTemplateOffer(templatePricing, productInfo.canonical);
+    if (fixed) {
+      return `Pack fijo: ${fixed.quantity} unidades por ${formatGs(fixed.total)} Gs. No se vende por unidad.`;
+    }
+
     const lines = templatePricing.offers
       .filter((o) => o.total >= 10000)
       .sort((a, b) => a.quantity - b.quantity)
@@ -1128,10 +1194,17 @@ function buildHardInstruction(state: ConversationState) {
   }
 
   if (!order.city) {
+    if (order.locked_offer?.fixed_quantity) {
+      return `Confirmar que la promo es un pack fijo de ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs, aclarar que no se vende por unidad y preguntar SOLO ciudad de envío. No pedir nombre/dirección/teléfono todavía.`;
+    }
     return "Confirmar producto/precio/promo y preguntar SOLO ciudad de envío. No inventar ciudad. No pedir nombre/dirección/teléfono todavía.";
   }
 
   if (!order.quantity) {
+    if (order.locked_offer?.fixed_quantity) {
+      return `La cantidad ya está definida por la plantilla: pack fijo de ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs. No preguntar 1 o 2. Avanzar con ciudad o datos faltantes.`;
+    }
+
     const promoText =
       order.locked_offer && order.locked_offer.quantity > 1
         ? ` Preguntar explícitamente si quiere 1 unidad o la promo de ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs.`
@@ -1544,13 +1617,14 @@ REGLAS DURAS:
 - Si falta producto, ofrecé catálogo/productos.
 - Si falta ciudad, preguntá ciudad.
 - Si falta cantidad, preguntá cantidad.
-- Si hay promo de 2 unidades y el cliente no especificó cantidad, NO asumas 1 unidad ni 2 unidades: preguntá si quiere 1 unidad o la promo.
+- Si la plantilla dice pack fijo, combo fijo, no se vende por unidad o únicamente por pack: NO preguntes cantidad, respetá cantidad y precio de la plantilla.
+- Si hay promo variable de 2 unidades y el cliente no especificó cantidad, NO asumas 1 unidad ni 2 unidades: preguntá si quiere 1 unidad o la promo.
 - Si faltan datos, pedí SOLO lo faltante.
 - Si no hay cobertura y todavía falta cantidad, NO muestres datos bancarios.
 - Si no hay cobertura y ya hay cantidad, podés mostrar datos de transferencia.
 - Si hay cobertura, indicar envío gratis contra-entrega cuando corresponda.
 - Si el cliente pregunta precio, respondé precio y guiá al siguiente paso.
-- PRIORIDAD DE PRECIOS: primero usar precios/promos de la plantilla o último mensaje promocional. Si la plantilla no trae precio/promo, recién ahí usar CATALOGO_PRODUCTOS del entrenamiento. Nunca uses números de dirección, teléfono o calle como precio.
+- PRIORIDAD DE PRECIOS: primero usar precios/promos de la plantilla o último mensaje promocional. Si la plantilla no trae precio/promo, recién ahí usar CATALOGO_PRODUCTOS del entrenamiento. Nunca uses números de dirección, teléfono o calle como precio. Nunca inventes otro producto.
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
 - Si no hay promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
@@ -1776,8 +1850,12 @@ export default async function handler(req: any, res: any) {
     if (productInfo) {
       const promoFromHistory = getOfferFromLastPromotion(history, parsed);
       const promoMatchesProduct = promoFromHistory && normalize(promoFromHistory.product) === normalize(productInfo.canonical);
+      const fixedTemplateOffer = getFixedTemplateOffer(templatePricing, productInfo.canonical);
 
-      if (explicitQty > 0) {
+      if (fixedTemplateOffer) {
+        lockedOffer = fixedTemplateOffer;
+        if (explicitQty === 0) explicitQty = fixedTemplateOffer.quantity;
+      } else if (explicitQty > 0) {
         const templateOffer = getTemplateOfferForQuantity(templatePricing, productInfo.canonical, explicitQty);
         const templatePrice1 = getTemplatePrice1(templatePricing, productInfo.canonical);
         const catalogOffer = getCatalogOffer(productInfo, explicitQty);
@@ -1863,12 +1941,20 @@ export default async function handler(req: any, res: any) {
       orderData.city = oldOrder.city;
     }
 
-    // Si el cliente dijo "quiero" en una promo sin cantidad explícita,
-    // NO asumimos cantidad. Primero se le pregunta si quiere 1 unidad o la promo.
-    // Solo usamos la cantidad de la promo cuando el cliente la escribe explícitamente
-    // o cuando viene ya confirmada desde un botón/variable externa.
+    // Si la plantilla indica pack fijo / no se vende por unidad,
+    // la cantidad queda bloqueada automáticamente desde la plantilla.
     if (
       orderData.locked_offer &&
+      orderData.locked_offer.fixed_quantity &&
+      orderData.quantity === 0
+    ) {
+      orderData.quantity = orderData.locked_offer.quantity;
+    }
+
+    // Para promos variables, no asumimos cantidad salvo que venga forzado por integración.
+    if (
+      orderData.locked_offer &&
+      !orderData.locked_offer.fixed_quantity &&
       orderData.quantity === 0 &&
       !hasExplicitQuantity(texto) &&
       context?.force_offer_quantity === true
@@ -1876,14 +1962,22 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = orderData.locked_offer.quantity;
     }
 
-    // Si hay cantidad explícita que no coincide con la promo, se desbloquea la promo.
+    // Si hay cantidad explícita distinta:
+    // - pack fijo: NO se cambia, porque la plantilla dice que no se vende por unidad.
+    // - promo variable: se puede cambiar.
     if (orderData.locked_offer && explicitQty > 0 && explicitQty !== orderData.locked_offer.quantity) {
-      orderData.locked_offer = null;
-      if (productInfo) {
-        const catalogOffer = getCatalogOffer(productInfo, explicitQty);
-        if (catalogOffer) orderData.locked_offer = catalogOffer;
+      if (orderData.locked_offer.fixed_quantity) {
+        orderData.quantity = orderData.locked_offer.quantity;
+      } else {
+        orderData.locked_offer = null;
+        if (productInfo) {
+          const templateOffer = getTemplateOfferForQuantity(templatePricing, productInfo.canonical, explicitQty);
+          const catalogOffer = getCatalogOffer(productInfo, explicitQty);
+          if (templateOffer) orderData.locked_offer = templateOffer;
+          else if (catalogOffer) orderData.locked_offer = catalogOffer;
+        }
+        orderData.quantity = explicitQty;
       }
-      orderData.quantity = explicitQty;
     }
 
     const proofReceived = hasPaymentProof(context, texto, media_url, media_type || mime_type);
