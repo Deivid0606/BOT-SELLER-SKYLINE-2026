@@ -28,6 +28,7 @@ import { createClient } from "@supabase/supabase-js";
  * 18) FIX V8: después de postventa, si llega una nueva plantilla y el cliente responde "Quiero confirmar", inicia otra venta nueva.
  * 18) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
  * 18) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
+ * 19) FIX V14: guarda en orders también cuando Gemini confirma con formato flexible de IA.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -155,6 +156,106 @@ function formatGs(n: number) {
 
 function parseNumberGs(raw: string) {
   return Number(clean(raw).replace(/[^\d]/g, "") || 0);
+}
+
+/**
+ * ✅ FIX V14:
+ * Detecta confirmaciones generadas por IA con formato flexible, por ejemplo:
+ *
+ * ¡Genial, David! Ya tenemos todos tus datos. ✅
+ *
+ * **Confirmamos tu pedido:**
+ * * **Producto:** 2x Procesador de Alimentos Premium RAF PRO
+ * * **Total:** 309.800 Gs
+ * * **Envío:** Gratis a Asunción (Caballero casi República de Colombia)
+ * * **Pago:** Contra entrega
+ *
+ * ¡Tu pedido está confirmado!
+ *
+ * Esto permite guardar el pedido en orders aunque Gemini no use el bloque fijo
+ * "✅ PEDIDO CONFIRMADO".
+ */
+function parseFlexibleAiConfirmation(text: string) {
+  const raw = clean(text);
+  const n = normalize(raw);
+
+  const isConfirmed =
+    /\b(confirmamos tu pedido|pedido confirmado|tu pedido esta confirmado|tu pedido está confirmado|ya tenemos todos tus datos|tu pedido ha sido confirmado|tu pedido esta listo|tu pedido está listo)\b/.test(n);
+
+  if (!isConfirmed) return null;
+
+  const customerNameRaw =
+    raw.match(/(?:^|\n)\s*[¡!]?(?:genial|perfecto|excelente|listo|muy bien)\s*,\s*([a-zA-ZÁÉÍÓÚáéíóúÑñ ]{2,50})[!.✅\n]/i)?.[1] ||
+    "";
+
+  const productRaw =
+    raw.match(/\*\s*\*\*\s*Producto\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
+    raw.match(/\*\*\s*Producto\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
+    raw.match(/Producto\s*:\s*(.+)$/im)?.[1] ||
+    "";
+
+  const totalRaw =
+    raw.match(/\*\s*\*\*\s*Total\s*:\s*\*\*\s*(?:Gs\.?\s*)?([\d.\s]+)\s*(?:Gs)?/im)?.[1] ||
+    raw.match(/\*\*\s*Total\s*:\s*\*\*\s*(?:Gs\.?\s*)?([\d.\s]+)\s*(?:Gs)?/im)?.[1] ||
+    raw.match(/Total\s*:\s*(?:Gs\.?\s*)?([\d.\s]+)\s*(?:Gs)?/im)?.[1] ||
+    "";
+
+  const envioRaw =
+    raw.match(/\*\s*\*\*\s*Env[ií]o\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
+    raw.match(/\*\*\s*Env[ií]o\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
+    raw.match(/Env[ií]o\s*:\s*(.+)$/im)?.[1] ||
+    "";
+
+  const pagoRaw =
+    raw.match(/\*\s*\*\*\s*Pago\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
+    raw.match(/\*\*\s*Pago\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
+    raw.match(/Pago\s*:\s*(.+)$/im)?.[1] ||
+    "";
+
+  if (!productRaw || !totalRaw) return null;
+
+  let quantity = 1;
+  let product = clean(productRaw)
+    .replace(/^[-*•]+\s*/, "")
+    .replace(/\*+/g, "")
+    .trim();
+
+  const qtyMatch =
+    product.match(/^(\d+)\s*x\s*(.+)$/i) ||
+    product.match(/^x\s*(\d+)\s+(.+)$/i) ||
+    product.match(/^(\d+)\s+(?:unidades?\s+de\s+)?(.+)$/i);
+
+  if (qtyMatch) {
+    quantity = sanitizeQuantity(Number(qtyMatch[1])) || 1;
+    product = clean(qtyMatch[2]);
+  }
+
+  const total = parseNumberGs(totalRaw);
+
+  let city = "";
+  let address = "";
+
+  const cityAddressMatch =
+    envioRaw.match(/(?:gratis\s+)?(?:a|en)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+)\s*\((.+?)\)/i);
+
+  if (cityAddressMatch) {
+    city = clean(cityAddressMatch[1]);
+    address = clean(cityAddressMatch[2]);
+  } else {
+    const cityOnly =
+      envioRaw.match(/(?:gratis\s+)?(?:a|en)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+)/i)?.[1] || "";
+    city = clean(cityOnly);
+  }
+
+  return {
+    product,
+    quantity,
+    total,
+    city,
+    address,
+    customer_name: clean(customerNameRaw),
+    payment_method: clean(pagoRaw),
+  };
 }
 
 function isPriceQuery(text: string) {
@@ -3207,6 +3308,65 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
 
     if (!aiResponse) {
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
+    }
+
+    // ✅ FIX V14:
+    // Si Gemini confirma con formato flexible, también guardar en orders.
+    // Mantiene intacto el flujo fijo del backend; esto solo cubre respuestas tipo:
+    // "Confirmamos tu pedido: Producto, Total, Envío, Pago".
+    const flexibleConfirmation = parseFlexibleAiConfirmation(aiResponse);
+
+    if (flexibleConfirmation) {
+      const flexibleOrder: OrderData = {
+        ...orderData,
+        order_id: orderData.order_id || makeOrderId(fromNumber),
+        product: flexibleConfirmation.product || orderData.product,
+        quantity: flexibleConfirmation.quantity || orderData.quantity || 1,
+        city: flexibleConfirmation.city || orderData.city,
+        address: flexibleConfirmation.address || orderData.address,
+        customer_name: orderData.customer_name || flexibleConfirmation.customer_name || "",
+        phone: orderData.phone || fromNumber,
+        locked_offer: {
+          product: flexibleConfirmation.product || orderData.product,
+          quantity: flexibleConfirmation.quantity || orderData.quantity || 1,
+          total: flexibleConfirmation.total,
+          source: "template",
+          fixed_quantity: true,
+        },
+        payment_proof_received: orderData.payment_proof_received || false,
+      };
+
+      const savedOrderId = await safeUpsertOrder(user_id, fromNumber, flexibleOrder, parsed, true);
+
+      if (savedOrderId && flexibleConfirmation.payment_method) {
+        const { error: metodoPagoError } = await supabase
+          .from("orders")
+          .update({ metodo_pago: flexibleConfirmation.payment_method } as any)
+          .eq("id", savedOrderId);
+
+        if (metodoPagoError) {
+          console.error("⚠️ metodo_pago update:", metodoPagoError);
+        }
+      }
+
+      return res.json({
+        response: postProcessResponse(aiResponse),
+        context: contextWithActiveTemplate(context, flexibleOrder, "pedido_confirmado", activeTemplateForContext, true),
+        debug: process.env.NODE_ENV === "development"
+          ? {
+              flexible_ai_confirmation_saved: true,
+              saved_order_id: savedOrderId,
+              product: flexibleOrder.product,
+              quantity: flexibleOrder.quantity,
+              city: flexibleOrder.city,
+              address: flexibleOrder.address,
+              customer_name: flexibleOrder.customer_name,
+              phone: flexibleOrder.phone,
+              total: flexibleConfirmation.total,
+              payment_method: flexibleConfirmation.payment_method,
+            }
+          : undefined,
+      });
     }
 
     return res.json({
