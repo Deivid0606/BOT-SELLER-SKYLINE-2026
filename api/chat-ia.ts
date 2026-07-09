@@ -36,6 +36,7 @@ type TrainingData = {
   cities: string[];
   catalogUrl: string;
   raw: string;
+  fullTraining: string;
 };
 
 function makeOrderId(fromNumber: string) {
@@ -50,89 +51,80 @@ function parseTrainingFromText(text: string): TrainingData {
   const cities: string[] = [];
   let catalogUrl = "";
 
-  // Dividir en bloques de productos (cada vendedor tiene su formato)
-  const blocks = text.split(/\n\s*\n\s*\n/).filter(b => b.trim());
+  // Buscar CATALOGO_PRODUCTOS
+  const catalogMatch = text.match(/CATALOGO_PRODUCTOS([\s\S]*?)(?:FIN_CATALOGO_PRODUCTOS|$)/i);
+  const catalogText = catalogMatch ? catalogMatch[1] : text;
 
-  for (const block of blocks) {
-    // Detectar si es un producto (cualquier formato)
-    const hasProductIndicators = 
-      /\b(producto|product|articulo|artículo|oferta|promo|precio|venta|copy|descripcion|caracteristicas)\b/i.test(block);
-    
-    if (!hasProductIndicators) {
-      // Puede ser datos bancarios o cobertura
-      if (/\b(banco|transferencia|cuenta|alias|pago|titular|ci)\b/i.test(block)) {
-        bankData += block + "\n";
-      }
-      if (/\b(ciudad|zona|cobertura|envio|envío|delivery)\b/i.test(block)) {
-        const cityMatches = block.match(/[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s*[A-ZÁÉÍÓÚÑ]?[a-záéíóúñ]*/g);
-        if (cityMatches) cities.push(...cityMatches);
-      }
-      if (/\b(catalogo|catálogo|https?:\/\/)\b/i.test(block)) {
-        const url = block.match(/https?:\/\/[^\s]+/i);
-        if (url) catalogUrl = url[0];
-      }
-      continue;
+  // Dividir en productos dentro del catálogo
+  const productBlocks = catalogText.split(/\n\s*\n/).filter(b => b.trim());
+
+  for (const block of productBlocks) {
+    // Buscar producto con formato estructurado
+    const productMatch = block.match(/^PRODUCTO:\s*(.+)$/im);
+    const canonicalMatch = block.match(/^NOMBRE_CANONICO:\s*(.+)$/im);
+    const aliasMatch = block.match(/^ALIAS:\s*(.+)$/im);
+    const price1Match = block.match(/^PRECIO_1:\s*(\d+)/im);
+    const messageMatch = block.match(/^MENSAJE_VENTA:\s*([\s\S]*?)(?=^[A-Z_]+:|$)/im);
+
+    if (productMatch) {
+      const name = clean(productMatch[1]);
+      const canonical = clean(canonicalMatch?.[1] || name);
+      const price = price1Match ? clean(price1Match[1]) : "";
+      const salesCopy = messageMatch ? clean(messageMatch[1]) : block;
+
+      products.push({
+        name: canonical || name,
+        description: block,
+        price: price,
+        salesCopy: salesCopy || block,
+        rawTraining: block
+      });
     }
-
-    // Extraer nombre del producto (cualquier formato que el vendedor use)
-    const namePatterns = [
-      /producto\s*[:\-]\s*([^\n]+)/i,
-      /product\s*[:\-]\s*([^\n]+)/i,
-      /^(?:PRODUCTO|PRODUCT|OFERTA|PROMO)\s*[:\-]?\s*([^\n]+)/im,
-      /^([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑ\s]{3,})(?:\n|$)/m,
-      /📦\s*([^\n]+)/,
-      /🔥\s*([^\n]+)/,
-      /💰\s*([^\n]+)/
-    ];
-
-    let productName = "";
-    for (const pattern of namePatterns) {
-      const match = block.match(pattern);
-      if (match) {
-        productName = clean(match[1]);
-        break;
-      }
-    }
-
-    // Si no se encontró nombre, tomar primera línea no vacía
-    if (!productName) {
-      const lines = block.split("\n").filter(l => clean(l));
-      if (lines.length > 0) productName = clean(lines[0]);
-    }
-
-    // Precio (puede estar en cualquier formato)
-    const pricePatterns = [
-      /(?:precio|price|valor|costo)\s*[:\-]?\s*([\d\.,\s]+)\s*(?:gs|guaran[ií]es|\$)/i,
-      /([\d\.,\s]+)\s*(?:gs|guaran[ií]es|\$)/i,
-      /💲\s*([\d\.,]+)/,
-      /💰\s*([\d\.,]+)/
-    ];
-
-    let price = "";
-    for (const pattern of pricePatterns) {
-      const match = block.match(pattern);
-      if (match) {
-        price = clean(match[1]);
-        break;
-      }
-    }
-
-    // Descripción, características o copy de venta (todo el bloque)
-    const salesCopy = block;
-
-    products.push({
-      name: productName || "Producto sin nombre",
-      description: block,
-      price: price || "",
-      salesCopy: salesCopy,
-      rawTraining: block
-    });
   }
 
-  // Si no se encontraron productos estructurados, tomar todo el texto como un solo producto
+  // Si no se encontraron productos estructurados, buscar en todo el texto
+  if (products.length === 0) {
+    // Buscar menciones de productos por palabras clave
+    const productKeywords = ['producto', 'oferta', 'promo', 'precio', 'venta'];
+    const lines = text.split('\n').filter(l => l.trim());
+    
+    for (const line of lines) {
+      const hasKeyword = productKeywords.some(kw => line.toLowerCase().includes(kw));
+      if (hasKeyword && line.length > 20) {
+        // Intentar extraer nombre y precio
+        const nameMatch = line.match(/^[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑ\s]{3,}/);
+        const priceMatch = line.match(/\b(\d{5,})\b/);
+        
+        products.push({
+          name: nameMatch ? clean(nameMatch[0]) : "Producto del vendedor",
+          description: line,
+          price: priceMatch ? clean(priceMatch[1]) : "",
+          salesCopy: line,
+          rawTraining: line
+        });
+      }
+    }
+  }
+
+  // Extraer ciudades
+  const citySection = text.match(/(?:ZONAS CON COBERTURA|CIUDADES)([\s\S]*?)(?:ZONAS SIN COBERTURA|$)/i);
+  if (citySection) {
+    const cityLines = citySection[1].match(/[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s*[A-ZÁÉÍÓÚÑ]?[a-záéíóúñ]*/g);
+    if (cityLines) cities.push(...cityLines);
+  }
+
+  // Extraer datos bancarios
+  const bankMatch = text.match(/DATOS_(?:BANCARIOS|TRANSFERENCIA)([\s\S]*?)(?:FIN_DATOS|$)/i);
+  if (bankMatch) bankData = clean(bankMatch[1]);
+
+  // Extraer URL de catálogo
+  const urlMatch = text.match(/(?:CATALOGO_URL|URL_CATALOGO)\s*:\s*(https?:\/\/[^\s]+)/i);
+  if (urlMatch) catalogUrl = urlMatch[1];
+
+  // Si no hay productos, usar todo el entrenamiento como un solo producto
   if (products.length === 0 && text.trim()) {
     products.push({
-      name: "Producto del vendedor",
+      name: "Productos del vendedor",
       description: text,
       salesCopy: text,
       rawTraining: text
@@ -141,18 +133,19 @@ function parseTrainingFromText(text: string): TrainingData {
 
   return {
     products,
-    bankData: bankData || "Datos bancarios no configurados",
+    bankData: bankData || "Datos bancarios según entrenamiento",
     cities: [...new Set(cities.filter(c => c.length > 2))],
-    catalogUrl: catalogUrl,
-    raw: text
+    catalogUrl: catalogUrl || "",
+    raw: text,
+    fullTraining: text
   };
 }
 
 function findRelevantProduct(text: string, training: TrainingData): ProductInfo | null {
   const userMessage = normalize(text);
-  if (!userMessage) return training.products[0] || null;
+  if (!userMessage || training.products.length === 0) return null;
 
-  // Buscar producto más relevante por palabras clave
+  // Si el mensaje menciona un producto específico
   let bestProduct: ProductInfo | null = null;
   let bestScore = 0;
 
@@ -160,19 +153,17 @@ function findRelevantProduct(text: string, training: TrainingData): ProductInfo 
     let score = 0;
     const productText = normalize(product.name + " " + product.description + " " + product.salesCopy);
     
-    // Palabras del mensaje que coinciden con el producto
+    // Palabras del mensaje
     const words = userMessage.split(/\s+/);
     for (const word of words) {
       if (word.length < 3) continue;
       if (productText.includes(word)) score += 10;
       if (product.name.toLowerCase().includes(word)) score += 20;
+      if (word.length > 4 && productText.includes(word)) score += 5;
     }
 
-    // Palabras clave de interés
-    const interestKeywords = ["quiero", "comprar", "precio", "cuanto", "info", "información", "producto", "oferta", "promo"];
-    for (const kw of interestKeywords) {
-      if (userMessage.includes(kw)) score += 2;
-    }
+    // Si el producto está en el mensaje
+    if (userMessage.includes(product.name.toLowerCase())) score += 30;
 
     if (score > bestScore) {
       bestScore = score;
@@ -180,61 +171,78 @@ function findRelevantProduct(text: string, training: TrainingData): ProductInfo 
     }
   }
 
-  // Si no hay coincidencia fuerte, tomar el primer producto
-  if (!bestProduct || bestScore < 5) {
-    return training.products[0] || null;
-  }
-
-  return bestProduct;
-}
-
-function getTrainingForPrompt(training: TrainingData, product: ProductInfo | null) {
-  if (!product) return training.raw;
-
-  // Usar SOLO el entrenamiento del producto específico si existe
-  return product.salesCopy || training.raw;
-}
-
-function buildSystemPrompt(training: TrainingData, product: ProductInfo | null, userMessage: string) {
-  const trainingText = getTrainingForPrompt(training, product);
+  // Si hay un producto con alta puntuación o es el único
+  if (bestProduct && bestScore > 10) return bestProduct;
   
-  return `
-Eres un vendedor experto de WhatsApp. Tu único conocimiento es el entrenamiento que el vendedor te ha proporcionado.
-
-ENTRENAMIENTO DEL VENDEDOR:
-${trainingText}
-
-INSTRUCCIONES IMPORTANTES:
-1. Responde EXCLUSIVAMENTE basándote en el entrenamiento del vendedor
-2. Si el vendedor cargó un copy de venta, úsalo como base y mejóralo si es posible
-3. NO inventes información que no esté en el entrenamiento
-4. NO uses plantillas predefinidas - cada respuesta debe ser natural y personalizada
-5. Si el cliente pregunta por un producto, usa el entrenamiento de ESE producto
-6. Sé cálido, profesional y persuasivo como el vendedor original
-7. Mantén el estilo, tono y formato que el vendedor usa en su entrenamiento
-8. Si no encuentras información en el entrenamiento, indícalo honestamente
-
-PRODUCTOS DISPONIBLES (según entrenamiento):
-${training.products.map(p => `- ${p.name}`).join("\n")}
-
-DATOS BANCARIOS:
-${training.bankData}
-
-CIUDADES CON COBERTURA:
-${training.cities.length ? training.cities.join(", ") : "Según entrenamiento"}
-
-${training.catalogUrl ? `CATÁLOGO: ${training.catalogUrl}` : ""}
-
-RESPONDE COMO EL VENDEDOR, USANDO EL FORMATO Y ESTILO DE SU ENTRENAMIENTO.`;
-}
-
-function buildFallbackResponse(training: TrainingData) {
-  if (training.products.length === 0) {
-    return "¡Hola! 😊 ¿En qué puedo ayudarte hoy?";
+  // Si solo hay un producto, devolverlo
+  if (training.products.length === 1) return training.products[0];
+  
+  // Si el mensaje es genérico, devolver el primer producto
+  const genericKeywords = ['hola', 'buenas', 'producto', 'catálogo', 'catalogo', 'oferta', 'promo'];
+  if (genericKeywords.some(kw => userMessage.includes(kw))) {
+    return training.products[0];
   }
 
-  const product = training.products[0];
-  return `¡Hola! Te cuento sobre nuestros productos:\n\n${product.salesCopy}\n\n¿Qué te interesa? 😊`;
+  return null;
+}
+
+function buildSystemPrompt(training: TrainingData, product: ProductInfo | null, userMessage: string): string {
+  // Si hay un producto específico, usar su entrenamiento
+  const specificTraining = product ? product.salesCopy : "";
+  
+  // Construir el prompt
+  return `
+Eres un vendedor experto de WhatsApp para Mega Todo Store / One Store.
+
+TU ENTRENAMIENTO COMPLETO:
+${training.fullTraining}
+
+${product ? `
+PRODUCTO RELEVANTE PARA ESTA CONSULTA:
+${product.salesCopy}
+` : ''}
+
+INSTRUCCIONES ESTRICTAS:
+1. RESPONDE EXCLUSIVAMENTE BASÁNDOTE EN EL ENTRENAMIENTO DEL VENDEDOR
+2. NO INVENTES información que no esté en el entrenamiento
+3. SI EL CLIENTE PREGUNTA POR UN PRODUCTO, USA LA INFORMACIÓN DE ESE PRODUCTO DEL ENTRENAMIENTO
+4. SÉ NATURAL, CÁLIDO Y PROFESIONAL
+5. USA EL ESTILO Y TONO DEL ENTRENAMIENTO
+6. SI EL ENTRENAMIENTO TIENE UN COPY DE VENTA, ÚSALO COMO BASE
+7. NO REPITAS EL ENTRENAMIENTO TEXTUALMENTE - RESPONDE DE FORMA NATURAL
+8. PREGUNTA SIEMPRE LA CIUDAD DESPUÉS DE PRESENTAR UN PRODUCTO
+
+${training.cities.length > 0 ? `CIUDADES CON COBERTURA: ${training.cities.join(", ")}` : ''}
+${training.bankData ? `DATOS BANCARIOS: ${training.bankData}` : ''}
+${training.catalogUrl ? `CATÁLOGO: ${training.catalogUrl}` : ''}
+
+RESPONDE COMO UN VENDEDOR HUMANO, USANDO EL ENTRENAMIENTO COMO BASE DE CONOCIMIENTO.`;
+}
+
+function buildFallbackResponse(training: TrainingData, product: ProductInfo | null): string {
+  if (!product && training.products.length === 0) {
+    return "¡Hola! 😊 ¿En qué puedo ayudarte hoy? Contame qué producto te interesa.";
+  }
+
+  const prod = product || training.products[0];
+  if (!prod) return "¡Hola! 😊 ¿Qué producto te interesa hoy?";
+
+  // Usar el copy de venta del producto si existe
+  if (prod.salesCopy && prod.salesCopy.length > 20) {
+    // Limpiar el copy y hacerlo más conversacional
+    let response = prod.salesCopy;
+    // Si el copy no tiene saludo, agregarlo
+    if (!response.match(/hola|buen|saludos/i)) {
+      response = `¡Hola! 😊 ${response}`;
+    }
+    // Agregar pregunta de ciudad si no la tiene
+    if (!response.match(/ciudad|envío|delivery/i)) {
+      response += "\n\n📍 ¿Para qué ciudad sería el envío? 😊";
+    }
+    return response;
+  }
+
+  return `¡Hola! 😊 Te cuento sobre ${prod.name}${prod.price ? `, su precio es ${prod.price} Gs` : ''}. ¿Qué te gustaría saber? 📍 ¿Para qué ciudad sería el envío?`;
 }
 
 async function callGemini({
@@ -244,39 +252,44 @@ async function callGemini({
   contents,
   temperature,
   maxTokens,
-}: any) {
-  const body: any = {
-    systemInstruction: { parts: [{ text: system }] },
-    contents,
-    generationConfig: {
-      temperature,
-      maxOutputTokens: maxTokens,
-      topP: 0.95,
-      topK: 40,
-    },
-  };
+}: any): Promise<string> {
+  try {
+    const body: any = {
+      systemInstruction: { parts: [{ text: system }] },
+      contents,
+      generationConfig: {
+        temperature: temperature || 0.6,
+        maxOutputTokens: maxTokens || 2048,
+        topP: 0.95,
+        topK: 40,
+      },
+    };
 
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("❌ Gemini API Error:", JSON.stringify(data, null, 2));
+      return "";
     }
-  );
 
-  const data = await r.json();
+    const text = data?.candidates?.[0]?.content?.parts
+      ?.map((p: any) => p.text || "")
+      .join("") || "";
 
-  if (!r.ok) {
-    console.error("❌ Gemini:", JSON.stringify(data).slice(0, 800));
+    return clean(text);
+  } catch (error) {
+    console.error("❌ Gemini call error:", error);
     return "";
   }
-
-  return clean(
-    data?.candidates?.[0]?.content?.parts
-      ?.map((p: any) => p.text || "")
-      .join("") || ""
-  );
 }
 
 async function getAllTrainingData(userId: string) {
@@ -341,16 +354,16 @@ export default async function handler(req: any, res: any) {
     const allTraining = await getAllTrainingData(user_id);
     const trainingText = buildTrainingText(allTraining);
     
-    // Parsear el entrenamiento del vendedor (cualquier formato)
+    // Parsear el entrenamiento
     const training = parseTrainingFromText(trainingText);
     
-    // Encontrar el producto relevante para el mensaje
+    // Encontrar el producto relevante
     const relevantProduct = findRelevantProduct(texto, training);
 
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    // Construir el sistema prompt basado en el entrenamiento
+    // Construir el sistema prompt
     const system = buildSystemPrompt(training, relevantProduct, texto);
 
     // Construir historial
@@ -374,28 +387,40 @@ export default async function handler(req: any, res: any) {
       model,
       system,
       contents,
-      temperature: iaConfig.temperature ?? 0.6,
-      maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
+      temperature: iaConfig.temperature ?? 0.65,
+      maxTokens: Math.max(iaConfig.max_tokens ?? 0, 1024),
     });
 
-    // Si no hay respuesta, usar fallback
-    if (!aiResponse) {
-      aiResponse = buildFallbackResponse(training);
+    // Si no hay respuesta de Gemini o es muy corta, usar fallback
+    if (!aiResponse || aiResponse.length < 10) {
+      console.log("⚠️ Gemini no respondió, usando fallback");
+      aiResponse = buildFallbackResponse(training, relevantProduct);
+    }
+
+    // Limpiar la respuesta
+    const cleanResponse = clean(aiResponse)
+      .replace(/\n{3,}/g, "\n\n")
+      .slice(0, 4000);
+
+    // Verificar que no esté devolviendo el entrenamiento crudo
+    if (cleanResponse.includes("ENTRENAMIENTO") || cleanResponse.includes("CATALOGO_PRODUCTOS")) {
+      console.log("⚠️ Respuesta contiene entrenamiento crudo, usando fallback");
+      aiResponse = buildFallbackResponse(training, relevantProduct);
     }
 
     return res.json({
-      response: aiResponse,
+      response: aiResponse || buildFallbackResponse(training, relevantProduct),
       context: {
         ...(context || {}),
         last_topic: relevantProduct?.name || null,
         used_training: true,
-        training_source: relevantProduct ? "specific_product" : "general",
+        product_found: !!relevantProduct,
         updated_at: new Date().toISOString(),
       },
       debug: true ? {
         products_found: training.products.length,
         product_used: relevantProduct?.name || "ninguno",
-        training_length: trainingText.length,
+        ai_response_length: aiResponse?.length || 0,
       } : undefined,
     });
 
