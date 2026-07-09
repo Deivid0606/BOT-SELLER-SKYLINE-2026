@@ -119,29 +119,42 @@ type ConversationState = {
   hardInstruction: string;
 };
 
-// ✅ NUEVA FUNCIÓN: Encontrar producto por PALABRA_CLAVE o ALIAS
+// ✅ FIX V15: Encontrar producto por PALABRA_CLAVE o ALIAS con normalización real.
+// Soporta palabras clave separadas por coma: "Crema, Varices" activa con "crema" o "varices".
 function encontrarProductoPorPalabraClave(mensaje: string, products: ProductItem[]): ProductItem | null {
   if (!products || products.length === 0) return null;
-  
-  const mensajeLower = mensaje.toLowerCase().trim();
-  
+
+  const msg = normalize(mensaje);
+  if (!msg) return null;
+
+  let best: ProductItem | null = null;
+  let bestScore = 0;
+
   for (const producto of products) {
-    // Buscar por PALABRA_CLAVE
-    if (producto.palabra_clave && mensajeLower.includes(producto.palabra_clave.toLowerCase())) {
-      return producto;
-    }
-    
-    // Buscar por ALIAS
-    if (producto.aliases && producto.aliases.length > 0) {
-      for (const alias of producto.aliases) {
-        if (mensajeLower.includes(alias.toLowerCase())) {
-          return producto;
-        }
+    const candidates = [
+      producto.palabra_clave || "",
+      producto.product || "",
+      producto.canonical || "",
+      ...(producto.aliases || []),
+    ]
+      .flatMap((x) => splitKeywordAliases(x))
+      .map(normalize)
+      .filter((x) => x.length >= 3 && !isGenericProductWord(x));
+
+    for (const c of Array.from(new Set(candidates))) {
+      let score = 0;
+      if (msg === c) score = 1000;
+      else if (msg.includes(c)) score = 800 + c.length;
+      else if (c.includes(msg) && msg.length >= 4) score = 500 + msg.length;
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = producto;
       }
     }
   }
-  
-  return null;
+
+  return bestScore >= 500 ? best : null;
 }
 
 function makeOrderId(fromNumber: string) {
@@ -218,7 +231,7 @@ function hasExplicitQuantity(text: string) {
 async function getAllTrainingData(userId: string) {
   const { data, error } = await supabase
     .from("training_data")
-    .select("id, intent, examples, response, is_active, image_urls")
+    .select("id, intent, examples, response, is_active, image_urls, products, entrenamiento_completo")
     .eq("user_id", userId)
     .eq("is_active", true)
     .order("created_at", { ascending: false });
@@ -262,6 +275,110 @@ function attachProductImages(products: ProductItem[], rawItems: any[]) {
       }
     }
   }
+}
+
+function splitKeywordAliases(value: any): string[] {
+  return clean(value)
+    .split(/[,:;|\/\\]+/g)
+    .map(clean)
+    .filter(Boolean);
+}
+
+function visualProductNameFromKeyword(keyword: string, copy: string, aliases: string[]) {
+  const fromCopy = extractProductNameFromCopy(copy);
+  if (fromCopy) return toTitleCase(fromCopy);
+
+  const firstAlias = aliases.find((a) => normalize(a).length >= 3);
+  if (firstAlias) return toTitleCase(firstAlias);
+
+  const firstKeyword = splitKeywordAliases(keyword).find((k) => normalize(k).length >= 3) || keyword;
+  return toTitleCase(firstKeyword);
+}
+
+function productsFromVisualCatalog(items: any[]): ProductItem[] {
+  const result: ProductItem[] = [];
+  const seen = new Set<string>();
+
+  for (const item of items || []) {
+    const list = Array.isArray(item?.products) ? item.products : [];
+
+    for (const p of list) {
+      const keyword = clean(p?.palabra_clave || p?.keyword || "");
+      const copy = clean(p?.copy || p?.salesCopy || p?.mensaje || "");
+      const image = clean(p?.image || p?.image_url || p?.imagen || "");
+
+      const aliasFrontend = Array.isArray(p?.alias)
+        ? p.alias.map(clean).filter(Boolean)
+        : typeof p?.alias === "string"
+          ? p.alias.split(",").map(clean).filter(Boolean)
+          : [];
+
+      const aliasesBackend = Array.isArray(p?.aliases)
+        ? p.aliases.map(clean).filter(Boolean)
+        : typeof p?.aliases === "string"
+          ? p.aliases.split(",").map(clean).filter(Boolean)
+          : [];
+
+      if (!keyword || !copy) continue;
+
+      const keywordParts = splitKeywordAliases(keyword);
+      const allAliases = Array.from(new Set([
+        keyword,
+        ...keywordParts,
+        ...aliasFrontend,
+        ...aliasesBackend,
+      ].map(clean).filter(Boolean)));
+
+      const canonical = visualProductNameFromKeyword(keyword, copy, allAliases);
+      const key = normalize(`${canonical}|${keyword}|${image}`);
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const { offers, fixedQuantity } = parseRawOffers(copy, canonical);
+      const sortedOffers = offers.slice().sort((a, b) => a.quantity - b.quantity);
+      const price1 = sortedOffers.find((o) => o.quantity === 1)?.total || sortedOffers[0]?.total || 1;
+      const price2 = fixedQuantity ? undefined : sortedOffers.find((o) => o.quantity === 2)?.total;
+      const price3 = fixedQuantity ? undefined : sortedOffers.find((o) => o.quantity === 3)?.total;
+      const fixedPackQuantity = fixedQuantity
+        ? (sortedOffers.find((o) => o.fixed_quantity)?.quantity || sortedOffers[0]?.quantity || undefined)
+        : undefined;
+
+      result.push({
+        product: canonical,
+        canonical,
+        aliases: allAliases,
+        price1,
+        price2,
+        price3,
+        fixedPackQuantity,
+        salesCopy: copy,
+        images: image ? [image] : [],
+        palabra_clave: keyword,
+      });
+    }
+  }
+
+  return result;
+}
+
+function mergeProductsByPriority(primary: ProductItem[], secondary: ProductItem[]) {
+  const merged: ProductItem[] = [];
+  const seen = new Set<string>();
+
+  for (const product of [...primary, ...secondary]) {
+    const names = [product.palabra_clave, product.canonical, product.product, ...(product.aliases || [])]
+      .flatMap((x) => splitKeywordAliases(x || ""))
+      .map(normalize)
+      .filter(Boolean);
+
+    const key = names.find((n) => n.length >= 3) || normalize(product.canonical || product.product);
+    if (!key || seen.has(key)) continue;
+
+    seen.add(key);
+    merged.push(product);
+  }
+
+  return merged;
 }
 
 function parseCatalogUrl(training: string) {
@@ -2510,6 +2627,12 @@ export default async function handler(req: any, res: any) {
     const allTraining = await getAllTrainingData(user_id);
     const trainingText = buildTrainingText(allTraining);
     const parsed = parseTraining(trainingText);
+
+    // ✅ FIX V15: El catálogo visual guardado en training_data.products tiene prioridad.
+    // Esto evita que el bot responda "afilador" con la imagen de "varices".
+    const visualProducts = productsFromVisualCatalog(allTraining);
+    parsed.products = mergeProductsByPriority(visualProducts, parsed.products);
+
     attachProductImages(parsed.products, allTraining);
     const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
 
