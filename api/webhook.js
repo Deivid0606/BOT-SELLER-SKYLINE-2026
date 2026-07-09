@@ -12,6 +12,7 @@
 // + ✅ LOGS DE DIAGNÓSTICO PARA VERIFICAR GUARDADO DE CONTEXTO
 // + ✅ FIX UBICACIÓN: se agrega manejo de mensajes type "location"
 // + ✅ FIX WEBHOOK: URL ABSOLUTA para llamar a chat-ia (soluciona error "host no detectado")
+// + ✅ FIX: URL con https:// correcto (soluciona error ERR_INVALID_URL)
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -949,9 +950,9 @@ async function llamarChatIA({
   mediaType = null,
   mimeType = null,
 }) {
-  // ✅ FIX: Usar URL absoluta en lugar de depender de req.headers.host
-  // Esto soluciona el error "No se detectó host" y el mensaje "hubo un error momentáneo"
-  const BASE_URL = process.env.BASE_URL || 'https://bot-seller-skyline-2026.vercel.app';
+  // ✅ FIX: Usar URL absoluta con https:// correcto
+  // Esto soluciona el error "ERR_INVALID_URL" y el mensaje "hubo un error momentáneo"
+  const BASE_URL = 'https://bot-seller-skyline-2026.vercel.app';
   const url = `${BASE_URL}/api/chat-ia`;
   
   console.log(`📤 Llamando a chat-ia en: ${url}`);
