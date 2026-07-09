@@ -271,6 +271,20 @@ function parseBankData(training: string): BankData | null {
  * "2 Afiladores Profesionales por solo Gs. 99.000" → "Afiladores Profesionales"
  * "Procesador de Alimentos Premium RAF PRO® preparás..." → "Procesador de Alimentos Premium RAF PRO"
  */
+function isGenericMarketingPhrase(normCanonical: string) {
+  const words = normCanonical.split(" ").filter(Boolean);
+  const genericWords = new Set([
+    "oferta", "ofertas", "promo", "promos", "promocion", "promoción",
+    "descuento", "descuentos", "gratis", "hoy", "ahora", "antes",
+    "stock", "limitado", "limitada", "envio", "envío", "delivery",
+    "pagas", "pagás", "recibir", "unidad", "unidades", "solo",
+    "solamente", "precio", "precios", "valido", "válido", "valida", "válida",
+  ]);
+  // Si TODAS las palabras del nombre detectado son genéricas de marketing
+  // (ej: "Oferta Hoy", "Stock Limitado"), no es un producto real.
+  return words.length > 0 && words.every((w) => genericWords.has(w));
+}
+
 function extractProductNameFromCopy(text: string): string {
   const raw = clean(text);
   if (!raw) return "";
@@ -337,6 +351,10 @@ function autoDetectProductsFromTraining(training: string, existing: ProductItem[
     const canonical = toTitleCase(name);
     const normCanonical = normalize(canonical);
     if (!normCanonical || knownNames.has(normCanonical)) continue;
+    // ✅ Evitar falsos positivos: frases de marketing genéricas ("Oferta Hoy",
+    // "Stock Limitado", "Envío Gratis") no son nombres de producto, aunque
+    // aparezcan capitalizadas y cerca de un precio.
+    if (isGenericMarketingPhrase(normCanonical)) continue;
 
     const { offers } = parseRawOffers(block, canonical);
     if (!offers.length) continue;
