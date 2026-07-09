@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { 
   GraduationCap, Plus, Trash2, BookOpen, Loader2, RefreshCw, 
-  ImagePlus, X, Copy, Sparkles, Zap, Package as PackageIcon
+  ImagePlus, X, Copy, Sparkles, Zap, Package as PackageIcon, Key
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -11,6 +11,8 @@ interface ProductItem {
   id: string;
   image: string;
   copy: string;
+  palabra_clave: string; // Nueva: palabra clave para activar el producto
+  alias: string[]; // Aliases adicionales
 }
 
 interface TrainingItem {
@@ -36,7 +38,7 @@ export default function TrainingPage() {
   const [intent, setIntent] = useState("");
   const [examples, setExamples] = useState("");
   const [entrenamientoCompleto, setEntrenamientoCompleto] = useState("");
-  const [products, setProducts] = useState<ProductItem[]>([]); // Empieza vacío
+  const [products, setProducts] = useState<ProductItem[]>([]);
   const [mostrarCatalogo, setMostrarCatalogo] = useState(false);
   
   const [loading, setLoading] = useState(false);
@@ -161,10 +163,10 @@ export default function TrainingPage() {
     );
   };
 
-  const handleCopyChange = (productId: string, copy: string) => {
+  const handleProductChange = (productId: string, field: keyof ProductItem, value: any) => {
     setProducts(prev => 
       prev.map(p => 
-        p.id === productId ? { ...p, copy } : p
+        p.id === productId ? { ...p, [field]: value } : p
       )
     );
   };
@@ -172,7 +174,13 @@ export default function TrainingPage() {
   const addProduct = () => {
     setProducts(prev => [
       ...prev,
-      { id: crypto.randomUUID(), image: "", copy: "" }
+      { 
+        id: crypto.randomUUID(), 
+        image: "", 
+        copy: "",
+        palabra_clave: "",
+        alias: []
+      }
     ]);
     setMostrarCatalogo(true);
   };
@@ -202,11 +210,17 @@ export default function TrainingPage() {
       return;
     }
 
-    // Validar productos solo si hay productos
+    // Validar productos si existen
     if (products.length > 0) {
       const hasEmptyCopy = products.some(p => !p.copy.trim());
       if (hasEmptyCopy) {
         alert("Todos los productos deben tener información (copy)");
+        return;
+      }
+      
+      const hasEmptyKeyword = products.some(p => !p.palabra_clave.trim());
+      if (hasEmptyKeyword) {
+        alert("Todos los productos deben tener una palabra clave");
         return;
       }
     }
@@ -227,7 +241,7 @@ export default function TrainingPage() {
         examples: examplesArray,
         response: entrenamientoCompleto.trim(),
         image_urls: imageUrls,
-        products: products.length > 0 ? products : [], // Guarda array vacío si no hay productos
+        products: products.length > 0 ? products : [],
         entrenamiento_completo: entrenamientoCompleto.trim(),
         is_active: true
       };
@@ -429,6 +443,40 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
                       </button>
                     </div>
 
+                    {/* Palabra Clave - NUEVO */}
+                    <div>
+                      <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+                        <Key className="h-3 w-3" />
+                        Palabra Clave <span className="text-destructive">*</span>
+                      </label>
+                      <input
+                        value={product.palabra_clave}
+                        onChange={(e) => handleProductChange(product.id, "palabra_clave", e.target.value)}
+                        className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+                        placeholder="Ej: procesador, veneno, limpiador"
+                      />
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        El bot usará esta palabra para identificar el producto y enviar su imagen
+                      </p>
+                    </div>
+
+                    {/* Aliases - NUEVO */}
+                    <div>
+                      <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+                        <PackageIcon className="h-3 w-3" />
+                        Aliases (separados por coma)
+                      </label>
+                      <input
+                        value={product.alias.join(', ')}
+                        onChange={(e) => handleProductChange(product.id, "alias", e.target.value.split(',').map(a => a.trim()).filter(Boolean))}
+                        className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+                        placeholder="proce, procesadora, raf pro"
+                      />
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        Palabras alternativas que también activarán este producto
+                      </p>
+                    </div>
+
                     {/* Imagen */}
                     <div>
                       <label className="text-[10px] text-muted-foreground">Imagen</label>
@@ -463,11 +511,11 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
                     <div>
                       <label className="text-[10px] text-muted-foreground flex items-center gap-1">
                         <Copy className="h-3 w-3" />
-                        Copy / Mensaje de Venta
+                        Copy / Mensaje de Venta <span className="text-destructive">*</span>
                       </label>
                       <textarea
                         value={product.copy}
-                        onChange={(e) => handleCopyChange(product.id, e.target.value)}
+                        onChange={(e) => handleProductChange(product.id, "copy", e.target.value)}
                         className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[80px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
                         placeholder={`🔥 ¡Cociná más rápido y sin esfuerzo!
 Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segundos...`}
