@@ -11,6 +11,7 @@
 // + ✅ FIX: SIEMPRE usa template si existe, ignora response cuando hay plantilla
 // + ✅ LOGS DE DIAGNÓSTICO PARA VERIFICAR GUARDADO DE CONTEXTO
 // + ✅ FIX UBICACIÓN: se agrega manejo de mensajes type "location"
+// + ✅ FIX WEBHOOK: URL ABSOLUTA para llamar a chat-ia (soluciona error "host no detectado")
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -934,7 +935,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// LLAMADA A CHAT-IA
+// LLAMADA A CHAT-IA - ✅ CORREGIDO CON URL ABSOLUTA
 // ═══════════════════════════════════════════════════════════
 
 async function llamarChatIA({
@@ -948,34 +949,54 @@ async function llamarChatIA({
   mediaType = null,
   mimeType = null,
 }) {
-  const host = req.headers.host;
-  const protocol = req.headers["x-forwarded-proto"] || "https";
-  if (!host) throw new Error("No se detectó host");
+  // ✅ FIX: Usar URL absoluta en lugar de depender de req.headers.host
+  // Esto soluciona el error "No se detectó host" y el mensaje "hubo un error momentáneo"
+  const BASE_URL = process.env.BASE_URL || 'https://bot-seller-skyline-2026.vercel.app';
+  const url = `${BASE_URL}/api/chat-ia`;
+  
+  console.log(`📤 Llamando a chat-ia en: ${url}`);
+  console.log(`📤 userId: ${userId}, from: ${from}, texto: ${texto?.slice(0, 50)}...`);
 
-  const url = `${protocol}://${host}/api/chat-ia`;
-  const resIA = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      user_id: userId,
-      message: texto,
-      from_number: from,
-      context: ctx || {},
-      history: history || [],
-      media_url: mediaUrl,
-      media_type: mediaType,
-      mime_type: mimeType,
-    }),
-  });
-  const raw = await resIA.text();
-  let data = {};
   try {
-    data = JSON.parse(raw);
-  } catch {
-    throw new Error("chat-ia no devolvió JSON");
+    const resIA = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: userId,
+        message: texto,
+        from_number: from,
+        context: ctx || {},
+        history: history || [],
+        media_url: mediaUrl,
+        media_type: mediaType,
+        mime_type: mimeType,
+      }),
+    });
+    
+    const raw = await resIA.text();
+    console.log(`📥 chat-ia response status: ${resIA.status}`);
+    console.log(`📥 chat-ia response length: ${raw?.length || 0}`);
+    
+    let data = {};
+    try {
+      data = JSON.parse(raw);
+    } catch (parseError) {
+      console.error("❌ Error parseando JSON de chat-ia:", parseError.message);
+      console.error("📥 Raw response:", raw?.slice(0, 500));
+      throw new Error("chat-ia no devolvió JSON válido");
+    }
+    
+    if (!resIA.ok) {
+      console.error(`❌ chat-ia error ${resIA.status}:`, data?.error || raw);
+      throw new Error(data?.error || `chat-ia error ${resIA.status}`);
+    }
+    
+    console.log(`✅ chat-ia respondió correctamente`);
+    return data;
+  } catch (err) {
+    console.error("❌ Error en llamarChatIA:", err.message || err);
+    throw err;
   }
-  if (!resIA.ok) throw new Error(data?.error || `chat-ia error ${resIA.status}`);
-  return data;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1538,12 +1559,6 @@ export async function procesar(req, message, userId, from) {
       mimeType = message.sticker?.mime_type || "image/webp";
       messageType = "image";
     } else if (tipoMsg === "location") {
-      // ✅ FIX: WhatsApp Cloud API manda la ubicación compartida con type "location"
-      // y un objeto message.location = { latitude, longitude, name?, address? }.
-      // Antes esto caía directo al "else" de abajo y se descartaba sin llamar
-      // nunca a /api/chat-ia, así que el bot jamás se enteraba de la ubicación
-      // y seguía pidiendo "dirección exacta o ubicación" aunque el cliente ya
-      // la hubiera compartido.
       const loc = message.location || {};
       if (loc.address) {
         texto = clean(loc.address);
