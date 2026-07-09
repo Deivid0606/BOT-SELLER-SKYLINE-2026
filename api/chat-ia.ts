@@ -401,6 +401,12 @@ function parseTraining(training: string): ParsedTraining {
     const price2 = Number(clean(block.match(/^PRECIO_2:\s*(\d+)/im)?.[1]) || 0);
     const price3 = Number(clean(block.match(/^PRECIO_3:\s*(\d+)/im)?.[1]) || 0);
     const salesCopy = clean(block.match(/^MENSAJE_VENTA:\s*([\s\S]*)$/im)?.[1]) || undefined;
+    // ✅ PACK_FIJO: <cantidad> — para productos que SOLO se venden en pack
+    // (ej: "2 afiladores por 99.000 Gs, no se vende por unidad"). Cuando
+    // está presente, PRECIO_1 se interpreta como el TOTAL del pack, no
+    // como precio de 1 unidad, y no se ofrece venta por unidad suelta.
+    const packFijoRaw = Number(clean(block.match(/^PACK_FIJO:\s*(\d+)/im)?.[1]) || 0);
+    const fixedPackQuantity = packFijoRaw > 1 ? packFijoRaw : undefined;
 
     if (product && canonical && price1 > 0) {
       products.push({
@@ -408,8 +414,9 @@ function parseTraining(training: string): ParsedTraining {
         canonical,
         aliases: Array.from(new Set([product, canonical, ...aliases])),
         price1,
-        price2: price2 || undefined,
-        price3: price3 || undefined,
+        price2: fixedPackQuantity ? undefined : price2 || undefined,
+        price3: fixedPackQuantity ? undefined : price3 || undefined,
+        fixedPackQuantity,
         salesCopy,
       });
     }
