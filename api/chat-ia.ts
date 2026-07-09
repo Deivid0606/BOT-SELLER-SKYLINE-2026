@@ -1873,6 +1873,15 @@ function bankDataText(parsed: ParsedTraining) {
 function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferItem | null, templatePricing?: TemplatePricing | null) {
   if (!productInfo) return "";
 
+  // ✅ Si el producto es pack fijo (detectado desde catálogo formal con
+  // PACK_FIJO o desde copy libre sin precio real de 1 unidad), SIEMPRE
+  // mostrar el texto de pack fijo, sin importar de dónde venga lockedOffer.
+  // Esto evita mostrar "1 unidad: X Gs" junto a "2 unidades: X Gs" con el
+  // mismo precio, que confunde al cliente.
+  if (productInfo.fixedPackQuantity && productInfo.price1) {
+    return `Pack fijo: ${productInfo.fixedPackQuantity} unidades por ${formatGs(productInfo.price1)} Gs. No se vende por unidad.`;
+  }
+
   // ✅ FIX V6:
   // Si hay precio/pack de plantilla para este producto, NO se muestran precios del catálogo.
   // La plantilla es la única fuente de verdad para producto/cantidad/precio del pedido actual.
