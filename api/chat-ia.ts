@@ -543,9 +543,39 @@ function extractQuantity(text: string) {
 }
 
 function extractPhone(text: string) {
-  const compact = clean(text).replace(/\s+/g, "");
-  const match = compact.match(/(?:09\d{8}|\+5959\d{8}|5959\d{8}|09\d{8,9})/);
-  return match?.[0] || "";
+  const raw = clean(text);
+
+  // ✅ FIX V21: antes se borraban TODOS los espacios del mensaje y se buscaba
+  // el teléfono en el string entero. Eso hacía que un número de casa pegado
+  // justo antes del teléfono (ej: "Caballero 099 0994130021") se fusionara
+  // con él, dando un teléfono roto ("0990994130" en vez de "0994130021").
+  // Ahora se busca palabra por palabra para no mezclar tokens numéricos
+  // que estaban separados por un espacio en el mensaje original.
+  const tokens = raw.split(/\s+/).filter(Boolean);
+
+  const fullPattern = /^(?:09\d{8}|\+5959\d{8}|5959\d{8})$/;
+
+  // 1) Un solo token que ya es un teléfono completo (el caso normal).
+  for (const t of tokens) {
+    const compactToken = t.replace(/[.\-]/g, "");
+    if (fullPattern.test(compactToken)) return compactToken.replace(/^\+/, "");
+  }
+
+  // 2) Teléfono partido en varios tokens numéricos consecutivos
+  //    (ej: "0994 130 021"), concatenando SOLO hasta completar un
+  //    teléfono válido, sin seguir de largo hacia otros números sueltos.
+  for (let i = 0; i < tokens.length; i++) {
+    if (!/^\d+$/.test(tokens[i]) || !tokens[i].startsWith("09")) continue;
+    let acc = tokens[i];
+    for (let j = i + 1; j < tokens.length && acc.length < 10; j++) {
+      if (!/^\d+$/.test(tokens[j])) break;
+      if (acc.length + tokens[j].length > 11) break;
+      acc += tokens[j];
+    }
+    if (/^09\d{8,9}$/.test(acc)) return acc;
+  }
+
+  return "";
 }
 
 function toTitleCase(str: string): string {
@@ -2876,7 +2906,7 @@ export default async function handler(req: any, res: any) {
           step: "pedido_confirmado",
           updated_at: new Date().toISOString(),
         },
-        debug: process.env.NODE_ENV === "development"
+        debug: true
           ? {
               fixed_backend_confirmation: true,
               product: orderData.product,
@@ -2910,7 +2940,7 @@ export default async function handler(req: any, res: any) {
             step: finalState.step,
             updated_at: new Date().toISOString(),
           },
-          debug: process.env.NODE_ENV === "development"
+          debug: true
             ? {
                 deterministic_fixed_city_response: true,
                 product: orderData.product,
@@ -2940,7 +2970,7 @@ export default async function handler(req: any, res: any) {
             step: finalState.step,
             updated_at: new Date().toISOString(),
           },
-          debug: process.env.NODE_ENV === "development"
+          debug: true
             ? {
                 deterministic_quantity_response: true,
                 freshOrder,
@@ -3006,7 +3036,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
         step: confirm ? "pedido_confirmado" : finalState.step,
         updated_at: new Date().toISOString(),
       },
-      debug: process.env.NODE_ENV === "development"
+      debug: true
         ? {
             freshOrder,
             parsed_products: parsed.products.length,
