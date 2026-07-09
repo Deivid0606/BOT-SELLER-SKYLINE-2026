@@ -630,6 +630,26 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   }
 
   if (isValidNameLine(raw)) return toTitleCase(raw);
+
+  // ✅ FIX V20: cliente manda nombre + dirección + teléfono TODO en una sola línea,
+  // sin saltos (ej: "Pamela Galeano Caballero 1050 0994130021").
+  // Antes esto devolvía "" porque isValidNameLine rechaza cualquier línea con dígitos,
+  // y la rama multilínea (que sí sabe separar) nunca se activaba porque no hay "\n".
+  // Ahora: tomamos las primeras palabras alfabéticas (antes del primer token con dígitos)
+  // y probamos si las primeras 2 forman un nombre válido (nombre y apellido).
+  if (!isMultiLine) {
+    const tokens = raw.split(/\s+/).filter(Boolean);
+    const leadingWords: string[] = [];
+    for (const t of tokens) {
+      if (/\d/.test(t)) break;
+      leadingWords.push(t);
+    }
+    if (leadingWords.length >= 2) {
+      const candidate = leadingWords.slice(0, 2).join(" ");
+      if (isValidNameLine(candidate)) return toTitleCase(candidate);
+    }
+  }
+
   return "";
 }
 
