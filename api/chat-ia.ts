@@ -32,6 +32,7 @@ import { createClient } from "@supabase/supabase-js";
  * 26) FIX V14: Filtrar por PALABRA_CLAVE para enviar SOLO imágenes del producto correcto
  * 27) FIX V18: Envía TODO el copy original del producto, sin resumir ni cortar.
  * 28) FIX V18: Cada producto soporta hasta 3 imágenes propias.
+ * 29) FIX V19: Detecta ciudad aunque el cliente escriba saludo/frase: "hola soy de Carapeguá".
  */
 
 const supabase = createClient(
@@ -779,30 +780,59 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
 }
 
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
-  const msg = normalize(text);
-  if (!msg) return clean(prev || "");
+  // ✅ FIX V19: detectar ciudad aunque venga mezclada con saludo/frase.
+  // Ejemplos: "hola soy de Carapeguá", "buenas estoy en Capiatá",
+  // "quiero para Luque", "me interesa, soy de San Lorenzo".
+  const rawMsg = normalize(text);
+  const statementCity = extractCityStatement(text);
+  const msg = normalize(statementCity || text);
+
+  if (!msg && !rawMsg) return clean(prev || "");
 
   let best = "";
   let bestScore = 0;
-  const msgWords = msg.split(/\s+/);
+  const msgWords = msg.split(/\s+/).filter(Boolean);
+  const rawWords = rawMsg.split(/\s+/).filter(Boolean);
 
   for (const c of parsed.cities) {
     const a = normalize(c.alias);
+    const cn = normalize(c.canonical);
     if (!a || a.length < 2) continue;
 
     let score = 0;
-    if (msg === a) score += 100;
-    else if (msg.includes(a)) score += 80;
-    else if (a.includes(msg) && msg.length >= 3) score += 50;
-    else {
-      const aliasWords = a.split(/\s+/).filter((w) => w.length >= 3);
-      if (aliasWords.length >= 2) {
-        const matched = aliasWords.filter((w) =>
-          msgWords.some((mw) => mw === w || mw.startsWith(w) || w.startsWith(mw))
-        );
-        if (matched.length >= Math.ceil(aliasWords.length * 0.7)) {
-          score += 60 + matched.length * 5;
-        }
+
+    // Coincidencias exactas / directas
+    if (msg === a || msg === cn) score += 120;
+    else if (rawMsg === a || rawMsg === cn) score += 115;
+
+    // Ciudad dentro de frase
+    if (msg.includes(a)) score += 95;
+    if (rawMsg.includes(a)) score += 90;
+    if (cn && msg.includes(cn)) score += 95;
+    if (cn && rawMsg.includes(cn)) score += 90;
+
+    // Frase extraída dentro de ciudad compuesta
+    if (a.includes(msg) && msg.length >= 3) score += 70;
+    if (cn && cn.includes(msg) && msg.length >= 3) score += 70;
+
+    // Match por palabras para ciudades compuestas: "san lorenzo", "ciudad del este", etc.
+    const aliasWords = a.split(/\s+/).filter((w) => w.length >= 3);
+    const canonicalWords = cn.split(/\s+/).filter((w) => w.length >= 3);
+    const wordsToCheck = Array.from(new Set([...aliasWords, ...canonicalWords]));
+
+    if (wordsToCheck.length >= 2) {
+      const matchedMsg = wordsToCheck.filter((w) =>
+        msgWords.some((mw) => mw === w || mw.startsWith(w) || w.startsWith(mw))
+      );
+
+      const matchedRaw = wordsToCheck.filter((w) =>
+        rawWords.some((mw) => mw === w || mw.startsWith(w) || w.startsWith(mw))
+      );
+
+      const matched = matchedMsg.length >= matchedRaw.length ? matchedMsg : matchedRaw;
+
+      if (matched.length >= Math.ceil(wordsToCheck.length * 0.65)) {
+        score += 65 + matched.length * 8;
       }
     }
 
@@ -813,6 +843,11 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   }
 
   if (bestScore >= 50) return best;
+
+  // Si no encontró en lista, pero el cliente claramente dijo "soy de X", usamos X como ciudad.
+  // Esto permite ciudades fuera de cobertura/lista para derivar a transportadora.
+  if (statementCity) return toTitleCase(statementCity);
+
   return clean(prev || "");
 }
 
@@ -834,15 +869,58 @@ function extractCityStatement(text: string): string {
   if (!raw || raw.length < 3 || /^[\p{Emoji}\s]+$/u.test(raw)) return "";
   if (/^\p{Emoji}/u.test(raw)) return "";
 
-  const greetings =
-    /^(hola|buenas|buenos|buen dia|buen dia|hi|hey|buenas noches|buenas tardes|saludos|ok|dale|si|no|gracias|de nada|listo|perfecto)[\s!.]*$/;
-  if (greetings.test(norm)) return "";
+  const onlyGreeting =
+    /^(hola|holaa|ola|buenas|buenos dias|buenos días|buen dia|buen día|hi|hey|buenas noches|buenas tardes|saludos|ok|dale|si|sí|no|gracias|de nada|listo|perfecto)[\s!.]*$/i;
 
-  const match = norm.match(
-    /^(?:soy de|vivo en|estoy en|ya estoy en|ya esty en|soy de la ciudad de|de la ciudad de|ciudad de|mi ciudad es|para la ciudad de)\s+(.+)$/
-  );
+  if (onlyGreeting.test(norm)) return "";
 
-  if (match) return clean(match[1]);
+  // ✅ FIX V19: no anclar al inicio. Detecta ciudad aunque antes haya saludo/producto.
+  // "hola soy de carapegua", "buenas, estoy en luque", "quiero para cde", etc.
+  const patterns: RegExp[] = [
+    /\bsoy\s+de\s+la\s+ciudad\s+de\s+(.+)$/i,
+    /\bsoy\s+de\s+(.+)$/i,
+    /\bsoi\s+de\s+(.+)$/i,
+    /\bsoy\s+d\s+(.+)$/i,
+    /\bvivo\s+en\s+(.+)$/i,
+    /\bestoy\s+en\s+(.+)$/i,
+    /\bya\s+estoy\s+en\s+(.+)$/i,
+    /\bde\s+la\s+ciudad\s+de\s+(.+)$/i,
+    /\bciudad\s+de\s+(.+)$/i,
+    /\bmi\s+ciudad\s+es\s+(.+)$/i,
+    /\bpara\s+la\s+ciudad\s+de\s+(.+)$/i,
+    /\bpara\s+env[ií]o\s+a\s+(.+)$/i,
+    /\bpara\s+enviar\s+a\s+(.+)$/i,
+    /\benv[ií]o\s+a\s+(.+)$/i,
+    /\bdelivery\s+a\s+(.+)$/i,
+    /\bpara\s+(.+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = norm.match(pattern);
+    if (!match?.[1]) continue;
+
+    let candidate = clean(match[1]);
+
+    // Corta cuando después de la ciudad vienen datos o intención.
+    candidate = candidate
+      .replace(/\b(quiero|qiero|kiero|me interesa|precio|cuanto|cuánto|consulta|comprar|compro|llevo|delivery|envio|envío|por favor|xfa|porfa|gracias|y quiero|y necesito|necesito|del producto|la crema|el producto)\b.*$/gi, "")
+      .replace(/\b(mi nombre es|me llamo|soy)\b.*$/gi, "")
+      .replace(/\b(09\d{6,}|5959\d{6,}|\+5959\d{6,})\b.*$/gi, "")
+      .replace(/[.,!?;:]+$/g, "")
+      .trim();
+
+    const words = normalize(candidate).split(/\s+/).filter(Boolean);
+
+    if (
+      candidate.length >= 3 &&
+      words.length <= 5 &&
+      !/^\d+$/.test(candidate) &&
+      !looksLikeSentenceNotCity(candidate)
+    ) {
+      return candidate;
+    }
+  }
+
   return "";
 }
 
