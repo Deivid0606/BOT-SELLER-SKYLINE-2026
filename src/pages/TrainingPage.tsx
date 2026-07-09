@@ -1,8 +1,7 @@
 import { motion } from "framer-motion";
 import { 
   GraduationCap, Plus, Trash2, BookOpen, Loader2, RefreshCw, 
-  ImagePlus, X, Copy, Sparkles, Zap, Package as PackageIcon, 
-  Key, MessageSquare
+  ImagePlus, X, Copy, Sparkles, Zap, Package as PackageIcon
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -12,8 +11,6 @@ interface ProductItem {
   id: string;
   image: string;
   copy: string;
-  palabra_clave: string;
-  alias: string[];
 }
 
 interface TrainingItem {
@@ -28,6 +25,7 @@ interface TrainingItem {
   entrenamiento_completo?: string;
 }
 
+const MAX_IMAGES = 3;
 const IMAGE_BUCKET = "training-images";
 
 export default function TrainingPage() {
@@ -38,7 +36,7 @@ export default function TrainingPage() {
   const [intent, setIntent] = useState("");
   const [examples, setExamples] = useState("");
   const [entrenamientoCompleto, setEntrenamientoCompleto] = useState("");
-  const [products, setProducts] = useState<ProductItem[]>([]);
+  const [products, setProducts] = useState<ProductItem[]>([]); // Empieza vacío
   const [mostrarCatalogo, setMostrarCatalogo] = useState(false);
   
   const [loading, setLoading] = useState(false);
@@ -163,10 +161,10 @@ export default function TrainingPage() {
     );
   };
 
-  const handleProductChange = (productId: string, field: keyof ProductItem, value: any) => {
+  const handleCopyChange = (productId: string, copy: string) => {
     setProducts(prev => 
       prev.map(p => 
-        p.id === productId ? { ...p, [field]: value } : p
+        p.id === productId ? { ...p, copy } : p
       )
     );
   };
@@ -174,13 +172,7 @@ export default function TrainingPage() {
   const addProduct = () => {
     setProducts(prev => [
       ...prev,
-      { 
-        id: crypto.randomUUID(), 
-        image: "", 
-        copy: "",
-        palabra_clave: "",
-        alias: []
-      }
+      { id: crypto.randomUUID(), image: "", copy: "" }
     ]);
     setMostrarCatalogo(true);
   };
@@ -210,16 +202,11 @@ export default function TrainingPage() {
       return;
     }
 
+    // Validar productos solo si hay productos
     if (products.length > 0) {
       const hasEmptyCopy = products.some(p => !p.copy.trim());
       if (hasEmptyCopy) {
         alert("Todos los productos deben tener información (copy)");
-        return;
-      }
-      
-      const hasEmptyKeyword = products.some(p => !p.palabra_clave.trim());
-      if (hasEmptyKeyword) {
-        alert("Todos los productos deben tener una palabra clave");
         return;
       }
     }
@@ -240,7 +227,7 @@ export default function TrainingPage() {
         examples: examplesArray,
         response: entrenamientoCompleto.trim(),
         image_urls: imageUrls,
-        products: products.length > 0 ? products : [],
+        products: products.length > 0 ? products : [], // Guarda array vacío si no hay productos
         entrenamiento_completo: entrenamientoCompleto.trim(),
         is_active: true
       };
@@ -384,7 +371,12 @@ export default function TrainingPage() {
               value={entrenamientoCompleto}
               onChange={(e) => setEntrenamientoCompleto(e.target.value)}
               className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[400px] resize-y font-mono placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
-              placeholder="Pega aquí todo el entrenamiento..."
+              placeholder={`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚨 REGLA DE EMERGENCIA — CANTIDAD (LEER PRIMERO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
+"1" → cantidad = 1 (NUNCA 11, NUNCA 111)
+...`}
             />
             <p className="text-[10px] text-muted-foreground mt-1">
               Copiá y pegá todo el entrenamiento: reglas, respuestas, ciudades, etc.
@@ -437,37 +429,6 @@ export default function TrainingPage() {
                       </button>
                     </div>
 
-                    {/* Palabra Clave */}
-                    <div>
-                      <label className="text-[10px] text-muted-foreground flex items-center gap-1">
-                        <Key className="h-3 w-3" />
-                        Palabra Clave <span className="text-destructive">*</span>
-                      </label>
-                      <input
-                        value={product.palabra_clave}
-                        onChange={(e) => handleProductChange(product.id, "palabra_clave", e.target.value)}
-                        className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
-                        placeholder="Ej: procesador, veneno, limpiador"
-                      />
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        El bot usará esta palabra para identificar el producto
-                      </p>
-                    </div>
-
-                    {/* Aliases */}
-                    <div>
-                      <label className="text-[10px] text-muted-foreground flex items-center gap-1">
-                        <PackageIcon className="h-3 w-3" />
-                        Aliases (separados por coma)
-                      </label>
-                      <input
-                        value={product.alias.join(', ')}
-                        onChange={(e) => handleProductChange(product.id, "alias", e.target.value.split(',').map(a => a.trim()).filter(Boolean))}
-                        className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
-                        placeholder="proce, procesadora, raf pro"
-                      />
-                    </div>
-
                     {/* Imagen */}
                     <div>
                       <label className="text-[10px] text-muted-foreground">Imagen</label>
@@ -502,13 +463,14 @@ export default function TrainingPage() {
                     <div>
                       <label className="text-[10px] text-muted-foreground flex items-center gap-1">
                         <Copy className="h-3 w-3" />
-                        Copy / Mensaje de Venta <span className="text-destructive">*</span>
+                        Copy / Mensaje de Venta
                       </label>
                       <textarea
                         value={product.copy}
-                        onChange={(e) => handleProductChange(product.id, "copy", e.target.value)}
+                        onChange={(e) => handleCopyChange(product.id, e.target.value)}
                         className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[80px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
-                        placeholder="🔥 Mensaje de venta del producto..."
+                        placeholder={`🔥 ¡Cociná más rápido y sin esfuerzo!
+Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segundos...`}
                       />
                     </div>
                   </div>
@@ -616,3 +578,10 @@ export default function TrainingPage() {
     </div>
   );
 }
+
+// Iconos
+const MessageSquare = ({ className }: { className?: string }) => (
+  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+  </svg>
+);
