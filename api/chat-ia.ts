@@ -28,6 +28,7 @@ import { createClient } from "@supabase/supabase-js";
  * 22) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
  * 23) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
  * 24) FIX CONFIRMACIÓN: El bot SIEMPRE pregunta "¿Confirmas?" antes de que el backend confirme directamente.
+ * 25) FIX GOOGLE MAPS: Detecta enlaces de Google Maps y extrae la dirección/ubicación automáticamente.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -191,6 +192,113 @@ function isAffirmative(text: string) {
 function hasExplicitQuantity(text: string) {
   return extractQuantity(text) > 0;
 }
+
+// ============================================================
+// 🆕 FUNCIONES PARA DETECTAR GOOGLE MAPS
+// ============================================================
+
+/**
+ * Detecta si el mensaje contiene un enlace de Google Maps
+ */
+function isGoogleMapsLink(text: string) {
+  const raw = clean(text);
+  return (
+    raw.includes("maps.app.goo.gl") ||
+    raw.includes("google.com/maps") ||
+    raw.includes("maps.google.com") ||
+    raw.includes("goo.gl/maps")
+  );
+}
+
+/**
+ * Extrae coordenadas de un enlace de Google Maps
+ * Ejemplos:
+ * - https://maps.app.goo.gl/XXXXX
+ * - https://www.google.com/maps/place/Dirección/@-25.123,-57.123,15z
+ * - https://www.google.com/maps?q=-25.123,-57.123
+ */
+function extractCoordinatesFromMapsLink(text: string) {
+  const raw = clean(text);
+  
+  // Formato: @-25.123,-57.123
+  const atCoords = raw.match(/@([\-0-9.]+),([\-0-9.]+)/);
+  if (atCoords) {
+    return {
+      lat: parseFloat(atCoords[1]),
+      lng: parseFloat(atCoords[2]),
+    };
+  }
+  
+  // Formato: ?q=-25.123,-57.123
+  const qCoords = raw.match(/[?&]q=([\-0-9.]+),([\-0-9.]+)/);
+  if (qCoords) {
+    return {
+      lat: parseFloat(qCoords[1]),
+      lng: parseFloat(qCoords[2]),
+    };
+  }
+  
+  // Formato: /place/Dirección/@-25.123,-57.123
+  const placeCoords = raw.match(/\/place\/[^/]+\/@([\-0-9.]+),([\-0-9.]+)/);
+  if (placeCoords) {
+    return {
+      lat: parseFloat(placeCoords[1]),
+      lng: parseFloat(placeCoords[2]),
+    };
+  }
+  
+  return null;
+}
+
+/**
+ * Extrae el nombre del lugar o dirección de un enlace de Google Maps
+ * Ejemplo: https://www.google.com/maps/place/Av.+España+123,+Asunción
+ * Resultado: "Av. España 123, Asunción"
+ */
+function extractPlaceNameFromMapsLink(text: string) {
+  const raw = clean(text);
+  
+  // Formato: /place/Nombre+del+Lugar
+  const placeMatch = raw.match(/\/place\/([^/@?]+)/);
+  if (placeMatch) {
+    // Decodificar URL y reemplazar + por espacio
+    return decodeURIComponent(placeMatch[1].replace(/\+/g, " "));
+  }
+  
+  // Formato: ?q=Dirección
+  const qMatch = raw.match(/[?&]q=([^&]+)/);
+  if (qMatch) {
+    return decodeURIComponent(qMatch[1].replace(/\+/g, " "));
+  }
+  
+  return "";
+}
+
+/**
+ * Función principal: dado un texto que puede contener un enlace de Google Maps,
+ * devuelve la dirección/ubicación extraída
+ */
+function extractAddressFromMapsLink(text: string) {
+  const raw = clean(text);
+  
+  if (!isGoogleMapsLink(raw)) return "";
+  
+  // Primero intentar extraer el nombre del lugar
+  const placeName = extractPlaceNameFromMapsLink(raw);
+  if (placeName) return placeName;
+  
+  // Si no hay nombre de lugar, extraer coordenadas
+  const coords = extractCoordinatesFromMapsLink(raw);
+  if (coords) {
+    return `📍 Ubicación: ${coords.lat}, ${coords.lng}`;
+  }
+  
+  return raw;
+}
+
+// ============================================================
+// FIN FUNCIONES GOOGLE MAPS
+// ============================================================
 
 async function getAllTrainingData(userId: string) {
   const { data, error } = await supabase
@@ -655,21 +763,39 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   return "";
 }
 
+/**
+ * 🔧 FUNCIÓN EXTRACT ADDRESS MEJORADA CON DETECCIÓN DE GOOGLE MAPS
+ */
 function extractAddress(text: string, detectedCity: string, phone: string, name: string) {
   const raw = clean(text);
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
   if (/^\d+$/.test(raw)) return "";
+
+  // ✅ NUEVO: Detectar enlaces de Google Maps primero
+  if (isGoogleMapsLink(raw)) {
+    const mapsAddress = extractAddressFromMapsLink(raw);
+    if (mapsAddress) return mapsAddress;
+  }
 
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
 
   const explicit = raw.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1];
   if (explicit) return clean(explicit);
 
+  // ✅ NUEVO: Si el texto tiene un enlace de Maps pero no se detectó antes, devolver el enlace
+  if (isGoogleMapsLink(raw)) return raw;
+
   if (raw.includes("maps.app") || raw.includes("google.com/maps")) return raw;
 
   for (const line of lines) {
     const cleaned = clean(line);
     const normLine = normalize(cleaned);
+
+    // ✅ NUEVO: Detectar enlaces de Maps en líneas separadas
+    if (isGoogleMapsLink(cleaned)) {
+      const mapsAddress = extractAddressFromMapsLink(cleaned);
+      if (mapsAddress) return mapsAddress;
+    }
 
     if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/i.test(normLine)) {
       if (name && normalize(cleaned).includes(normalize(name))) continue;
