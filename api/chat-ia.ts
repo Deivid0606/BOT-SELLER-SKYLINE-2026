@@ -30,7 +30,9 @@ import { createClient } from "@supabase/supabase-js";
  * 24) FIX IMAGENES: SOLO se envía la PRIMERA imagen del producto (la principal), no todas las imágenes.
  * 25) FIX V13: Definir newTemplateSignal antes de usarlo (soluciona ReferenceError)
  * 26) FIX V14: Filtrar por PALABRA_CLAVE para enviar SOLO la imagen del producto correcto
+ * 27) FIX V17: Ciudad sin cobertura/transportadora NO confirma pedido sin comprobante real adjunto.
  */
+
 
 const supabase = createClient(
   process.env.SUPABASE_URL as string,
@@ -1844,14 +1846,29 @@ function looksLikeSentenceNotCity(text: string) {
 
 function hasPaymentProofText(text: string) {
   const n = normalize(text);
-  return /\b(comprobante|transferi|transferí|transferencia hecha|ya pague|ya pagué|deposito|depósito|pague|pagué|adjunto|envio comprobante|envío comprobante|recibo)\b/.test(n);
+  return /\b(comprobante|recibo|ticket|transferencia hecha|adjunto|envio comprobante|envío comprobante|te paso comprobante|mando comprobante)\b/.test(n);
+}
+
+function isPaymentProofMedia(mediaUrl?: string, mediaType?: string) {
+  const url = clean(mediaUrl);
+  const type = normalize(mediaType || "");
+
+  if (!url) return false;
+  if (/audio|voice|ogg|mp3|mpeg|wav|webm/.test(type)) return false;
+
+  // WhatsApp puede mandar media_type vacío o genérico. Si hay media_url y no es audio,
+  // lo tomamos como comprobante adjunto para zonas sin cobertura.
+  return true;
 }
 
 function hasPaymentProof(context: any, text: string, mediaUrl?: string, mediaType?: string) {
   if (context?.order_data?.payment_proof_received === true) return true;
   if (context?.payment_proof_received === true) return true;
-  if (hasPaymentProofText(text)) return true;
-  if (mediaUrl && /image|document|pdf|application/i.test(clean(mediaType))) return true;
+
+  // ✅ FIX V17: texto como "ya pagué" NO confirma pago.
+  // Para zona sin cobertura se exige comprobante real adjunto: imagen, PDF o documento.
+  if (isPaymentProofMedia(mediaUrl, mediaType)) return true;
+
   return false;
 }
 
@@ -2074,7 +2091,7 @@ function buildHardInstruction(state: ConversationState) {
 
   if (coverage === false && order.quantity > 0) {
     if (missing.length > 0) {
-      return "Informar total, explicar envío por transportadora y pago anticipado. Mostrar datos de transferencia porque ya hay cantidad. Pedir SOLO lo faltante: nombre completo, teléfono y/o comprobante de transferencia. IMPORTANTE: no confirmar el pedido hasta recibir comprobante.";
+      return "Informar total, explicar envío por transportadora y pago anticipado. Mostrar datos de transferencia porque ya hay cantidad. Pedir SOLO lo faltante: nombre completo, teléfono y/o comprobante de transferencia. IMPORTANTE: no confirmar el pedido hasta recibir comprobante real adjunto (imagen, PDF o documento). Texto como \"ya pagué\" no alcanza.";
     }
     return "Confirmar el pedido por transportadora porque ya se recibió comprobante y datos.";
   }
@@ -2147,6 +2164,10 @@ function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState) 
   return Boolean(o.payment_proof_received);
 }
 
+function blocksConfirmationWithoutCoverageProof(state: ConversationState) {
+  return state.coverage === false && state.order.payment_proof_received !== true;
+}
+
 function isOrderStale(order: OrderData, lastActivity: string) {
   const hasProduct = !!order?.product;
   const hasCity = !!order?.city;
@@ -2170,7 +2191,8 @@ async function safeUpsertOrder(
   if (!getProductInfo(order.product, parsed)) return null;
 
   const state = buildState(order, parsed);
-  const status = confirm && state.step === "confirm_order" ? "confirmed" : state.step === "confirm_order" ? "confirm_pending" : state.step;
+  const canMarkConfirmed = confirm && state.step === "confirm_order" && !blocksConfirmationWithoutCoverageProof(state);
+  const status = canMarkConfirmed ? "confirmed" : state.step === "confirm_order" ? "confirm_pending" : state.step;
 
   const orderId = clean(order.order_id);
   const payload: any = {
@@ -2412,7 +2434,9 @@ ${o.locked_offer.quantity} unidades de ${o.product}
 
 📍 ${o.city} no cuenta con contra-entrega, pero hacemos envío por transportadora 🚚
 
-💵 Para avanzar, realizá la transferencia y enviame el comprobante junto con:
+💵 Para avanzar, realizá la transferencia y enviame la foto/PDF del comprobante.
+
+También necesito:
 ✅ nombre completo
 ✅ número de celular
 
@@ -2458,7 +2482,9 @@ ${promoLine}
 
 🚚 Para tu zona hacemos envío por transportadora con pago anticipado.
 
-💵 Para avanzar, realizá la transferencia y enviame el comprobante junto con:
+💵 Para avanzar, realizá la transferencia y enviame la foto/PDF del comprobante.
+
+También necesito:
 ✅ nombre completo
 ✅ número de celular
 
@@ -2606,6 +2632,33 @@ Antes de pasarte el total y los datos de pago, decime: ${qtyQuestion}`;
     return `✅ Perfecto, ${o.city} tiene envío gratis contra-entrega 🚚
 
 ${qtyQuestion}`;
+  }
+
+  if (state.coverage === false && !o.payment_proof_received && o.product && o.city && o.quantity) {
+    const missingPersonal = [
+      !o.customer_name ? "nombre completo" : "",
+      !o.phone ? "número de celular" : "",
+    ].filter(Boolean);
+
+    const personalLine = missingPersonal.length
+      ? `\n\nTambién me falta:\n✅ ${missingPersonal.join("\n✅ ")}`
+      : "";
+
+    return `🎉 ¡Perfecto! Queda avanzado tu pedido 😊
+
+📦 Producto: ${o.product}
+🔢 Cantidad: ${o.quantity}
+💰 Total: ${formatGs(state.total)} Gs
+📍 Ciudad: ${o.city}
+
+🚚 Para tu zona hacemos envío por transportadora con pago anticipado.
+
+💵 Datos para transferencia:
+${bankDataText(parsed)}
+
+📎 Para CONFIRMAR tu pedido necesito que me envíes la foto/PDF del comprobante de transferencia.${personalLine}
+
+Apenas recibimos el comprobante, dejamos tu pedido confirmado ✅`;
   }
 
   if (state.missing.length) {
@@ -3071,8 +3124,16 @@ export default async function handler(req: any, res: any) {
     }
 
     const finalState = buildState(orderData, parsed);
-    const directConfirm = hasAllRequiredOrderDataForDirectConfirmation(finalState);
-    const confirm = shouldConfirmOrder(finalState) || directConfirm;
+    let directConfirm = hasAllRequiredOrderDataForDirectConfirmation(finalState);
+    let confirm = shouldConfirmOrder(finalState) || directConfirm;
+
+    // 🔒 FIX V17: bloqueo absoluto.
+    // Ciudad sin cobertura / envío por transportadora NUNCA pasa a pedido_confirmado
+    // hasta que llegue comprobante real adjunto.
+    if (blocksConfirmationWithoutCoverageProof(finalState)) {
+      directConfirm = false;
+      confirm = false;
+    }
 
     if (orderData.product) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, confirm);
