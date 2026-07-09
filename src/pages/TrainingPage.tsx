@@ -1,17 +1,24 @@
 import { motion } from "framer-motion";
-import { GraduationCap, Plus, Trash2, BookOpen, Loader2, RefreshCw, ImagePlus, X } from "lucide-react";
+import { GraduationCap, Plus, Trash2, BookOpen, Loader2, RefreshCw, ImagePlus, X, Copy } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
+
+interface ProductItem {
+  id: string; // id temporal para el frontend
+  image: string;
+  copy: string;
+}
 
 interface TrainingItem {
   id: string;
   intent: string;
   examples: string[];
-  response: string;
+  response: string; // Mantenemos para compatibilidad, pero usaremos productos
   is_active: boolean;
   created_at: string;
   image_urls?: string[];
+  products?: ProductItem[]; // Nuevo campo para productos
 }
 
 const MAX_IMAGES = 3;
@@ -22,15 +29,16 @@ export default function TrainingPage() {
   const [trainingData, setTrainingData] = useState<TrainingItem[]>([]);
   const [intent, setIntent] = useState("");
   const [examples, setExamples] = useState("");
-  const [response, setResponse] = useState("");
-  const [images, setImages] = useState<string[]>([]);
+  const [products, setProducts] = useState<ProductItem[]>([
+    { id: crypto.randomUUID(), image: "", copy: "" }
+  ]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
+  const [uploadingProductId, setUploadingProductId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const pendingSlotRef = useRef<number>(0);
+  const pendingProductIdRef = useRef<string>("");
 
   const loadTrainingData = async () => {
     if (!user) {
@@ -52,19 +60,30 @@ export default function TrainingPage() {
       console.error("❌ Error cargando:", error);
     } else {
       console.log(`✅ ${data?.length || 0} entrenamientos cargados para ${user.email}`);
-      setTrainingData(data || []);
+      // Convertir los datos antiguos al nuevo formato si es necesario
+      const formattedData = data?.map(item => ({
+        ...item,
+        products: item.products || (item.image_urls && item.image_urls.length > 0 ? 
+          item.image_urls.map((url: string, index: number) => ({
+            id: crypto.randomUUID(),
+            image: url,
+            copy: item.response || ""
+          })) : 
+          [{ id: crypto.randomUUID(), image: "", copy: item.response || "" }]
+        )
+      })) || [];
+      setTrainingData(formattedData);
     }
     setLoading(false);
   };
 
-  // ✅ CORREGIDO: Usar user?.id como dependencia
   useEffect(() => {
     if (user) {
       loadTrainingData();
     } else {
       setTrainingData([]);
     }
-  }, [user?.id]); // ← Solo cambia cuando el ID cambia
+  }, [user?.id]);
 
   const refreshData = async () => {
     setRefreshing(true);
@@ -72,8 +91,7 @@ export default function TrainingPage() {
     setRefreshing(false);
   };
 
-  // ✅ NUEVO: subir una imagen al bucket "training-images" y devolver su URL pública
-  const uploadImage = async (file: File, slotIndex: number) => {
+  const uploadImage = async (file: File, productId: string) => {
     if (!user) {
       alert("Debes iniciar sesión");
       return;
@@ -91,11 +109,11 @@ export default function TrainingPage() {
       return;
     }
 
-    setUploadingIndex(slotIndex);
+    setUploadingProductId(productId);
 
     try {
       const ext = file.name.split(".").pop() || "jpg";
-      const path = `${user.id}/${Date.now()}-${slotIndex}.${ext}`;
+      const path = `${user.id}/${Date.now()}-${productId}.${ext}`;
 
       const { error: uploadError } = await supabase.storage
         .from(IMAGE_BUCKET)
@@ -115,32 +133,59 @@ export default function TrainingPage() {
         return;
       }
 
-      setImages((prev) => {
-        const next = [...prev];
-        next[slotIndex] = publicUrl;
-        return next.slice(0, MAX_IMAGES);
-      });
+      setProducts(prev => 
+        prev.map(p => 
+          p.id === productId ? { ...p, image: publicUrl } : p
+        )
+      );
     } catch (err: any) {
       console.error("❌ Error inesperado subiendo imagen:", err);
       alert("Error inesperado al subir la imagen: " + err.message);
     } finally {
-      setUploadingIndex(null);
+      setUploadingProductId(null);
     }
   };
 
-  const handlePickImage = (slotIndex: number) => {
-    pendingSlotRef.current = slotIndex;
+  const handlePickImage = (productId: string) => {
+    pendingProductIdRef.current = productId;
     fileInputRef.current?.click();
   };
 
   const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) uploadImage(file, pendingSlotRef.current);
+    if (file) uploadImage(file, pendingProductIdRef.current);
     e.target.value = "";
   };
 
-  const handleRemoveImage = (slotIndex: number) => {
-    setImages((prev) => prev.filter((_, i) => i !== slotIndex));
+  const handleRemoveImage = (productId: string) => {
+    setProducts(prev => 
+      prev.map(p => 
+        p.id === productId ? { ...p, image: "" } : p
+      )
+    );
+  };
+
+  const handleCopyChange = (productId: string, copy: string) => {
+    setProducts(prev => 
+      prev.map(p => 
+        p.id === productId ? { ...p, copy } : p
+      )
+    );
+  };
+
+  const addProduct = () => {
+    setProducts(prev => [
+      ...prev,
+      { id: crypto.randomUUID(), image: "", copy: "" }
+    ]);
+  };
+
+  const removeProduct = (productId: string) => {
+    if (products.length <= 1) {
+      alert("Debe haber al menos un producto");
+      return;
+    }
+    setProducts(prev => prev.filter(p => p.id !== productId));
   };
 
   const handleSave = async () => {
@@ -155,8 +200,11 @@ export default function TrainingPage() {
       alert("Por favor completa el Tema / Categoría");
       return;
     }
-    if (!response.trim()) {
-      alert("Por favor completa la información de entrenamiento");
+
+    // Verificar que todos los productos tengan copy
+    const hasEmptyCopy = products.some(p => !p.copy.trim());
+    if (hasEmptyCopy) {
+      alert("Todos los productos deben tener información (copy)");
       return;
     }
 
@@ -165,17 +213,27 @@ export default function TrainingPage() {
       .filter(ex => ex.trim())
       .map(ex => ex.trim());
 
+    // Extraer las imágenes para compatibilidad
+    const imageUrls = products.map(p => p.image).filter(img => img);
+
     setSaving(true);
 
     try {
+      const productData = {
+        user_id: user.id,
+        intent: intent.trim(),
+        examples: examplesArray,
+        response: products.map(p => p.copy).join("\n---\n"), // Guardamos todos los copys juntos
+        image_urls: imageUrls,
+        products: products, // Guardamos la estructura completa de productos
+        is_active: true
+      };
+
       if (editingId) {
         const { error } = await supabase
           .from("training_data")
           .update({
-            intent: intent.trim(),
-            examples: examplesArray,
-            response: response.trim(),
-            image_urls: images,
+            ...productData,
             updated_at: new Date().toISOString()
           })
           .eq("id", editingId)
@@ -192,14 +250,7 @@ export default function TrainingPage() {
       } else {
         const { error } = await supabase
           .from("training_data")
-          .insert({
-            user_id: user.id,
-            intent: intent.trim(),
-            examples: examplesArray,
-            response: response.trim(),
-            image_urls: images,
-            is_active: true
-          });
+          .insert(productData);
 
         if (error) {
           console.error("❌ Error al guardar:", error);
@@ -221,9 +272,8 @@ export default function TrainingPage() {
 
   const handleEdit = (item: TrainingItem) => {
     setIntent(item.intent);
-    setResponse(item.response);
     setExamples(item.examples.join('\n'));
-    setImages(Array.isArray(item.image_urls) ? item.image_urls.slice(0, MAX_IMAGES) : []);
+    setProducts(item.products || []);
     setEditingId(item.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -251,8 +301,7 @@ export default function TrainingPage() {
   const resetForm = () => {
     setIntent("");
     setExamples("");
-    setResponse("");
-    setImages([]);
+    setProducts([{ id: crypto.randomUUID(), image: "", copy: "" }]);
     setEditingId(null);
   };
 
@@ -301,69 +350,90 @@ export default function TrainingPage() {
             </p>
           </div>
 
+          {/* Productos - cada uno con imagen + copy */}
           <div>
-            <label className="text-xs text-muted-foreground">Información de entrenamiento</label>
-            <textarea
-              value={response}
-              onChange={(e) => setResponse(e.target.value)}
-              className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[150px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
-              placeholder="Escribe la información que la IA debe conocer…"
-            />
-          </div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs text-muted-foreground">
+                Productos ({products.length})
+              </label>
+              <button
+                type="button"
+                onClick={addProduct}
+                className="flex items-center gap-1 text-xs text-primary hover:text-primary/80 transition-colors"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Añadir producto
+              </button>
+            </div>
 
-          {/* ✅ NUEVO: Cuadritos de imágenes (hasta 3) */}
-          <div>
-            <label className="text-xs text-muted-foreground">
-              Imágenes del producto ({images.length}/{MAX_IMAGES})
-            </label>
-            <p className="text-[10px] text-muted-foreground/70 mb-2">
-              El bot las manda junto con el copy de este producto. JPG, PNG o WEBP, hasta 5MB c/u.
-            </p>
-            <div className="grid grid-cols-3 gap-2">
-              {Array.from({ length: MAX_IMAGES }).map((_, i) => {
-                const url = images[i];
-                const isUploading = uploadingIndex === i;
-                return (
-                  <div
-                    key={i}
-                    className="relative aspect-square rounded-lg border border-dashed border-border bg-secondary/30 overflow-hidden flex items-center justify-center group"
-                  >
-                    {isUploading ? (
-                      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                    ) : url ? (
-                      <>
-                        <img src={url} alt={`Imagen ${i + 1}`} className="w-full h-full object-cover" />
+            <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+              {products.map((product, index) => (
+                <div key={product.id} className="border border-border rounded-lg p-3 space-y-3 relative">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-medium text-muted-foreground">
+                      Producto #{index + 1}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => removeProduct(product.id)}
+                      className="text-destructive hover:text-destructive/80 transition-colors"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Imagen */}
+                  <div>
+                    <label className="text-[10px] text-muted-foreground">Imagen</label>
+                    <div className="mt-1 aspect-video rounded-lg border border-dashed border-border bg-secondary/30 overflow-hidden flex items-center justify-center group max-w-[200px]">
+                      {uploadingProductId === product.id ? (
+                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                      ) : product.image ? (
+                        <div className="relative w-full h-full">
+                          <img src={product.image} alt={`Producto ${index + 1}`} className="w-full h-full object-cover" />
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveImage(product.id)}
+                            className="absolute top-1 right-1 p-1 rounded-full bg-background/80 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/20"
+                          >
+                            <X className="h-3 w-3 text-destructive" />
+                          </button>
+                        </div>
+                      ) : (
                         <button
                           type="button"
-                          onClick={() => handleRemoveImage(i)}
-                          className="absolute top-1 right-1 p-1 rounded-full bg-background/80 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/20"
-                          title="Quitar imagen"
+                          onClick={() => handlePickImage(product.id)}
+                          className="flex flex-col items-center gap-1 text-muted-foreground hover:text-primary transition-colors w-full h-full justify-center"
                         >
-                          <X className="h-3 w-3 text-destructive" />
+                          <ImagePlus className="h-5 w-5" />
+                          <span className="text-[9px]">Subir imagen</span>
                         </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => handlePickImage(i)}
-                        className="flex flex-col items-center gap-1 text-muted-foreground hover:text-primary transition-colors w-full h-full justify-center"
-                      >
-                        <ImagePlus className="h-5 w-5" />
-                        <span className="text-[9px]">Subir</span>
-                      </button>
-                    )}
+                      )}
+                    </div>
                   </div>
-                );
-              })}
+
+                  {/* Copy del producto */}
+                  <div>
+                    <label className="text-[10px] text-muted-foreground">Información del producto</label>
+                    <textarea
+                      value={product.copy}
+                      onChange={(e) => handleCopyChange(product.id, e.target.value)}
+                      className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[80px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+                      placeholder="Descripción, precio, características..."
+                    />
+                  </div>
+                </div>
+              ))}
             </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/jpeg,image/png,image/webp,image/jpg"
-              className="hidden"
-              onChange={handleFileSelected}
-            />
           </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/jpg"
+            className="hidden"
+            onChange={handleFileSelected}
+          />
 
           <div className="flex gap-2">
             <button
@@ -403,16 +473,16 @@ export default function TrainingPage() {
               <p className="text-xs text-muted-foreground">Aún no hay datos de entrenamiento</p>
             </div>
           ) : (
-            <div className="divide-y divide-border">
+            <div className="divide-y divide-border max-h-[600px] overflow-y-auto">
               {trainingData.map((item) => (
                 <div
                   key={item.id}
                   onClick={() => handleEdit(item)}
                   className="px-4 py-3 hover:bg-secondary/30 transition-colors cursor-pointer flex items-center gap-3 group"
                 >
-                  {Array.isArray(item.image_urls) && item.image_urls[0] ? (
+                  {item.products && item.products.length > 0 && item.products[0].image ? (
                     <img
-                      src={item.image_urls[0]}
+                      src={item.products[0].image}
                       alt=""
                       className="h-8 w-8 rounded object-cover shrink-0 border border-border"
                     />
@@ -421,17 +491,13 @@ export default function TrainingPage() {
                   )}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{item.intent}</p>
-                    <p className="text-xs text-muted-foreground truncate">{item.response.substring(0, 60)}</p>
                     <div className="flex items-center gap-2 mt-0.5">
+                      <p className="text-xs text-muted-foreground truncate">
+                        {item.products?.length || 0} productos
+                      </p>
                       {item.examples.length > 0 && (
                         <p className="text-[10px] text-muted-foreground/60">
-                          {item.examples.length} ejemplo{item.examples.length !== 1 ? 's' : ''}
-                        </p>
-                      )}
-                      {Array.isArray(item.image_urls) && item.image_urls.length > 0 && (
-                        <p className="text-[10px] text-muted-foreground/60 flex items-center gap-0.5">
-                          <ImagePlus className="h-2.5 w-2.5" />
-                          {item.image_urls.length}
+                          • {item.examples.length} ejemplo{item.examples.length !== 1 ? 's' : ''}
                         </p>
                       )}
                     </div>
