@@ -29,6 +29,7 @@ import { createClient } from "@supabase/supabase-js";
  * 23) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
  * 24) FIX IMAGENES: SOLO se envía la PRIMERA imagen del producto (la principal), no todas las imágenes.
  * 25) FIX V13: Definir newTemplateSignal antes de usarlo (soluciona ReferenceError)
+ * 26) FIX V14: Filtrar por PALABRA_CLAVE para enviar SOLO la imagen del producto correcto
  */
 
 const supabase = createClient(
@@ -58,6 +59,7 @@ type ProductItem = {
   fixedPackQuantity?: number;
   salesCopy?: string;
   images?: string[];
+  palabra_clave?: string; // ✅ NUEVO: palabra clave para filtrar
 };
 
 type OfferItem = {
@@ -116,6 +118,31 @@ type ConversationState = {
   missing: string[];
   hardInstruction: string;
 };
+
+// ✅ NUEVA FUNCIÓN: Encontrar producto por PALABRA_CLAVE o ALIAS
+function encontrarProductoPorPalabraClave(mensaje: string, products: ProductItem[]): ProductItem | null {
+  if (!products || products.length === 0) return null;
+  
+  const mensajeLower = mensaje.toLowerCase().trim();
+  
+  for (const producto of products) {
+    // Buscar por PALABRA_CLAVE
+    if (producto.palabra_clave && mensajeLower.includes(producto.palabra_clave.toLowerCase())) {
+      return producto;
+    }
+    
+    // Buscar por ALIAS
+    if (producto.aliases && producto.aliases.length > 0) {
+      for (const alias of producto.aliases) {
+        if (mensajeLower.includes(alias.toLowerCase())) {
+          return producto;
+        }
+      }
+    }
+  }
+  
+  return null;
+}
 
 function makeOrderId(fromNumber: string) {
   const safeFrom = clean(fromNumber).replace(/\D/g, "").slice(-8) || "chat";
@@ -406,6 +433,9 @@ function parseTraining(training: string): ParsedTraining {
     const salesCopy = clean(block.match(/^MENSAJE_VENTA:\s*([\s\S]*)$/im)?.[1]) || undefined;
     const packFijoRaw = Number(clean(block.match(/^PACK_FIJO:\s*(\d+)/im)?.[1]) || 0);
     const fixedPackQuantity = packFijoRaw > 1 ? packFijoRaw : undefined;
+    
+    // ✅ NUEVO: Extraer PALABRA_CLAVE
+    const palabraClave = clean(block.match(/^PALABRA_CLAVE:\s*(.+)$/im)?.[1]);
 
     if (product && canonical && price1 > 0) {
       products.push({
@@ -417,6 +447,7 @@ function parseTraining(training: string): ParsedTraining {
         price3: fixedPackQuantity ? undefined : price3 || undefined,
         fixedPackQuantity,
         salesCopy,
+        palabra_clave: palabraClave || undefined,
       });
     }
   }
@@ -3003,12 +3034,23 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
-    // ✅ FIX IMAGENES: SOLO enviar la PRIMERA imagen del producto (la principal)
+    // ✅ FIX IMAGENES: Enviar SOLO la imagen del producto que coincide con PALABRA_CLAVE
     let imagesToSend: string[] | undefined = undefined;
     
-    if (!orderData.city && finalState.productInfo?.images?.length) {
-      imagesToSend = finalState.productInfo.images.slice(0, 1);
-      console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${orderData.product || 'producto'}" (SOLO la principal)`);
+    // ✅ Buscar producto por PALABRA_CLAVE o ALIAS
+    const productoPorClave = encontrarProductoPorPalabraClave(texto, parsed.products);
+    
+    // Solo enviar imágenes si NO tenemos ciudad aún (etapa de presentación del producto)
+    if (!orderData.city) {
+      if (productoPorClave && productoPorClave.images?.length) {
+        // ✅ Enviar SOLO la imagen del producto que coincide con la palabra clave
+        imagesToSend = productoPorClave.images.slice(0, 1);
+        console.log(`📸 Enviando imagen para "${productoPorClave.palabra_clave || productoPorClave.canonical}" (SOLO la principal)`);
+      } else if (finalState.productInfo?.images?.length) {
+        // Fallback: si no encontró por palabra clave, usar el producto detectado
+        imagesToSend = finalState.productInfo.images.slice(0, 1);
+        console.log(`📸 Enviando imagen para "${finalState.productInfo.canonical}" (SOLO la principal)`);
+      }
     }
 
     return res.json({
@@ -3043,6 +3085,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
             productFromMessageInitial,
             promoResponse,
             images_sent: imagesToSend?.length || 0,
+            producto_por_clave: productoPorClave?.palabra_clave || null,
           }
         : undefined,
     });
