@@ -1,7 +1,8 @@
 import { motion } from "framer-motion";
 import { 
   GraduationCap, Plus, Trash2, BookOpen, Loader2, RefreshCw, 
-  ImagePlus, X, Copy, Sparkles, Zap, Package as PackageIcon, Key
+  ImagePlus, X, Copy, Sparkles, Zap, Package as PackageIcon, 
+  Key, MessageSquare
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -11,8 +12,8 @@ interface ProductItem {
   id: string;
   image: string;
   copy: string;
-  palabra_clave: string; // Nueva: palabra clave para activar el producto
-  alias: string[]; // Aliases adicionales
+  palabra_clave: string;
+  alias: string[];
 }
 
 interface TrainingItem {
@@ -27,7 +28,6 @@ interface TrainingItem {
   entrenamiento_completo?: string;
 }
 
-const MAX_IMAGES = 3;
 const IMAGE_BUCKET = "training-images";
 
 export default function TrainingPage() {
@@ -210,7 +210,6 @@ export default function TrainingPage() {
       return;
     }
 
-    // Validar productos si existen
     if (products.length > 0) {
       const hasEmptyCopy = products.some(p => !p.copy.trim());
       if (hasEmptyCopy) {
@@ -385,12 +384,7 @@ export default function TrainingPage() {
               value={entrenamientoCompleto}
               onChange={(e) => setEntrenamientoCompleto(e.target.value)}
               className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[400px] resize-y font-mono placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
-              placeholder={`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🚨 REGLA DE EMERGENCIA — CANTIDAD (LEER PRIMERO)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
-"1" → cantidad = 1 (NUNCA 11, NUNCA 111)
-...`}
+              placeholder="Pega aquí todo el entrenamiento..."
             />
             <p className="text-[10px] text-muted-foreground mt-1">
               Copiá y pegá todo el entrenamiento: reglas, respuestas, ciudades, etc.
@@ -443,7 +437,7 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
                       </button>
                     </div>
 
-                    {/* Palabra Clave - NUEVO */}
+                    {/* Palabra Clave */}
                     <div>
                       <label className="text-[10px] text-muted-foreground flex items-center gap-1">
                         <Key className="h-3 w-3" />
@@ -456,11 +450,11 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
                         placeholder="Ej: procesador, veneno, limpiador"
                       />
                       <p className="text-[10px] text-muted-foreground mt-0.5">
-                        El bot usará esta palabra para identificar el producto y enviar su imagen
+                        El bot usará esta palabra para identificar el producto
                       </p>
                     </div>
 
-                    {/* Aliases - NUEVO */}
+                    {/* Aliases */}
                     <div>
                       <label className="text-[10px] text-muted-foreground flex items-center gap-1">
                         <PackageIcon className="h-3 w-3" />
@@ -472,9 +466,6 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
                         className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
                         placeholder="proce, procesadora, raf pro"
                       />
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        Palabras alternativas que también activarán este producto
-                      </p>
                     </div>
 
                     {/* Imagen */}
@@ -517,8 +508,7 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
                         value={product.copy}
                         onChange={(e) => handleProductChange(product.id, "copy", e.target.value)}
                         className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[80px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
-                        placeholder={`🔥 ¡Cociná más rápido y sin esfuerzo!
-Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segundos...`}
+                        placeholder="🔥 Mensaje de venta del producto..."
                       />
                     </div>
                   </div>
@@ -626,10 +616,3 @@ Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segund
     </div>
   );
 }
-
-// Iconos
-const MessageSquare = ({ className }: { className?: string }) => (
-  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-  </svg>
-);
