@@ -198,9 +198,6 @@ function hasExplicitQuantity(text: string) {
 // 🆕 FUNCIONES PARA DETECTAR GOOGLE MAPS
 // ============================================================
 
-/**
- * Detecta si el mensaje contiene un enlace de Google Maps
- */
 function isGoogleMapsLink(text: string) {
   const raw = clean(text);
   return (
@@ -211,9 +208,6 @@ function isGoogleMapsLink(text: string) {
   );
 }
 
-/**
- * Extrae coordenadas de un enlace de Google Maps
- */
 function extractCoordinatesFromMapsLink(text: string) {
   const raw = clean(text);
   
@@ -244,9 +238,6 @@ function extractCoordinatesFromMapsLink(text: string) {
   return null;
 }
 
-/**
- * Extrae el nombre del lugar o dirección de un enlace de Google Maps
- */
 function extractPlaceNameFromMapsLink(text: string) {
   const raw = clean(text);
   
@@ -263,10 +254,6 @@ function extractPlaceNameFromMapsLink(text: string) {
   return "";
 }
 
-/**
- * Función principal: dado un texto que puede contener un enlace de Google Maps,
- * devuelve la dirección/ubicación extraída
- */
 function extractAddressFromMapsLink(text: string) {
   const raw = clean(text);
   
@@ -288,74 +275,119 @@ function extractAddressFromMapsLink(text: string) {
 // ============================================================
 
 /**
- * Detecta si el mensaje contiene una ubicación compartida
+ * ✅ FIX: Detecta ubicación en cualquier formato que pueda llegar
+ * Busca en message, location, context, etc.
  */
-function isSharedLocation(mediaType?: string, message?: any) {
-  if (mediaType === "location") return true;
-  if (message?.location) return true;
-  if (message?.context?.location) return true;
-  return false;
-}
-
-/**
- * Extrae la dirección de un objeto location compartido
- */
-function extractSharedLocationAddress(message: any): string {
-  const sources = [
-    message?.location,
-    message?.context?.location,
-    message?.location_data,
-    message?.message?.location,
-  ];
-  
-  for (const loc of sources) {
-    if (!loc) continue;
-    
-    if (loc.address) return clean(loc.address);
-    if (loc.name) return clean(loc.name);
-    if (loc.label) return clean(loc.label);
-    if (loc.latitude && loc.longitude) {
-      return `📍 Ubicación: ${loc.latitude}, ${loc.longitude}`;
-    }
-  }
-  
-  if (message?.latitude && message?.longitude) {
-    return `📍 Ubicación: ${message.latitude}, ${message.longitude}`;
-  }
-  
-  return "";
-}
-
-/**
- * Procesa el body completo para extraer ubicación compartida
- */
-function processSharedLocation(body: any): string {
-  const locSources = [
+function isSharedLocation(body: any): boolean {
+  // Revisar todas las ubicaciones posibles en el body
+  const possibleLocations = [
     body?.message?.location,
     body?.location,
     body?.context?.location,
     body?.message?.context?.location,
     body?.message?.location_data,
     body?.location_data,
+    body?.message?.original_message?.location,
+    body?.original_message?.location,
   ];
   
-  for (const loc of locSources) {
+  for (const loc of possibleLocations) {
+    if (loc) return true;
+  }
+  
+  // Si media_type es location
+  if (body?.media_type === "location") return true;
+  
+  // Si el mensaje contiene location en el texto
+  if (typeof body?.message === "string" && body.message.includes("location")) {
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * ✅ FIX: Extrae la dirección de la ubicación de forma más robusta
+ */
+function extractSharedLocationAddress(body: any): string {
+  // Lista de todas las ubicaciones posibles en el body
+  const locationSources = [
+    body?.message?.location,
+    body?.location,
+    body?.context?.location,
+    body?.message?.context?.location,
+    body?.message?.location_data,
+    body?.location_data,
+    body?.message?.original_message?.location,
+    body?.original_message?.location,
+  ];
+  
+  // También revisar el mensaje directamente si es un objeto con location
+  if (typeof body?.message === "object" && body.message?.location) {
+    locationSources.push(body.message.location);
+  }
+  
+  // Si el mensaje es un string pero contiene ubicación
+  if (typeof body?.message === "string" && body.message.includes("location")) {
+    try {
+      const parsed = JSON.parse(body.message);
+      if (parsed?.location) locationSources.push(parsed.location);
+    } catch (e) {
+      // No es JSON válido
+    }
+  }
+  
+  for (const loc of locationSources) {
     if (!loc) continue;
     
-    if (loc.address) return clean(loc.address);
-    if (loc.name) return clean(loc.name);
-    if (loc.label) return clean(loc.label);
-    if (loc.latitude && loc.longitude) {
+    // Prioridad: address > name > label > coordenadas
+    if (loc.address) {
+      const addr = clean(loc.address);
+      if (addr && addr.length > 3) return addr;
+    }
+    if (loc.name) {
+      const name = clean(loc.name);
+      if (name && name.length > 3) return name;
+    }
+    if (loc.label) {
+      const label = clean(loc.label);
+      if (label && label.length > 3) return label;
+    }
+    if (loc.latitude !== undefined && loc.longitude !== undefined) {
       return `📍 Ubicación: ${loc.latitude}, ${loc.longitude}`;
     }
+  }
+  
+  // Si no se encontró dirección pero hay coordenadas en el body
+  if (body?.latitude && body?.longitude) {
+    return `📍 Ubicación: ${body.latitude}, ${body.longitude}`;
   }
   
   return "";
 }
 
 /**
- * Verifica si el texto parece ser una ubicación
+ * ✅ FIX: Procesa el body completo para extraer ubicación compartida
+ * Esta función es la que se llama desde el handler
  */
+function processSharedLocation(body: any): string {
+  if (!isSharedLocation(body)) return "";
+  
+  const address = extractSharedLocationAddress(body);
+  if (address) return address;
+  
+  // Último intento: buscar coordenadas en el texto
+  const text = typeof body?.message === "string" ? body.message : "";
+  if (text) {
+    const coordsMatch = text.match(/([\-0-9.]+),\s*([\-0-9.]+)/);
+    if (coordsMatch) {
+      return `📍 Ubicación: ${coordsMatch[1]}, ${coordsMatch[2]}`;
+    }
+  }
+  
+  return "📍 Ubicación compartida";
+}
+
 function looksLikeLocationText(text: string) {
   const raw = clean(text);
   return (
@@ -750,7 +782,6 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   const raw = clean(text);
   if (!raw) return "";
   
-  // ✅ Si es una ubicación, no intentar extraer nombre
   if (looksLikeLocationText(raw)) return "";
   if (extractQuantity(raw) > 0) return "";
 
@@ -837,18 +868,13 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   return "";
 }
 
-/**
- * 🔧 FUNCIÓN EXTRACT ADDRESS MEJORADA CON DETECCIÓN DE GOOGLE MAPS Y UBICACIÓN COMPARTIDA
- */
 function extractAddress(text: string, detectedCity: string, phone: string, name: string) {
   const raw = clean(text);
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
   if (/^\d+$/.test(raw)) return "";
   
-  // ✅ Si es una ubicación compartida, devolverla directamente
   if (looksLikeLocationText(raw)) return raw;
 
-  // ✅ Detectar enlaces de Google Maps primero
   if (isGoogleMapsLink(raw)) {
     const mapsAddress = extractAddressFromMapsLink(raw);
     if (mapsAddress) return mapsAddress;
@@ -1970,11 +1996,6 @@ function shouldConfirmOrder(state: ConversationState) {
   return state.step === "confirm_order";
 }
 
-/**
- * ✅ FIX DE CONFIRMACIÓN:
- * Ahora NO confirma directamente si el paso anterior fue de recolección de datos personales.
- * Esto obliga a Gemini a preguntar "¿Confirmas?" antes de la confirmación final.
- */
 function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState, prevStep: string) {
   const o = state.order;
 
@@ -2506,28 +2527,40 @@ export default async function handler(req: any, res: any) {
     if (!fromNumber) return res.status(400).json({ error: "Falta from_number" });
     if (!texto && !media_url) return res.status(400).json({ error: "Faltan message o media" });
 
-    // ✅ PROCESAR UBICACIÓN COMPARTIDA ANTES QUE NADA
-    let sharedLocationAddress = processSharedLocation(req.body);
+    // ✅ PROCESAR UBICACIÓN COMPARTIDA - CON FIX MEJORADO
+    let sharedLocationAddress = "";
     
-    // Si tenemos dirección de la ubicación, la usamos como texto
-    if (sharedLocationAddress) {
-      texto = sharedLocationAddress;
-      console.log(`📍 Ubicación compartida detectada: ${sharedLocationAddress}`);
+    // Verificar si hay ubicación en el body
+    if (isSharedLocation(req.body)) {
+      sharedLocationAddress = processSharedLocation(req.body);
+      if (sharedLocationAddress) {
+        texto = sharedLocationAddress;
+        console.log(`📍 Ubicación compartida detectada: ${sharedLocationAddress}`);
+      }
     }
     
     // Si el mensaje es una ubicación pero no se pudo extraer dirección,
-    // intentar con el contexto anterior
+    // intentar con el contexto anterior o con el mensaje
     if (!sharedLocationAddress && media_type === "location") {
       const locationFromContext = context?.last_shared_location || "";
       if (locationFromContext) {
         texto = locationFromContext;
         sharedLocationAddress = locationFromContext;
+        console.log(`📍 Ubicación recuperada del contexto: ${sharedLocationAddress}`);
+      } else if (texto && texto.includes("location")) {
+        // Intentar extraer del texto
+        const coordsMatch = texto.match(/([\-0-9.]+),\s*([\-0-9.]+)/);
+        if (coordsMatch) {
+          texto = `📍 Ubicación: ${coordsMatch[1]}, ${coordsMatch[2]}`;
+          sharedLocationAddress = texto;
+        }
       }
     }
 
     // Si es una ubicación y todavía no hay texto, usar mensaje genérico
-    if (!texto && media_type === "location") {
+    if (!texto && (media_type === "location" || isSharedLocation(req.body))) {
       texto = "📍 Ubicación compartida";
+      sharedLocationAddress = texto;
     }
 
     const { data: iaConfig } = await supabase
@@ -2606,6 +2639,7 @@ export default async function handler(req: any, res: any) {
               ...(context || {}),
               step: "pedido_confirmado",
               updated_at: new Date().toISOString(),
+              last_shared_location: sharedLocationAddress || context?.last_shared_location || null,
             },
           });
         }
@@ -2620,6 +2654,7 @@ export default async function handler(req: any, res: any) {
                 ...(context || {}),
                 step: "pedido_confirmado",
                 updated_at: new Date().toISOString(),
+                last_shared_location: sharedLocationAddress || context?.last_shared_location || null,
               },
             });
           }
@@ -2654,6 +2689,7 @@ export default async function handler(req: any, res: any) {
               ...(context || {}),
               step: "pedido_confirmado",
               updated_at: new Date().toISOString(),
+              last_shared_location: sharedLocationAddress || context?.last_shared_location || null,
             },
           });
         }
@@ -2664,6 +2700,7 @@ export default async function handler(req: any, res: any) {
             ...(context || {}),
             step: "pedido_confirmado",
             updated_at: new Date().toISOString(),
+            last_shared_location: sharedLocationAddress || context?.last_shared_location || null,
           },
         });
       }
@@ -2990,6 +3027,7 @@ export default async function handler(req: any, res: any) {
                 total: finalState.total,
                 step: finalState.step,
                 locked_offer: orderData.locked_offer,
+                shared_location: sharedLocationAddress,
               }
             : undefined,
         });
@@ -3024,6 +3062,7 @@ export default async function handler(req: any, res: any) {
                 missing: finalState.missing,
                 step: finalState.step,
                 locked_offer: orderData.locked_offer,
+                shared_location: sharedLocationAddress,
               }
             : undefined,
         });
