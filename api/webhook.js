@@ -1649,8 +1649,11 @@ export async function procesar(req, message, userId, from) {
 
       // ✅ FIX: si chat-ia devuelve media_urls (imágenes cargadas en
       // Entrenamiento para el producto), las mandamos antes del texto.
+      // ✅ FIX: SOLO se envía la PRIMERA imagen (slice 0,1)
       if (Array.isArray(data?.media_urls) && data.media_urls.length > 0) {
-        for (const url of data.media_urls.slice(0, 3)) {
+        // Enviar SOLO la primera imagen (la principal)
+        const url = data.media_urls[0];
+        if (url) {
           const ok = await enviarMedia(userId, from, url, "image", "");
           if (ok) {
             await saveReceivedMessage({
