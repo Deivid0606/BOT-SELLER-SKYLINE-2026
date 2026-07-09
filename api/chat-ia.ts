@@ -27,9 +27,11 @@ import { createClient } from "@supabase/supabase-js";
  * 21) FIX V8: después de postventa, si llega una nueva plantilla y el cliente responde "Quiero confirmar", inicia otra venta nueva.
  * 22) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
  * 23) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
- * 24) FIX IMAGENES: SOLO se envía la PRIMERA imagen del producto (la principal), no todas las imágenes.
+ * 24) FIX IMAGENES: envía hasta 3 imágenes del producto correcto.
  * 25) FIX V13: Definir newTemplateSignal antes de usarlo (soluciona ReferenceError)
- * 26) FIX V14: Filtrar por PALABRA_CLAVE para enviar SOLO la imagen del producto correcto
+ * 26) FIX V14: Filtrar por PALABRA_CLAVE para enviar SOLO imágenes del producto correcto
+ * 27) FIX V18: Envía TODO el copy original del producto, sin resumir ni cortar.
+ * 28) FIX V18: Cada producto soporta hasta 3 imágenes propias.
  */
 
 const supabase = createClient(
@@ -253,11 +255,30 @@ function buildTrainingText(items: any[]) {
     .join("\n\n---\n\n");
 }
 
+function normalizeProductImages(input: any): string[] {
+  const rawImages: any[] = [];
+
+  if (Array.isArray(input?.images)) rawImages.push(...input.images);
+  if (Array.isArray(input?.image_urls)) rawImages.push(...input.image_urls);
+  if (Array.isArray(input?.imagenes)) rawImages.push(...input.imagenes);
+  if (Array.isArray(input?.media_urls)) rawImages.push(...input.media_urls);
+
+  if (typeof input?.image === "string") rawImages.push(input.image);
+  if (typeof input?.image_url === "string") rawImages.push(input.image_url);
+  if (typeof input?.imagen === "string") rawImages.push(input.imagen);
+
+  return Array.from(
+    new Set(
+      rawImages
+        .map((u) => clean(u))
+        .filter((u) => /^https?:\/\//i.test(u))
+    )
+  ).slice(0, 3);
+}
+
 function attachProductImages(products: ProductItem[], rawItems: any[]) {
   for (const item of rawItems) {
-    const urls = Array.isArray(item?.image_urls)
-      ? item.image_urls.filter((u: any) => typeof u === "string" && u.trim()).slice(0, 3)
-      : [];
+    const urls = normalizeProductImages({ image_urls: item?.image_urls });
     if (!urls.length) continue;
 
     const rowText = normalize(
@@ -312,7 +333,7 @@ function productsFromVisualCatalog(items: any[]): ProductItem[] {
     for (const p of list) {
       const keyword = clean(p?.palabra_clave || p?.keyword || "");
       const copy = clean(p?.copy || p?.salesCopy || p?.mensaje || "");
-      const image = clean(p?.image || p?.image_url || p?.imagen || "");
+      const productImages = normalizeProductImages(p);
 
       const aliasFrontend = Array.isArray(p?.alias)
         ? p.alias.map(clean).filter(Boolean)
@@ -337,7 +358,7 @@ function productsFromVisualCatalog(items: any[]): ProductItem[] {
       ].map(clean).filter(Boolean)));
 
       const canonical = visualProductNameFromKeyword(keyword, copy, allAliases);
-      const key = normalize(`${canonical}|${keyword}|${image}`);
+      const key = normalize(`${canonical}|${keyword}|${productImages.join("|")}`);
       if (seen.has(key)) continue;
       seen.add(key);
 
@@ -359,7 +380,7 @@ function productsFromVisualCatalog(items: any[]): ProductItem[] {
         price3,
         fixedPackQuantity,
         salesCopy: copy,
-        images: image ? [image] : [],
+        images: productImages,
         palabra_clave: keyword,
       });
     }
@@ -2524,7 +2545,7 @@ function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState
 
   return `
 Sos la IA vendedora de Mega Todo Store / One Store.
-Tu trabajo es vender de forma natural, amable, segura y breve por WhatsApp.
+Tu trabajo es vender de forma natural, amable y segura por WhatsApp. Cuando hay copy de producto cargado, debés respetarlo completo.
 
 REGLA PRINCIPAL:
 El backend ya calculó y validó el estado. Vos NO inventás datos. Vos redactás una respuesta fluida siguiendo la INSTRUCCIÓN OBLIGATORIA.
@@ -2553,7 +2574,7 @@ ${productPriceText(state.productInfo, o.locked_offer, templatePricing) || "Sin p
 
 ${
   state.productInfo?.salesCopy
-    ? `COPY DE VENTA ORIGINAL DE ESTE PRODUCTO (usalo como base, podés mejorar redacción/tono/orden, pero el PRECIO final que menciones debe ser EXACTAMENTE el de "PRECIO/PROMO DEL PRODUCTO ACTUAL" de arriba, nunca inventes ni cambies un número):
+    ? `COPY DE VENTA ORIGINAL DE ESTE PRODUCTO (OBLIGATORIO: enviarlo COMPLETO, sin resumir, sin cortar y sin quitar párrafos. El PRECIO final que menciones debe ser EXACTAMENTE el de "PRECIO/PROMO DEL PRODUCTO ACTUAL" de arriba, nunca inventes ni cambies un número):
 """
 ${state.productInfo.salesCopy}
 """
@@ -2566,7 +2587,7 @@ ${bankDataText(parsed)}
 REGLAS DURAS:
 - Respondé en español paraguayo/neutro, estilo WhatsApp.
 - Sé vendedor amable, cálido y fluido. Usá emojis comerciales moderados: 😊🔥🚚✅📦💰📍📲.
-- Máximo 6 a 10 líneas salvo confirmación final.
+- Si hay COPY DE VENTA ORIGINAL del producto, NO lo resumas, NO lo acortes y NO le quites partes: enviá el copy completo aunque sea largo.
 - No digas que sos IA.
 - No menciones backend, sistema ni estado interno.
 - No inventes productos, precios, bancos, cuentas, enlaces, ciudades ni tiempos.
@@ -2591,7 +2612,7 @@ REGLAS DURAS:
   5) No recalcules total multiplicando precio de plantilla por cantidad.
   6) Solo usá el catálogo del entrenamiento cuando NO exista plantilla activa.
 - Nunca uses números de dirección, teléfono o calle como precio.
-- Si hay "COPY DE VENTA ORIGINAL" para el producto actual, usalo como base de tu respuesta (podés reordenar, resumir o mejorar la redacción), pero el precio que digas SIEMPRE debe coincidir exactamente con "PRECIO/PROMO DEL PRODUCTO ACTUAL". Nunca calcules ni escribas un precio distinto al ya provisto.
+- Si hay "COPY DE VENTA ORIGINAL" para el producto actual y todavía falta ciudad, enviá TODO el copy original completo, sin resumir, sin recortar y sin cambiar el orden. Solo podés agregar al final la pregunta de ciudad. Nunca calcules ni escribas un precio distinto al ya provisto.
 - Nunca inventes otro producto. Si llegó plantilla nueva, es venta nueva.
 - Después de pedido confirmado, responder postventa si pregunta factura/entrega/pago/garantía.
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
@@ -2600,6 +2621,20 @@ REGLAS DURAS:
 - Nunca preguntes "¿Está todo correcto?" si ya están todos los datos. Si el pedido está completo, el backend responde directamente con ✅ PEDIDO CONFIRMADO y no se llama a Gemini.
 - En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
 `.trim();
+}
+
+function buildFullProductCopyResponse(state: ConversationState, templatePricing?: TemplatePricing | null) {
+  const copy = clean(state.productInfo?.salesCopy || "");
+  if (!copy) return "";
+
+  const priceLine = productPriceText(state.productInfo, state.order.locked_offer, templatePricing);
+  const copyMentionsPrice = /gs\.?\s*\d[\d.\s]{3,}|\d[\d.\s]{3,}\s*gs/i.test(copy);
+
+  return `${copy}${copyMentionsPrice || !priceLine ? "" : `
+
+${priceLine}`}
+
+📍 ¿Para qué ciudad sería el envío? 😊`;
 }
 
 function buildFallbackResponse(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
@@ -3296,7 +3331,14 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
-    // ✅ FIX IMAGENES: Enviar SOLO la imagen del producto que coincide con PALABRA_CLAVE
+    // ✅ FIX V18: si estamos presentando el producto, enviar SIEMPRE el copy completo cargado.
+    // No dejamos que Gemini lo resuma ni que postProcess lo corte.
+    const fullProductCopyResponse = !orderData.city ? buildFullProductCopyResponse(finalState, templatePricing) : "";
+    if (fullProductCopyResponse) {
+      aiResponse = fullProductCopyResponse;
+    }
+
+    // ✅ FIX IMAGENES: Enviar hasta 3 imágenes del producto que coincide con PALABRA_CLAVE
     let imagesToSend: string[] | undefined = undefined;
     
     // ✅ Buscar producto por PALABRA_CLAVE o ALIAS
@@ -3305,13 +3347,13 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     // Solo enviar imágenes si NO tenemos ciudad aún (etapa de presentación del producto)
     if (!orderData.city) {
       if (productoPorClave && productoPorClave.images?.length) {
-        // ✅ Enviar SOLO la imagen del producto que coincide con la palabra clave
-        imagesToSend = productoPorClave.images.slice(0, 1);
-        console.log(`📸 Enviando imagen para "${productoPorClave.palabra_clave || productoPorClave.canonical}" (SOLO la principal)`);
+        // ✅ Enviar hasta 3 imágenes del producto que coincide con la palabra clave
+        imagesToSend = productoPorClave.images.slice(0, 3);
+        console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${productoPorClave.palabra_clave || productoPorClave.canonical}"`);
       } else if (finalState.productInfo?.images?.length) {
         // Fallback: si no encontró por palabra clave, usar el producto detectado
-        imagesToSend = finalState.productInfo.images.slice(0, 1);
-        console.log(`📸 Enviando imagen para "${finalState.productInfo.canonical}" (SOLO la principal)`);
+        imagesToSend = finalState.productInfo.images.slice(0, 3);
+        console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${finalState.productInfo.canonical}"`);
       }
     }
 
