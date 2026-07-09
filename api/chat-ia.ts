@@ -288,7 +288,14 @@ function visualProductNameFromKeyword(keyword: string, copy: string, aliases: st
   const fromCopy = extractProductNameFromCopy(copy);
   if (fromCopy) return toTitleCase(fromCopy);
 
-  const firstAlias = aliases.find((a) => normalize(a).length >= 3);
+  // ✅ FIX V16: si la palabra clave viene como "Crema, Varices", no usarla completa
+  // como nombre del producto. Usar una parte limpia o un alias simple.
+  const aliasParts = aliases
+    .flatMap((a) => splitKeywordAliases(a))
+    .map(clean)
+    .filter((a) => normalize(a).length >= 3 && !isGenericProductWord(a));
+
+  const firstAlias = aliasParts.find(Boolean);
   if (firstAlias) return toTitleCase(firstAlias);
 
   const firstKeyword = splitKeywordAliases(keyword).find((k) => normalize(k).length >= 3) || keyword;
@@ -392,32 +399,73 @@ function parseCatalogUrl(training: string) {
 }
 
 function parseBankData(training: string): BankData | null {
-  const block =
-    training.match(/DATOS_(?:BANCARIOS|TRANSFERENCIA)([\s\S]*?)(?:FIN_DATOS_(?:BANCARIOS|TRANSFERENCIA)|---|CATALOGO_PRODUCTOS|$)/i)?.[1] ||
-    training.match(/(?:DATOS PARA TRANSFERENCIA|PAGO ANTICIPADO POR TRANSFERENCIA)([\s\S]*?)(?:---|CATALOGO_PRODUCTOS|FIN_|$)/i)?.[1] ||
-    "";
+  // ✅ FIX V16: parser estricto de datos bancarios.
+  // Antes tomaba la frase "PAGO ANTICIPADO POR TRANSFERENCIA" como inicio de bloque
+  // y terminaba leyendo líneas de ciudades como si fueran CI/Banco/Cuenta.
+  const explicitBlock =
+    training.match(/(?:^|\n)\s*(?:DATOS_BANCARIOS|DATOS_TRANSFERENCIA|DATOS PARA TRANSFERENCIA|DATOS DE TRANSFERENCIA)\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:FIN_DATOS_BANCARIOS|FIN_DATOS_TRANSFERENCIA|CATALOGO_PRODUCTOS|LISTA COMPLETA POR CIUDAD|ZONAS CON COBERTURA|ZONAS SIN COBERTURA|---)|$)/i)?.[1] || "";
 
-  const raw = clean(block);
+  // Si no hay bloque formal, igual permitimos leer líneas sueltas con etiqueta exacta
+  // (Titular:, Banco:, N° de cuenta:, Alias:), pero nunca frases genéricas.
+  const raw = clean(explicitBlock || training);
   if (!raw) return null;
 
-  const get = (...labels: string[]) => {
-    for (const label of labels) {
-      const re = new RegExp(`^\\s*${label}\\s*[:\\-]?\\s*(.+)$`, "im");
-      const v = raw.match(re)?.[1];
-      if (v) return clean(v);
+  const dangerousValue = (v: string) => {
+    const n = normalize(v);
+    return (
+      !v ||
+      v.length > 120 ||
+      v.includes("→") ||
+      /\b(ciudad del este|cde|cdad del este|zona|zonas|cobertura|asuncion|asunción|san lorenzo|luque|chaco)\b/.test(n)
+    );
+  };
+
+  const lines = raw
+    .split(/\r?\n/g)
+    .map((line) => clean(line.replace(/^[^a-zA-ZÁÉÍÓÚáéíóúÑñ0-9#°Nn]+/, "")))
+    .filter(Boolean);
+
+  const getLine = (patterns: RegExp[], validator?: (v: string) => string) => {
+    for (const line of lines) {
+      for (const pattern of patterns) {
+        const m = line.match(pattern);
+        if (!m?.[1]) continue;
+        const value = clean(m[1]);
+        const finalValue = validator ? validator(value) : value;
+        if (finalValue && !dangerousValue(finalValue)) return finalValue;
+      }
     }
     return "";
   };
 
-  return {
-    titular: get("Titular"),
-    ci: get("CI", "Cédula", "Cedula"),
-    entidad: get("Entidad"),
-    banco: get("Banco"),
-    cuenta: get("N° de cuenta", "Nro de cuenta", "Numero de cuenta", "Número de cuenta", "Cuenta"),
-    alias: get("Alias"),
-    raw,
+  const onlyDigitsValue = (v: string) => {
+    const m = clean(v).match(/\d[\d.\-\s]{3,}/);
+    return m ? clean(m[0]) : "";
   };
+
+  const normalBankValue = (v: string) => {
+    const value = clean(v).replace(/\s+/g, " ");
+    return dangerousValue(value) ? "" : value;
+  };
+
+  const titular = getLine([/^Titular\s*[:\-]\s*(.+)$/i], normalBankValue);
+  const ci = getLine([/^(?:CI|Cédula|Cedula)\s*[:\-]\s*(.+)$/i], onlyDigitsValue);
+  const entidad = getLine([/^Entidad\s*[:\-]\s*(.+)$/i], normalBankValue);
+  const banco = getLine([/^Banco\s*[:\-]\s*(.+)$/i], normalBankValue);
+  let cuenta = getLine([
+    /^(?:N[°ºo]?\s*de\s*cuenta|Nro\.?\s*de\s*cuenta|Numero\s*de\s*cuenta|Número\s*de\s*cuenta|Cuenta)\s*[:\-]\s*(.+)$/i,
+  ], normalBankValue);
+  const alias = getLine([/^Alias\s*[:\-]\s*(.+)$/i], normalBankValue);
+
+  // Limpia casos tipo "N° de cuenta: Familiar: 81-5932919" si Banco ya es Familiar.
+  if (cuenta && banco && normalize(cuenta).startsWith(normalize(banco))) {
+    const safeBank = banco.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    cuenta = clean(cuenta.replace(new RegExp(`^${safeBank}\\s*:?\\s*`, "i"), ""));
+  }
+
+  const parsed: BankData = { titular, ci, entidad, banco, cuenta, alias, raw: explicitBlock ? clean(explicitBlock) : "" };
+  const hasUsefulData = !!(parsed.titular || parsed.ci || parsed.entidad || parsed.banco || parsed.cuenta || parsed.alias);
+  return hasUsefulData ? parsed : null;
 }
 
 function isGenericMarketingPhrase(normCanonical: string) {
@@ -435,6 +483,10 @@ function isGenericMarketingPhrase(normCanonical: string) {
 function extractProductNameFromCopy(text: string): string {
   const raw = clean(text);
   if (!raw) return "";
+
+  // ✅ FIX V16: detecta líneas tipo "1 Crema: Gs. 129.000" o "2 Cremas: Gs. 239.000".
+  const simpleQtyName = raw.match(/^\s*\d+\s+([A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñÑ]{2,30})s?\s*:\s*(?:Gs\.?|₲)?\s*\d/im);
+  if (simpleQtyName) return toTitleCase(clean(simpleQtyName[1]));
 
   const afterQty = raw.match(
     /\b\d+\s+((?:[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]*\s*){1,5})\s*(?:por|a|solo|solamente)\s+(?:solo\s+)?(?:[Gg][Ss]\.?)?\s*\d/
@@ -1179,6 +1231,8 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
   }
 
   const explicitPackPatterns = [
+    // ✅ FIX V16: precios del catálogo visual: "1 Crema: Gs. 129.000" / "2 Cremas: Gs. 239.000"
+    /(?:^|\n)\s*(\d+)\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]{3,40}s?\s*[:=]\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/gi,
     /\b(?:pack|combo)\s*(?:de)?\s*(\d+)[^\n\r]{0,100}?(?:=|por|a|solo|solamente|→|->)\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/gi,
     /\b(\d+)\s*(?:unidades|unidad|u|und|unds|piezas|pieza|productos)?[^\n\r]{0,100}?(?:por|a|solo|solamente|=|→|->)\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/gi,
     /(?:^|\n|\*)\s*(\d+)\s*(?:unidad|unidades|u|und|unds)?\s*(?:→|->|-|:|=|por|x|a)?\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/gi,
