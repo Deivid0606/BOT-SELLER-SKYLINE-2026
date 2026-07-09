@@ -10,6 +10,7 @@
 // + ✅ GUARDA PRODUCTO EN CONTEXTO AL ENVIAR PLANTILLA
 // + ✅ FIX: SIEMPRE usa template si existe, ignora response cuando hay plantilla
 // + ✅ LOGS DE DIAGNÓSTICO PARA VERIFICAR GUARDADO DE CONTEXTO
+// + ✅ FIX UBICACIÓN: se agrega manejo de mensajes type "location"
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -410,7 +411,6 @@ async function saveReceivedMessage({
 // PLANTILLAS CON BOTONES E IMAGEN - CORREGIDO CON DIAGNÓSTICO ✅
 // ═══════════════════════════════════════════════════════════
 
-// ✅ FUNCIÓN CORREGIDA: Envía plantilla COMPLETA con BOTONES E IMAGEN + GUARDA CONTEXTO + DIAGNÓSTICO
 async function enviarPlantillaCompleta({ userId, from, templateName, fallbackText, productNameFallback }) {
   console.log('🔍 ===== INICIO enviarPlantillaCompleta =====');
   console.log('🔍 userId:', userId);
@@ -436,7 +436,6 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     plantilla = tpl;
     productName = plantilla?.name || templateName || productNameFallback || "";
     
-    // 🔥 LOGS DE DIAGNÓSTICO
     console.log('🔍 ===== DIAGNÓSTICO =====');
     console.log(`🔍 plantilla?.name: "${plantilla?.name}"`);
     console.log(`🔍 templateName recibido: "${templateName}"`);
@@ -449,7 +448,6 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     console.log('🔍 variables:', JSON.stringify(plantilla?.variables, null, 2));
   }
 
-  // 🔥 GUARDAR PRODUCTO EN CONTEXTO ANTES DE ENVIAR
   if (productName) {
     console.log(`📌 Guardando producto en contexto: "${productName}"`);
     const ctx = await getContexto(userId, from);
@@ -471,23 +469,19 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
 
   const mensajeFinal = clean(plantilla?.content || fallbackText || "");
   
-  // 🔧 CORREGIDO: Buscar imagen en MULTIPLES lugares
   let firstImage = null;
   let imagenes = [];
   
-  // 1. Buscar en variables.media.imageUrls (múltiples imágenes)
   if (plantilla?.variables?.media?.imageUrls && Array.isArray(plantilla.variables.media.imageUrls)) {
     imagenes = plantilla.variables.media.imageUrls.filter(url => url);
     console.log('🔍 Imágenes en variables.media.imageUrls:', imagenes.length);
   }
   
-  // 2. 🔥 BUSCAR EN media_url (¡ESTE ES EL QUE FALTABA!)
   if (imagenes.length === 0 && plantilla?.media_url) {
     console.log('🔍 Usando media_url como imagen:', plantilla.media_url);
     imagenes = [plantilla.media_url];
   }
   
-  // 3. Buscar en variables.media directamente (estructuras alternativas)
   if (imagenes.length === 0 && plantilla?.variables?.media) {
     const media = plantilla.variables.media;
     if (media.imageUrl) {
@@ -502,13 +496,11 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     }
   }
   
-  // Obtener primera imagen
   if (imagenes && imagenes.length > 0) {
     firstImage = imagenes[0];
     console.log('🔍 Primera imagen seleccionada:', firstImage);
   }
   
-  // Obtener video y GIF
   let video = null;
   let gif = null;
   if (plantilla?.variables?.media?.videoUrl) {
@@ -524,13 +516,10 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     `📦 Plantilla "${plantilla?.name || templateName}" → ${imagenes.length} img, video: ${!!video}, gif: ${!!gif}, botones: ${buttons?.length || 0}`
   );
 
-  // ✅ CASO 1: CON BOTONES - Usar URL ABSOLUTA CON DOMINIO DE PRODUCCIÓN
   if (buttons && buttons.length > 0) {
     console.log(`🎯 Enviando plantilla con ${buttons.length} botones desde webhook`);
     console.log(`📸 Imagen a enviar: ${firstImage || 'ninguna'}`);
     
-    // 🔧 URL ABSOLUTA - DOMINIO DE PRODUCCIÓN FIJO
-    // Este es tu dominio de producción (sin hash, sin autenticación)
     const baseUrl = 'https://bot-seller-skyline-2026.vercel.app';
     
     const payload = {
@@ -564,7 +553,6 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
       
       if (!response.ok) {
         console.error('❌ Error enviando plantilla con botones:', response.status, responseText);
-        // Fallback: enviar mensaje sin botones pero CON imagen
         if (firstImage) {
           await enviarMedia(userId, from, firstImage, "image", mensajeFinal);
         } else {
@@ -590,7 +578,6 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
       }
     } catch (err) {
       console.error('❌ Error en fetch send-whatsapp:', err);
-      // Fallback: enviar mensaje sin botones pero CON imagen
       if (firstImage) {
         await enviarMedia(userId, from, firstImage, "image", mensajeFinal);
       } else {
@@ -618,7 +605,6 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     return plantilla;
   }
 
-  // ✅ CASO 2: SIN BOTONES - Usar el flujo normal (imagenes + texto)
   console.log('ℹ️ Sin botones, enviando mensaje normal');
   
   for (let i = 0; i < imagenes.length; i++) {
@@ -751,7 +737,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
     const ctx = await getContexto(userId, from);
     const lastTrigger = ctx?.last_trigger || null;
 
-    // PASADA 1: si hay lastTrigger, buscar su secundario con prioridad absoluta
     if (lastTrigger) {
       const trigLastMatch = triggers.find((t) => t.name === lastTrigger);
       if (trigLastMatch && matchSecundario(trigLastMatch.secondary, textoNorm)) {
@@ -819,7 +804,6 @@ async function evaluarDisparadores({ userId, from, texto }) {
       }
     }
 
-    // PASADA 2: buscar match primario
     const triggersOrdenados = [...triggers].sort((a, b) => {
       if (a.name === lastTrigger) return -1;
       if (b.name === lastTrigger) return 1;
@@ -870,20 +854,17 @@ async function evaluarDisparadores({ userId, from, texto }) {
       let contenidoPrimary = "";
       let contenidoSecondary = "";
 
-      // 🔥🔥🔥 CORREGIDO: SIEMPRE usar template si existe, ignorar response
       if (matchPrimary) {
-        // Si hay template, usarlo SIEMPRE (incluso si response tiene texto)
         if (trig.template && trig.template !== "Ninguna" && trig.template !== "null") {
           console.log(`📌 Usando plantilla "${trig.template}" (ignorando response)`);
           plantillaPrimary = await enviarPlantillaCompleta({
             userId,
             from,
             templateName: trig.template,
-            fallbackText: "", // No usar response
+            fallbackText: "",
             productNameFallback: trig.name,
           });
         } else {
-          // Solo si NO hay template, usar response como fallback
           console.log(`📌 No hay plantilla, usando response como fallback`);
           plantillaPrimary = await enviarPlantillaCompleta({
             userId,
@@ -1439,9 +1420,7 @@ export async function procesar(req, message, userId, from) {
     let mediaId = null;
     let mimeType = null;
 
-    // 🔥 NUEVO: Manejar mensajes de tipo "interactive" (botones)
     if (tipoMsg === "interactive") {
-      // Obtener el texto del botón que el usuario seleccionó
       const buttonText = message.interactive?.button_reply?.title || 
                          message.interactive?.list_reply?.title || 
                          message.interactive?.button_reply?.id || 
@@ -1454,7 +1433,6 @@ export async function procesar(req, message, userId, from) {
       
       console.log(`🔘 Botón presionado: "${texto}"`);
       
-      // Guardar el mensaje
       await saveReceivedMessage({
         userId,
         from,
@@ -1464,14 +1442,12 @@ export async function procesar(req, message, userId, from) {
         waMessageId: message.id || null,
       });
       
-      // Procesar como texto normal (ejecutar triggers, etc.)
       const disparado = await evaluarDisparadores({ userId, from, texto });
       if (disparado) {
         console.log("✅ Disparador atendió el mensaje del botón.");
         return { response: null, handled_by: "trigger", error: null };
       }
       
-      // Si no hay trigger, enviar a Gemini
       const ctx = await getContexto(userId, from);
       const history = await getHistory(userId, from);
       
@@ -1515,7 +1491,6 @@ export async function procesar(req, message, userId, from) {
         return { response: data.response, context: data.context };
       }
       
-      // Fallback si no hay respuesta
       const fallback = "👋 Gracias por tu respuesta. ¿En qué más puedo ayudarte?";
       await enviarMensaje(userId, from, fallback);
       await saveReceivedMessage({
@@ -1527,7 +1502,6 @@ export async function procesar(req, message, userId, from) {
       return { response: fallback, error: null };
     }
 
-    // Mensajes de texto normales
     if (tipoMsg === "text") {
       texto = clean(message.text?.body || "");
       messageType = "text";
@@ -1563,6 +1537,24 @@ export async function procesar(req, message, userId, from) {
       mediaId = message.sticker?.id || null;
       mimeType = message.sticker?.mime_type || "image/webp";
       messageType = "image";
+    } else if (tipoMsg === "location") {
+      // ✅ FIX: WhatsApp Cloud API manda la ubicación compartida con type "location"
+      // y un objeto message.location = { latitude, longitude, name?, address? }.
+      // Antes esto caía directo al "else" de abajo y se descartaba sin llamar
+      // nunca a /api/chat-ia, así que el bot jamás se enteraba de la ubicación
+      // y seguía pidiendo "dirección exacta o ubicación" aunque el cliente ya
+      // la hubiera compartido.
+      const loc = message.location || {};
+      if (loc.address) {
+        texto = clean(loc.address);
+      } else if (loc.name) {
+        texto = clean(loc.name);
+      } else if (loc.latitude && loc.longitude) {
+        texto = `📍 Ubicación: ${loc.latitude}, ${loc.longitude}`;
+      } else {
+        texto = "📍 Ubicación compartida";
+      }
+      messageType = "location";
     } else {
       console.log(`⚠️ Tipo de mensaje no soportado: ${tipoMsg}`);
       return { response: null, error: "Tipo no soportado" };
@@ -1612,7 +1604,7 @@ export async function procesar(req, message, userId, from) {
       waMessageId: message.id || null,
     });
 
-    if (messageType === "text") {
+    if (messageType === "text" || messageType === "location") {
       const disparado = await evaluarDisparadores({ userId, from, texto });
       if (disparado) {
         console.log("✅ Disparador atendió el mensaje. No se llama a Gemini.");
