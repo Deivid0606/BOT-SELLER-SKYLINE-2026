@@ -66,6 +66,11 @@ type ProductItem = {
   // unidades (ej. "2 por 99.000 Gs"), sin precio real de 1 unidad.
   // Marca que la cantidad es fija y no se debe preguntar "1 o 2 unidades".
   fixedPackQuantity?: number;
+  // ✅ Copy de venta original (MENSAJE_VENTA del catálogo formal, o el texto
+  // libre completo cuando el producto se detectó automáticamente). La IA lo
+  // usa como base para redactar/mejorar la presentación, sin poder cambiar
+  // el precio que ya viene calculado por el backend.
+  salesCopy?: string;
 };
 
 type OfferItem = {
@@ -364,6 +369,7 @@ function autoDetectProductsFromTraining(training: string, existing: ProductItem[
       price2: fixedPackQuantity ? undefined : price2,
       price3: fixedPackQuantity ? undefined : price3,
       fixedPackQuantity,
+      salesCopy: block,
     });
 
     knownNames.add(normCanonical);
@@ -394,6 +400,7 @@ function parseTraining(training: string): ParsedTraining {
     const price1 = Number(clean(block.match(/^PRECIO_1:\s*(\d+)/im)?.[1]) || 0);
     const price2 = Number(clean(block.match(/^PRECIO_2:\s*(\d+)/im)?.[1]) || 0);
     const price3 = Number(clean(block.match(/^PRECIO_3:\s*(\d+)/im)?.[1]) || 0);
+    const salesCopy = clean(block.match(/^MENSAJE_VENTA:\s*([\s\S]*)$/im)?.[1]) || undefined;
 
     if (product && canonical && price1 > 0) {
       products.push({
@@ -403,6 +410,7 @@ function parseTraining(training: string): ParsedTraining {
         price1,
         price2: price2 || undefined,
         price3: price3 || undefined,
+        salesCopy,
       });
     }
   }
@@ -2451,6 +2459,15 @@ ${catalogForPrompt(parsed, state, templatePricing)}
 PRECIO/PROMO DEL PRODUCTO ACTUAL:
 ${productPriceText(state.productInfo, o.locked_offer, templatePricing) || "Sin producto actual."}
 
+${
+  state.productInfo?.salesCopy
+    ? `COPY DE VENTA ORIGINAL DE ESTE PRODUCTO (usalo como base, podés mejorar redacción/tono/orden, pero el PRECIO final que menciones debe ser EXACTAMENTE el de "PRECIO/PROMO DEL PRODUCTO ACTUAL" de arriba, nunca inventes ni cambies un número):
+"""
+${state.productInfo.salesCopy}
+"""
+`
+    : ""
+}
 DATOS DE TRANSFERENCIA:
 ${bankDataText(parsed)}
 
@@ -2482,6 +2499,7 @@ REGLAS DURAS:
   5) No recalcules total multiplicando precio de plantilla por cantidad.
   6) Solo usá el catálogo del entrenamiento cuando NO exista plantilla activa.
 - Nunca uses números de dirección, teléfono o calle como precio.
+- Si hay "COPY DE VENTA ORIGINAL" para el producto actual, usalo como base de tu respuesta (podés reordenar, resumir o mejorar la redacción), pero el precio que digas SIEMPRE debe coincidir exactamente con "PRECIO/PROMO DEL PRODUCTO ACTUAL". Nunca calcules ni escribas un precio distinto al ya provisto.
 - Nunca inventes otro producto. Si llegó plantilla nueva, es venta nueva.
 - Después de pedido confirmado, responder postventa si pregunta factura/entrega/pago/garantía.
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
