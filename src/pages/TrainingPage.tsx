@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { 
   GraduationCap, Plus, Trash2, BookOpen, Loader2, RefreshCw, 
-  ImagePlus, X, Copy, Sparkles, Zap
+  ImagePlus, X, Copy, Sparkles, Zap, Package as PackageIcon
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -22,7 +22,6 @@ interface TrainingItem {
   created_at: string;
   image_urls?: string[];
   products?: ProductItem[];
-  // El entrenamiento completo en un solo campo
   entrenamiento_completo?: string;
 }
 
@@ -37,9 +36,8 @@ export default function TrainingPage() {
   const [intent, setIntent] = useState("");
   const [examples, setExamples] = useState("");
   const [entrenamientoCompleto, setEntrenamientoCompleto] = useState("");
-  const [products, setProducts] = useState<ProductItem[]>([
-    { id: crypto.randomUUID(), image: "", copy: "" }
-  ]);
+  const [products, setProducts] = useState<ProductItem[]>([]); // Empieza vacío
+  const [mostrarCatalogo, setMostrarCatalogo] = useState(false);
   
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -176,11 +174,13 @@ export default function TrainingPage() {
       ...prev,
       { id: crypto.randomUUID(), image: "", copy: "" }
     ]);
+    setMostrarCatalogo(true);
   };
 
   const removeProduct = (productId: string) => {
     if (products.length <= 1) {
-      alert("Debe haber al menos un producto");
+      setProducts([]);
+      setMostrarCatalogo(false);
       return;
     }
     setProducts(prev => prev.filter(p => p.id !== productId));
@@ -202,11 +202,13 @@ export default function TrainingPage() {
       return;
     }
 
-    // Verificar que todos los productos tengan copy
-    const hasEmptyCopy = products.some(p => !p.copy.trim());
-    if (hasEmptyCopy) {
-      alert("Todos los productos deben tener información (copy)");
-      return;
+    // Validar productos solo si hay productos
+    if (products.length > 0) {
+      const hasEmptyCopy = products.some(p => !p.copy.trim());
+      if (hasEmptyCopy) {
+        alert("Todos los productos deben tener información (copy)");
+        return;
+      }
     }
 
     const examplesArray = examples
@@ -223,9 +225,9 @@ export default function TrainingPage() {
         user_id: user.id,
         intent: intent.trim(),
         examples: examplesArray,
-        response: entrenamientoCompleto.trim(), // Guardamos todo el entrenamiento aquí
+        response: entrenamientoCompleto.trim(),
         image_urls: imageUrls,
-        products: products,
+        products: products.length > 0 ? products : [], // Guarda array vacío si no hay productos
         entrenamiento_completo: entrenamientoCompleto.trim(),
         is_active: true
       };
@@ -275,6 +277,7 @@ export default function TrainingPage() {
     setExamples(item.examples.join('\n'));
     setEntrenamientoCompleto(item.entrenamiento_completo || item.response || "");
     setProducts(item.products || []);
+    setMostrarCatalogo(item.products && item.products.length > 0);
     setEditingId(item.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -303,7 +306,8 @@ export default function TrainingPage() {
     setIntent("");
     setExamples("");
     setEntrenamientoCompleto("");
-    setProducts([{ id: crypto.randomUUID(), image: "", copy: "" }]);
+    setProducts([]);
+    setMostrarCatalogo(false);
     setEditingId(null);
   };
 
@@ -379,11 +383,13 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
             </p>
           </div>
 
+          {/* Catálogo de Productos - Opcional */}
           <div className="border-t border-border pt-4">
             <div className="flex items-center justify-between mb-2">
               <label className="text-xs text-muted-foreground flex items-center gap-1">
-                <Package className="h-3 w-3" />
-                📦 Catálogo de Productos ({products.length})
+                <PackageIcon className="h-3 w-3" />
+                📦 Catálogo de Productos {products.length > 0 && `(${products.length})`}
+                <span className="text-[10px] text-muted-foreground/60 ml-1">(opcional)</span>
               </label>
               <button
                 type="button"
@@ -395,69 +401,82 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
               </button>
             </div>
 
-            <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2">
-              {products.map((product, index) => (
-                <div key={product.id} className="border border-border rounded-lg p-3 space-y-3 relative">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-muted-foreground">
-                      Producto #{index + 1}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => removeProduct(product.id)}
-                      className="text-destructive hover:text-destructive/80 transition-colors"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
+            {products.length === 0 ? (
+              <div 
+                className="border border-dashed border-border rounded-lg p-6 text-center cursor-pointer hover:bg-secondary/30 transition-colors"
+                onClick={addProduct}
+              >
+                <PackageIcon className="h-8 w-8 text-muted-foreground/40 mx-auto mb-2" />
+                <p className="text-xs text-muted-foreground">
+                  Haz clic para agregar tu primer producto<br />
+                  <span className="text-[10px] text-muted-foreground/60">(opcional)</span>
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2">
+                {products.map((product, index) => (
+                  <div key={product.id} className="border border-border rounded-lg p-3 space-y-3 relative">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        Producto #{index + 1}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => removeProduct(product.id)}
+                        className="text-destructive hover:text-destructive/80 transition-colors"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
 
-                  {/* Imagen */}
-                  <div>
-                    <label className="text-[10px] text-muted-foreground">Imagen</label>
-                    <div className="mt-1 aspect-video rounded-lg border border-dashed border-border bg-secondary/30 overflow-hidden flex items-center justify-center group max-w-[200px]">
-                      {uploadingProductId === product.id ? (
-                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                      ) : product.image ? (
-                        <div className="relative w-full h-full">
-                          <img src={product.image} alt={`Producto ${index + 1}`} className="w-full h-full object-cover" />
+                    {/* Imagen */}
+                    <div>
+                      <label className="text-[10px] text-muted-foreground">Imagen</label>
+                      <div className="mt-1 aspect-video rounded-lg border border-dashed border-border bg-secondary/30 overflow-hidden flex items-center justify-center group max-w-[200px]">
+                        {uploadingProductId === product.id ? (
+                          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                        ) : product.image ? (
+                          <div className="relative w-full h-full">
+                            <img src={product.image} alt={`Producto ${index + 1}`} className="w-full h-full object-cover" />
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveImage(product.id)}
+                              className="absolute top-1 right-1 p-1 rounded-full bg-background/80 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/20"
+                            >
+                              <X className="h-3 w-3 text-destructive" />
+                            </button>
+                          </div>
+                        ) : (
                           <button
                             type="button"
-                            onClick={() => handleRemoveImage(product.id)}
-                            className="absolute top-1 right-1 p-1 rounded-full bg-background/80 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/20"
+                            onClick={() => handlePickImage(product.id)}
+                            className="flex flex-col items-center gap-1 text-muted-foreground hover:text-primary transition-colors w-full h-full justify-center"
                           >
-                            <X className="h-3 w-3 text-destructive" />
+                            <ImagePlus className="h-5 w-5" />
+                            <span className="text-[9px]">Subir imagen</span>
                           </button>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => handlePickImage(product.id)}
-                          className="flex flex-col items-center gap-1 text-muted-foreground hover:text-primary transition-colors w-full h-full justify-center"
-                        >
-                          <ImagePlus className="h-5 w-5" />
-                          <span className="text-[9px]">Subir imagen</span>
-                        </button>
-                      )}
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Copy del producto */}
+                    <div>
+                      <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+                        <Copy className="h-3 w-3" />
+                        Copy / Mensaje de Venta
+                      </label>
+                      <textarea
+                        value={product.copy}
+                        onChange={(e) => handleCopyChange(product.id, e.target.value)}
+                        className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[80px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
+                        placeholder={`🔥 ¡Cociná más rápido y sin esfuerzo!
+Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segundos...`}
+                      />
                     </div>
                   </div>
-
-                  {/* Copy del producto */}
-                  <div>
-                    <label className="text-[10px] text-muted-foreground flex items-center gap-1">
-                      <Copy className="h-3 w-3" />
-                      Copy / Mensaje de Venta
-                    </label>
-                    <textarea
-                      value={product.copy}
-                      onChange={(e) => handleCopyChange(product.id, e.target.value)}
-                      className="w-full mt-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm min-h-[80px] resize-y placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
-                      placeholder={`🔥 ¡Cociná más rápido y sin esfuerzo!
-Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segundos...`}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <input
@@ -529,12 +548,14 @@ Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segund
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium truncate">{item.intent}</p>
                     <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                      <span className="text-[10px] text-muted-foreground/60">
-                        {item.products?.length || 0} productos
-                      </span>
+                      {item.products && item.products.length > 0 && (
+                        <span className="text-[10px] text-muted-foreground/60">
+                          {item.products.length} productos
+                        </span>
+                      )}
                       {item.examples && item.examples.length > 0 && (
                         <span className="text-[10px] text-muted-foreground/60">
-                          • {item.examples.length} ejemplos
+                          {item.examples.length} ejemplos
                         </span>
                       )}
                     </div>
@@ -558,17 +579,9 @@ Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segund
   );
 }
 
-// Iconos faltantes
+// Iconos
 const MessageSquare = ({ className }: { className?: string }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-  </svg>
-);
-
-const Package = ({ className }: { className?: string }) => (
-  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-    <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
-    <line x1="12" y1="22.08" x2="12" y2="12" />
   </svg>
 );
