@@ -28,6 +28,7 @@ import { createClient } from "@supabase/supabase-js";
  * 22) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
  * 23) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
  * 24) FIX IMAGENES: SOLO se envía la PRIMERA imagen del producto (la principal), no todas las imágenes.
+ * 25) FIX V13: Definir newTemplateSignal antes de usarlo (soluciona ReferenceError)
  */
 
 const supabase = createClient(
@@ -2481,6 +2482,9 @@ export default async function handler(req: any, res: any) {
     attachProductImages(parsed.products, allTraining);
     const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
 
+    // ✅ FIX: Definir newTemplateSignal ANTES de usarlo (soluciona ReferenceError)
+    const newTemplateSignal = isNewTemplateOrProductIntent(texto, parsed, history);
+
     const recentExplicitProductInterest = getRecentExplicitProductInterestAfterConfirmed(history, parsed);
     const templateAfterExplicitProductInterest = recentExplicitProductInterest
       ? getTemplatePricingAfterHistoryIndex(history, parsed, recentExplicitProductInterest.index)
@@ -2603,6 +2607,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    // ✅ newTemplateSignal ya está definido, ahora podemos usarlo
     const productFromMessageInitial = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
     const lockedProductInitial = getLockedProductFromContext(context, oldOrder, history, parsed);
     const promoResponse = isRespondingToPromotion(texto, history);
@@ -2999,13 +3004,9 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     }
 
     // ✅ FIX IMAGENES: SOLO enviar la PRIMERA imagen del producto (la principal)
-    // Esto asegura que cuando el cliente escriba "crema" solo reciba la imagen de la CREMA
-    // y cuando escriba "afilador" solo reciba la imagen del AFILADOR
     let imagesToSend: string[] | undefined = undefined;
     
-    // Solo enviar imágenes si NO tenemos ciudad aún (etapa de presentación del producto)
     if (!orderData.city && finalState.productInfo?.images?.length) {
-      // ✅ Enviar SOLO la primera imagen (la principal del producto)
       imagesToSend = finalState.productInfo.images.slice(0, 1);
       console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${orderData.product || 'producto'}" (SOLO la principal)`);
     }
