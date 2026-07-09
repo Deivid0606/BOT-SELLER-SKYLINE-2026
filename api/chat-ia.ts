@@ -29,6 +29,7 @@ import { createClient } from "@supabase/supabase-js";
  * 23) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
  * 24) FIX CONFIRMACIÓN: El bot SIEMPRE pregunta "¿Confirmas?" antes de que el backend confirme directamente.
  * 25) FIX GOOGLE MAPS: Detecta enlaces de Google Maps y extrae la dirección/ubicación automáticamente.
+ * 26) FIX UBICACIÓN COMPARTIDA: Detecta cuando el cliente comparte su ubicación por WhatsApp y la toma como dirección.
  *
  * IMPORTANTE:
  * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
@@ -212,15 +213,10 @@ function isGoogleMapsLink(text: string) {
 
 /**
  * Extrae coordenadas de un enlace de Google Maps
- * Ejemplos:
- * - https://maps.app.goo.gl/XXXXX
- * - https://www.google.com/maps/place/Dirección/@-25.123,-57.123,15z
- * - https://www.google.com/maps?q=-25.123,-57.123
  */
 function extractCoordinatesFromMapsLink(text: string) {
   const raw = clean(text);
   
-  // Formato: @-25.123,-57.123
   const atCoords = raw.match(/@([\-0-9.]+),([\-0-9.]+)/);
   if (atCoords) {
     return {
@@ -229,7 +225,6 @@ function extractCoordinatesFromMapsLink(text: string) {
     };
   }
   
-  // Formato: ?q=-25.123,-57.123
   const qCoords = raw.match(/[?&]q=([\-0-9.]+),([\-0-9.]+)/);
   if (qCoords) {
     return {
@@ -238,7 +233,6 @@ function extractCoordinatesFromMapsLink(text: string) {
     };
   }
   
-  // Formato: /place/Dirección/@-25.123,-57.123
   const placeCoords = raw.match(/\/place\/[^/]+\/@([\-0-9.]+),([\-0-9.]+)/);
   if (placeCoords) {
     return {
@@ -252,20 +246,15 @@ function extractCoordinatesFromMapsLink(text: string) {
 
 /**
  * Extrae el nombre del lugar o dirección de un enlace de Google Maps
- * Ejemplo: https://www.google.com/maps/place/Av.+España+123,+Asunción
- * Resultado: "Av. España 123, Asunción"
  */
 function extractPlaceNameFromMapsLink(text: string) {
   const raw = clean(text);
   
-  // Formato: /place/Nombre+del+Lugar
   const placeMatch = raw.match(/\/place\/([^/@?]+)/);
   if (placeMatch) {
-    // Decodificar URL y reemplazar + por espacio
     return decodeURIComponent(placeMatch[1].replace(/\+/g, " "));
   }
   
-  // Formato: ?q=Dirección
   const qMatch = raw.match(/[?&]q=([^&]+)/);
   if (qMatch) {
     return decodeURIComponent(qMatch[1].replace(/\+/g, " "));
@@ -283,11 +272,9 @@ function extractAddressFromMapsLink(text: string) {
   
   if (!isGoogleMapsLink(raw)) return "";
   
-  // Primero intentar extraer el nombre del lugar
   const placeName = extractPlaceNameFromMapsLink(raw);
   if (placeName) return placeName;
   
-  // Si no hay nombre de lugar, extraer coordenadas
   const coords = extractCoordinatesFromMapsLink(raw);
   if (coords) {
     return `📍 Ubicación: ${coords.lat}, ${coords.lng}`;
@@ -297,7 +284,91 @@ function extractAddressFromMapsLink(text: string) {
 }
 
 // ============================================================
-// FIN FUNCIONES GOOGLE MAPS
+// 🆕 FUNCIONES PARA UBICACIÓN COMPARTIDA DE WHATSAPP
+// ============================================================
+
+/**
+ * Detecta si el mensaje contiene una ubicación compartida
+ */
+function isSharedLocation(mediaType?: string, message?: any) {
+  if (mediaType === "location") return true;
+  if (message?.location) return true;
+  if (message?.context?.location) return true;
+  return false;
+}
+
+/**
+ * Extrae la dirección de un objeto location compartido
+ */
+function extractSharedLocationAddress(message: any): string {
+  const sources = [
+    message?.location,
+    message?.context?.location,
+    message?.location_data,
+    message?.message?.location,
+  ];
+  
+  for (const loc of sources) {
+    if (!loc) continue;
+    
+    if (loc.address) return clean(loc.address);
+    if (loc.name) return clean(loc.name);
+    if (loc.label) return clean(loc.label);
+    if (loc.latitude && loc.longitude) {
+      return `📍 Ubicación: ${loc.latitude}, ${loc.longitude}`;
+    }
+  }
+  
+  if (message?.latitude && message?.longitude) {
+    return `📍 Ubicación: ${message.latitude}, ${message.longitude}`;
+  }
+  
+  return "";
+}
+
+/**
+ * Procesa el body completo para extraer ubicación compartida
+ */
+function processSharedLocation(body: any): string {
+  const locSources = [
+    body?.message?.location,
+    body?.location,
+    body?.context?.location,
+    body?.message?.context?.location,
+    body?.message?.location_data,
+    body?.location_data,
+  ];
+  
+  for (const loc of locSources) {
+    if (!loc) continue;
+    
+    if (loc.address) return clean(loc.address);
+    if (loc.name) return clean(loc.name);
+    if (loc.label) return clean(loc.label);
+    if (loc.latitude && loc.longitude) {
+      return `📍 Ubicación: ${loc.latitude}, ${loc.longitude}`;
+    }
+  }
+  
+  return "";
+}
+
+/**
+ * Verifica si el texto parece ser una ubicación
+ */
+function looksLikeLocationText(text: string) {
+  const raw = clean(text);
+  return (
+    raw.includes("📍 Ubicación:") ||
+    raw.includes("latitude") ||
+    raw.includes("longitude") ||
+    raw.includes("location") ||
+    /^-?\d+\.\d+,\s*-?\d+\.\d+$/.test(raw)
+  );
+}
+
+// ============================================================
+// FIN FUNCIONES DE UBICACIÓN
 // ============================================================
 
 async function getAllTrainingData(userId: string) {
@@ -678,6 +749,9 @@ function toTitleCase(str: string): string {
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const raw = clean(text);
   if (!raw) return "";
+  
+  // ✅ Si es una ubicación, no intentar extraer nombre
+  if (looksLikeLocationText(raw)) return "";
   if (extractQuantity(raw) > 0) return "";
 
   const isMultiLine = raw.includes("\n");
@@ -764,14 +838,17 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
 }
 
 /**
- * 🔧 FUNCIÓN EXTRACT ADDRESS MEJORADA CON DETECCIÓN DE GOOGLE MAPS
+ * 🔧 FUNCIÓN EXTRACT ADDRESS MEJORADA CON DETECCIÓN DE GOOGLE MAPS Y UBICACIÓN COMPARTIDA
  */
 function extractAddress(text: string, detectedCity: string, phone: string, name: string) {
   const raw = clean(text);
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
   if (/^\d+$/.test(raw)) return "";
+  
+  // ✅ Si es una ubicación compartida, devolverla directamente
+  if (looksLikeLocationText(raw)) return raw;
 
-  // ✅ NUEVO: Detectar enlaces de Google Maps primero
+  // ✅ Detectar enlaces de Google Maps primero
   if (isGoogleMapsLink(raw)) {
     const mapsAddress = extractAddressFromMapsLink(raw);
     if (mapsAddress) return mapsAddress;
@@ -782,7 +859,6 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   const explicit = raw.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1];
   if (explicit) return clean(explicit);
 
-  // ✅ NUEVO: Si el texto tiene un enlace de Maps pero no se detectó antes, devolver el enlace
   if (isGoogleMapsLink(raw)) return raw;
 
   if (raw.includes("maps.app") || raw.includes("google.com/maps")) return raw;
@@ -791,7 +867,6 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
     const cleaned = clean(line);
     const normLine = normalize(cleaned);
 
-    // ✅ NUEVO: Detectar enlaces de Maps en líneas separadas
     if (isGoogleMapsLink(cleaned)) {
       const mapsAddress = extractAddressFromMapsLink(cleaned);
       if (mapsAddress) return mapsAddress;
@@ -1913,8 +1988,6 @@ function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState, 
 
   if (!hasBaseData) return false;
 
-  // ✅ NUEVO: No confirmar directamente si el paso anterior era de recolección de datos personales
-  // Esto permite que Gemini pida confirmación antes de cerrar el pedido
   const sensitiveSteps = ["collecting_name", "collecting_address", "collecting_phone", "collecting_quantity"];
   if (sensitiveSteps.includes(prevStep)) {
     return false;
@@ -2433,6 +2506,30 @@ export default async function handler(req: any, res: any) {
     if (!fromNumber) return res.status(400).json({ error: "Falta from_number" });
     if (!texto && !media_url) return res.status(400).json({ error: "Faltan message o media" });
 
+    // ✅ PROCESAR UBICACIÓN COMPARTIDA ANTES QUE NADA
+    let sharedLocationAddress = processSharedLocation(req.body);
+    
+    // Si tenemos dirección de la ubicación, la usamos como texto
+    if (sharedLocationAddress) {
+      texto = sharedLocationAddress;
+      console.log(`📍 Ubicación compartida detectada: ${sharedLocationAddress}`);
+    }
+    
+    // Si el mensaje es una ubicación pero no se pudo extraer dirección,
+    // intentar con el contexto anterior
+    if (!sharedLocationAddress && media_type === "location") {
+      const locationFromContext = context?.last_shared_location || "";
+      if (locationFromContext) {
+        texto = locationFromContext;
+        sharedLocationAddress = locationFromContext;
+      }
+    }
+
+    // Si es una ubicación y todavía no hay texto, usar mensaje genérico
+    if (!texto && media_type === "location") {
+      texto = "📍 Ubicación compartida";
+    }
+
     const { data: iaConfig } = await supabase
       .from("chat_ia_gemini")
       .select("*")
@@ -2823,7 +2920,6 @@ export default async function handler(req: any, res: any) {
 
     const finalState = buildState(orderData, parsed);
     
-    // ✅ FIX DE CONFIRMACIÓN: Usar prevStep para decidir si confirmar directamente
     const directConfirm = hasAllRequiredOrderDataForDirectConfirmation(finalState, prevStep);
     const confirm = shouldConfirmOrder(finalState) || directConfirm;
 
@@ -2831,7 +2927,6 @@ export default async function handler(req: any, res: any) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, confirm);
     }
 
-    // ✅ Si el pedido está completo Y el paso anterior NO era de recolección de datos, confirmar directamente
     if (confirm) {
       const fixedConfirmation = finalConfirmationMessage(finalState, parsed);
 
@@ -2847,6 +2942,7 @@ export default async function handler(req: any, res: any) {
           payment_proof_received: orderData.payment_proof_received || false,
           step: "pedido_confirmado",
           updated_at: new Date().toISOString(),
+          last_shared_location: sharedLocationAddress || context?.last_shared_location || null,
         },
         debug: true
           ? {
@@ -2862,6 +2958,7 @@ export default async function handler(req: any, res: any) {
               direct_confirm: directConfirm,
               prev_step: prevStep,
               locked_offer: orderData.locked_offer,
+              shared_location: sharedLocationAddress,
             }
           : undefined,
       });
@@ -2882,6 +2979,7 @@ export default async function handler(req: any, res: any) {
             payment_proof_received: orderData.payment_proof_received || false,
             step: finalState.step,
             updated_at: new Date().toISOString(),
+            last_shared_location: sharedLocationAddress || context?.last_shared_location || null,
           },
           debug: true
             ? {
@@ -2912,6 +3010,7 @@ export default async function handler(req: any, res: any) {
             order_id: orderData.order_id || null,
             step: finalState.step,
             updated_at: new Date().toISOString(),
+            last_shared_location: sharedLocationAddress || context?.last_shared_location || null,
           },
           debug: true
             ? {
@@ -2978,6 +3077,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
         payment_proof_received: (orderData as any).payment_proof_received || false,
         step: confirm ? "pedido_confirmado" : finalState.step,
         updated_at: new Date().toISOString(),
+        last_shared_location: sharedLocationAddress || context?.last_shared_location || null,
       },
       debug: true
         ? {
@@ -2997,6 +3097,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
             locked_offer: orderData.locked_offer,
             productFromMessageInitial,
             promoResponse,
+            shared_location: sharedLocationAddress,
           }
         : undefined,
     });
