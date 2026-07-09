@@ -1763,6 +1763,16 @@ function getLockedOfferFromContext(context: any, oldOrder: OrderData, history: a
   return getOfferFromLastPromotion(history, parsed);
 }
 
+/**
+ * ✅ Una ciudad real es un nombre propio corto, nunca una oración con verbo.
+ * Esto evita que frases como "me interesa el afilador" o "cuanto sale"
+ * terminen guardadas como si fueran el nombre de una ciudad, aunque
+ * detectProduct no haya reconocido el producto en ese mensaje puntual.
+ */
+function looksLikeSentenceNotCity(text: string) {
+  const n = normalize(text);
+  return /\b(me interesa|te interesa|interesa|quiero|necesito|cuanto|cuánto|cuesta|precio|tienen|tenes|tenés|hay|dame|mandame|reservame|consulta|informacion|información|hola|buenas|gracias|comprar|compro)\b/.test(n);
+}
 
 function hasPaymentProofText(text: string) {
   const n = normalize(text);
@@ -2936,6 +2946,7 @@ export default async function handler(req: any, res: any) {
               !extractQuantity(texto) &&
               !extractPhone(texto) &&
               !detectProduct(texto, parsed, "") &&
+              !looksLikeSentenceNotCity(texto) &&
               normalize(texto).split(/\s+/).length <= 6
             ? clean(texto) || detectCity(texto, parsed, oldOrder.city)
             : !freshOrder
