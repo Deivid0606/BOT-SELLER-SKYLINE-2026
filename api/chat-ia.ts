@@ -71,6 +71,8 @@ type ProductItem = {
   // usa como base para redactar/mejorar la presentación, sin poder cambiar
   // el precio que ya viene calculado por el backend.
   salesCopy?: string;
+  // ✅ Hasta 3 URLs de imágenes cargadas en Entrenamiento para este producto.
+  images?: string[];
 };
 
 type OfferItem = {
@@ -204,7 +206,7 @@ function hasExplicitQuantity(text: string) {
 async function getAllTrainingData(userId: string) {
   const { data, error } = await supabase
     .from("training_data")
-    .select("id, intent, examples, response, is_active")
+    .select("id, intent, examples, response, is_active, image_urls")
     .eq("user_id", userId)
     .eq("is_active", true)
     .order("created_at", { ascending: false });
@@ -224,6 +226,38 @@ function buildTrainingText(items: any[]) {
       return `${i.intent || ""}\n${examples}\n${i.response || ""}`;
     })
     .join("\n\n---\n\n");
+}
+
+/**
+ * ✅ Asocia las imágenes cargadas en cada fila de Entrenamiento con el
+ * producto que corresponda. Como el texto de cada fila (intent + ejemplos +
+ * response) puede mencionar uno o más productos ya parseados, se buscan
+ * coincidencias por nombre/alias y se les copian las image_urls de esa fila.
+ * No pisa imágenes ya asignadas por una fila anterior (primera fila que
+ * cargue imágenes para un producto, gana).
+ */
+function attachProductImages(products: ProductItem[], rawItems: any[]) {
+  for (const item of rawItems) {
+    const urls = Array.isArray(item?.image_urls)
+      ? item.image_urls.filter((u: any) => typeof u === "string" && u.trim()).slice(0, 3)
+      : [];
+    if (!urls.length) continue;
+
+    const rowText = normalize(
+      `${item?.intent || ""}\n${Array.isArray(item?.examples) ? item.examples.join("\n") : ""}\n${item?.response || ""}`
+    );
+    if (!rowText) continue;
+
+    for (const product of products) {
+      if (product.images?.length) continue; // ya tiene imágenes de una fila anterior
+      const names = [product.canonical, product.product, ...product.aliases]
+        .map(normalize)
+        .filter((n) => n.length >= 4);
+      if (names.some((n) => rowText.includes(n))) {
+        product.images = urls;
+      }
+    }
+  }
 }
 
 function parseCatalogUrl(training: string) {
@@ -2675,6 +2709,7 @@ export default async function handler(req: any, res: any) {
     const allTraining = await getAllTrainingData(user_id);
     const trainingText = buildTrainingText(allTraining);
     const parsed = parseTraining(trainingText);
+    attachProductImages(parsed.products, allTraining);
     const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
 
     // ✅ FIX V11 mínimo:
@@ -3248,6 +3283,12 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
 
     return res.json({
       response: postProcessResponse(aiResponse),
+      // ✅ Imágenes del producto: se mandan en el momento en que se presenta
+      // (todavía no hay ciudad cargada), igual que el copy de venta.
+      media_urls:
+        !orderData.city && finalState.productInfo?.images?.length
+          ? finalState.productInfo.images
+          : undefined,
       context: {
         ...(context || {}),
         current_product: orderData.product || null,
