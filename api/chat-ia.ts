@@ -22,19 +22,12 @@ import { createClient } from "@supabase/supabase-js";
  * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
  * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
  * 18) FIX V12: detección de producto ignora palabras genéricas como unidades y reconoce singular/plural.
- * 18) FIX V11: si el cliente pidió explícitamente otro producto antes de una plantilla nueva, ese producto gana sobre contexto viejo.
- * 18) FIX V9: si el pedido ya tiene todos los datos obligatorios, confirma directo con bloque fijo backend; nunca pregunta “¿Confirmamos?”.
- * 18) FIX V8: después de postventa, si llega una nueva plantilla y el cliente responde "Quiero confirmar", inicia otra venta nueva.
- * 18) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
- * 18) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
- *
- * IMPORTANTE:
- * - Si tu tabla orders NO tiene columna locked_offer, eliminá payload.locked_offer
- *   o agregá una columna jsonb:
- *   alter table orders add column if not exists locked_offer jsonb;
- *   alter table orders add column if not exists order_id text;
- *   alter table orders add column if not exists payment_proof_received boolean default false;
- *   create unique index if not exists orders_user_order_id_unique on orders(user_id, order_id);
+ * 19) FIX V11: si el cliente pidió explícitamente otro producto antes de una plantilla nueva, ese producto gana sobre contexto viejo.
+ * 20) FIX V9: si el pedido ya tiene todos los datos obligatorios, confirma directo con bloque fijo backend; nunca pregunta "¿Confirmamos?".
+ * 21) FIX V8: después de postventa, si llega una nueva plantilla y el cliente responde "Quiero confirmar", inicia otra venta nueva.
+ * 22) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
+ * 23) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
+ * 24) FIX IMAGENES: SOLO se envía la PRIMERA imagen del producto (la principal), no todas las imágenes.
  */
 
 const supabase = createClient(
@@ -61,17 +54,8 @@ type ProductItem = {
   price1: number;
   price2?: number;
   price3?: number;
-  // ✅ Se completa cuando el producto viene de un copy de venta libre (sin
-  // catálogo formal) cuyo ÚNICO precio detectado es para un pack de N
-  // unidades (ej. "2 por 99.000 Gs"), sin precio real de 1 unidad.
-  // Marca que la cantidad es fija y no se debe preguntar "1 o 2 unidades".
   fixedPackQuantity?: number;
-  // ✅ Copy de venta original (MENSAJE_VENTA del catálogo formal, o el texto
-  // libre completo cuando el producto se detectó automáticamente). La IA lo
-  // usa como base para redactar/mejorar la presentación, sin poder cambiar
-  // el precio que ya viene calculado por el backend.
   salesCopy?: string;
-  // ✅ Hasta 3 URLs de imágenes cargadas en Entrenamiento para este producto.
   images?: string[];
 };
 
@@ -228,14 +212,6 @@ function buildTrainingText(items: any[]) {
     .join("\n\n---\n\n");
 }
 
-/**
- * ✅ Asocia las imágenes cargadas en cada fila de Entrenamiento con el
- * producto que corresponda. Como el texto de cada fila (intent + ejemplos +
- * response) puede mencionar uno o más productos ya parseados, se buscan
- * coincidencias por nombre/alias y se les copian las image_urls de esa fila.
- * No pisa imágenes ya asignadas por una fila anterior (primera fila que
- * cargue imágenes para un producto, gana).
- */
 function attachProductImages(products: ProductItem[], rawItems: any[]) {
   for (const item of rawItems) {
     const urls = Array.isArray(item?.image_urls)
@@ -249,7 +225,7 @@ function attachProductImages(products: ProductItem[], rawItems: any[]) {
     if (!rowText) continue;
 
     for (const product of products) {
-      if (product.images?.length) continue; // ya tiene imágenes de una fila anterior
+      if (product.images?.length) continue;
       const names = [product.canonical, product.product, ...product.aliases]
         .map(normalize)
         .filter((n) => n.length >= 4);
@@ -299,12 +275,6 @@ function parseBankData(training: string): BankData | null {
   };
 }
 
-/**
- * ✅ Intenta extraer un nombre de producto directamente de un texto de venta libre,
- * sin depender de un catálogo formal. Prioriza frases tipo:
- * "2 Afiladores Profesionales por solo Gs. 99.000" → "Afiladores Profesionales"
- * "Procesador de Alimentos Premium RAF PRO® preparás..." → "Procesador de Alimentos Premium RAF PRO"
- */
 function isGenericMarketingPhrase(normCanonical: string) {
   const words = normCanonical.split(" ").filter(Boolean);
   const genericWords = new Set([
@@ -314,8 +284,6 @@ function isGenericMarketingPhrase(normCanonical: string) {
     "pagas", "pagás", "recibir", "unidad", "unidades", "solo",
     "solamente", "precio", "precios", "valido", "válido", "valida", "válida",
   ]);
-  // Si TODAS las palabras del nombre detectado son genéricas de marketing
-  // (ej: "Oferta Hoy", "Stock Limitado"), no es un producto real.
   return words.length > 0 && words.every((w) => genericWords.has(w));
 }
 
@@ -323,7 +291,6 @@ function extractProductNameFromCopy(text: string): string {
   const raw = clean(text);
   if (!raw) return "";
 
-  // Prioridad 1: "<cantidad> <Nombre Producto> por (solo) Gs. <precio>"
   const afterQty = raw.match(
     /\b\d+\s+((?:[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]*\s*){1,5})\s*(?:por|a|solo|solamente)\s+(?:solo\s+)?(?:[Gg][Ss]\.?)?\s*\d/
   );
@@ -332,15 +299,12 @@ function extractProductNameFromCopy(text: string): string {
     if (candidate.split(/\s+/).length <= 6) return candidate;
   }
 
-  // Prioridad 2: "Con el <Nombre Producto>" (frases de copy tipo "Con el Procesador de Alimentos...")
   const conEl = raw.match(/\bcon\s+(?:el|la|los|las)\s+((?:[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]*\s*){1,6})/);
   if (conEl) {
     const candidate = clean(conEl[1]).replace(/[.,]+$/, "");
     if (candidate.split(/\s+/).length <= 6) return candidate;
   }
 
-  // Prioridad 3: primera secuencia de 2 a 6 palabras con mayúscula inicial que aparezca
-  // cerca de un precio o de la palabra "oferta"/"promo", ignorando emojis y signos.
   const lines = raw.split(/\n|[!?.]\s+/).map(clean).filter(Boolean);
   for (const line of lines) {
     if (!/gs\.?\s*\d|precio|oferta|promo/i.test(line)) continue;
@@ -355,13 +319,6 @@ function extractProductNameFromCopy(text: string): string {
   return "";
 }
 
-/**
- * ✅ Escanea todo el entrenamiento buscando bloques de texto que parezcan
- * plantillas/copys de venta (con precio, emojis de oferta, etc.) y que NO
- * hayan sido registrados en el bloque formal CATALOGO_PRODUCTOS. Si encuentra
- * un nombre de producto y al menos un precio válido, los da de alta como si
- * fueran productos del catálogo, con alias derivados del propio nombre.
- */
 function autoDetectProductsFromTraining(training: string, existing: ProductItem[]): ProductItem[] {
   const blocks = training
     .split(/\n\n---\n\n|\n{2,}/)
@@ -374,9 +331,8 @@ function autoDetectProductsFromTraining(training: string, existing: ProductItem[
   );
 
   for (const block of blocks) {
-    if (block.length > 1500) continue; // evita procesar el entrenamiento entero como un solo bloque
+    if (block.length > 1500) continue;
     if (!isSafeTemplatePricingMessage(block)) continue;
-    // No confundir bloques de reglas/ejemplos con productos reales.
     if (/^(regla|ejemplo|formato|instruccion|instrucción)/i.test(block)) continue;
 
     const name = extractProductNameFromCopy(block);
@@ -385,9 +341,6 @@ function autoDetectProductsFromTraining(training: string, existing: ProductItem[
     const canonical = toTitleCase(name);
     const normCanonical = normalize(canonical);
     if (!normCanonical || knownNames.has(normCanonical)) continue;
-    // ✅ Evitar falsos positivos: frases de marketing genéricas ("Oferta Hoy",
-    // "Stock Limitado", "Envío Gratis") no son nombres de producto, aunque
-    // aparezcan capitalizadas y cerca de un precio.
     if (isGenericMarketingPhrase(normCanonical)) continue;
 
     const { offers } = parseRawOffers(block, canonical);
@@ -401,9 +354,6 @@ function autoDetectProductsFromTraining(training: string, existing: ProductItem[
     const effectivePrice1 = price1 || cheapestOffer?.total;
     if (!effectivePrice1) continue;
 
-    // Si NO hay precio real de 1 unidad y el único precio detectado es para
-    // un pack de N>1, marcamos fixedPackQuantity para no ofrecer "1 unidad"
-    // al mismo precio (eso confundía: mismo precio para 1 que para el pack).
     const fixedPackQuantity = !price1 && cheapestOffer && cheapestOffer.quantity > 1
       ? cheapestOffer.quantity
       : undefined;
@@ -453,10 +403,6 @@ function parseTraining(training: string): ParsedTraining {
     const price2 = Number(clean(block.match(/^PRECIO_2:\s*(\d+)/im)?.[1]) || 0);
     const price3 = Number(clean(block.match(/^PRECIO_3:\s*(\d+)/im)?.[1]) || 0);
     const salesCopy = clean(block.match(/^MENSAJE_VENTA:\s*([\s\S]*)$/im)?.[1]) || undefined;
-    // ✅ PACK_FIJO: <cantidad> — para productos que SOLO se venden en pack
-    // (ej: "2 afiladores por 99.000 Gs, no se vende por unidad"). Cuando
-    // está presente, PRECIO_1 se interpreta como el TOTAL del pack, no
-    // como precio de 1 unidad, y no se ofrece venta por unidad suelta.
     const packFijoRaw = Number(clean(block.match(/^PACK_FIJO:\s*(\d+)/im)?.[1]) || 0);
     const fixedPackQuantity = packFijoRaw > 1 ? packFijoRaw : undefined;
 
@@ -474,11 +420,6 @@ function parseTraining(training: string): ParsedTraining {
     }
   }
 
-  // ✅ AUTO-DETECCIÓN DE PRODUCTOS SIN CATÁLOGO FORMAL:
-  // Si en el entrenamiento pegás directamente un texto de venta (copy con emojis,
-  // "X unidades por Gs. Y", etc.) sin el bloque PRODUCTO:/PRECIO_1:, el sistema
-  // igual intenta reconocer el producto y su precio a partir del propio texto,
-  // para no depender de que cada vendedor arme el bloque formal a mano.
   const autoProducts = autoDetectProductsFromTraining(training, products);
   products.push(...autoProducts);
 
@@ -588,11 +529,6 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
       if (msg.includes(a)) score += 80;
       if (a.includes(msg) && msg.length >= 4) score += 50;
 
-      // ✅ FIX V12:
-      // No usar palabras genéricas como "unidades" para detectar producto.
-      // Caso real: plantilla de Plumero contenía "2 Unidades", y el sistema podía
-      // elegir erróneamente "Almohadillas Antivibración x4 unidades" solo por esa palabra.
-      // También igualamos singular/plural: plumero/plumeros, extensible/extensibles.
       const aliasWords = a
         .split(/\s+/)
         .map(singularizeProductWord)
@@ -736,26 +672,15 @@ function extractQuantity(text: string) {
 
 function extractPhone(text: string) {
   const raw = clean(text);
-
-  // ✅ FIX V21: antes se borraban TODOS los espacios del mensaje y se buscaba
-  // el teléfono en el string entero. Eso hacía que un número de casa pegado
-  // justo antes del teléfono (ej: "Caballero 099 0994130021") se fusionara
-  // con él, dando un teléfono roto ("0990994130" en vez de "0994130021").
-  // Ahora se busca palabra por palabra para no mezclar tokens numéricos
-  // que estaban separados por un espacio en el mensaje original.
   const tokens = raw.split(/\s+/).filter(Boolean);
 
   const fullPattern = /^(?:09\d{8}|\+5959\d{8}|5959\d{8})$/;
 
-  // 1) Un solo token que ya es un teléfono completo (el caso normal).
   for (const t of tokens) {
     const compactToken = t.replace(/[.\-]/g, "");
     if (fullPattern.test(compactToken)) return compactToken.replace(/^\+/, "");
   }
 
-  // 2) Teléfono partido en varios tokens numéricos consecutivos
-  //    (ej: "0994 130 021"), concatenando SOLO hasta completar un
-  //    teléfono válido, sin seguir de largo hacia otros números sueltos.
   for (let i = 0; i < tokens.length; i++) {
     if (!/^\d+$/.test(tokens[i]) || !tokens[i].startsWith("09")) continue;
     let acc = tokens[i];
@@ -782,13 +707,6 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   const isMultiLine = raw.includes("\n");
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
 
-  // ✅ FIX V4:
-  // Antes se rechazaba TODO el mensaje si contenía una ciudad.
-  // Ejemplo real:
-  // "Alexis Ortega\nCapiata, barrio san juan\n0988765433"
-  // Como contenía "Capiata", extractName devolvía vacío y el bot volvía a pedir nombre.
-  // Ahora solo rechazamos como nombre cuando el mensaje completo es una ciudad simple,
-  // no cuando viene un bloque multilinea con nombre + dirección + teléfono.
   if (parsed && !isMultiLine && !extractPhone(raw)) {
     const normRaw = normalize(raw);
     const isOnlyCity = parsed.cities.some((c) => {
@@ -853,12 +771,6 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
 
   if (isValidNameLine(raw)) return toTitleCase(raw);
 
-  // ✅ FIX V20: cliente manda nombre + dirección + teléfono TODO en una sola línea,
-  // sin saltos (ej: "Pamela Galeano Caballero 1050 0994130021").
-  // Antes esto devolvía "" porque isValidNameLine rechaza cualquier línea con dígitos,
-  // y la rama multilínea (que sí sabe separar) nunca se activaba porque no hay "\n".
-  // Ahora: tomamos las primeras palabras alfabéticas (antes del primer token con dígitos)
-  // y probamos si las primeras 2 forman un nombre válido (nombre y apellido).
   if (!isMultiLine) {
     const tokens = raw.split(/\s+/).filter(Boolean);
     const leadingWords: string[] = [];
@@ -1001,12 +913,6 @@ function getCatalogOffer(product: ProductItem, quantity: number): OfferItem | nu
   return null;
 }
 
-/**
- * ✅ Devuelve la oferta de pack fijo detectada automáticamente desde un copy
- * de venta libre en el entrenamiento (sin catálogo formal), cuando el único
- * precio real es para N>1 unidades. Aplica sin importar la cantidad pedida,
- * igual que un pack fijo de plantilla.
- */
 function getCatalogFixedPackOffer(product: ProductItem | null): OfferItem | null {
   if (!product?.fixedPackQuantity || !product.price1) return null;
   return {
@@ -1061,13 +967,8 @@ function detectOfferFromText(text: string, parsed: ParsedTraining): OfferItem | 
   return null;
 }
 
-
 function looksLikeCustomerDataOrAddress(text: string) {
   const n = normalize(text);
-  // ✅ FIX V19: "casa", "frente", "lado" y "bo" son palabras demasiado genéricas
-  // que aparecen en textos de venta normales (ej. "pagás al recibir en tu casa"),
-  // lo que hacía que isSafeTemplatePricingMessage descartara plantillas reales
-  // por error y el bot terminara usando el precio de un producto viejo/cerrado.
   return /\b(calle|avda|avenida|ruta|km|barrio|esquina|casi|numero|nro|manzana|mz|lote|direccion|dirección|ubicacion|ubicación|telefono|teléfono|celular)\b/.test(n);
 }
 
@@ -1093,8 +994,6 @@ function isFixedPackText(text: string) {
   const explicitFixed =
     /\b(no se vende por unidad|no vendemos por unidad|solo pack|solo por pack|pack fijo|combo fijo|unicamente por el pack|únicamente por el pack|promocion valida unicamente|promoción válida únicamente|valida unicamente por el pack|válida únicamente por el pack)\b/.test(n);
 
-  // Si la plantilla viene estructurada con Producto + Cantidad + Precio,
-  // se interpreta como oferta/cantidad fija, no como promo seleccionable.
   const structuredFixed =
     /producto\s*:/i.test(raw) &&
     /cantidad\s*:\s*\d+/i.test(raw) &&
@@ -1111,8 +1010,6 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
     const q = sanitizeQuantity(quantity);
     const t = Number(total || 0);
 
-    // Genérico: evita interpretar direcciones/teléfonos como precio.
-    // Ningún precio válido de producto debe quedar como 1.542 Gs.
     if (!q || !t || t < 10000 || t > 10000000) return;
 
     offers.push({
@@ -1125,10 +1022,6 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
     });
   };
 
-  // Formato recomendado multi-vendedor:
-  // Producto: X
-  // Cantidad: 2 unidades
-  // Precio: Gs. 99.000
   const structuredQty = raw.match(/cantidad\s*:\s*(\d+)\s*(?:unidad|unidades|u|und|unds|piezas|pieza)?/i);
   const structuredPrice = raw.match(/precio\s*:\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/i);
 
@@ -1136,11 +1029,6 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
     addOffer(Number(structuredQty[1]), parseNumberGs(structuredPrice[1]), true);
   }
 
-  // Casos genéricos:
-  // "2 Afiladores ... por solo Gs. 99.000"
-  // "Pack de 2 afiladores = Gs. 99.000"
-  // "Combo 3 unidades por 149.900"
-  // "2 unidades → 129.900 Gs"
   const explicitPackPatterns = [
     /\b(?:pack|combo)\s*(?:de)?\s*(\d+)[^\n\r]{0,100}?(?:=|por|a|solo|solamente|→|->)\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/gi,
     /\b(\d+)\s*(?:unidades|unidad|u|und|unds|piezas|pieza|productos)?[^\n\r]{0,100}?(?:por|a|solo|solamente|=|→|->)\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/gi,
@@ -1156,10 +1044,6 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
     }
   }
 
-  // Precio simple:
-  // "Precio Promocional: Gs. 149.900"
-  // "Oferta HOY: 169.900 Gs"
-  // Solo se toma como 1 unidad si NO dice pack fijo.
   const singlePricePatterns = [
     /precio\s*promocional\s*[:\-]?\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/i,
     /oferta\s*(?:hoy)?\s*[:\-]?\s*(?:gs\.?\s*)?(\d[\d.\s]{3,})\s*(?:gs|guaran[ií]es)?/i,
@@ -1176,8 +1060,6 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
     }
   }
 
-  // Si hay texto de pack fijo y solo se detectó precio simple o el pack aparece textual,
-  // intenta tomar cantidad desde "pack de X", "X unidades", etc. y el precio más claro del mensaje.
   if (fixedQuantity && !offers.some((o) => o.fixed_quantity)) {
     const qMatch =
       raw.match(/\b(?:pack|combo)\s*(?:de)?\s*(\d+)\b/i) ||
@@ -1214,25 +1096,6 @@ function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): Te
   const uniqueOffers = Array.from(unique.values()).sort((a, b) => a.quantity - b.quantity);
   if (!uniqueOffers.length) return null;
 
-  /**
-   * ✅ CORRECCIÓN V3:
-   * Si la plantilla trae UNA SOLA oferta y esa oferta ya dice cantidad + total
-   * (ej: "2 Unidades de Plumeros Extensibles por solo Gs. 99.000"),
-   * el sistema debe respetar esa promo como cantidad cerrada de la plantilla.
-   *
-   * Antes se trataba como promo opcional:
-   *   "¿Querés 1 o la promo de 2?"
-   * y si el cliente respondía "2", podía terminar calculando 99.000 x 2 = 198.000.
-   *
-   * Ahora:
-   * - No pregunta 1 o 2.
-   * - Bloquea cantidad 2.
-   * - Bloquea total 99.000.
-   * - Pide directamente ciudad/datos según corresponda.
-   *
-   * Importante: solo se marca fijo cuando la única oferta de plantilla es mayor a 1.
-   * Una plantilla de "1 unidad → 149.900" sigue siendo venta normal de 1 unidad.
-   */
   const singleTemplatePackPromo =
     uniqueOffers.length === 1 &&
     uniqueOffers[0].quantity > 1 &&
@@ -1242,7 +1105,6 @@ function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): Te
 
   return {
     product,
-    // Si es pack fijo de 2/3/etc, NO guardamos price1 porque no existe venta por unidad en esta plantilla.
     price1: hasFixed ? undefined : uniqueOffers.find((o) => o.quantity === 1)?.total,
     offers: uniqueOffers.map((o) => ({ ...o, fixed_quantity: hasFixed ? true : o.fixed_quantity })),
     raw,
@@ -1250,18 +1112,6 @@ function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): Te
   };
 }
 
-/**
- * ✅ FIX V5:
- * Fallback para plantillas pegadas por el cliente después de un pedido confirmado.
- * A veces el texto llega sin emojis o con el botón/interactive concatenado:
- *
- * Producto: Afilador de Cuchillos
- * Cantidad: 2 unidades
- * Precio: Gs. 99.000
- * Quiero
- *
- * En esos casos igual debe detectarse como NUEVA plantilla y no como postventa/cierre.
- */
 function isStructuredSalesTemplateMessage(text: string) {
   const raw = clean(text);
   if (!raw) return false;
@@ -1329,12 +1179,6 @@ function isNewPastedTemplatePurchase(text: string, parsed: ParsedTraining) {
 }
 
 function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): TemplatePricing | null {
-  /**
-   * ✅ FIX V8:
-   * La última plantilla real del historial debe ganar sobre cualquier producto viejo guardado.
-   * Además, algunas integraciones no guardan el texto en content; pueden usar message, text o body.
-   * Por eso revisamos esos campos y no dependemos del role.
-   */
   const recentMessages = (history || []).slice(-30).reverse();
 
   for (const item of recentMessages) {
@@ -1355,6 +1199,7 @@ function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): 
 
   return null;
 }
+
 function getTemplateOfferForQuantity(templatePricing: TemplatePricing | null, product: string, quantity: number): OfferItem | null {
   if (!templatePricing || !product || normalize(templatePricing.product) !== normalize(product)) return null;
   const q = sanitizeQuantity(quantity);
@@ -1365,7 +1210,6 @@ function getTemplatePrice1(templatePricing: TemplatePricing | null, product: str
   if (!templatePricing || !product || normalize(templatePricing.product) !== normalize(product)) return 0;
   return templatePricing.price1 || templatePricing.offers.find((o) => o.quantity === 1)?.total || 0;
 }
-
 
 function getFixedTemplateOffer(templatePricing: TemplatePricing | null, product: string): OfferItem | null {
   if (!templatePricing || !product || normalize(templatePricing.product) !== normalize(product)) return null;
@@ -1379,13 +1223,6 @@ function getFixedTemplateOffer(templatePricing: TemplatePricing | null, product:
 }
 
 function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
-  /**
-   * ✅ FIX V7:
-   * Primero intentar tomar el producto desde la plantilla/precio detectado.
-   * Esto evita que un producto viejo del contexto/historial, por ejemplo
-   * "Almohadillas Antivibración", gane cuando la plantilla nueva dice
-   * "Producto: Afilador de Cuchillos".
-   */
   const templatePricing = getTemplatePricingFromHistory(history, parsed);
   const templateProduct = getProductInfo(templatePricing?.product || "", parsed);
   if (templateProduct) return templateProduct;
@@ -1418,6 +1255,7 @@ function getProductFromLastPromotion(history: any[], parsed: ParsedTraining) {
 
   return null;
 }
+
 function getOfferFromLastPromotion(history: any[], parsed: ParsedTraining): OfferItem | null {
   const templatePricing = getTemplatePricingFromHistory(history, parsed);
   if (!templatePricing) return null;
@@ -1429,6 +1267,7 @@ function getOfferFromLastPromotion(history: any[], parsed: ParsedTraining): Offe
     .filter((o) => o.quantity > 1)
     .sort((a, b) => b.quantity - a.quantity)[0] || templatePricing.offers[0] || null;
 }
+
 function isPromotionLikeMessage(text: string) {
   const c = clean(text);
   const n = normalize(c);
@@ -1439,8 +1278,6 @@ function isPromotionLikeMessage(text: string) {
     /\b(oferta|ofertas|promo|promocion|promoción|ultimas unidades|últimas unidades|garantia|garantía|solo hoy|escribi quiero|escribí quiero|unidades)\b/.test(n)
   );
 }
-
-
 
 function isConfirmedOrderMessage(text: string) {
   const n = normalize(text);
@@ -1465,9 +1302,6 @@ function isRealSalesTemplateMessage(text: string) {
 }
 
 function getLastRealSalesTemplatePricing(history: any[], parsed: ParsedTraining): TemplatePricing | null {
-  // ✅ FIX V8:
-  // Buscar la última plantilla real sin depender del role del historial.
-  // Esto permite: pedido confirmado -> factura/postventa -> nueva plantilla -> "Quiero confirmar".
   const recentMessages = (history || []).slice(-30).reverse();
 
   for (const item of recentMessages) {
@@ -1505,7 +1339,6 @@ function getLastRealSalesTemplateProduct(history: any[], parsed: ParsedTraining)
   return null;
 }
 
-
 function historyText(item: any) {
   return clean(item?.content || item?.message || item?.text || item?.body || "");
 }
@@ -1538,7 +1371,6 @@ function getRecentExplicitProductInterestAfterConfirmed(history: any[], parsed: 
     const productInfo = getProductInfo(product, parsed);
     if (productInfo) return { product: productInfo, index: i };
 
-    // No usar intereses viejos anteriores al último pedido confirmado.
     if (isConfirmedOrderMessage(content)) break;
   }
 
@@ -1579,8 +1411,6 @@ function forceTemplatePricingProduct(templatePricing: TemplatePricing | null, pr
 
 function isStrongNewPurchaseReply(text: string) {
   const n = normalize(text);
-  // Después de un pedido confirmado, solo estas respuestas reabren venta desde la última plantilla real.
-  // No incluye "ok", "listo" ni "gracias" porque normalmente cierran la conversación.
   return /^(quiero|lo quiero|quiero ese|quiero eso|quiero confirmar|confirmar|si quiero|sí quiero|comprar|compro|quiero comprar|quiero llevar|llevo|reservar|reservame|agendar|agendame|confirmo)$/.test(n);
 }
 
@@ -1589,11 +1419,6 @@ function isShortAcknowledgement(text: string) {
   return /^(ok|okay|dale|listo|gracias|muchas gracias|perfecto|bueno|👍|👌|🙏|genial|excelente|joya)$/.test(n);
 }
 
-/**
- * Detecta cuando el cliente ya cerró la conversación después de un pedido confirmado.
- * Esto evita que el bot insista con preguntas tipo:
- * “¿Querés consultar algo sobre entrega, pago o factura?”
- */
 function isConversationClosing(text: string) {
   const n = normalize(text);
   if (!n) return false;
@@ -1610,11 +1435,6 @@ function isPostSaleQuestion(text: string) {
   );
 }
 
-/**
- * ✅ FIX V4 postventa determinística:
- * Algunas consultas después de pedido_confirmado no deben quedar a criterio de Gemini,
- * porque podía responder con estado de entrega aunque el cliente pidiera factura.
- */
 function deterministicPostSaleResponse(text: string, order: OrderData, parsed: ParsedTraining) {
   const n = normalize(text);
 
@@ -1696,29 +1516,26 @@ function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, hist
   const lastTemplateProduct = getProductFromLastPromotion(history, parsed)?.canonical || "";
   const effectivePricing = pricingInMessage || pricingFromHistory;
 
-  // Cliente/operador pega la plantilla completa + QUIERO.
   const pastedTemplate =
     isPromotionLikeMessage(raw) ||
     isSafeTemplatePricingMessage(raw) ||
     !!pricingInMessage;
 
-  // Cliente pregunta por un producto nuevo.
   const productInterest =
     !!productInMessage &&
     /\b(me interesa|precio|cuanto|cuánto|quiero|confirmar|comprar|consulta|info|informacion|información)\b/.test(n);
 
-  // Respuesta "QUIERO" justo después de una plantilla nueva enviada por el bot.
   const wantsLastTemplate =
     (isGenericBuyReply(raw) || isBuyIntent(raw)) &&
     !!lastTemplateProduct;
 
   return {
     isNew: Boolean(pastedTemplate || productInterest || wantsLastTemplate),
-    // ✅ FIX V7: si hay plantilla con precio, el producto de la plantilla gana.
     product: effectivePricing?.product || productInMessage || lastTemplateProduct || "",
     pricing: effectivePricing,
   };
 }
+
 function isRespondingToPromotion(text: string, history: any[]) {
   if (!isBuyIntent(text) && !isGenericBuyReply(text)) return false;
 
@@ -1729,11 +1546,6 @@ function isRespondingToPromotion(text: string, history: any[]) {
   return lastBotMessages.some((item) => isPromotionLikeMessage(clean(item?.content)));
 }
 
-/**
- * Regla anti-datos-viejos:
- * Si el cliente entra con interés/producto o responde QUIERO a una promo/campaña,
- * se inicia pedido limpio. Solo se conserva producto/promo, NO ciudad/nombre/dirección/teléfono viejos.
- */
 function shouldStartFreshOrder({
   texto,
   context,
@@ -1822,12 +1634,6 @@ function getLockedOfferFromContext(context: any, oldOrder: OrderData, history: a
   return getOfferFromLastPromotion(history, parsed);
 }
 
-/**
- * ✅ Una ciudad real es un nombre propio corto, nunca una oración con verbo.
- * Esto evita que frases como "me interesa el afilador" o "cuanto sale"
- * terminen guardadas como si fueran el nombre de una ciudad, aunque
- * detectProduct no haya reconocido el producto en ese mensaje puntual.
- */
 function looksLikeSentenceNotCity(text: string) {
   const n = normalize(text);
   return /\b(me interesa|te interesa|interesa|quiero|necesito|cuanto|cuánto|cuesta|precio|tienen|tenes|tenés|hay|dame|mandame|reservame|consulta|informacion|información|hola|buenas|gracias|comprar|compro)\b/.test(n);
@@ -1850,8 +1656,6 @@ function nextStep(order: OrderData, coverage: boolean | null) {
   if (!order.product) return "selling";
   if (!order.city) return "collecting_city";
 
-  // Pack/cantidad fija: si la plantilla ya trae cantidad y precio,
-  // no se pregunta cantidad. Se usa la cantidad bloqueada.
   if (!order.quantity && order.locked_offer?.fixed_quantity) {
     order.quantity = order.locked_offer.quantity;
   }
@@ -1907,18 +1711,10 @@ function bankDataText(parsed: ParsedTraining) {
 function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferItem | null, templatePricing?: TemplatePricing | null) {
   if (!productInfo) return "";
 
-  // ✅ Si el producto es pack fijo (detectado desde catálogo formal con
-  // PACK_FIJO o desde copy libre sin precio real de 1 unidad), SIEMPRE
-  // mostrar el texto de pack fijo, sin importar de dónde venga lockedOffer.
-  // Esto evita mostrar "1 unidad: X Gs" junto a "2 unidades: X Gs" con el
-  // mismo precio, que confunde al cliente.
   if (productInfo.fixedPackQuantity && productInfo.price1) {
     return `Pack fijo: ${productInfo.fixedPackQuantity} unidades por ${formatGs(productInfo.price1)} Gs. No se vende por unidad.`;
   }
 
-  // ✅ FIX V6:
-  // Si hay precio/pack de plantilla para este producto, NO se muestran precios del catálogo.
-  // La plantilla es la única fuente de verdad para producto/cantidad/precio del pedido actual.
   if (templatePricing && normalize(templatePricing.product) === normalize(productInfo.canonical)) {
     const fixed = getFixedTemplateOffer(templatePricing, productInfo.canonical);
     if (fixed) {
@@ -1937,7 +1733,6 @@ function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferIt
     if (lines.length) return lines.join("\n");
   }
 
-  // ✅ Si la oferta bloqueada viene de plantilla, tampoco mezclar con precio unitario del catálogo.
   if (
     lockedOffer &&
     lockedOffer.source === "template" &&
@@ -1982,12 +1777,6 @@ function productsSummary(parsed: ParsedTraining) {
     .join("\n");
 }
 
-
-/**
- * ✅ FIX V6 - Fuente de verdad para precios:
- * Cuando hay plantilla activa, el catálogo/entrenamiento NO compite.
- * El entrenamiento queda solo para cobertura, bancos, factura, tono y reglas generales.
- */
 function hasTemplateForProduct(templatePricing: TemplatePricing | null | undefined, productName: string) {
   return Boolean(
     templatePricing &&
@@ -2133,19 +1922,6 @@ function shouldConfirmOrder(state: ConversationState) {
   return state.step === "confirm_order";
 }
 
-/**
- * ✅ FIX V9 CONFIRMACIÓN DIRECTA:
- * Esta función NO depende del texto que genere Gemini ni del paso conversacional.
- * Si el backend ya tiene todos los datos reales del pedido, debe confirmar SIEMPRE
- * con finalConfirmationMessage().
- *
- * Evita el bug:
- * "Ya tenemos todos tus datos... ¿Confirmamos tu pedido?"
- *
- * Regla:
- * - Contra-entrega/cobertura: producto + ciudad + cantidad + nombre + dirección + teléfono.
- * - Sin cobertura: producto + ciudad + cantidad + nombre + teléfono + comprobante.
- */
 function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState) {
   const o = state.order;
 
@@ -2159,16 +1935,12 @@ function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState) 
 
   if (!hasBaseData) return false;
 
-  // Seguridad: no confirmar si el producto no existe en catálogo/entrenamiento.
-  // La plantilla puede fijar precio/cantidad, pero el producto debe poder mapearse.
   if (!state.productInfo) return false;
 
-  // Si hay cobertura contra-entrega, la dirección es obligatoria.
   if (state.coverage !== false) {
     return Boolean(clean(o.address));
   }
 
-  // Si no hay cobertura, no se confirma hasta recibir comprobante.
   return Boolean(o.payment_proof_received);
 }
 
@@ -2367,7 +2139,6 @@ async function transcribeAudioWithGemini({
   });
 }
 
-
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
   const addressPart = o.address ? ` — ${o.address}` : "";
@@ -2422,7 +2193,6 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 
 Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
 }
-
 
 function deterministicAfterCityFixedOfferMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
@@ -2583,7 +2353,7 @@ REGLAS DURAS:
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
 - Si no hay plantilla activa ni promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
-- Nunca preguntes “¿Está todo correcto?” si ya están todos los datos. Si el pedido está completo, el backend responde directamente con ✅ PEDIDO CONFIRMADO y no se llama a Gemini.
+- Nunca preguntes "¿Está todo correcto?" si ya están todos los datos. Si el pedido está completo, el backend responde directamente con ✅ PEDIDO CONFIRMADO y no se llama a Gemini.
 - En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
 `.trim();
 }
@@ -2604,7 +2374,6 @@ ${productsSummary(parsed)}
   if (!o.city) {
     const copy = state.productInfo?.salesCopy;
     const priceLine = productPriceText(state.productInfo, o.locked_offer, templatePricing);
-    // Si el copy ya menciona un precio en Gs, no duplicar la línea de precio.
     const copyMentionsPrice = copy ? /gs\.?\s*\d[\d.\s]{3,}|\d[\d.\s]{3,}\s*gs/i.test(copy) : false;
     return copy
       ? `${copy}${copyMentionsPrice ? "" : `\n\n${priceLine}`}\n\n📍 ¿Para qué ciudad sería el envío? 😊`
@@ -2712,10 +2481,6 @@ export default async function handler(req: any, res: any) {
     attachProductImages(parsed.products, allTraining);
     const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
 
-    // ✅ FIX V11 mínimo:
-    // Si después de un pedido confirmado el cliente dice explícitamente "Quiero plumero"
-    // y luego responde "Quiero confirmar" a una plantilla nueva, ese producto explícito
-    // debe ganar sobre cualquier last_ad_product/current_product viejo del contexto.
     const recentExplicitProductInterest = getRecentExplicitProductInterestAfterConfirmed(history, parsed);
     const templateAfterExplicitProductInterest = recentExplicitProductInterest
       ? getTemplatePricingAfterHistoryIndex(history, parsed, recentExplicitProductInterest.index)
@@ -2745,11 +2510,6 @@ export default async function handler(req: any, res: any) {
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
 
-    // ✅ Pedido cerrado / postventa:
-    // Si llega plantilla/producto nuevo => venta nueva.
-    // Si pregunta factura, llegada, pago, garantía, etc. => responder postventa sin reabrir pedido.
-    // Si solo dice ok/gracias/nada más => respuesta corta.
-    const newTemplateSignal = isNewTemplateOrProductIntent(texto, parsed, history);
     let forceFreshOrderFromConfirmedTemplate = false;
 
     if (context?.step === "pedido_confirmado") {
@@ -2762,26 +2522,17 @@ export default async function handler(req: any, res: any) {
           : getLastRealSalesTemplatePricing(history, parsed);
       const lastRealSalesTemplateProduct = recentExplicitProductInterest?.product || (lastRealSalesTemplatePricing?.product ? getProductInfo(lastRealSalesTemplatePricing.product, parsed) : getLastRealSalesTemplateProduct(history, parsed));
 
-      // ✅ IMPORTANTE:
-      // Primero se detecta si el cliente está comprando una NUEVA plantilla real.
-      // Ejemplo: después de un pedido confirmado, el bot manda otra plantilla y el cliente responde "QUIERO".
-      // Eso debe iniciar venta nueva.
-      // Pero "OK", "GRACIAS", "NADA MAS" NO deben reabrir venta aunque haya promos viejas en el historial.
       const explicitNewPurchaseAfterConfirmed =
-        // Plantilla/precio pegado en el mensaje actual: SIEMPRE venta nueva.
         hasCurrentTemplatePricing ||
         isNewPastedTemplatePurchase(texto, parsed) ||
-        // Producto nuevo explícito: “me interesa el afilador”, “precio del afilador”, etc.
         (!!productInClosedMessage && /\b(precio|cuanto|cuánto|me interesa|quiero|quiero comprar|comprar|confirmar|agendar|otro producto)\b/.test(msgNormClosed)) ||
         /\b(otro producto|nuevo pedido|hacer otro pedido|catalogo|catálogo|ver catalogo|ver catálogo|quiero comprar otra cosa)\b/.test(msgNormClosed) ||
-        // “QUIERO” / “QUIERO CONFIRMAR” después de una plantilla REAL reciente enviada por el bot.
         ((isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) && !!lastRealSalesTemplateProduct && !!lastRealSalesTemplatePricing);
 
       if (explicitNewPurchaseAfterConfirmed) {
         forceFreshOrderFromConfirmedTemplate = true;
         oldOrder = emptyOrder(makeOrderId(fromNumber));
       } else {
-        // ✅ Cierre real de conversación después de confirmar pedido.
         if (isShortAcknowledgement(texto) || isConversationClosing(texto)) {
           return res.json({
             response: `😊 ¡Perfecto, muchas gracias! Tu pedido ya quedó confirmado y agendado. 🚚📦`,
@@ -2866,7 +2617,6 @@ export default async function handler(req: any, res: any) {
       parsed,
     });
 
-    // Si el mensaje actual trae una plantilla/precio/producto nuevo, siempre iniciar nuevo pedido.
     if ((newTemplateSignal.isNew || forceFreshOrderFromConfirmedTemplate) && context?.step === "pedido_confirmado") {
       freshOrder = true;
     }
@@ -2883,13 +2633,6 @@ export default async function handler(req: any, res: any) {
       ? (currentTemplateLockedOffer || getOfferFromLastPromotion(history, parsed))
       : getLockedOfferFromContext(context, oldOrder, history, parsed);
 
-    // ✅ FIX V7:
-    // Para respuestas genéricas como "QUIERO", nunca dejar que un producto viejo del contexto
-    // gane sobre la plantilla activa. La prioridad correcta es:
-    // 1) plantilla actual pegada en el mensaje,
-    // 2) última plantilla real del historial,
-    // 3) producto explícito del mensaje,
-    // 4) recién después contexto viejo / catálogo.
     let productToUse =
       currentTemplatePricing?.product ||
       ((isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) ? recentExplicitProductInterest?.product?.canonical || "" : "") ||
@@ -2908,9 +2651,6 @@ export default async function handler(req: any, res: any) {
 
     let product = detectProduct(texto, parsed, productToUse);
 
-    // ✅ FIX V7 extra:
-    // Si hay plantilla activa y el mensaje es genérico (QUIERO/CONFIRMO), forzar producto de plantilla.
-    // Esto evita respuestas como: plantilla de Afilador + producto viejo Almohadillas.
     if (
       (recentExplicitProductInterest?.product?.canonical || templatePricing?.product) &&
       (isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) &&
@@ -2942,19 +2682,12 @@ export default async function handler(req: any, res: any) {
       explicitQty = 1;
     }
 
-    /**
-     * Promo locking/unlocking:
-     * - "quiero" desde promo => bloquea promo y cantidad de la promo.
-     * - "quiero uno"/"1 unidad" => desbloquea promo y usa cantidad explícita.
-     * - "quiero dos" => usa promo catálogo si existe o promo plantilla si coincide.
-     */
     let lockedOffer: OfferItem | null = null;
 
     if (productInfo) {
       const promoFromHistory = getOfferFromLastPromotion(history, parsed);
       const promoMatchesProduct = promoFromHistory && normalize(promoFromHistory.product) === normalize(productInfo.canonical);
       const fixedTemplateOffer = getFixedTemplateOffer(templatePricing, productInfo.canonical);
-      // ✅ Pack fijo detectado desde copy libre de entrenamiento (sin plantilla activa en el chat).
       const fixedCatalogOffer = getCatalogFixedPackOffer(productInfo);
 
       if (fixedTemplateOffer) {
@@ -3008,8 +2741,6 @@ export default async function handler(req: any, res: any) {
     const detectedCityRaw = detectCity(texto, parsed, "");
 
     const detectedCity =
-      // Si estamos esperando cantidad/datos y ya había ciudad, conservarla SIEMPRE.
-      // Esto evita que al responder "2 quiero" vuelva a pedir ciudad.
       (!freshOrder && oldOrder.city && ["collecting_quantity", "collecting_name", "collecting_address", "collecting_phone"].includes(prevStep))
         ? oldOrder.city
         : detectedCityRaw ||
@@ -3047,13 +2778,10 @@ export default async function handler(req: any, res: any) {
       product
     );
 
-    // Protección extra: si el cliente está respondiendo cantidad, no perder ciudad previa.
     if (!orderData.city && oldOrder.city && qty > 0) {
       orderData.city = oldOrder.city;
     }
 
-    // Si la plantilla indica pack fijo / no se vende por unidad,
-    // la cantidad queda bloqueada automáticamente desde la plantilla.
     if (
       orderData.locked_offer &&
       orderData.locked_offer.fixed_quantity &&
@@ -3062,7 +2790,6 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = orderData.locked_offer.quantity;
     }
 
-    // Para promos variables, no asumimos cantidad salvo que venga forzado por integración.
     if (
       orderData.locked_offer &&
       !orderData.locked_offer.fixed_quantity &&
@@ -3073,9 +2800,6 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = orderData.locked_offer.quantity;
     }
 
-    // Si hay cantidad explícita distinta:
-    // - pack fijo: NO se cambia, porque la plantilla dice que no se vende por unidad.
-    // - promo variable: se puede cambiar.
     if (orderData.locked_offer && explicitQty > 0 && explicitQty !== orderData.locked_offer.quantity) {
       if (orderData.locked_offer.fixed_quantity) {
         orderData.quantity = orderData.locked_offer.quantity;
@@ -3134,10 +2858,6 @@ export default async function handler(req: any, res: any) {
     }
 
     const finalState = buildState(orderData, parsed);
-    // ✅ FIX V9:
-    // Confirmar directo si el backend ya tiene todos los datos obligatorios.
-    // No depender únicamente de finalState.step porque Gemini nunca debe pedir
-    // una confirmación extra cuando los datos ya están completos.
     const directConfirm = hasAllRequiredOrderDataForDirectConfirmation(finalState);
     const confirm = shouldConfirmOrder(finalState) || directConfirm;
 
@@ -3145,9 +2865,6 @@ export default async function handler(req: any, res: any) {
       await safeUpsertOrder(user_id, fromNumber, orderData, parsed, confirm);
     }
 
-    // ✅ REGLA CRÍTICA:
-    // Si el pedido ya está completo, Gemini NO responde.
-    // El backend devuelve siempre el formato fijo oficial de PEDIDO CONFIRMADO.
     if (confirm) {
       const fixedConfirmation = finalConfirmationMessage(finalState, parsed);
 
@@ -3246,7 +2963,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-        const system = buildSalesSystemPrompt(parsed, finalState, templatePricing);
+    const system = buildSalesSystemPrompt(parsed, finalState, templatePricing);
 
     const contents = (history || [])
       .slice(-12)
@@ -3281,14 +2998,21 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
+    // ✅ FIX IMAGENES: SOLO enviar la PRIMERA imagen del producto (la principal)
+    // Esto asegura que cuando el cliente escriba "crema" solo reciba la imagen de la CREMA
+    // y cuando escriba "afilador" solo reciba la imagen del AFILADOR
+    let imagesToSend: string[] | undefined = undefined;
+    
+    // Solo enviar imágenes si NO tenemos ciudad aún (etapa de presentación del producto)
+    if (!orderData.city && finalState.productInfo?.images?.length) {
+      // ✅ Enviar SOLO la primera imagen (la principal del producto)
+      imagesToSend = finalState.productInfo.images.slice(0, 1);
+      console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${orderData.product || 'producto'}" (SOLO la principal)`);
+    }
+
     return res.json({
       response: postProcessResponse(aiResponse),
-      // ✅ Imágenes del producto: se mandan en el momento en que se presenta
-      // (todavía no hay ciudad cargada), igual que el copy de venta.
-      media_urls:
-        !orderData.city && finalState.productInfo?.images?.length
-          ? finalState.productInfo.images
-          : undefined,
+      media_urls: imagesToSend,
       context: {
         ...(context || {}),
         current_product: orderData.product || null,
@@ -3317,6 +3041,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
             locked_offer: orderData.locked_offer,
             productFromMessageInitial,
             promoResponse,
+            images_sent: imagesToSend?.length || 0,
           }
         : undefined,
     });
