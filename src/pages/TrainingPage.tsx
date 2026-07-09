@@ -11,8 +11,8 @@ interface ProductItem {
   id: string;
   image: string;
   copy: string;
-  palabra_clave: string; // Palabra clave para activar el producto
-  alias: string[]; // Aliases adicionales
+  palabra_clave: string;
+  alias: string[];
 }
 
 interface TrainingItem {
@@ -221,6 +221,14 @@ export default function TrainingPage() {
       const hasEmptyKeyword = products.some(p => !p.palabra_clave.trim());
       if (hasEmptyKeyword) {
         alert("Todos los productos deben tener una palabra clave");
+        return;
+      }
+
+      // Verificar que no haya palabras clave duplicadas
+      const palabrasClave = products.map(p => p.palabra_clave.toLowerCase().trim());
+      const duplicados = palabrasClave.filter((item, index) => palabrasClave.indexOf(item) !== index);
+      if (duplicados.length > 0) {
+        alert(`Palabras clave duplicadas: ${duplicados.join(', ')}. Cada producto debe tener una palabra clave única.`);
         return;
       }
     }
@@ -443,7 +451,7 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
                       </button>
                     </div>
 
-                    {/* 🔑 PALABRA CLAVE - NUEVO */}
+                    {/* 🔑 PALABRA CLAVE */}
                     <div>
                       <label className="text-[10px] text-muted-foreground flex items-center gap-1">
                         <Key className="h-3 w-3" />
@@ -456,11 +464,11 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
                         placeholder="Ej: procesador, veneno, limpiador"
                       />
                       <p className="text-[10px] text-muted-foreground mt-0.5">
-                        El bot usará esta palabra para identificar el producto y enviar su imagen
+                        Palabra única que activa este producto. El bot enviará SOLO este producto cuando el cliente escriba esta palabra.
                       </p>
                     </div>
 
-                    {/* 🔗 ALIAS - NUEVO */}
+                    {/* 🔗 ALIAS */}
                     <div>
                       <label className="text-[10px] text-muted-foreground flex items-center gap-1">
                         <PackageIcon className="h-3 w-3" />
@@ -473,13 +481,13 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
                         placeholder="proce, procesadora, raf pro"
                       />
                       <p className="text-[10px] text-muted-foreground mt-0.5">
-                        Palabras alternativas que también activarán este producto
+                        Palabras alternativas que también activarán SOLO este producto
                       </p>
                     </div>
 
                     {/* Imagen */}
                     <div>
-                      <label className="text-[10px] text-muted-foreground">Imagen</label>
+                      <label className="text-[10px] text-muted-foreground">Imagen del Producto</label>
                       <div className="mt-1 aspect-video rounded-lg border border-dashed border-border bg-secondary/30 overflow-hidden flex items-center justify-center group max-w-[200px]">
                         {uploadingProductId === product.id ? (
                           <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -520,6 +528,9 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
                         placeholder={`🔥 ¡Cociná más rápido y sin esfuerzo!
 Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segundos...`}
                       />
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        Este es el mensaje que el bot enviará cuando se active con la palabra clave
+                      </p>
                     </div>
                   </div>
                 ))}
