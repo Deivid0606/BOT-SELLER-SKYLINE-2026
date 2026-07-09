@@ -9,7 +9,8 @@ import { useAuth } from "@/contexts/AuthContext";
 
 interface ProductItem {
   id: string;
-  image: string;
+  image?: string; // compatibilidad con registros viejos
+  images?: string[]; // ✅ hasta 3 imágenes propias del producto
   copy: string;
   palabra_clave: string;
   alias: string[];
@@ -29,6 +30,21 @@ interface TrainingItem {
 
 const MAX_IMAGES = 3;
 const IMAGE_BUCKET = "training-images";
+
+const normalizeProductImages = (product: ProductItem) => {
+  const urls = Array.isArray(product.images) ? product.images : [];
+  const legacy = product.image ? [product.image] : [];
+  return Array.from(new Set([...urls, ...legacy].filter(Boolean))).slice(0, MAX_IMAGES);
+};
+
+const normalizeProductItem = (product: ProductItem): ProductItem => {
+  const images = normalizeProductImages(product);
+  return {
+    ...product,
+    images,
+    image: images[0] || "",
+  };
+};
 
 export default function TrainingPage() {
   const { user } = useAuth();
@@ -132,9 +148,18 @@ export default function TrainingPage() {
       }
 
       setProducts(prev => 
-        prev.map(p => 
-          p.id === productId ? { ...p, image: publicUrl } : p
-        )
+        prev.map(p => {
+          if (p.id !== productId) return p;
+
+          const currentImages = normalizeProductImages(p);
+          if (currentImages.length >= MAX_IMAGES) {
+            alert(`Cada producto puede tener máximo ${MAX_IMAGES} imágenes`);
+            return p;
+          }
+
+          const nextImages = Array.from(new Set([...currentImages, publicUrl])).slice(0, MAX_IMAGES);
+          return { ...p, images: nextImages, image: nextImages[0] || "" };
+        })
       );
     } catch (err: any) {
       console.error("❌ Error inesperado subiendo imagen:", err);
@@ -145,6 +170,12 @@ export default function TrainingPage() {
   };
 
   const handlePickImage = (productId: string) => {
+    const product = products.find(p => p.id === productId);
+    if (product && normalizeProductImages(product).length >= MAX_IMAGES) {
+      alert(`Cada producto puede tener máximo ${MAX_IMAGES} imágenes`);
+      return;
+    }
+
     pendingProductIdRef.current = productId;
     fileInputRef.current?.click();
   };
@@ -155,11 +186,13 @@ export default function TrainingPage() {
     e.target.value = "";
   };
 
-  const handleRemoveImage = (productId: string) => {
+  const handleRemoveImage = (productId: string, imageUrl: string) => {
     setProducts(prev => 
-      prev.map(p => 
-        p.id === productId ? { ...p, image: "" } : p
-      )
+      prev.map(p => {
+        if (p.id !== productId) return p;
+        const nextImages = normalizeProductImages(p).filter(img => img !== imageUrl);
+        return { ...p, images: nextImages, image: nextImages[0] || "" };
+      })
     );
   };
 
@@ -177,6 +210,7 @@ export default function TrainingPage() {
       { 
         id: crypto.randomUUID(), 
         image: "", 
+        images: [],
         copy: "",
         palabra_clave: "",
         alias: []
@@ -238,7 +272,8 @@ export default function TrainingPage() {
       .filter(ex => ex.trim())
       .map(ex => ex.trim());
 
-    const imageUrls = products.map(p => p.image).filter(img => img);
+    const normalizedProducts = products.map(normalizeProductItem);
+    const imageUrls = normalizedProducts.flatMap(p => normalizeProductImages(p));
 
     setSaving(true);
 
@@ -249,7 +284,7 @@ export default function TrainingPage() {
         examples: examplesArray,
         response: entrenamientoCompleto.trim(),
         image_urls: imageUrls,
-        products: products.length > 0 ? products : [],
+        products: normalizedProducts.length > 0 ? normalizedProducts : [],
         entrenamiento_completo: entrenamientoCompleto.trim(),
         is_active: true
       };
@@ -298,7 +333,7 @@ export default function TrainingPage() {
     setIntent(item.intent);
     setExamples(item.examples.join('\n'));
     setEntrenamientoCompleto(item.entrenamiento_completo || item.response || "");
-    setProducts(item.products || []);
+    setProducts((item.products || []).map(normalizeProductItem));
     setMostrarCatalogo(item.products && item.products.length > 0);
     setEditingId(item.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -485,34 +520,48 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
                       </p>
                     </div>
 
-                    {/* Imagen */}
+                    {/* Imágenes */}
                     <div>
-                      <label className="text-[10px] text-muted-foreground">Imagen del Producto</label>
-                      <div className="mt-1 aspect-video rounded-lg border border-dashed border-border bg-secondary/30 overflow-hidden flex items-center justify-center group max-w-[200px]">
-                        {uploadingProductId === product.id ? (
-                          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                        ) : product.image ? (
-                          <div className="relative w-full h-full">
-                            <img src={product.image} alt={`Producto ${index + 1}`} className="w-full h-full object-cover" />
+                      <label className="text-[10px] text-muted-foreground">
+                        Imágenes del Producto ({normalizeProductImages(product).length}/{MAX_IMAGES})
+                      </label>
+                      <div className="mt-1 grid grid-cols-3 gap-2 max-w-[420px]">
+                        {normalizeProductImages(product).map((imageUrl, imgIndex) => (
+                          <div
+                            key={imageUrl}
+                            className="aspect-video rounded-lg border border-border bg-secondary/30 overflow-hidden flex items-center justify-center group relative"
+                          >
+                            <img src={imageUrl} alt={`Producto ${index + 1} imagen ${imgIndex + 1}`} className="w-full h-full object-cover" />
                             <button
                               type="button"
-                              onClick={() => handleRemoveImage(product.id)}
+                              onClick={() => handleRemoveImage(product.id, imageUrl)}
                               className="absolute top-1 right-1 p-1 rounded-full bg-background/80 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/20"
                             >
                               <X className="h-3 w-3 text-destructive" />
                             </button>
                           </div>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => handlePickImage(product.id)}
-                            className="flex flex-col items-center gap-1 text-muted-foreground hover:text-primary transition-colors w-full h-full justify-center"
-                          >
-                            <ImagePlus className="h-5 w-5" />
-                            <span className="text-[9px]">Subir imagen</span>
-                          </button>
+                        ))}
+
+                        {normalizeProductImages(product).length < MAX_IMAGES && (
+                          <div className="aspect-video rounded-lg border border-dashed border-border bg-secondary/30 overflow-hidden flex items-center justify-center group">
+                            {uploadingProductId === product.id ? (
+                              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handlePickImage(product.id)}
+                                className="flex flex-col items-center gap-1 text-muted-foreground hover:text-primary transition-colors w-full h-full justify-center"
+                              >
+                                <ImagePlus className="h-5 w-5" />
+                                <span className="text-[9px]">Subir imagen</span>
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
+                      <p className="text-[10px] text-muted-foreground mt-1">
+                        Podés subir hasta {MAX_IMAGES} imágenes para este producto. El bot enviará las imágenes del producto correcto.
+                      </p>
                     </div>
 
                     {/* Copy del producto */}
