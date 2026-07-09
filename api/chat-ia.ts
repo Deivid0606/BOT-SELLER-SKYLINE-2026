@@ -2568,10 +2568,16 @@ ${productsSummary(parsed)}
   }
 
   if (!o.city) {
-    return `¡Excelente elección! 🔥
+    const copy = state.productInfo?.salesCopy;
+    const priceLine = productPriceText(state.productInfo, o.locked_offer, templatePricing);
+    // Si el copy ya menciona un precio en Gs, no duplicar la línea de precio.
+    const copyMentionsPrice = copy ? /gs\.?\s*\d[\d.\s]{3,}|\d[\d.\s]{3,}\s*gs/i.test(copy) : false;
+    return copy
+      ? `${copy}${copyMentionsPrice ? "" : `\n\n${priceLine}`}\n\n📍 ¿Para qué ciudad sería el envío? 😊`
+      : `¡Excelente elección! 🔥
 
 ${state.productInfo?.canonical || o.product}
-${productPriceText(state.productInfo, o.locked_offer, templatePricing)}
+${priceLine}
 
 📍 ¿Para qué ciudad sería el envío? 😊`;
   }
