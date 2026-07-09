@@ -1632,6 +1632,23 @@ export async function procesar(req, message, userId, from) {
 
       if (data?.context) await saveContexto(userId, from, data.context);
 
+      // ✅ FIX: si chat-ia devuelve media_urls (imágenes cargadas en
+      // Entrenamiento para el producto), las mandamos antes del texto.
+      if (Array.isArray(data?.media_urls) && data.media_urls.length > 0) {
+        for (const url of data.media_urls.slice(0, 3)) {
+          const ok = await enviarMedia(userId, from, url, "image", "");
+          if (ok) {
+            await saveReceivedMessage({
+              userId,
+              from,
+              message: `[image] ${url}`,
+              messageType: "out_image",
+              mediaUrl: url,
+            });
+          }
+        }
+      }
+
       if (data?.response) {
         const sent = await enviarMensaje(userId, from, data.response);
         if (sent) {
