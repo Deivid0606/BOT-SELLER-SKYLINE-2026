@@ -40,6 +40,7 @@ import { createClient } from "@supabase/supabase-js";
  * 34) FIX V21: Evita quedarse mudo; si audio no se puede transcribir, responde claro sin romper el pedido.
  * 35) FIX V22: Guarda observaciones de pago/fecha/horario/coordinar entrega sin perder la venta.
  * 36) FIX V23: Responde determinísticamente cuando el cliente deja observación de pago/fecha/horario, sin depender de Gemini.
+ * 37) FIX V26: Las consultas tienen prioridad; no reemplaza la respuesta con el copy ni reenvía imágenes mientras falta ciudad.
  * 37) FIX V25: Separa consultas de ciudades; una pregunta corta nunca activa transportadora ni cobertura falsa.
  * 38) FIX V25: Después de responder cualquier consulta, retoma exactamente el dato pendiente del pedido.
  */
@@ -3931,7 +3932,12 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
 
     // ✅ FIX V18: si estamos presentando el producto, enviar SIEMPRE el copy completo cargado.
     // No dejamos que Gemini lo resuma ni que postProcess lo corte.
-    const fullProductCopyResponse = !orderData.city ? buildFullProductCopyResponse(finalState, templatePricing) : "";
+    // ✅ FIX V26: una consulta del cliente tiene prioridad sobre el reenvío del copy.
+    // Ej.: "DE DONDE SON" debe responderse y luego retomar la ciudad pendiente.
+    const currentMessageIsQuestion = isQuestionLikeMessage(texto);
+    const fullProductCopyResponse = !orderData.city && !currentMessageIsQuestion
+      ? buildFullProductCopyResponse(finalState, templatePricing)
+      : "";
     if (fullProductCopyResponse) {
       aiResponse = fullProductCopyResponse;
     }
@@ -3942,8 +3948,9 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     // ✅ Buscar producto por PALABRA_CLAVE o ALIAS
     const productoPorClave = encontrarProductoPorPalabraClave(texto, parsed.products);
     
-    // Solo enviar imágenes si NO tenemos ciudad aún (etapa de presentación del producto)
-    if (!orderData.city) {
+    // Solo enviar imágenes al presentar el producto, no cuando el cliente hace una consulta.
+    // Evita repetir imagen/copy ante "de dónde son", "cómo funciona", etc.
+    if (!orderData.city && !currentMessageIsQuestion) {
       if (productoPorClave && productoPorClave.images?.length) {
         // ✅ Enviar hasta 3 imágenes del producto que coincide con la palabra clave
         imagesToSend = productoPorClave.images.slice(0, 3);
