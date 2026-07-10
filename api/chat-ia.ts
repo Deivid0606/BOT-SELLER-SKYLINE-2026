@@ -35,9 +35,6 @@ import { createClient } from "@supabase/supabase-js";
  * 29) FIX V19: Detecta ciudad aunque el cliente escriba saludo/frase: "hola soy de Carapeguá".
  * 30) FIX V20: Detecta cantidad escrita en palabras/frases: "quiero una", "quiero dos", "dos nomás".
  * 31) FIX V20: Si el cliente responde por audio, transcribe y procesa como texto; si falla, responde pidiendo texto.
- * 32) FIX V21: Audio real: busca URL/transcripción en múltiples campos del webhook.
- * 33) FIX V21: Si Gemini está sin cuota 429, intenta fallback con OpenAI Whisper si está configurado.
- * 34) FIX V21: Evita quedarse mudo; si audio no se puede transcribir, responde claro sin romper el pedido.
  */
 
 const supabase = createClient(
@@ -2414,16 +2411,6 @@ async function fetchMediaAsBase64(url: string) {
   };
 }
 
-function isGeminiQuotaErrorPayload(data: any) {
-  const raw = JSON.stringify(data || {}).toLowerCase();
-  return (
-    raw.includes("resource_exhausted") ||
-    raw.includes("quota") ||
-    raw.includes("rate-limits") ||
-    raw.includes("429")
-  );
-}
-
 async function callGemini({
   apiKey,
   model,
@@ -2456,11 +2443,10 @@ async function callGemini({
     }
   );
 
-  const data = await r.json().catch(() => ({}));
+  const data = await r.json();
 
   if (!r.ok) {
     console.error("❌ Gemini:", JSON.stringify(data).slice(0, 800));
-    if (r.status === 429 || isGeminiQuotaErrorPayload(data)) return "__GEMINI_QUOTA_EXCEEDED__";
     return "";
   }
 
@@ -2494,67 +2480,6 @@ async function transcribeAudioWithGemini({
     maxTokens: 1024,
   });
 }
-
-async function transcribeAudioWithOpenAI({
-  audioBase64,
-  mime,
-}: {
-  audioBase64: string;
-  mime: string;
-}) {
-  const apiKey = clean(process.env.OPENAI_API_KEY || "");
-  if (!apiKey) return "";
-
-  try {
-    const ext = mime.includes("mpeg") ? "mp3" : mime.includes("mp4") ? "mp4" : mime.includes("wav") ? "wav" : mime.includes("webm") ? "webm" : "ogg";
-    const buffer = Buffer.from(audioBase64, "base64");
-    const form = new FormData();
-    form.append("model", "whisper-1");
-    form.append("language", "es");
-    form.append("response_format", "json");
-    form.append("file", new Blob([buffer], { type: mime || "audio/ogg" }), `audio.${ext}`);
-
-    const r = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: form,
-    });
-
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-      console.error("❌ OpenAI Whisper:", JSON.stringify(data).slice(0, 800));
-      return "";
-    }
-
-    return clean(data?.text || "");
-  } catch (err) {
-    console.error("❌ OpenAI Whisper exception:", err);
-    return "";
-  }
-}
-
-async function transcribeAudioSmart({
-  apiKey,
-  model,
-  audioBase64,
-  mime,
-}: any) {
-  const geminiText = await transcribeAudioWithGemini({ apiKey, model, audioBase64, mime });
-  if (geminiText && geminiText !== "__GEMINI_QUOTA_EXCEEDED__") {
-    return { text: geminiText, reason: "gemini" };
-  }
-
-  // ✅ FIX V21: si Gemini quedó sin cuota 429, intentamos Whisper si OPENAI_API_KEY existe.
-  const openAiText = await transcribeAudioWithOpenAI({ audioBase64, mime });
-  if (openAiText) return { text: openAiText, reason: "openai_whisper" };
-
-  if (geminiText === "__GEMINI_QUOTA_EXCEEDED__") {
-    return { text: "", reason: "gemini_quota" };
-  }
-
-  return { text: "", reason: "transcription_failed" };
-}
-
 
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
@@ -2928,12 +2853,6 @@ function extractIncomingText(body: any) {
     body?.voice?.text,
     body?.voice?.transcription,
     body?.voice?.transcript,
-    body?.data?.audio?.text,
-    body?.data?.audio?.transcription,
-    body?.data?.audio?.transcript,
-    body?.data?.voice?.text,
-    body?.data?.voice?.transcription,
-    body?.data?.voice?.transcript,
   ];
 
   for (const c of candidates) {
@@ -2942,101 +2861,6 @@ function extractIncomingText(body: any) {
   }
 
   return "";
-}
-
-function firstHttpUrl(...values: any[]) {
-  for (const value of values) {
-    if (Array.isArray(value)) {
-      const found = firstHttpUrl(...value);
-      if (found) return found;
-      continue;
-    }
-
-    const v = clean(value);
-    if (/^https?:\/\//i.test(v)) return v;
-  }
-
-  return "";
-}
-
-function extractMediaInfo(body: any) {
-  const mediaUrl = firstHttpUrl(
-    body?.media_url,
-    body?.mediaUrl,
-    body?.media,
-    body?.url,
-    body?.file_url,
-    body?.fileUrl,
-    body?.download_url,
-    body?.downloadUrl,
-    body?.audio_url,
-    body?.audioUrl,
-    body?.voice_url,
-    body?.voiceUrl,
-    body?.ptt_url,
-    body?.pttUrl,
-    body?.data?.media_url,
-    body?.data?.mediaUrl,
-    body?.data?.url,
-    body?.data?.file_url,
-    body?.data?.download_url,
-    body?.message?.media_url,
-    body?.message?.mediaUrl,
-    body?.message?.url,
-    body?.message?.file_url,
-    body?.message?.download_url,
-    body?.audio?.url,
-    body?.audio?.media_url,
-    body?.audio?.mediaUrl,
-    body?.audio?.file_url,
-    body?.audio?.download_url,
-    body?.voice?.url,
-    body?.voice?.media_url,
-    body?.voice?.mediaUrl,
-    body?.voice?.file_url,
-    body?.voice?.download_url,
-    body?.data?.audio?.url,
-    body?.data?.audio?.media_url,
-    body?.data?.audio?.mediaUrl,
-    body?.data?.voice?.url,
-    body?.data?.voice?.media_url,
-    body?.data?.voice?.mediaUrl
-  );
-
-  const mediaType = clean(
-    body?.media_type ||
-      body?.mediaType ||
-      body?.message_type ||
-      body?.messageType ||
-      body?.type ||
-      body?.data?.media_type ||
-      body?.data?.message_type ||
-      body?.data?.type ||
-      body?.message?.media_type ||
-      body?.message?.type ||
-      body?.audio?.type ||
-      body?.voice?.type ||
-      (body?.audio ? "audio" : "") ||
-      (body?.voice ? "voice" : "")
-  );
-
-  const mimeType = clean(
-    body?.mime_type ||
-      body?.mimeType ||
-      body?.mimetype ||
-      body?.media_mime_type ||
-      body?.data?.mime_type ||
-      body?.data?.mimeType ||
-      body?.message?.mime_type ||
-      body?.message?.mimeType ||
-      body?.audio?.mime_type ||
-      body?.audio?.mimeType ||
-      body?.voice?.mime_type ||
-      body?.voice?.mimeType ||
-      ""
-  );
-
-  return { media_url: mediaUrl, media_type: mediaType, mime_type: mimeType };
 }
 
 function isAudioLikeMedia({
@@ -3078,12 +2902,10 @@ export default async function handler(req: any, res: any) {
       from_number,
       context,
       history,
+      media_url,
+      media_type,
+      mime_type,
     } = req.body;
-
-    const mediaInfo = extractMediaInfo(req.body);
-    const media_url = mediaInfo.media_url;
-    const media_type = mediaInfo.media_type;
-    const mime_type = mediaInfo.mime_type;
 
     let texto = extractIncomingText(req.body);
     const fromNumber = clean(from_number);
@@ -3106,42 +2928,31 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    // ✅ FIX V20/V21: si llega audio, transcribir ANTES de detectar producto/ciudad/cantidad.
+    // ✅ FIX V20: si llega audio, transcribir ANTES de detectar producto/ciudad/cantidad.
     // Si el proveedor ya manda transcripción, extractIncomingText(req.body) ya la usa.
     const audioLike = isAudioLikeMedia({ media_url, media_type, mime_type });
 
     if (audioLike && !texto) {
       const fetched = await fetchMediaAsBase64(clean(media_url));
-      let transcriptionReason = "no_media";
-
       if (fetched) {
-        const transcribed = await transcribeAudioSmart({
-          apiKey,
-          model,
-          audioBase64: fetched.data,
-          mime: clean(mime_type) || fetched.mime || "audio/ogg",
-        });
-
-        texto = clean(transcribed.text);
-        transcriptionReason = transcribed.reason;
+        texto =
+          (await transcribeAudioWithGemini({
+            apiKey,
+            model,
+            audioBase64: fetched.data,
+            mime: clean(mime_type) || fetched.mime || "audio/ogg",
+          })) || "";
       }
 
       if (!texto) {
-        const noQuota = transcriptionReason === "gemini_quota";
         return res.json({
-          response: noQuota
-            ? "🎧 Recibí tu audio, pero el transcriptor está sin cuota en este momento. Escribime por texto, por favor, así sigo con tu pedido 😊"
-            : "🎧 Recibí tu audio, pero no pude leerlo automáticamente. ¿Podés escribirme por texto, por favor? 😊",
+          response: "🎧 Recibí tu audio, pero no pude leerlo automáticamente. ¿Podés escribirme por texto, por favor? 😊",
           context: {
             ...(context || {}),
-            audio_pending_text: true,
-            audio_transcription_reason: transcriptionReason,
             updated_at: new Date().toISOString(),
           },
         });
       }
-
-      console.log(`🎧 Audio transcripto (${transcriptionReason}): ${texto.slice(0, 160)}`);
     }
 
     const allTraining = await getAllTrainingData(user_id);
@@ -3701,7 +3512,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
     });
 
-    if (!aiResponse || aiResponse === "__GEMINI_QUOTA_EXCEEDED__") {
+    if (!aiResponse) {
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
