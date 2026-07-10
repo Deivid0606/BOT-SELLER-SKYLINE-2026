@@ -43,6 +43,9 @@ import { createClient } from "@supabase/supabase-js";
  * 37) FIX V26: Las consultas tienen prioridad; no reemplaza la respuesta con el copy ni reenvía imágenes mientras falta ciudad.
  * 37) FIX V25: Separa consultas de ciudades; una pregunta corta nunca activa transportadora ni cobertura falsa.
  * 38) FIX V25: Después de responder cualquier consulta, retoma exactamente el dato pendiente del pedido.
+ * 39) FIX V28: Limpia ciudades inválidas guardadas por consultas de versiones anteriores.
+ * 40) FIX V28: Respuestas de cantidad no reinician ventas activas ni reenvían el copy.
+ * 41) FIX V28: Si llega cantidad antes de ciudad, conserva la cantidad y vuelve a pedir ciudad.
  */
 
 const supabase = createClient(
@@ -1341,11 +1344,18 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
     forbiddenNames.some((f) => nameNorm.includes(normalize(f))) ||
     nameNorm.split(" ").length > 5;
 
+  // ✅ FIX V28: limpia ciudades contaminadas por consultas guardadas en versiones anteriores.
+  // Ej.: "DE DONDE SON" / "PERO DE DOINDE SON" nunca pueden permanecer como ciudad.
+  const oldCity = clean(old?.city || "");
+  const sanitizedCity = isQuestionLikeMessage(oldCity) || looksLikeSentenceNotCity(oldCity)
+    ? ""
+    : oldCity;
+
   return {
     order_id: clean(old?.order_id || ""),
     product: productInfo?.canonical || "",
     quantity: sanitizeQuantity(old?.quantity || 0),
-    city: clean(old?.city || ""),
+    city: sanitizedCity,
     customer_name:
       old?.customer_name && nameNorm !== "quiero" && !isInvalidName
         ? clean(old.customer_name)
@@ -2081,6 +2091,19 @@ function shouldStartFreshOrder({
   const contextWasConfirmed = context?.step === "pedido_confirmado";
 
   const stale = isOrderStale(oldOrder, context?.updated_at || new Date().toISOString());
+
+  // ✅ FIX V28: una cantidad explícita durante un pedido activo NO inicia otra venta.
+  // "UNO QUIERO", "QUIERO 2", "DOS QUIERO", etc. deben completar la cantidad
+  // y conservar producto, ciudad y demás datos ya capturados.
+  const explicitQuantityReply = extractQuantity(texto) > 0;
+  const activeIncompleteOrder =
+    !!oldOrder.product &&
+    context?.step !== "pedido_confirmado" &&
+    ["collecting_city", "collecting_quantity", "collecting_name", "collecting_address", "collecting_phone"].includes(context?.step || "");
+
+  if (explicitQuantityReply && activeIncompleteOrder && !productChanged) {
+    return false;
+  }
 
   return Boolean(productChanged || campaignClick || genericWantsPromo || contextWasConfirmed || stale);
 }
@@ -3973,9 +3996,14 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     // ✅ FIX V26: una consulta del cliente tiene prioridad sobre el reenvío del copy.
     // Ej.: "DE DONDE SON" debe responderse y luego retomar la ciudad pendiente.
     const currentMessageIsQuestion = isQuestionLikeMessage(texto);
-    const fullProductCopyResponse = !orderData.city && !currentMessageIsQuestion
-      ? buildFullProductCopyResponse(finalState, templatePricing)
-      : "";
+    const currentMessageHasQuantity = extractQuantity(texto) > 0;
+    const fullProductCopyResponse =
+      !orderData.city &&
+      !currentMessageIsQuestion &&
+      !currentMessageHasQuantity &&
+      (newTemplateSignal.isNew || !!detectProduct(texto, parsed, ""))
+        ? buildFullProductCopyResponse(finalState, templatePricing)
+        : "";
     if (fullProductCopyResponse) {
       aiResponse = fullProductCopyResponse;
     }
@@ -3988,7 +4016,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     
     // Solo enviar imágenes al presentar el producto, no cuando el cliente hace una consulta.
     // Evita repetir imagen/copy ante "de dónde son", "cómo funciona", etc.
-    if (!orderData.city && !currentMessageIsQuestion) {
+    if (!orderData.city && !currentMessageIsQuestion && !currentMessageHasQuantity) {
       if (productoPorClave && productoPorClave.images?.length) {
         // ✅ Enviar hasta 3 imágenes del producto que coincide con la palabra clave
         imagesToSend = productoPorClave.images.slice(0, 3);
