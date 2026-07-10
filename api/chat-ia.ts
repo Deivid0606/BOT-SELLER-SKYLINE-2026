@@ -3106,16 +3106,13 @@ REGLAS DURAS:
 `.trim();
 }
 
-function buildFullProductCopyResponse(state: ConversationState, templatePricing?: TemplatePricing | null) {
+function buildFullProductCopyResponse(state: ConversationState, _templatePricing?: TemplatePricing | null) {
   const copy = clean(state.productInfo?.salesCopy || "");
   if (!copy) return "";
 
-  const priceLine = productPriceText(state.productInfo, state.order.locked_offer, templatePricing);
-  const copyMentionsPrice = /gs\.?\s*\d[\d.\s]{3,}|\d[\d.\s]{3,}\s*gs/i.test(copy);
-
-  return `${copy}${copyMentionsPrice || !priceLine ? "" : `
-
-${priceLine}`}
+  // ✅ FIX V32: devolver el copy exactamente como fue cargado.
+  // Prohibido agregar saludo, separadores, precios inferidos, packs o explicaciones.
+  return `${copy}
 
 📍 ¿Para qué ciudad sería el envío? 😊`;
 }
@@ -4077,12 +4074,18 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     const currentMessageIsQuestion = isQuestionLikeMessage(texto);
     const currentMessageHasQuantity = extractQuantity(texto) > 0;
     const currentMessageIsAcknowledgement = isShortAcknowledgement(texto);
+    const hasExactCatalogCopy = !!clean(finalState.productInfo?.salesCopy || "");
+
+    // ✅ FIX V32: el copy exacto del catálogo tiene prioridad absoluta al presentar un producto.
+    // No depende de que detectProduct() vuelva a reconocer el texto ni de newTemplateSignal,
+    // porque esas señales pueden fallar con alias, errores ortográficos o nombres visuales.
+    // Las consultas, cantidades y respuestas sociales siguen excluidas para no repetir el copy.
     const fullProductCopyResponse =
       !orderData.city &&
+      hasExactCatalogCopy &&
       !currentMessageIsQuestion &&
       !currentMessageHasQuantity &&
-      !currentMessageIsAcknowledgement &&
-      (newTemplateSignal.isNew || !!detectProduct(texto, parsed, ""))
+      !currentMessageIsAcknowledgement
         ? buildFullProductCopyResponse(finalState, templatePricing)
         : "";
     if (fullProductCopyResponse) {
