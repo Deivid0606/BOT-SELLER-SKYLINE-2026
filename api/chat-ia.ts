@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 
 /**
  * CHAT IA VENDEDOR AUTÓNOMO V3 - Mega Todo Store / One Store
+ * FIX V31: No confunde stock/talles/precio anterior con pack fijo; reconoce "Hoy" como precio unitario.
  *
  * Soluciona:
  * 1) La IA vende sola y redacta fluido.
@@ -1508,8 +1509,28 @@ function isFixedPackText(text: string) {
   return explicitFixed || structuredFixed;
 }
 
+function sanitizeCopyForOfferParsing(raw: string) {
+  // Evita confundir stock, talles, testimonios y precios anteriores con cantidades/ofertas.
+  // Ejemplos que deben ignorarse como cantidad: "ÚLTIMOS 35 PARES", "talles 35 al 45",
+  // "5.000 paraguayos". Ejemplos que deben ignorarse como precio vigente: "Farmacia: 280.000".
+  return clean(raw)
+    .split(/\r?\n/g)
+    .filter((line) => {
+      const n = normalize(line);
+      if (!n) return true;
+      if (/\b(ultimos?|quedan|stock|disponibles?|restan?)\b/.test(n)) return false;
+      if (/\b(talle|talles|calce|numero|numeros)\b/.test(n) && /\b\d{2}\s*(?:al|a|hasta|-)\s*\d{2}\b/.test(n)) return false;
+      if (/\b\d{2}\s*(?:al|a|hasta|-)\s*\d{2}\b/.test(n) && !/(?:gs|guarani|guaranies)/.test(n)) return false;
+      if (/\b(farmacia|antes|precio normal|precio regular|valor normal)\b/.test(n)) return false;
+      if (/\b\d[\d.]*\s+(?:paraguayos|clientes|personas|compradores)\b/.test(n)) return false;
+      return true;
+    })
+    .join("\n");
+}
+
 function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fixedQuantity: boolean } {
   const fixedQuantity = isFixedPackText(raw);
+  const pricingRaw = sanitizeCopyForOfferParsing(raw);
   const offers: OfferItem[] = [];
 
   const addOffer = (quantity: number, total: number, fixed = false) => {
@@ -1528,8 +1549,8 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
     });
   };
 
-  const structuredQty = raw.match(/cantidad\s*:\s*(\d+)\s*(?:unidad|unidades|u|und|unds|piezas|pieza)?/i);
-  const structuredPrice = raw.match(/precio\s*:\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/i);
+  const structuredQty = pricingRaw.match(/cantidad\s*:\s*(\d+)\s*(?:unidad|unidades|u|und|unds|piezas|pieza)?/i);
+  const structuredPrice = pricingRaw.match(/precio\s*:\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/i);
 
   if (structuredQty && structuredPrice) {
     addOffer(Number(structuredQty[1]), parseNumberGs(structuredPrice[1]), true);
@@ -1545,7 +1566,7 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
 
   for (const pattern of explicitPackPatterns) {
     let match: RegExpExecArray | null;
-    while ((match = pattern.exec(raw)) !== null) {
+    while ((match = pattern.exec(pricingRaw)) !== null) {
       const quantity = Number(match[1]);
       const total = parseNumberGs(match[2]);
       addOffer(quantity, total, fixedQuantity || quantity > 1 && isFixedPackText(raw));
@@ -1553,6 +1574,7 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
   }
 
   const singlePricePatterns = [
+    /(?:^|\n)[^\n]{0,20}\bhoy\s*[:\-]?\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/i,
     /precio\s*promocional\s*[:\-]?\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/i,
     /oferta\s*(?:hoy)?\s*[:\-]?\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/i,
     /(?:precio|valor|sale|cuesta)\s*[:\-]?\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/i,
@@ -1560,7 +1582,7 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
 
   if (!fixedQuantity) {
     for (const pattern of singlePricePatterns) {
-      const m = raw.match(pattern);
+      const m = pricingRaw.match(pattern);
       if (m) {
         addOffer(1, parseNumberGs(m[1]), false);
         break;
@@ -1570,11 +1592,11 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
 
   if (fixedQuantity && !offers.some((o) => o.fixed_quantity)) {
     const qMatch =
-      raw.match(/\b(?:pack|combo)\s*(?:de)?\s*(\d+)\b/i) ||
-      raw.match(/\b(\d+)\s*(?:unidades|unidad|u|und|unds|piezas|pieza)\b/i);
+      pricingRaw.match(/\b(?:pack|combo)\s*(?:de)?\s*(\d+)\b/i) ||
+      pricingRaw.match(/\b(\d+)\s*(?:unidades|unidad|u|und|unds|piezas|pieza)\b/i);
 
     const pMatch =
-      raw.match(/(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/i);
+      pricingRaw.match(/(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/i);
 
     if (qMatch && pMatch) {
       addOffer(Number(qMatch[1]), parseNumberGs(pMatch[1]), true);
@@ -1604,12 +1626,10 @@ function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): Te
   const uniqueOffers = Array.from(unique.values()).sort((a, b) => a.quantity - b.quantity);
   if (!uniqueOffers.length) return null;
 
-  const singleTemplatePackPromo =
-    uniqueOffers.length === 1 &&
-    uniqueOffers[0].quantity > 1 &&
-    uniqueOffers[0].source === "template";
-
-  const hasFixed = uniqueOffers.some((o) => o.fixed_quantity) || fixedQuantity || singleTemplatePackPromo;
+  // Una sola oferta con cantidad > 1 NO significa automáticamente pack fijo.
+  // Solo es pack fijo cuando el copy lo declara explícitamente o viene estructurado
+  // como Producto + Cantidad + Precio.
+  const hasFixed = uniqueOffers.some((o) => o.fixed_quantity) || fixedQuantity;
 
   return {
     product,
