@@ -3,11 +3,43 @@ import { createClient } from "@supabase/supabase-js";
 /**
  * CHAT IA VENDEDOR AUTÓNOMO V3 - Mega Todo Store / One Store
  *
- * FIX V27: CORREGIDO DEFINITIVAMENTE
- * - Cuando cliente dice "me interesa [producto]" → ENVIA copy completo + imágenes
- * - Cuando cliente ya recibió la plantilla y dice "quiero" → AVANZA sin repetir
- * - Cuando cliente ya tiene pedido en curso → AVANZA sin repetir plantilla
- * - Anti-repetición 24h: no vuelve a mandar la misma plantilla al mismo cliente
+ * Soluciona:
+ * 1) La IA vende sola y redacta fluido.
+ * 2) El backend solo detecta, valida, calcula, guarda y protege reglas.
+ * 3) NO reutiliza ciudad/datos viejos cuando entra una nueva campaña/producto.
+ * 4) Si el cliente responde "quiero" desde una promo, respeta la promo.
+ * 5) Si el cliente responde "quiero uno", "una unidad", "solo 1", desbloquea la promo.
+ * 6) Nunca inventa ciudad, nombre, dirección, teléfono, banco ni catálogo.
+ * 7) No se salta ciudad ni cantidad.
+ * 8) Confirmación final 100% fija desde backend, nunca generada por Gemini.
+ * 9) Precio de plantilla congelado: nunca toma números de dirección/teléfono como precio.
+ * 10) Después de pedido confirmado, cierra el flujo y no vuelve a vender el mismo pedido.
+ * 11) Detecta packs fijos genéricos para cualquier vendedor sin hardcodear precios/productos.
+ * 12) Si plantilla trae Producto + Cantidad + Precio, salta la pregunta de cantidad.
+ * 13) Si llega plantilla/producto nuevo después de pedido_confirmado, inicia venta nueva.
+ * 14) Postventa: después de confirmado responde preguntas normales sin reabrir pedido.
+ * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
+ * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
+ * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
+ * 18) FIX V12: detección de producto ignora palabras genéricas como unidades y reconoce singular/plural.
+ * 19) FIX V11: si el cliente pidió explícitamente otro producto antes de una plantilla nueva, ese producto gana sobre contexto viejo.
+ * 20) FIX V9: si el pedido ya tiene todos los datos obligatorios, confirma directo con bloque fijo backend; nunca pregunta "¿Confirmamos?".
+ * 21) FIX V8: después de postventa, si llega una nueva plantilla y el cliente responde "Quiero confirmar", inicia otra venta nueva.
+ * 22) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
+ * 23) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
+ * 24) FIX IMAGENES: envía hasta 3 imágenes del producto correcto.
+ * 25) FIX V13: Definir newTemplateSignal antes de usarlo (soluciona ReferenceError)
+ * 26) FIX V14: Filtrar por PALABRA_CLAVE para enviar SOLO imágenes del producto correcto
+ * 27) FIX V18: Envía TODO el copy original del producto, sin resumir ni cortar.
+ * 28) FIX V18: Cada producto soporta hasta 3 imágenes propias.
+ * 29) FIX V19: Detecta ciudad aunque el cliente escriba saludo/frase: "hola soy de Carapeguá".
+ * 30) FIX V20: Detecta cantidad escrita en palabras/frases: "quiero una", "quiero dos", "dos nomás".
+ * 31) FIX V20: Si el cliente responde por audio, transcribe y procesa como texto; si falla, responde pidiendo texto.
+ * 32) FIX V21: Audio real: busca URL/transcripción en múltiples campos del webhook.
+ * 33) FIX V21: Si Gemini está sin cuota 429, intenta fallback con OpenAI Whisper si está configurado.
+ * 34) FIX V21: Evita quedarse mudo; si audio no se puede transcribir, responde claro sin romper el pedido.
+ * 35) FIX V22: Guarda observaciones de pago/fecha/horario/coordinar entrega sin perder la venta.
+ * 36) FIX V23: Responde determinísticamente cuando el cliente deja observación de pago/fecha/horario, sin depender de Gemini.
  */
 
 const supabase = createClient(
@@ -37,7 +69,7 @@ type ProductItem = {
   fixedPackQuantity?: number;
   salesCopy?: string;
   images?: string[];
-  palabra_clave?: string;
+  palabra_clave?: string; // ✅ NUEVO: palabra clave para filtrar
 };
 
 type OfferItem = {
@@ -101,6 +133,8 @@ type ConversationState = {
   hardInstruction: string;
 };
 
+// ✅ FIX V15: Encontrar producto por PALABRA_CLAVE o ALIAS con normalización real.
+// Soporta palabras clave separadas por coma: "Crema, Varices" activa con "crema" o "varices".
 function encontrarProductoPorPalabraClave(mensaje: string, products: ProductItem[]): ProductItem | null {
   if (!products || products.length === 0) return null;
 
@@ -291,6 +325,8 @@ function visualProductNameFromKeyword(keyword: string, copy: string, aliases: st
   const fromCopy = extractProductNameFromCopy(copy);
   if (fromCopy) return toTitleCase(fromCopy);
 
+  // ✅ FIX V16: si la palabra clave viene como "Crema, Varices", no usarla completa
+  // como nombre del producto. Usar una parte limpia o un alias simple.
   const aliasParts = aliases
     .flatMap((a) => splitKeywordAliases(a))
     .map(clean)
@@ -400,9 +436,14 @@ function parseCatalogUrl(training: string) {
 }
 
 function parseBankData(training: string): BankData | null {
+  // ✅ FIX V16: parser estricto de datos bancarios.
+  // Antes tomaba la frase "PAGO ANTICIPADO POR TRANSFERENCIA" como inicio de bloque
+  // y terminaba leyendo líneas de ciudades como si fueran CI/Banco/Cuenta.
   const explicitBlock =
     training.match(/(?:^|\n)\s*(?:DATOS_BANCARIOS|DATOS_TRANSFERENCIA|DATOS PARA TRANSFERENCIA|DATOS DE TRANSFERENCIA)\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:FIN_DATOS_BANCARIOS|FIN_DATOS_TRANSFERENCIA|CATALOGO_PRODUCTOS|LISTA COMPLETA POR CIUDAD|ZONAS CON COBERTURA|ZONAS SIN COBERTURA|---)|$)/i)?.[1] || "";
 
+  // Si no hay bloque formal, igual permitimos leer líneas sueltas con etiqueta exacta
+  // (Titular:, Banco:, N° de cuenta:, Alias:), pero nunca frases genéricas.
   const raw = clean(explicitBlock || training);
   if (!raw) return null;
 
@@ -453,6 +494,7 @@ function parseBankData(training: string): BankData | null {
   ], normalBankValue);
   const alias = getLine([/^Alias\s*[:\-]\s*(.+)$/i], normalBankValue);
 
+  // Limpia casos tipo "N° de cuenta: Familiar: 81-5932919" si Banco ya es Familiar.
   if (cuenta && banco && normalize(cuenta).startsWith(normalize(banco))) {
     const safeBank = banco.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     cuenta = clean(cuenta.replace(new RegExp(`^${safeBank}\\s*:?\\s*`, "i"), ""));
@@ -479,6 +521,7 @@ function extractProductNameFromCopy(text: string): string {
   const raw = clean(text);
   if (!raw) return "";
 
+  // ✅ FIX V16: detecta líneas tipo "1 Crema: Gs. 129.000" o "2 Cremas: Gs. 239.000".
   const simpleQtyName = raw.match(/^\s*\d+\s+([A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñÑ]{2,30})s?\s*:\s*(?:Gs\.?|₲)?\s*\d/im);
   if (simpleQtyName) return toTitleCase(clean(simpleQtyName[1]));
 
@@ -597,6 +640,7 @@ function parseTraining(training: string): ParsedTraining {
     const packFijoRaw = Number(clean(block.match(/^PACK_FIJO:\s*(\d+)/im)?.[1]) || 0);
     const fixedPackQuantity = packFijoRaw > 1 ? packFijoRaw : undefined;
     
+    // ✅ NUEVO: Extraer PALABRA_CLAVE
     const palabraClave = clean(block.match(/^PALABRA_CLAVE:\s*(.+)$/im)?.[1]);
 
     if (product && canonical && price1 > 0) {
@@ -751,6 +795,9 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
 }
 
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
+  // ✅ FIX V19: detectar ciudad aunque venga mezclada con saludo/frase.
+  // Ejemplos: "hola soy de Carapeguá", "buenas estoy en Capiatá",
+  // "quiero para Luque", "me interesa, soy de San Lorenzo".
   const rawMsg = normalize(text);
   const statementCity = extractCityStatement(text);
   const msg = normalize(statementCity || text);
@@ -769,17 +816,21 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 
     let score = 0;
 
+    // Coincidencias exactas / directas
     if (msg === a || msg === cn) score += 120;
     else if (rawMsg === a || rawMsg === cn) score += 115;
 
+    // Ciudad dentro de frase
     if (msg.includes(a)) score += 95;
     if (rawMsg.includes(a)) score += 90;
     if (cn && msg.includes(cn)) score += 95;
     if (cn && rawMsg.includes(cn)) score += 90;
 
+    // Frase extraída dentro de ciudad compuesta
     if (a.includes(msg) && msg.length >= 3) score += 70;
     if (cn && cn.includes(msg) && msg.length >= 3) score += 70;
 
+    // Match por palabras para ciudades compuestas: "san lorenzo", "ciudad del este", etc.
     const aliasWords = a.split(/\s+/).filter((w) => w.length >= 3);
     const canonicalWords = cn.split(/\s+/).filter((w) => w.length >= 3);
     const wordsToCheck = Array.from(new Set([...aliasWords, ...canonicalWords]));
@@ -808,6 +859,8 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 
   if (bestScore >= 50) return best;
 
+  // Si no encontró en lista, pero el cliente claramente dijo "soy de X", usamos X como ciudad.
+  // Esto permite ciudades fuera de cobertura/lista para derivar a transportadora.
   if (statementCity) return toTitleCase(statementCity);
 
   return clean(prev || "");
@@ -836,6 +889,8 @@ function extractCityStatement(text: string): string {
 
   if (onlyGreeting.test(norm)) return "";
 
+  // ✅ FIX V19: no anclar al inicio. Detecta ciudad aunque antes haya saludo/producto.
+  // "hola soy de carapegua", "buenas, estoy en luque", "quiero para cde", etc.
   const patterns: RegExp[] = [
     /\bsoy\s+de\s+la\s+ciudad\s+de\s+(.+)$/i,
     /\bsoy\s+de\s+(.+)$/i,
@@ -861,6 +916,7 @@ function extractCityStatement(text: string): string {
 
     let candidate = clean(match[1]);
 
+    // Corta cuando después de la ciudad vienen datos o intención.
     candidate = candidate
       .replace(/\b(quiero|qiero|kiero|me interesa|precio|cuanto|cuánto|consulta|comprar|compro|llevo|delivery|envio|envío|por favor|xfa|porfa|gracias|y quiero|y necesito|necesito|del producto|la crema|el producto)\b.*$/gi, "")
       .replace(/\b(mi nombre es|me llamo|soy)\b.*$/gi, "")
@@ -902,35 +958,43 @@ function extractQuantity(text: string) {
     diez: 10,
   };
 
+  // No tomar teléfonos como cantidad.
   if (/^(?:09\d{6,}|5959\d{6,}|\+5959\d{6,})$/.test(clean(text))) return 0;
 
+  // "1", "2", "1 unidad", "2 unidades", "1u", "2 unds"
   const onlyNumber = m.match(/^(\d{1,3})\s*(?:unidad|unidades|u|und|unds|pieza|piezas)?$/);
   if (onlyNumber && !m.startsWith("09")) return sanitizeQuantity(Number(onlyNumber[1]));
 
   const q1 = m.match(/\b(\d{1,3})\s*(unidad|unidades|u|und|unds|piezas|pieza)\b/);
   if (q1 && !q1[1].startsWith("09")) return sanitizeQuantity(Number(q1[1]));
 
+  // "quiero 2", "llevo 1", "mandame 3", "serían 2"
   const q2 = m.match(/\b(quiero|kiero|qiero|llevo|dame|mandame|mándame|reservame|resérvame|solo|solamente|serian|serían|seria|sería|quiero llevar|voy a llevar|me llevo)\s+(\d{1,3})\b/);
   if (q2) return sanitizeQuantity(Number(q2[2]));
 
+  // "2 quiero", "1 llevo"
   const q3 = m.match(/\b(\d{1,3})\s+(quiero|llevo|dame|mandame|mándame|seria|sería|serian|serían)\b/);
   if (q3 && !q3[1].startsWith("09")) return sanitizeQuantity(Number(q3[1]));
 
+  // "una unidad", "dos unidades", "un producto", "dos cremas"
   for (const [word, num] of Object.entries(wordMap)) {
     const unitRegex = new RegExp(`\\b${word}\\s*(unidad|unidades|u\\b|und\\b|unds\\b|piezas|pieza|producto|productos|crema|cremas|item|items|ítem|ítems)\\b`);
     if (unitRegex.test(m)) return sanitizeQuantity(num);
   }
 
+  // "quiero una", "quiero dos", "llevo una", "mandame dos", "dame una"
   for (const [word, num] of Object.entries(wordMap)) {
     const intentWordRegex = new RegExp(`\\b(quiero|kiero|qiero|llevo|dame|mandame|mándame|reservame|resérvame|solo|solamente|seria|sería|serian|serían|quiero llevar|voy a llevar|me llevo|pasame|pásame|envíame|enviame)\\s+${word}\\b`);
     if (intentWordRegex.test(m)) return sanitizeQuantity(num);
   }
 
+  // "una nomás", "dos nomás", "una no más", "solo una"
   for (const [word, num] of Object.entries(wordMap)) {
     const casualRegex = new RegExp(`\\b(?:solo\\s+|solamente\\s+)?${word}\\s*(?:nomas|nomás|no mas|no más)?\\b`);
     if (casualRegex.test(m)) return sanitizeQuantity(num);
   }
 
+  // Último fallback: respuesta corta de una sola palabra: "una", "dos", "tres"
   if (m.split(/\s+/).length <= 2) {
     for (const [word, num] of Object.entries(wordMap)) {
       if (new RegExp(`^${word}(?:\\s+(?:nomas|nomás|no mas|no más))?$`).test(m)) {
@@ -1109,6 +1173,7 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   return "";
 }
 
+
 function mergeUniqueText(oldValue: any, newValue: any) {
   const oldText = clean(oldValue);
   const newText = clean(newValue);
@@ -1152,13 +1217,6 @@ function extractOrderObservation(text: string): Partial<OrderData> {
   const raw = clean(text);
   const n = normalize(raw);
   if (!raw || !n) return {};
-
-  if (
-    /\?/.test(raw) ||
-    /\b(tienen|tenes|tenés|hay|pueden|puede|se puede|para cuando|cuanto tarda|cuánto tarda|llega|entrega hoy|delivery hoy|de donde|de dónde|como hago|cómo hago)\b/.test(n)
-  ) {
-    return {};
-  }
 
   const obs: Partial<OrderData> = {};
   const dateWords = "hoy|manana|mañana|pasado|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo|fin de semana|quincena|fin de mes|[0-3]?\\d(?:\\/|-)[0-1]?\\d|[0-3]?\\d\\s*(?:de)?\\s*(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)";
@@ -1396,6 +1454,7 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
   }
 
   const explicitPackPatterns = [
+    // ✅ FIX V16: precios del catálogo visual: "1 Crema: Gs. 129.000" / "2 Cremas: Gs. 239.000"
     /^[^0-9\n]{0,20}(\d+)\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]{3,40}s?\s*[:=]\s*(?:gs\.?\s*)?(\d[\d. ]{3,})(?:\s*(?:gs|guaran[ií]es))?/gim,
     /\b(?:pack|combo)\s*(?:de)?\s*(\d+)[^\n\r]{0,100}?(?:=|por|a|solo|solamente|→|->)\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/gi,
     /\b(\d+)\s*(?:unidades|unidad|u|und|unds|piezas|pieza|productos)?[^\n\r]{0,100}?(?:por|a|solo|solamente|=|→|->)\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/gi,
@@ -1952,15 +2011,6 @@ function shouldStartFreshOrder({
 
   const stale = isOrderStale(oldOrder, context?.updated_at || new Date().toISOString());
 
-  const isJustConfirming =
-    oldOrder.product &&
-    (isGenericBuyReply(texto) || isAffirmative(texto) || hasTemplateBuyIntent(texto)) &&
-    !productChanged;
-
-  if (isJustConfirming && oldOrder.city) {
-    return false;
-  }
-
   return Boolean(productChanged || campaignClick || genericWantsPromo || contextWasConfirmed || stale);
 }
 
@@ -2012,7 +2062,7 @@ function getLockedOfferFromContext(context: any, oldOrder: OrderData, history: a
 
 function looksLikeSentenceNotCity(text: string) {
   const n = normalize(text);
-  return /\b(me interesa|te interesa|interesa|quiero|necesito|cuanto|cuánto|cuesta|precio|tienen|tenes|tenés|hay|dame|mandame|reservame|consulta|informacion|información|hola|buenas|gracias|comprar|compro|como hago|cómo hago|que hago|qué hago|como seria|cómo sería|como compro|cómo compro|muy caro|caro|le confirmo|te confirmo|confirmo enseguida|para cuando|cuando llega|entrega hoy|para entrega hoy|de donde|de dónde|son de|ubicados|ubicacion|ubicación)\b/.test(n);
+  return /\b(me interesa|te interesa|interesa|quiero|necesito|cuanto|cuánto|cuesta|precio|tienen|tenes|tenés|hay|dame|mandame|reservame|consulta|informacion|información|hola|buenas|gracias|comprar|compro)\b/.test(n);
 }
 
 function hasPaymentProofText(text: string) {
@@ -2020,6 +2070,8 @@ function hasPaymentProofText(text: string) {
   return /\b(comprobante|transferi|transferí|transferencia hecha|ya pague|ya pagué|deposito|depósito|pague|pagué|adjunto|envio comprobante|envío comprobante|recibo)\b/.test(n);
 }
 
+// ✅ FIX V17: el comprobante NO se marca por texto ni por contexto viejo.
+// Solo cuenta si en ESTE mensaje llegó una imagen / PDF / documento adjunto.
 function hasPaymentProof(context: any, text: string, mediaUrl?: string, mediaType?: string) {
   const url = clean(mediaUrl);
   const type = clean(mediaType);
@@ -2166,267 +2218,6 @@ function productsSummary(parsed: ParsedTraining) {
       return `- ${p.canonical}: ${promos}`;
     })
     .join("\n");
-}
-
-function productsShortList(parsed: ParsedTraining, max = 12) {
-  if (!parsed.products.length) return "No hay productos cargados.";
-  const unique = new Map<string, ProductItem>();
-  for (const p of parsed.products) {
-    const key = normalize(p.canonical || p.product);
-    if (key && !unique.has(key)) unique.set(key, p);
-  }
-  return Array.from(unique.values())
-    .slice(0, max)
-    .map((p) => `• ${p.canonical}`)
-    .join("\n");
-}
-
-function isGenericNoProductQuestion(text: string) {
-  const n = normalize(text);
-  if (!n) return false;
-  return (
-    /\b(hola|buenas|buen dia|buen día|consulta|quiero consultar|precio|costo|cuanto|cuánto|tienen|tenes|tenés|hay|disponible|productos|catalogo|catálogo|que productos|qué productos)\b/.test(n) &&
-    !/\b(09\d{6,}|5959\d{6,})\b/.test(n)
-  );
-}
-
-function isUndetectedSpecificProductPriceQuery(text: string, parsed: ParsedTraining) {
-  const n = normalize(text);
-  if (!isPriceQuery(text) && !/\b(precio|costo|cuanto|cuánto|sale|vale)\b/.test(n)) return false;
-  if (detectProduct(text, parsed, "")) return false;
-
-  return /\b(?:del|de la|de las|de los|del producto|producto)\s+[a-z0-9áéíóúñ ]{3,}/i.test(clean(text));
-}
-
-function shouldAskWhichProduct(text: string, parsed: ParsedTraining, product: string, oldOrder?: OrderData | null) {
-  if (product) return false;
-  if (detectProduct(text, parsed, "")) return false;
-  if (extractQuantity(text) > 0 || extractPhone(text)) return false;
-  if (extractCityStatement(text)) return false;
-  if (oldOrder?.product && !isGenericNoProductQuestion(text)) return false;
-  return isGenericNoProductQuestion(text) || normalize(text).split(/\s+/).length <= 4;
-}
-
-function askWhichProductResponse(parsed: ParsedTraining) {
-  return `😊 Claro, te ayudo.
-
-¿Sobre qué producto querés consultar?
-
-Tenemos disponibles:
-
-${productsShortList(parsed)}
-
-Escribime el nombre del producto y te paso precio, promo y envío.`;
-}
-
-function getLastSentTemplate(context: any) {
-  return context?.last_template_sent || context?.last_product_template_sent || null;
-}
-
-function wasProductTemplateSentRecently(context: any, productName: string, maxHours = 24) {
-  const last = getLastSentTemplate(context);
-  if (!last || !productName) return false;
-
-  const sameProduct =
-    normalize(last.product || last.product_name || "") === normalize(productName) ||
-    normalize(last.canonical || "") === normalize(productName);
-
-  if (!sameProduct) return false;
-
-  const atRaw = clean(last.sent_at || last.created_at || last.updated_at || "");
-  if (!atRaw) return true;
-
-  const at = new Date(atRaw);
-  if (Number.isNaN(at.getTime())) return true;
-
-  const diffHours = (Date.now() - at.getTime()) / (1000 * 60 * 60);
-  return diffHours >= 0 && diffHours <= maxHours;
-}
-
-function templateSentContextPatch(context: any, productName: string, didSendTemplate: boolean) {
-  if (!didSendTemplate || !productName) return {};
-  return {
-    last_template_sent: {
-      product: productName,
-      sent_at: new Date().toISOString(),
-    },
-  };
-}
-
-function isHowToBuyQuestion(text: string) {
-  const n = normalize(text);
-  return /\b(como hago|cómo hago|como compro|cómo compro|que hago|qué hago|como seria|cómo sería|como es el proceso|como seria el pedido|cómo sería el pedido|que necesito|qué necesito)\b/.test(n);
-}
-
-function isOriginQuestion(text: string) {
-  const n = normalize(text);
-  return /\b(de donde son|de dónde son|donde estan|dónde están|ubicados|ubicacion|ubicación|son de donde|son de dónde|local|tienda fisica|tienda física)\b/.test(n);
-}
-
-function isTooExpensiveMessage(text: string) {
-  const n = normalize(text);
-  return /\b(muy caro|caro|carito|no tengo|rebaja|descuento|ultimo precio|último precio|menos|mejor precio|solo uno|solo una)\b/.test(n);
-}
-
-function isWillConfirmLater(text: string) {
-  const n = normalize(text);
-  return /\b(le confirmo|te confirmo|confirmo enseguida|te aviso|le aviso|voy a consultar|consulto|despues te digo|después te digo|mas tarde|más tarde)\b/.test(n);
-}
-
-function isDeliveryTodayQuestion(text: string) {
-  const n = normalize(text);
-  return /\b(entrega hoy|para entrega hoy|tienen para entrega|hay entrega|pueden entregar hoy|puede llegar hoy|llega hoy|me llega hoy|envian hoy|envían hoy|delivery hoy|hoy mismo)\b/.test(n);
-}
-
-function isThanksOnly(text: string) {
-  const n = normalize(text);
-  return /^(gracias|muchas gracias|ok gracias|dale gracias|listo gracias|iii muchas gracias|mil gracias|perfecto gracias|ok|dale|listo)$/i.test(n);
-}
-
-function deterministicGeneralSalesResponse(text: string, state: ConversationState, parsed: ParsedTraining, templatePricing?: TemplatePricing | null) {
-  const o = state.order;
-  const productName = state.productInfo?.canonical || o.product || "";
-  const priceLine = productPriceText(state.productInfo, o.locked_offer, templatePricing);
-
-  if (o.product && o.city) {
-    if (isGenericBuyReply(text) || isAffirmative(text) || isBuyIntent(text)) {
-      if (!o.quantity && !o.locked_offer?.fixed_quantity) {
-        return `✅ Perfecto 😊
-
-📦 ${o.product}
-📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚
-
-${priceLine || ""}
-
-¿Cuántas unidades querés llevar? 😊`;
-      }
-      
-      if (!o.customer_name) {
-        return `✅ Perfecto 😊
-
-📦 ${o.product}
-🔢 Cantidad: ${o.quantity || 1}
-💰 Total: ${formatGs(state.total)} Gs
-📍 ${o.city}
-
-Ahora solo necesito:
-✅ nombre y apellido
-✅ dirección exacta o ubicación
-✅ número de celular 📲`;
-      }
-    }
-  }
-
-  if (/\b(cuando me llevan|cuando llega|cuando entregan|cuando envían|cuando me mandan|cuando me traen)\b/.test(normalize(text))) {
-    if (productName && o.city) {
-      return `🚚 Tu pedido de ${productName} queda agendado para la próxima ronda de envíos.
-
-El delivery te confirma cuando llegue a tu zona.
-
-${o.customer_name ? `✅ Ya tengo tus datos, solo falta confirmar la cantidad. ¿Cuántas unidades querés llevar? 😊` : `Para agendarlo, pasame: 
-✅ nombre y apellido
-✅ dirección exacta o ubicación
-✅ número de celular 📲`}`;
-    }
-    return `🚚 Hacemos envíos a todo Paraguay. Si me pasas tu ciudad, te confirmo cobertura y te ayudo con el pedido 😊`;
-  }
-
-  if (isThanksOnly(text)) {
-    if (productName && !o.city) {
-      return `😊 A vos, gracias.
-
-Si querés avanzar con ${productName}, pasame tu ciudad y te confirmo el envío 🚚`;
-    }
-    return `😊 A vos, gracias. Cualquier consulta estoy para ayudarte.`;
-  }
-
-  if (isWillConfirmLater(text)) {
-    return `😊 Perfecto, te espero.
-
-La promo queda sujeta a stock disponible. Cuando quieras avanzar, escribime "quiero" y seguimos con el pedido 🚚`;
-  }
-
-  if (isOriginQuestion(text)) {
-    if (productName && o.city) {
-      return `Somos tienda online con envíos a todo Paraguay 🚚
-
-📍 ${o.city} tiene envío GRATIS y pagás al recibir.
-
-${!o.quantity ? `¿Cuántas unidades de ${productName} querés llevar? 😊` : `Para agendar ${productName}, pasame:
-✅ nombre y apellido
-✅ dirección exacta
-✅ número de celular 📲`}`;
-    }
-    return `Somos tienda online con envíos a todo Paraguay 🚚
-
-En zonas con cobertura tenés envío GRATIS y pagás al recibir.
-
-${productName ? `Para ${productName}, pasame tu ciudad y te confirmo si llega contra-entrega 😊` : `Decime qué producto te interesa y tu ciudad, y te confirmo precio y envío 😊`}`;
-  }
-
-  if (isHowToBuyQuestion(text)) {
-    if (productName) {
-      return `Es fácil 😊
-
-Para comprar ${productName}, solo necesito:
-✅ ciudad
-✅ cantidad
-✅ nombre y apellido
-✅ dirección exacta
-✅ número de celular
-
-${priceLine ? `${priceLine}\n\n` : ""}Pasame primero tu ciudad y seguimos 🚚`;
-    }
-    return askWhichProductResponse(parsed);
-  }
-
-  if (isDeliveryTodayQuestion(text)) {
-    if (productName) {
-      return `🚚 Podemos coordinar entrega lo antes posible según tu ciudad y la ronda disponible de hoy.
-
-Pasame tu ciudad y te confirmo cobertura para ${productName} 😊`;
-    }
-    return `🚚 Podemos coordinar entrega lo antes posible según tu ciudad y el producto.
-
-¿Qué producto te interesa? Tenemos:
-
-${productsShortList(parsed)}`;
-  }
-
-  if (isTooExpensiveMessage(text) && productName) {
-    const offers = priceLine || productPriceText(state.productInfo, null, templatePricing);
-    return `Te entiendo 😊
-
-Justamente tenemos la promo para que te convenga más:
-${offers || productName}
-
-Si querés, podés llevar 1 unidad o aprovechar la promo disponible. ¿Cuál te queda mejor?`;
-  }
-
-  return "";
-}
-
-function repeatedProductShortResponse(state: ConversationState, parsed: ParsedTraining, templatePricing?: TemplatePricing | null) {
-  const o = state.order;
-  const productName = state.productInfo?.canonical || o.product || "";
-  const priceLine = productPriceText(state.productInfo, o.locked_offer, templatePricing);
-
-  if (!productName) return askWhichProductResponse(parsed);
-
-  if (!o.city) {
-    return `😊 Te paso de nuevo la info principal:
-
-${productName}
-${priceLine || ""}
-
-📍 ¿Para qué ciudad sería el envío?`;
-  }
-
-  if (!o.quantity) {
-    return buildFallbackResponse(parsed, state, templatePricing);
-  }
-
-  return buildFallbackResponse(parsed, state, templatePricing);
 }
 
 function hasTemplateForProduct(templatePricing: TemplatePricing | null | undefined, productName: string) {
@@ -2856,6 +2647,7 @@ async function transcribeAudioSmart({
     return { text: geminiText, reason: "gemini" };
   }
 
+  // ✅ FIX V21: si Gemini quedó sin cuota 429, intentamos Whisper si OPENAI_API_KEY existe.
   const openAiText = await transcribeAudioWithOpenAI({ audioBase64, mime });
   if (openAiText) return { text: openAiText, reason: "openai_whisper" };
 
@@ -2865,6 +2657,7 @@ async function transcribeAudioSmart({
 
   return { text: "", reason: "transcription_failed" };
 }
+
 
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
@@ -2892,6 +2685,7 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
 
 ¡Gracias por tu compra! 🛍️✨
 
+
 Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
   }
 
@@ -2915,6 +2709,7 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 💵 Podés pagar en EFECTIVO o TRANSFERENCIA AL DELIVERY cuando recibas tu producto. ¡Como te quede más cómodo! 🚚
 
 ¡Gracias por tu compra! 🛍️✨
+
 
 Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
 }
@@ -3024,6 +2819,7 @@ ${bankDataText(parsed)} 📲
 Cuando me pases el comprobante, dejamos tu pedido confirmado 😊`;
 }
 
+
 function deterministicObservationAckMessage(state: ConversationState, parsed: ParsedTraining, observationPatch?: Partial<OrderData> | null) {
   if (!hasOrderObservation(observationPatch || {})) return "";
 
@@ -3057,20 +2853,6 @@ function deterministicObservationAckMessage(state: ConversationState, parsed: Pa
   }
 
   return `${intro}\n\n✅ Tengo todos los datos del pedido. Nuestro equipo tendrá en cuenta esa observación para coordinar 😊`;
-}
-
-function buildFullProductCopyResponse(state: ConversationState, templatePricing?: TemplatePricing | null) {
-  const copy = clean(state.productInfo?.salesCopy || "");
-  if (!copy) return "";
-
-  const priceLine = productPriceText(state.productInfo, state.order.locked_offer, templatePricing);
-  const copyMentionsPrice = /gs\.?\s*\d[\d.\s]{3,}|\d[\d.\s]{3,}\s*gs/i.test(copy);
-
-  return `${copy}${copyMentionsPrice || !priceLine ? "" : `
-
-${priceLine}`}
-
-📍 ¿Para qué ciudad sería el envío? 😊`;
 }
 
 function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
@@ -3159,6 +2941,20 @@ REGLAS DURAS:
 `.trim();
 }
 
+function buildFullProductCopyResponse(state: ConversationState, templatePricing?: TemplatePricing | null) {
+  const copy = clean(state.productInfo?.salesCopy || "");
+  if (!copy) return "";
+
+  const priceLine = productPriceText(state.productInfo, state.order.locked_offer, templatePricing);
+  const copyMentionsPrice = /gs\.?\s*\d[\d.\s]{3,}|\d[\d.\s]{3,}\s*gs/i.test(copy);
+
+  return `${copy}${copyMentionsPrice || !priceLine ? "" : `
+
+${priceLine}`}
+
+📍 ¿Para qué ciudad sería el envío? 😊`;
+}
+
 function buildFallbackResponse(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
   const o = state.order;
 
@@ -3239,6 +3035,7 @@ function postProcessResponse(resp: string) {
   return clean(resp)
     .replace(/\n{4,}/g, "\n\n");
 }
+
 
 function extractIncomingText(body: any) {
   const candidates = [
@@ -3451,6 +3248,8 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
+    // ✅ FIX V20/V21: si llega audio, transcribir ANTES de detectar producto/ciudad/cantidad.
+    // Si el proveedor ya manda transcripción, extractIncomingText(req.body) ya la usa.
     const audioLike = isAudioLikeMedia({ media_url, media_type, mime_type });
 
     if (audioLike && !texto) {
@@ -3491,12 +3290,15 @@ export default async function handler(req: any, res: any) {
     const trainingText = buildTrainingText(allTraining);
     const parsed = parseTraining(trainingText);
 
+    // ✅ FIX V15: El catálogo visual guardado en training_data.products tiene prioridad.
+    // Esto evita que el bot responda "afilador" con la imagen de "varices".
     const visualProducts = productsFromVisualCatalog(allTraining);
     parsed.products = mergeProductsByPriority(visualProducts, parsed.products);
 
     attachProductImages(parsed.products, allTraining);
     const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
 
+    // ✅ FIX: Definir newTemplateSignal ANTES de usarlo (soluciona ReferenceError)
     const newTemplateSignal = isNewTemplateOrProductIntent(texto, parsed, history);
 
     const recentExplicitProductInterest = getRecentExplicitProductInterestAfterConfirmed(history, parsed);
@@ -3605,6 +3407,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    // ✅ newTemplateSignal ya está definido, ahora podemos usarlo
     const productFromMessageInitial = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
     const lockedProductInitial = getLockedProductFromContext(context, oldOrder, history, parsed);
     const promoResponse = isRespondingToPromotion(texto, history);
@@ -3622,15 +3425,6 @@ export default async function handler(req: any, res: any) {
     if ((newTemplateSignal.isNew || forceFreshOrderFromConfirmedTemplate) && context?.step === "pedido_confirmado") {
       freshOrder = true;
     }
-
-    // ⚠️ GUARDAR PRODUCTO DETECTADO ANTES DE ASIGNARLO AL PEDIDO
-    const detectedProductFromMessage = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
-    
-    // DETECTAR SI ES PRIMERA VEZ QUE MUESTRA INTERÉS
-    const isFirstInterest = 
-      !oldOrder.product && 
-      detectedProductFromMessage &&
-      (isBuyIntent(texto) || isGenericBuyReply(texto) || /\b(me interesa|precio|cuanto|info|informacion|consultar|quiero saber)\b/.test(normalize(texto)));
 
     if (freshOrder) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
@@ -3661,15 +3455,6 @@ export default async function handler(req: any, res: any) {
     }
 
     let product = detectProduct(texto, parsed, productToUse);
-
-    if (
-      isUndetectedSpecificProductPriceQuery(texto, parsed) &&
-      !currentTemplatePricing &&
-      !newTemplateSignal.product
-    ) {
-      product = "";
-      lockedOfferByContext = null;
-    }
 
     if (
       (recentExplicitProductInterest?.product?.canonical || templatePricing?.product) &&
@@ -3844,6 +3629,7 @@ export default async function handler(req: any, res: any) {
     } else if (isSameOrderForPaymentProof(oldOrder, orderData)) {
       orderData.payment_proof_received = true;
     } else {
+      // 🔒 No arrastrar comprobantes de pedidos/contextos anteriores.
       orderData.payment_proof_received = false;
     }
 
@@ -3882,53 +3668,11 @@ export default async function handler(req: any, res: any) {
     }
 
     const finalState = buildState(orderData, parsed);
-
-    if (!finalState.order.product && shouldAskWhichProduct(texto, parsed, product, oldOrder)) {
-      return res.json({
-        response: askWhichProductResponse(parsed),
-        context: {
-          ...(context || {}),
-          order_data: orderData,
-          step: "collecting_product",
-          updated_at: new Date().toISOString(),
-        },
-        debug: true
-          ? {
-              ask_which_product: true,
-              incoming_text: texto,
-            }
-          : undefined,
-      });
-    }
-
-    const deterministicGeneralResponse = deterministicGeneralSalesResponse(texto, finalState, parsed, templatePricing);
-    if (deterministicGeneralResponse) {
-      return res.json({
-        response: deterministicGeneralResponse,
-        context: {
-          ...(context || {}),
-          current_product: orderData.product || context?.current_product || null,
-          last_topic: orderData.product || context?.last_topic || null,
-          last_ad_offer: orderData.locked_offer || context?.last_ad_offer || null,
-          order_data: orderData,
-          order_id: orderData.order_id || context?.order_id || null,
-          payment_proof_received: orderData.payment_proof_received || false,
-          step: finalState.step,
-          updated_at: new Date().toISOString(),
-        },
-        debug: true
-          ? {
-              deterministic_general_response: true,
-              product: orderData.product,
-              step: finalState.step,
-            }
-          : undefined,
-      });
-    }
-
     let directConfirm = hasAllRequiredOrderDataForDirectConfirmation(finalState);
     let confirm = shouldConfirmOrder(finalState) || directConfirm;
 
+    // 🔒 BLOQUEO ABSOLUTO: ciudad sin cobertura / transportadora
+    // NUNCA confirma sin comprobante real adjunto.
     if (finalState.coverage === false && !orderData.payment_proof_received) {
       directConfirm = false;
       confirm = false;
@@ -4032,7 +3776,7 @@ export default async function handler(req: any, res: any) {
                 step: finalState.step,
                 locked_offer: orderData.locked_offer,
               }
-          : undefined,
+            : undefined,
         });
       }
     }
@@ -4139,86 +3883,29 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
-    // ============================================
-    // FIX V27: LÓGICA CORREGIDA PARA ENVÍO DE PLANTILLA + IMÁGENES
-    // ============================================
-    
-    // Obtener el producto detectado del mensaje
-    const productoDetectado = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
-    const productInfoDetectado = getProductInfo(productoDetectado, parsed);
-    
-    // Verificar si YA se envió la plantilla de este producto recientemente
-    const yaEnvioPlantilla = Boolean(
-      productInfoDetectado?.canonical &&
-      wasProductTemplateSentRecently(context, productInfoDetectado.canonical, 24)
-    );
-    
-    // Verificar si el cliente está mostrando interés en un producto
-    const mostrarInteres = 
-      productoDetectado &&
-      (isBuyIntent(texto) || isGenericBuyReply(texto) || /\b(me interesa|precio|cuanto|info|informacion|consultar|quiero saber)\b/.test(normalize(texto)));
-    
-    // DECISIÓN: Enviar plantilla SOLO si NO se ha enviado antes
-    const debeEnviarPlantilla = 
-      productoDetectado &&
-      mostrarInteres &&
-      !yaEnvioPlantilla &&
-      !orderData.product; // No tiene producto en el pedido aún
-    
-    const isConfirmingWithProduct = 
-      orderData.product && 
-      (isBuyIntent(texto) || isGenericBuyReply(texto) || isAffirmative(texto));
-    
-    let didSendTemplateThisTurn = false;
+    // ✅ FIX V18: si estamos presentando el producto, enviar SIEMPRE el copy completo cargado.
+    // No dejamos que Gemini lo resuma ni que postProcess lo corte.
+    const fullProductCopyResponse = !orderData.city ? buildFullProductCopyResponse(finalState, templatePricing) : "";
+    if (fullProductCopyResponse) {
+      aiResponse = fullProductCopyResponse;
+    }
+
+    // ✅ FIX IMAGENES: Enviar hasta 3 imágenes del producto que coincide con PALABRA_CLAVE
     let imagesToSend: string[] | undefined = undefined;
     
-    if (debeEnviarPlantilla && productInfoDetectado) {
-      // Construir respuesta con copy completo
-      const copy = clean(productInfoDetectado.salesCopy || "");
-      const priceLine = productPriceText(productInfoDetectado, null, templatePricing);
-      const copyMentionsPrice = /gs\.?\s*\d[\d.\s]{3,}|\d[\d.\s]{3,}\s*gs/i.test(copy);
-      
-      aiResponse = copy 
-        ? `${copy}${copyMentionsPrice || !priceLine ? "" : `\n\n${priceLine}`}\n\n📍 ¿Para qué ciudad sería el envío? 😊`
-        : `🔥 ${productInfoDetectado.canonical}\n${priceLine}\n\n📍 ¿Para qué ciudad sería el envío? 😊`;
-      
-      didSendTemplateThisTurn = true;
-      
-      // Enviar imágenes del producto
-      if (productInfoDetectado.images?.length) {
-        imagesToSend = productInfoDetectado.images.slice(0, 3);
-        console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${productInfoDetectado.canonical}"`);
-      }
-    } else if (isConfirmingWithProduct || orderData.product) {
-      // Ya tiene producto y está confirmando → AVANZAR sin plantilla
-      if (orderData.product && !orderData.city) {
-        aiResponse = `✅ Perfecto 😊
-
-📦 ${orderData.product}
-${productPriceText(state.productInfo, orderData.locked_offer, templatePricing)}
-
-📍 ¿Para qué ciudad sería el envío? 😊`;
-      } else if (orderData.product && orderData.city && !orderData.quantity) {
-        aiResponse = `✅ Perfecto 😊
-
-📦 ${orderData.product}
-📍 ${orderData.city} tiene envío GRATIS y pagás al recibir 🚚
-
-${productPriceText(state.productInfo, orderData.locked_offer, templatePricing)}
-
-¿Cuántas unidades querés llevar? 😊`;
-      } else if (orderData.product && orderData.city && orderData.quantity && !orderData.customer_name) {
-        aiResponse = `✅ Perfecto 😊
-
-📦 ${orderData.product}
-🔢 Cantidad: ${orderData.quantity}
-💰 Total: ${formatGs(finalState.total)} Gs
-📍 ${orderData.city}
-
-Para agendarlo, pasame:
-✅ nombre y apellido
-✅ dirección exacta o ubicación
-✅ número de celular 📲`;
+    // ✅ Buscar producto por PALABRA_CLAVE o ALIAS
+    const productoPorClave = encontrarProductoPorPalabraClave(texto, parsed.products);
+    
+    // Solo enviar imágenes si NO tenemos ciudad aún (etapa de presentación del producto)
+    if (!orderData.city) {
+      if (productoPorClave && productoPorClave.images?.length) {
+        // ✅ Enviar hasta 3 imágenes del producto que coincide con la palabra clave
+        imagesToSend = productoPorClave.images.slice(0, 3);
+        console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${productoPorClave.palabra_clave || productoPorClave.canonical}"`);
+      } else if (finalState.productInfo?.images?.length) {
+        // Fallback: si no encontró por palabra clave, usar el producto detectado
+        imagesToSend = finalState.productInfo.images.slice(0, 3);
+        console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${finalState.productInfo.canonical}"`);
       }
     }
 
@@ -4227,7 +3914,6 @@ Para agendarlo, pasame:
       media_urls: imagesToSend,
       context: {
         ...(context || {}),
-        ...templateSentContextPatch(context, productInfoDetectado?.canonical || orderData.product, didSendTemplateThisTurn),
         current_product: orderData.product || null,
         last_topic: orderData.product || context?.last_topic || null,
         last_ad_offer: orderData.locked_offer || null,
@@ -4252,12 +3938,10 @@ Para agendarlo, pasame:
             confirm,
             direct_confirm: directConfirm,
             locked_offer: orderData.locked_offer,
-            producto_detectado: productoDetectado,
-            ya_envio_plantilla: yaEnvioPlantilla,
-            debe_enviar_plantilla: debeEnviarPlantilla,
-            is_confirming_with_product: isConfirmingWithProduct,
+            productFromMessageInitial,
+            promoResponse,
             images_sent: imagesToSend?.length || 0,
-            did_send_template_this_turn: didSendTemplateThisTurn,
+            producto_por_clave: productoPorClave?.palabra_clave || null,
           }
         : undefined,
     });
