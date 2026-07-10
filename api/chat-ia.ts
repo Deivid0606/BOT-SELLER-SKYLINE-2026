@@ -41,7 +41,7 @@ import { createClient } from "@supabase/supabase-js";
  * 34) FIX V21: Evita quedarse mudo; si audio no se puede transcribir, responde claro sin romper el pedido.
  * 35) FIX V22: Guarda observaciones de pago/fecha/horario/coordinar entrega sin perder la venta.
  * 36) FIX V23: Responde determinísticamente cuando el cliente deja observación de pago/fecha/horario, sin depender de Gemini.
- * 37) FIX V33 DEFINITIVO: el copy del catálogo se envía literal desde backend; Gemini nunca lo reescribe.
+ * 37) FIX V34 DEFINITIVO: copy literal con doble seguro; el historial del bot nunca se reparsa como plantilla.
  * 37) FIX V30: Después de pedido confirmado, una intención explícita sobre otro producto reinicia la venta, incluso con errores como "mi interesa".
  * 37) FIX V26: Las consultas tienen prioridad; no reemplaza la respuesta con el copy ni reenvía imágenes mientras falta ciudad.
  * 37) FIX V25: Separa consultas de ciudades; una pregunta corta nunca activa transportadora ni cobertura falsa.
@@ -1714,6 +1714,7 @@ function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): 
     const content = clean(item?.content || item?.message || item?.text || item?.body || "");
     if (!content) continue;
     if (isConfirmedOrderMessage(content)) continue;
+    if (isCatalogCopyHistoryMessage(content, parsed)) continue;
 
     const looksLikeTemplate =
       isStructuredSalesTemplateMessage(content) ||
@@ -1837,6 +1838,7 @@ function getLastRealSalesTemplatePricing(history: any[], parsed: ParsedTraining)
     const content = clean(item?.content || item?.message || item?.text || item?.body || "");
     if (!content) continue;
     if (isConfirmedOrderMessage(content)) continue;
+    if (isCatalogCopyHistoryMessage(content, parsed)) continue;
     if (!isRealSalesTemplateMessage(content) && !isSafeTemplatePricingMessage(content) && !isStructuredSalesTemplateMessage(content)) continue;
 
     const pricing = detectTemplatePricingSmart(content, parsed);
@@ -1858,6 +1860,7 @@ function getLastRealSalesTemplateProduct(history: any[], parsed: ParsedTraining)
   for (const item of recentMessages) {
     const content = clean(item?.content || item?.message || item?.text || item?.body || "");
     if (!content) continue;
+    if (isCatalogCopyHistoryMessage(content, parsed)) continue;
     if (!isRealSalesTemplateMessage(content)) continue;
 
     const product = detectProduct(content, parsed, "");
@@ -1870,6 +1873,22 @@ function getLastRealSalesTemplateProduct(history: any[], parsed: ParsedTraining)
 
 function historyText(item: any) {
   return clean(item?.content || item?.message || item?.text || item?.body || "");
+}
+
+// ✅ FIX V34: un copy que salió del propio catálogo nunca puede volver a entrar
+// desde el historial como una "plantilla nueva". Esto evita que stock, talles,
+// precios anteriores o frases como "1 PAR = 2 PLANTILLAS" se conviertan en packs.
+function isCatalogCopyHistoryMessage(text: string, parsed: ParsedTraining) {
+  const raw = clean(text);
+  if (!raw) return false;
+
+  return parsed.products.some((product) => {
+    const copy = clean(product.salesCopy || "");
+    if (!copy) return false;
+
+    // El bot puede agregar únicamente la pregunta operativa al final.
+    return raw === copy || raw.startsWith(copy + "\n") || raw.includes(copy);
+  });
 }
 
 function extractExplicitProductInterest(text: string, parsed: ParsedTraining) {
@@ -1913,6 +1932,7 @@ function getTemplatePricingAfterHistoryIndex(history: any[], parsed: ParsedTrain
     const content = historyText(items[i]);
     if (!content) continue;
     if (isConfirmedOrderMessage(content)) continue;
+    if (isCatalogCopyHistoryMessage(content, parsed)) continue;
     if (!isRealSalesTemplateMessage(content) && !isSafeTemplatePricingMessage(content) && !isStructuredSalesTemplateMessage(content)) continue;
 
     const pricing = detectTemplatePricingSmart(content, parsed);
@@ -4037,7 +4057,8 @@ export default async function handler(req: any, res: any) {
         freshOrder ||
         newTemplateSignal.isNew ||
         !!currentTemplatePricing ||
-        (explicitProductInterestNow && productMentionNow)
+        explicitProductInterestNow ||
+        (!!productMentionNow && !context?.current_product)
       )
     );
 
@@ -4123,7 +4144,19 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = deterministicAcknowledgementResponse;
     }
 
-    // El copy exacto ya fue atendido antes de llamar a Gemini (FIX V33).
+    // ✅ FIX V34 DOBLE SEGURO: si por cualquier contexto heredado no se activó
+    // el retorno temprano, una intención explícita de producto con salesCopy
+    // reemplaza totalmente la salida de Gemini. Nunca se mezcla ni se explica.
+    if (
+      explicitProductInterestNow &&
+      clean(finalState.productInfo?.salesCopy || "") &&
+      !currentMessageIsQuestionBeforeAI
+    ) {
+      aiResponse = buildFullProductCopyResponse(finalState, null);
+      templatePricing = null;
+    }
+
+    // El copy exacto ya fue atendido antes de llamar a Gemini (FIX V33/V34).
     // Desde este punto solo se procesan consultas, datos del pedido y postventa.
     const currentMessageIsQuestion = isQuestionLikeMessage(texto);
     const currentMessageHasQuantity = extractQuantity(texto) > 0;
