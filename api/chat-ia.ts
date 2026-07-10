@@ -40,6 +40,7 @@ import { createClient } from "@supabase/supabase-js";
  * 34) FIX V21: Evita quedarse mudo; si audio no se puede transcribir, responde claro sin romper el pedido.
  * 35) FIX V22: Guarda observaciones de pago/fecha/horario/coordinar entrega sin perder la venta.
  * 36) FIX V23: Responde determinísticamente cuando el cliente deja observación de pago/fecha/horario, sin depender de Gemini.
+ * 37) FIX V30: Después de pedido confirmado, una intención explícita sobre otro producto reinicia la venta, incluso con errores como "mi interesa".
  * 37) FIX V26: Las consultas tienen prioridad; no reemplaza la respuesta con el copy ni reenvía imágenes mientras falta ciudad.
  * 37) FIX V25: Separa consultas de ciudades; una pregunta corta nunca activa transportadora ni cobertura falsa.
  * 38) FIX V25: Después de responder cualquier consulta, retoma exactamente el dato pendiente del pedido.
@@ -1916,6 +1917,15 @@ function forceTemplatePricingProduct(templatePricing: TemplatePricing | null, pr
   };
 }
 
+function hasExplicitProductInterestPhrase(text: string) {
+  const n = normalize(text);
+  if (!n) return false;
+
+  // Tolera errores frecuentes de escritura: "mi interesa", "me intereza",
+  // "me interesa la peladora", "quiero otro producto", etc.
+  return /\b(me|mi)\s+intere(?:sa|za)|\bquiero(?:\s+comprar|\s+llevar)?|\bprecio|\bcuanto|\bconfirmar|\bagendar|\bcomprar|\bnecesito|\bconsulta|\binfo(?:rmacion)?\b/.test(n);
+}
+
 function isStrongNewPurchaseReply(text: string) {
   const n = normalize(text);
   return /^(quiero|lo quiero|quiero ese|quiero eso|quiero confirmar|confirmar|si quiero|sí quiero|comprar|compro|quiero comprar|quiero llevar|llevo|reservar|reservame|agendar|agendame|confirmo)$/.test(n);
@@ -2065,7 +2075,7 @@ function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, hist
 
   const productInterest =
     !!productInMessage &&
-    /\b(me interesa|precio|cuanto|cuánto|quiero|confirmar|comprar|consulta|info|informacion|información)\b/.test(n);
+    hasExplicitProductInterestPhrase(raw);
 
   const wantsLastTemplate =
     (isGenericBuyReply(raw) || isBuyIntent(raw)) &&
@@ -2107,7 +2117,7 @@ function shouldStartFreshOrder({
 }) {
   const msg = normalize(texto);
   const explicitInterest =
-    /\b(me interesa|precio|cuanto|cuanto sale|quiero informacion|info|informacion|quiero saber|consulta)\b/.test(msg);
+    hasExplicitProductInterestPhrase(texto);
 
   const productChanged =
     !!productFromMessage &&
@@ -3464,7 +3474,7 @@ export default async function handler(req: any, res: any) {
       const explicitNewPurchaseAfterConfirmed =
         hasCurrentTemplatePricing ||
         isNewPastedTemplatePurchase(texto, parsed) ||
-        (!!productInClosedMessage && /\b(precio|cuanto|cuánto|me interesa|quiero|quiero comprar|comprar|confirmar|agendar|otro producto)\b/.test(msgNormClosed)) ||
+        (!!productInClosedMessage && hasExplicitProductInterestPhrase(texto)) ||
         /\b(otro producto|nuevo pedido|hacer otro pedido|catalogo|catálogo|ver catalogo|ver catálogo|quiero comprar otra cosa)\b/.test(msgNormClosed) ||
         ((isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) && !!lastRealSalesTemplateProduct && !!lastRealSalesTemplatePricing);
 
