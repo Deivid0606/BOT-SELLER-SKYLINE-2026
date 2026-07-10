@@ -3,10 +3,11 @@ import { createClient } from "@supabase/supabase-js";
 /**
  * CHAT IA VENDEDOR AUTÓNOMO V3 - Mega Todo Store / One Store
  *
- * FIX V26: SOLUCIONADO DEFINITIVAMENTE
- * - Cuando cliente dice "me interesa [producto]" → ENVIA plantilla con copy + imágenes
- * - Cuando cliente dice "quiero" después de plantilla → AVANZA sin repetir
+ * FIX V27: CORREGIDO DEFINITIVAMENTE
+ * - Cuando cliente dice "me interesa [producto]" → ENVIA copy completo + imágenes
+ * - Cuando cliente ya recibió la plantilla y dice "quiero" → AVANZA sin repetir
  * - Cuando cliente ya tiene pedido en curso → AVANZA sin repetir plantilla
+ * - Anti-repetición 24h: no vuelve a mandar la misma plantilla al mismo cliente
  */
 
 const supabase = createClient(
@@ -3058,18 +3059,7 @@ function deterministicObservationAckMessage(state: ConversationState, parsed: Pa
   return `${intro}\n\n✅ Tengo todos los datos del pedido. Nuestro equipo tendrá en cuenta esa observación para coordinar 😊`;
 }
 
-function buildFullProductCopyResponse(state: ConversationState, templatePricing?: TemplatePricing | null, forceFullCopy = false) {
-  if (state.order.product && state.order.city && !forceFullCopy) {
-    return "";
-  }
-
-  if (state.order.product && !state.order.city) {
-    const lastMessageWasQuestion = state.hardInstruction?.includes("preguntar SOLO ciudad");
-    if (lastMessageWasQuestion) {
-      return "";
-    }
-  }
-
+function buildFullProductCopyResponse(state: ConversationState, templatePricing?: TemplatePricing | null) {
   const copy = clean(state.productInfo?.salesCopy || "");
   if (!copy) return "";
 
@@ -3633,14 +3623,14 @@ export default async function handler(req: any, res: any) {
       freshOrder = true;
     }
 
-    // ⚠️ IMPORTANTE: Guardamos el producto detectado ANTES de que sea asignado al pedido
+    // ⚠️ GUARDAR PRODUCTO DETECTADO ANTES DE ASIGNARLO AL PEDIDO
     const detectedProductFromMessage = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
     
-    // Detectar si es la PRIMERA vez que el cliente muestra interés en este producto
+    // DETECTAR SI ES PRIMERA VEZ QUE MUESTRA INTERÉS
     const isFirstInterest = 
       !oldOrder.product && 
       detectedProductFromMessage &&
-      (isBuyIntent(texto) || isGenericBuyReply(texto) || /\b(me interesa|precio|cuanto|info|informacion|consultar)\b/.test(normalize(texto)));
+      (isBuyIntent(texto) || isGenericBuyReply(texto) || /\b(me interesa|precio|cuanto|info|informacion|consultar|quiero saber)\b/.test(normalize(texto)));
 
     if (freshOrder) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
@@ -4149,43 +4139,58 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
-    // ✅ FIX V26: LÓGICA CORREGIDA PARA ENVÍO DE PLANTILLA
-    // 1. SI es PRIMERA VEZ que muestra interés y NO tiene producto → ENVIAR plantilla
-    // 2. SI ya tiene producto y está confirmando → AVANZAR (NO enviar plantilla)
-    // 3. SI ya tiene producto y ciudad pero NO cantidad → AVANZAR (NO enviar plantilla)
+    // ============================================
+    // FIX V27: LÓGICA CORREGIDA PARA ENVÍO DE PLANTILLA + IMÁGENES
+    // ============================================
     
-    const isFirstInterestNow = 
-      !orderData.product && 
-      detectedProductFromMessage &&
-      (isBuyIntent(texto) || isGenericBuyReply(texto) || /\b(me interesa|precio|cuanto|info|informacion|consultar)\b/.test(normalize(texto)));
-
+    // Obtener el producto detectado del mensaje
+    const productoDetectado = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
+    const productInfoDetectado = getProductInfo(productoDetectado, parsed);
+    
+    // Verificar si YA se envió la plantilla de este producto recientemente
+    const yaEnvioPlantilla = Boolean(
+      productInfoDetectado?.canonical &&
+      wasProductTemplateSentRecently(context, productInfoDetectado.canonical, 24)
+    );
+    
+    // Verificar si el cliente está mostrando interés en un producto
+    const mostrarInteres = 
+      productoDetectado &&
+      (isBuyIntent(texto) || isGenericBuyReply(texto) || /\b(me interesa|precio|cuanto|info|informacion|consultar|quiero saber)\b/.test(normalize(texto)));
+    
+    // DECISIÓN: Enviar plantilla SOLO si NO se ha enviado antes
+    const debeEnviarPlantilla = 
+      productoDetectado &&
+      mostrarInteres &&
+      !yaEnvioPlantilla &&
+      !orderData.product; // No tiene producto en el pedido aún
+    
     const isConfirmingWithProduct = 
       orderData.product && 
       (isBuyIntent(texto) || isGenericBuyReply(texto) || isAffirmative(texto));
-
-    const hasActiveOrder = Boolean(
-      orderData.product && 
-      (orderData.city || orderData.quantity || orderData.customer_name || orderData.phone)
-    );
-
-    const repeatedTemplate24h = Boolean(
-      finalState.productInfo?.canonical &&
-      wasProductTemplateSentRecently(context, finalState.productInfo?.canonical || orderData.product, 24)
-    );
-
+    
     let didSendTemplateThisTurn = false;
-    let fullProductCopyResponse = "";
-
-    // DECISIÓN: Enviar plantilla SOLO si es la primera vez que muestra interés
-    if (isFirstInterestNow && !repeatedTemplate24h) {
-      fullProductCopyResponse = buildFullProductCopyResponse(finalState, templatePricing);
+    let imagesToSend: string[] | undefined = undefined;
+    
+    if (debeEnviarPlantilla && productInfoDetectado) {
+      // Construir respuesta con copy completo
+      const copy = clean(productInfoDetectado.salesCopy || "");
+      const priceLine = productPriceText(productInfoDetectado, null, templatePricing);
+      const copyMentionsPrice = /gs\.?\s*\d[\d.\s]{3,}|\d[\d.\s]{3,}\s*gs/i.test(copy);
+      
+      aiResponse = copy 
+        ? `${copy}${copyMentionsPrice || !priceLine ? "" : `\n\n${priceLine}`}\n\n📍 ¿Para qué ciudad sería el envío? 😊`
+        : `🔥 ${productInfoDetectado.canonical}\n${priceLine}\n\n📍 ¿Para qué ciudad sería el envío? 😊`;
+      
       didSendTemplateThisTurn = true;
       
-      if (fullProductCopyResponse) {
-        aiResponse = fullProductCopyResponse;
+      // Enviar imágenes del producto
+      if (productInfoDetectado.images?.length) {
+        imagesToSend = productInfoDetectado.images.slice(0, 3);
+        console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${productInfoDetectado.canonical}"`);
       }
-    } else if (isConfirmingWithProduct || hasActiveOrder) {
-      // Si ya tiene producto y está confirmando, NO enviar plantilla, solo avanzar
+    } else if (isConfirmingWithProduct || orderData.product) {
+      // Ya tiene producto y está confirmando → AVANZAR sin plantilla
       if (orderData.product && !orderData.city) {
         aiResponse = `✅ Perfecto 😊
 
@@ -4215,28 +4220,6 @@ Para agendarlo, pasame:
 ✅ dirección exacta o ubicación
 ✅ número de celular 📲`;
       }
-    } else if (!orderData.city && repeatedTemplate24h) {
-      // Si ya se envió la plantilla en las últimas 24h, no repetir
-      aiResponse =
-        deterministicGeneralSalesResponse(texto, finalState, parsed, templatePricing) ||
-        repeatedProductShortResponse(finalState, parsed, templatePricing);
-    }
-
-    let imagesToSend: string[] | undefined = undefined;
-
-    const productoPorClave = encontrarProductoPorPalabraClave(texto, parsed.products);
-
-    // Enviar imágenes SOLO si es la primera vez que muestra interés
-    if (isFirstInterestNow && !repeatedTemplate24h) {
-      if (productoPorClave && productoPorClave.images?.length) {
-        imagesToSend = productoPorClave.images.slice(0, 3);
-        didSendTemplateThisTurn = true;
-        console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${productoPorClave.palabra_clave || productoPorClave.canonical}"`);
-      } else if (finalState.productInfo?.images?.length) {
-        imagesToSend = finalState.productInfo.images.slice(0, 3);
-        didSendTemplateThisTurn = true;
-        console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${finalState.productInfo.canonical}"`);
-      }
     }
 
     return res.json({
@@ -4244,7 +4227,7 @@ Para agendarlo, pasame:
       media_urls: imagesToSend,
       context: {
         ...(context || {}),
-        ...templateSentContextPatch(context, finalState.productInfo?.canonical || orderData.product, didSendTemplateThisTurn),
+        ...templateSentContextPatch(context, productInfoDetectado?.canonical || orderData.product, didSendTemplateThisTurn),
         current_product: orderData.product || null,
         last_topic: orderData.product || context?.last_topic || null,
         last_ad_offer: orderData.locked_offer || null,
@@ -4269,16 +4252,12 @@ Para agendarlo, pasame:
             confirm,
             direct_confirm: directConfirm,
             locked_offer: orderData.locked_offer,
-            productFromMessageInitial,
-            promoResponse,
-            images_sent: imagesToSend?.length || 0,
-            repeated_template_24h: repeatedTemplate24h,
-            did_send_template_this_turn: didSendTemplateThisTurn,
-            producto_por_clave: productoPorClave?.palabra_clave || null,
-            is_first_interest: isFirstInterestNow,
+            producto_detectado: productoDetectado,
+            ya_envio_plantilla: yaEnvioPlantilla,
+            debe_enviar_plantilla: debeEnviarPlantilla,
             is_confirming_with_product: isConfirmingWithProduct,
-            has_active_order: hasActiveOrder,
-            detected_product_from_message: detectedProductFromMessage,
+            images_sent: imagesToSend?.length || 0,
+            did_send_template_this_turn: didSendTemplateThisTurn,
           }
         : undefined,
     });
