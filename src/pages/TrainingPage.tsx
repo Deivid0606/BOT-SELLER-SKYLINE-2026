@@ -14,6 +14,9 @@ interface ProductItem {
   copy: string;
   palabra_clave: string;
   alias: string[];
+  // ✅ Anti repetición por producto: evita reenviar la misma plantilla/copy muchas veces al mismo cliente.
+  prevent_repeat_24h?: boolean;
+  repeat_cooldown_hours?: number;
 }
 
 interface TrainingItem {
@@ -39,10 +42,16 @@ const normalizeProductImages = (product: ProductItem) => {
 
 const normalizeProductItem = (product: ProductItem): ProductItem => {
   const images = normalizeProductImages(product);
+  const cooldown = Number(product.repeat_cooldown_hours || 24);
+
   return {
     ...product,
     images,
     image: images[0] || "",
+    // Si el producto ya tenía configuración, la respeta.
+    // Si es viejo y no tenía, queda activado por defecto para evitar spam de plantillas.
+    prevent_repeat_24h: product.prevent_repeat_24h ?? true,
+    repeat_cooldown_hours: Number.isFinite(cooldown) && cooldown > 0 ? cooldown : 24,
   };
 };
 
@@ -213,7 +222,9 @@ export default function TrainingPage() {
         images: [],
         copy: "",
         palabra_clave: "",
-        alias: []
+        alias: [],
+        prevent_repeat_24h: true,
+        repeat_cooldown_hours: 24
       }
     ]);
     setMostrarCatalogo(true);
@@ -581,6 +592,61 @@ Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segund
                         Este es el mensaje que el bot enviará cuando se active con la palabra clave
                       </p>
                     </div>
+
+                    {/* ✅ Anti repetición de plantilla */}
+                    <div className="rounded-lg border border-border bg-secondary/25 p-3 space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <label className="text-[10px] text-muted-foreground flex items-center gap-1">
+                            <RefreshCw className="h-3 w-3" />
+                            No repetir plantilla / copy
+                          </label>
+                          <p className="text-[10px] text-muted-foreground mt-0.5 leading-relaxed">
+                            Activado: si este producto ya fue enviado al cliente, el bot no vuelve a mandar la misma plantilla durante el tiempo indicado. Ideal para evitar spam cuando el cliente responde “gracias”, “muy caro”, “cómo hago” o “le confirmo”.
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleProductChange(product.id, "prevent_repeat_24h", !(product.prevent_repeat_24h ?? true))}
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                            (product.prevent_repeat_24h ?? true) ? "bg-primary" : "bg-secondary border border-border"
+                          }`}
+                          title={(product.prevent_repeat_24h ?? true) ? "Anti repetición activado" : "Anti repetición desactivado"}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                              (product.prevent_repeat_24h ?? true) ? "translate-x-6" : "translate-x-1"
+                            }`}
+                          />
+                        </button>
+                      </div>
+
+                      {(product.prevent_repeat_24h ?? true) && (
+                        <div>
+                          <label className="text-[10px] text-muted-foreground">
+                            Tiempo de bloqueo de repetición
+                          </label>
+                          <div className="mt-1 flex items-center gap-2">
+                            <input
+                              type="number"
+                              min={1}
+                              max={168}
+                              value={product.repeat_cooldown_hours ?? 24}
+                              onChange={(e) => {
+                                const next = Math.max(1, Math.min(168, Number(e.target.value || 24)));
+                                handleProductChange(product.id, "repeat_cooldown_hours", next);
+                              }}
+                              className="w-24 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-primary/50"
+                            />
+                            <span className="text-xs text-muted-foreground">horas</span>
+                          </div>
+                          <p className="text-[10px] text-muted-foreground mt-1">
+                            Recomendado: 24 horas. Máximo permitido por seguridad: 168 horas.
+                          </p>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -659,6 +725,11 @@ Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segund
                       {item.products && item.products.length > 0 && (
                         <span className="text-[10px] text-muted-foreground/60">
                           {item.products.length} productos
+                        </span>
+                      )}
+                      {item.products && item.products.some((p: any) => p.prevent_repeat_24h ?? true) && (
+                        <span className="text-[10px] text-primary/80">
+                          anti-repetición ON
                         </span>
                       )}
                       {item.examples && item.examples.length > 0 && (
