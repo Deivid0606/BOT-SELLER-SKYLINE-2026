@@ -40,6 +40,7 @@ import { createClient } from "@supabase/supabase-js";
  * 34) FIX V21: Evita quedarse mudo; si audio no se puede transcribir, responde claro sin romper el pedido.
  * 35) FIX V22: Guarda observaciones de pago/fecha/horario/coordinar entrega sin perder la venta.
  * 36) FIX V23: Responde determinísticamente cuando el cliente deja observación de pago/fecha/horario, sin depender de Gemini.
+ * 37) FIX V24: Las preguntas intermedias no se guardan como nombre y siempre se repiten TODOS los datos realmente faltantes.
  */
 
 const supabase = createClient(
@@ -1035,10 +1036,24 @@ function toTitleCase(str: string): string {
   return str.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function isCustomerQuestionOrInfoRequest(text: string) {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /[?¿]/.test(clean(text)) ||
+    /\b(de donde son|donde estan|donde queda|quienes son|como funciona|como se usa|cuanto tarda|cuando llega|hacen envio|tienen local|tienen garantia|es original|que incluye|que trae|formas de pago|como pago|puedo retirar)\b/.test(n) ||
+    /^(que|como|cuando|donde|por que|porque|cuanto|cual|quien|quienes)\b/.test(n)
+  );
+}
+
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const raw = clean(text);
   if (!raw) return "";
   if (extractQuantity(raw) > 0) return "";
+  // Una consulta intermedia no puede convertirse en nombre del cliente.
+  // Ejemplo crítico: "DE DONDE SON" antes se guardaba como customer_name.
+  if (isCustomerQuestionOrInfoRequest(raw)) return "";
 
   const isMultiLine = raw.includes("\n");
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
@@ -1268,6 +1283,8 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
 
   const isInvalidName =
     forbiddenNames.some((f) => nameNorm.includes(normalize(f))) ||
+    isCustomerQuestionOrInfoRequest(old?.customer_name || "") ||
+    /\b(de donde|donde|como|cuando|cuanto|quienes|que trae|que incluye)\b/.test(nameNorm) ||
     nameNorm.split(" ").length > 5;
 
   return {
@@ -3055,6 +3072,19 @@ Para agendarlo, me falta:
 ¡Gracias por tu compra! 💜`;
 }
 
+function appendExactMissingReminder(resp: string, state: ConversationState, customerText: string) {
+  if (!isCustomerQuestionOrInfoRequest(customerText)) return resp;
+
+  const pending = state.missing.filter((x) =>
+    ["nombre y apellido", "dirección exacta o ubicación", "número de celular", "comprobante de transferencia"].includes(x)
+  );
+
+  if (!pending.length) return resp;
+
+  const list = pending.map((x) => `✅ ${x}`).join("\n");
+  return `${clean(resp)}\n\nPara completar tu pedido todavía necesito:\n${list}`.trim();
+}
+
 function postProcessResponse(resp: string) {
   return clean(resp)
     .replace(/\n{4,}/g, "\n\n");
@@ -3934,7 +3964,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     }
 
     return res.json({
-      response: postProcessResponse(aiResponse),
+      response: postProcessResponse(appendExactMissingReminder(aiResponse, finalState, texto)),
       media_urls: imagesToSend,
       context: {
         ...(context || {}),
