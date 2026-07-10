@@ -49,6 +49,14 @@ import { createClient } from "@supabase/supabase-js";
  * 39) FIX V28: Limpia ciudades inválidas guardadas por consultas de versiones anteriores.
  * 40) FIX V28: Respuestas de cantidad no reinician ventas activas ni reenvían el copy.
  * 41) FIX V28: Si llega cantidad antes de ciudad, conserva la cantidad y vuelve a pedir ciudad.
+ * 42) FIX V35: Detección ESTRICTA de producto al leer plantillas del HISTORIAL (no del mensaje actual).
+ *     Antes, un mensaje viejo de OTRO producto podía "ganar" por matching flojo de palabras
+ *     y quedar pegado como pack fijo del producto que se está vendiendo ahora
+ *     (ej: mostrar "35 unidades por 280.000 Gs" de una promo vieja de otro producto
+ *     en vez de "1 = 159.000 Gs" del copy real que se acaba de cargar).
+ * 43) FIX V35: Verificación de plausibilidad: un pack fijo / oferta bloqueada solo se acepta
+ *     si su cantidad o su precio realmente aparecen en el copy propio de ESE producto.
+ *     Si no hay coincidencia, se descarta y se cae al precio base del producto (price1).
  */
 
 const supabase = createClient(
@@ -803,6 +811,73 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
   return prevOk?.canonical || "";
 }
 
+// ✅ FIX V35: Detección ESTRICTA de producto, usada exclusivamente para leer
+// plantillas/promos guardadas en el HISTORIAL. El matching flojo de detectProduct()
+// (con 30 puntos alcanza con una sola palabra genérica compartida) es correcto para
+// interpretar el mensaje ACTUAL del cliente, pero es peligroso para reinterpretar
+// mensajes viejos como "plantilla activa": un mensaje de otro producto puede colarse
+// y pisar el precio/cantidad real del producto que se está vendiendo ahora.
+// Acá exigimos: coincidencia exacta, o un alias de 2+ palabras contenido/conteniendo
+// el mensaje completo. Nada de matching por una sola palabra suelta.
+function detectProductStrict(text: string, parsed: ParsedTraining): string {
+  const msg = normalize(text);
+  if (!msg) return "";
+
+  let best: ProductItem | null = null;
+  let bestScore = 0;
+
+  for (const p of parsed.products) {
+    for (const alias of p.aliases) {
+      const a = normalize(alias);
+      if (!a || a.length < 3) continue;
+
+      const aliasWordCount = a.split(/\s+/).filter(Boolean).length;
+      let score = 0;
+
+      if (msg === a) {
+        score = 1000;
+      } else if (aliasWordCount >= 2 && msg.includes(a)) {
+        score = 900;
+      } else if (aliasWordCount >= 2 && a.includes(msg) && msg.length >= 4) {
+        score = 850;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = p;
+      }
+    }
+  }
+
+  return bestScore >= 850 && best ? best.canonical : "";
+}
+
+// ✅ FIX V35: Verifica que una oferta (sobre todo pack fijo) realmente pertenezca
+// al producto que se le quiere asignar, chequeando que su cantidad y/o su precio
+// aparezcan efectivamente en el copy propio de ESE producto. Esto evita que un pack
+// fijo detectado en un mensaje viejo de otro producto (ej. "35 unidades por 280.000 Gs")
+// termine mostrándose como si fuera la promo del producto actual.
+function isPlausibleOfferForProduct(offer: OfferItem | null | undefined, product: ProductItem | null | undefined): boolean {
+  if (!offer || !product) return false;
+
+  const copy = normalize(product.salesCopy || "");
+  // Si el producto no tiene copy propio cargado, no podemos validar contra nada:
+  // dejamos pasar para no bloquear casos legítimos sin copy.
+  if (!copy) return true;
+
+  if (offer.fixed_quantity) {
+    const qtyStr = String(offer.quantity);
+    const totalDigits = String(offer.total || "").replace(/\D/g, "");
+
+    const qtyMentioned = new RegExp(`\\b${qtyStr}\\b`).test(copy);
+    const totalMentioned = totalDigits.length >= 4 && copy.includes(totalDigits);
+
+    if (!qtyMentioned && !totalMentioned) return false;
+  }
+
+  return true;
+}
+
 function isQuestionLikeMessage(text: string) {
   const raw = clean(text);
   const n = normalize(raw);
@@ -1399,7 +1474,8 @@ function calculateTotal(productName: string, quantity: number, parsed: ParsedTra
     lockedOffer &&
     normalize(lockedOffer.product) === normalize(p.canonical) &&
     sanitizeQuantity(lockedOffer.quantity) === q &&
-    lockedOffer.total > 0
+    lockedOffer.total > 0 &&
+    isPlausibleOfferForProduct(lockedOffer, p)
   ) {
     return lockedOffer.total;
   }
@@ -1607,11 +1683,11 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
   return { offers, fixedQuantity };
 }
 
-function detectTemplatePricingFromText(text: string, parsed: ParsedTraining): TemplatePricing | null {
+function detectTemplatePricingFromText(text: string, parsed: ParsedTraining, strict = false): TemplatePricing | null {
   const raw = clean(text);
   if (!isSafeTemplatePricingMessage(raw)) return null;
 
-  const product = detectProduct(raw, parsed, "");
+  const product = strict ? detectProductStrict(raw, parsed) : detectProduct(raw, parsed, "");
   if (!product) return null;
 
   const { offers, fixedQuantity } = parseRawOffers(raw, product);
@@ -1657,7 +1733,7 @@ function hasTemplateBuyIntent(text: string) {
   return /\b(quiero|confirmar|quiero confirmar|me interesa|comprar|compro|reservar|reservame|agendar|agendame|lo quiero)\b/.test(n);
 }
 
-function detectStructuredTemplatePricingFallback(text: string, parsed: ParsedTraining): TemplatePricing | null {
+function detectStructuredTemplatePricingFallback(text: string, parsed: ParsedTraining, strict = false): TemplatePricing | null {
   const raw = clean(text);
   if (!isStructuredSalesTemplateMessage(raw)) return null;
 
@@ -1665,7 +1741,9 @@ function detectStructuredTemplatePricingFallback(text: string, parsed: ParsedTra
   const qtyLine = raw.match(/cantidad\s*:\s*(\d+)\s*(?:unidad|unidades|u|und|unds|piezas|pieza)?/i);
   const priceLine = raw.match(/precio\s*:\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/i);
 
-  const product = detectProduct(productLine || raw, parsed, "");
+  const product = strict
+    ? detectProductStrict(productLine || raw, parsed)
+    : detectProduct(productLine || raw, parsed, "");
   const quantity = qtyLine ? sanitizeQuantity(Number(qtyLine[1])) : 0;
   const total = priceLine ? parseNumberGs(priceLine[1]) : 0;
 
@@ -1689,8 +1767,8 @@ function detectStructuredTemplatePricingFallback(text: string, parsed: ParsedTra
   };
 }
 
-function detectTemplatePricingSmart(text: string, parsed: ParsedTraining): TemplatePricing | null {
-  return detectTemplatePricingFromText(text, parsed) || detectStructuredTemplatePricingFallback(text, parsed);
+function detectTemplatePricingSmart(text: string, parsed: ParsedTraining, strict = false): TemplatePricing | null {
+  return detectTemplatePricingFromText(text, parsed, strict) || detectStructuredTemplatePricingFallback(text, parsed, strict);
 }
 
 function isNewPastedTemplatePurchase(text: string, parsed: ParsedTraining) {
@@ -1723,7 +1801,9 @@ function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): 
 
     if (!looksLikeTemplate) continue;
 
-    const pricing = detectTemplatePricingSmart(content, parsed);
+    // ✅ FIX V35: matching ESTRICTO de producto al reinterpretar mensajes viejos del
+    // historial. Evita que un mensaje de otro producto contamine la plantilla activa.
+    const pricing = detectTemplatePricingSmart(content, parsed, true);
     if (pricing) return pricing;
   }
 
@@ -1841,7 +1921,8 @@ function getLastRealSalesTemplatePricing(history: any[], parsed: ParsedTraining)
     if (isCatalogCopyHistoryMessage(content, parsed)) continue;
     if (!isRealSalesTemplateMessage(content) && !isSafeTemplatePricingMessage(content) && !isStructuredSalesTemplateMessage(content)) continue;
 
-    const pricing = detectTemplatePricingSmart(content, parsed);
+    // ✅ FIX V35: matching estricto también acá, mismo motivo que getTemplatePricingFromHistory.
+    const pricing = detectTemplatePricingSmart(content, parsed, true);
     if (pricing) return pricing;
   }
 
@@ -1935,7 +2016,8 @@ function getTemplatePricingAfterHistoryIndex(history: any[], parsed: ParsedTrain
     if (isCatalogCopyHistoryMessage(content, parsed)) continue;
     if (!isRealSalesTemplateMessage(content) && !isSafeTemplatePricingMessage(content) && !isStructuredSalesTemplateMessage(content)) continue;
 
-    const pricing = detectTemplatePricingSmart(content, parsed);
+    // ✅ FIX V35: matching estricto también en este recorrido de historial.
+    const pricing = detectTemplatePricingSmart(content, parsed, true);
     if (pricing) return pricing;
   }
 
@@ -1945,16 +2027,28 @@ function getTemplatePricingAfterHistoryIndex(history: any[], parsed: ParsedTrain
 function forceTemplatePricingProduct(templatePricing: TemplatePricing | null, product: ProductItem | string | null): TemplatePricing | null {
   if (!templatePricing || !product) return templatePricing;
 
+  const productItem = typeof product === "string" ? null : product;
   const productName = typeof product === "string" ? product : product.canonical;
   if (!productName) return templatePricing;
+
+  // ✅ FIX V35: al reasignar una plantilla a otro producto (ej. porque el cliente
+  // mostró interés explícito en otro producto), filtramos las ofertas que no sean
+  // plausibles para ESE producto puntual. Evita heredar un pack fijo ajeno.
+  const sourceOffers = templatePricing.offers || [];
+  const filteredOffers = productItem
+    ? sourceOffers.filter((o) => isPlausibleOfferForProduct(o, productItem))
+    : sourceOffers;
+
+  if (productItem && !filteredOffers.length) return null;
 
   return {
     ...templatePricing,
     product: productName,
-    offers: (templatePricing.offers || []).map((o) => ({
+    offers: filteredOffers.map((o) => ({
       ...o,
       product: productName,
     })),
+    fixed_quantity: filteredOffers.some((o) => o.fixed_quantity),
   };
 }
 
@@ -2343,7 +2437,7 @@ function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferIt
 
   if (templatePricing && normalize(templatePricing.product) === normalize(productInfo.canonical)) {
     const fixed = getFixedTemplateOffer(templatePricing, productInfo.canonical);
-    if (fixed) {
+    if (fixed && isPlausibleOfferForProduct(fixed, productInfo)) {
       return `Pack fijo: ${fixed.quantity} unidades por ${formatGs(fixed.total)} Gs. No se vende por unidad.`;
     }
 
@@ -2364,7 +2458,8 @@ function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferIt
     lockedOffer.source === "template" &&
     normalize(lockedOffer.product) === normalize(productInfo.canonical) &&
     lockedOffer.quantity > 0 &&
-    lockedOffer.total > 0
+    lockedOffer.total > 0 &&
+    isPlausibleOfferForProduct(lockedOffer, productInfo)
   ) {
     return lockedOffer.fixed_quantity
       ? `Pack fijo: ${lockedOffer.quantity} unidades por ${formatGs(lockedOffer.total)} Gs. No se vende por unidad.`
@@ -2375,7 +2470,8 @@ function productPriceText(productInfo: ProductItem | null, lockedOffer?: OfferIt
     lockedOffer &&
     normalize(lockedOffer.product) === normalize(productInfo.canonical) &&
     lockedOffer.quantity > 0 &&
-    lockedOffer.total > 0
+    lockedOffer.total > 0 &&
+    isPlausibleOfferForProduct(lockedOffer, productInfo)
   ) {
     return [
       `1 unidad: ${formatGs(productInfo.price1)} Gs`,
@@ -3618,9 +3714,23 @@ export default async function handler(req: any, res: any) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
     }
 
-    const currentTemplateLockedOffer = templatePricing?.product
+    const currentTemplateLockedOfferRaw = templatePricing?.product
       ? (getFixedTemplateOffer(templatePricing, templatePricing.product) || templatePricing.offers[0] || null)
       : null;
+
+    const currentTemplateLockedOfferProductInfo = templatePricing?.product
+      ? getProductInfo(templatePricing.product, parsed)
+      : null;
+
+    // ✅ FIX V35: descartamos esta oferta "de arranque" si no es plausible para el
+    // producto al que se le está por asignar (protección extra antes de usarla como
+    // lockedOfferByContext en un pedido recién iniciado).
+    const currentTemplateLockedOffer =
+      currentTemplateLockedOfferRaw && currentTemplateLockedOfferProductInfo
+        ? (isPlausibleOfferForProduct(currentTemplateLockedOfferRaw, currentTemplateLockedOfferProductInfo)
+            ? currentTemplateLockedOfferRaw
+            : null)
+        : currentTemplateLockedOfferRaw;
 
     let lockedOfferByContext = freshOrder
       ? (currentTemplateLockedOffer || getOfferFromLastPromotion(history, parsed))
@@ -3681,7 +3791,12 @@ export default async function handler(req: any, res: any) {
     if (productInfo) {
       const promoFromHistory = getOfferFromLastPromotion(history, parsed);
       const promoMatchesProduct = promoFromHistory && normalize(promoFromHistory.product) === normalize(productInfo.canonical);
-      const fixedTemplateOffer = getFixedTemplateOffer(templatePricing, productInfo.canonical);
+      const fixedTemplateOfferRaw = getFixedTemplateOffer(templatePricing, productInfo.canonical);
+      // ✅ FIX V35: un pack fijo de plantilla solo se usa si es plausible para ESTE producto
+      // (su cantidad y/o precio deben aparecer en el copy propio del producto).
+      const fixedTemplateOffer = isPlausibleOfferForProduct(fixedTemplateOfferRaw, productInfo)
+        ? fixedTemplateOfferRaw
+        : null;
       const fixedCatalogOffer = getCatalogFixedPackOffer(productInfo);
 
       if (fixedTemplateOffer) {
@@ -3691,7 +3806,8 @@ export default async function handler(req: any, res: any) {
         lockedOffer = fixedCatalogOffer;
         explicitQty = fixedCatalogOffer.quantity;
       } else if (explicitQty > 0) {
-        const templateOffer = getTemplateOfferForQuantity(templatePricing, productInfo.canonical, explicitQty);
+        const templateOfferRaw = getTemplateOfferForQuantity(templatePricing, productInfo.canonical, explicitQty);
+        const templateOffer = isPlausibleOfferForProduct(templateOfferRaw, productInfo) ? templateOfferRaw : null;
         const templatePrice1 = getTemplatePrice1(templatePricing, productInfo.canonical);
         const catalogOffer = getCatalogOffer(productInfo, explicitQty);
 
@@ -3711,17 +3827,19 @@ export default async function handler(req: any, res: any) {
           lockedOffer = catalogOffer;
         } else if (
           promoMatchesProduct &&
-          promoFromHistory.quantity === explicitQty
+          promoFromHistory.quantity === explicitQty &&
+          isPlausibleOfferForProduct(promoFromHistory, productInfo)
         ) {
           lockedOffer = promoFromHistory;
         } else {
           lockedOffer = null;
         }
-      } else if ((isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto)) && promoMatchesProduct) {
+      } else if ((isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto)) && promoMatchesProduct && isPlausibleOfferForProduct(promoFromHistory, productInfo)) {
         lockedOffer = promoFromHistory;
       } else if (
         lockedOfferByContext &&
-        normalize(lockedOfferByContext.product) === normalize(productInfo.canonical)
+        normalize(lockedOfferByContext.product) === normalize(productInfo.canonical) &&
+        isPlausibleOfferForProduct(lockedOfferByContext, productInfo)
       ) {
         lockedOffer = lockedOfferByContext;
       }
@@ -3803,10 +3921,11 @@ export default async function handler(req: any, res: any) {
       } else {
         orderData.locked_offer = null;
         if (productInfo) {
-          const templateOffer = getTemplateOfferForQuantity(templatePricing, productInfo.canonical, explicitQty);
+          const templateOfferRaw2 = getTemplateOfferForQuantity(templatePricing, productInfo.canonical, explicitQty);
+          const templateOffer2 = isPlausibleOfferForProduct(templateOfferRaw2, productInfo) ? templateOfferRaw2 : null;
           const templateActiveForProduct = hasTemplateForProduct(templatePricing, productInfo.canonical);
           const catalogOffer = templateActiveForProduct ? null : getCatalogOffer(productInfo, explicitQty);
-          if (templateOffer) orderData.locked_offer = templateOffer;
+          if (templateOffer2) orderData.locked_offer = templateOffer2;
           else if (catalogOffer) orderData.locked_offer = catalogOffer;
         }
         orderData.quantity = explicitQty;
@@ -3835,12 +3954,13 @@ export default async function handler(req: any, res: any) {
     const state = buildState(orderData, parsed);
 
     if (state.productInfo && !orderData.locked_offer && orderData.quantity) {
-      const templateOffer = getTemplateOfferForQuantity(templatePricing, state.productInfo.canonical, orderData.quantity);
+      const templateOfferRaw3 = getTemplateOfferForQuantity(templatePricing, state.productInfo.canonical, orderData.quantity);
+      const templateOffer3 = isPlausibleOfferForProduct(templateOfferRaw3, state.productInfo) ? templateOfferRaw3 : null;
       const templateActiveForProduct = hasTemplateForProduct(templatePricing, state.productInfo.canonical);
       const catalogOffer = templateActiveForProduct ? null : getCatalogOffer(state.productInfo, orderData.quantity);
 
-      if (templateOffer) {
-        orderData.locked_offer = templateOffer;
+      if (templateOffer3) {
+        orderData.locked_offer = templateOffer3;
       } else if (catalogOffer) {
         orderData.locked_offer = catalogOffer;
       } else {
