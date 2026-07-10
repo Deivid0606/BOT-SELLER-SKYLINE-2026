@@ -44,10 +44,6 @@ import { createClient } from "@supabase/supabase-js";
  * 38) FIX V24: Respuestas determinísticas para "de dónde son", "cómo hago", "muy caro", "entrega hoy", "le confirmo".
  * 39) FIX V24: Si no hay producto claro, pregunta qué producto le interesa y lista disponibles.
  * 40) FIX V24: Evita tomar frases como "como hago" o consultas generales como ciudad/dirección/observación.
- * 41) FIX V25: Backend respeta botón anti-repetición por producto (prevent_repeat_24h / repeat_cooldown_hours).
- * 42) FIX V25: No expone copy largo a Gemini después de tener ciudad/cantidad/datos; evita repetir plantilla en medio del cierre.
- * 43) FIX V25: Evita producto genérico "PROMOCIÓN ESPECIAL" y extrae nombre real del copy (ej: Plumero Atrapa Polvo).
- * 44) FIX V25: Si todos los datos están completos, confirma directo con formato fijo backend y guarda en Pedidos.
  */
 
 const supabase = createClient(
@@ -78,8 +74,6 @@ type ProductItem = {
   salesCopy?: string;
   images?: string[];
   palabra_clave?: string; // ✅ NUEVO: palabra clave para filtrar
-  prevent_repeat_24h?: boolean;
-  repeat_cooldown_hours?: number;
 };
 
 type OfferItem = {
@@ -219,62 +213,6 @@ function formatGs(n: number) {
 
 function parseNumberGs(raw: string) {
   return Number(clean(raw).replace(/[^\d]/g, "") || 0);
-}
-
-
-function parseFlexibleAiConfirmation(text: string) {
-  const raw = clean(text);
-  const n = normalize(raw);
-
-  const isConfirmed =
-    /\b(confirmamos tu pedido|pedido confirmado|tu pedido esta confirmado|tu pedido está confirmado|ya tenemos todos tus datos|tu pedido ha sido confirmado|tu pedido esta listo|tu pedido está listo)\b/.test(n);
-
-  if (!isConfirmed) return null;
-
-  const productRaw =
-    raw.match(/\*\*\s*Producto\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
-    raw.match(/\*\s*\*\*Producto\s*:\*\*\s*(.+)$/im)?.[1] ||
-    raw.match(/Producto\s*:\s*(.+)$/im)?.[1] ||
-    "";
-
-  const totalRaw =
-    raw.match(/\*\*\s*Total\s*:\s*\*\*\s*(?:Gs\.?\s*)?([\d.\s]+)\s*(?:Gs)?/im)?.[1] ||
-    raw.match(/\*\s*\*\*Total\s*:\*\*\s*(?:Gs\.?\s*)?([\d.\s]+)\s*(?:Gs)?/im)?.[1] ||
-    raw.match(/Total\s*:\s*(?:Gs\.?\s*)?([\d.\s]+)\s*(?:Gs)?/im)?.[1] ||
-    "";
-
-  const envioRaw =
-    raw.match(/\*\*\s*Env[ií]o\s*:\s*\*\*\s*(.+)$/im)?.[1] ||
-    raw.match(/\*\s*\*\*Env[ií]o\s*:\*\*\s*(.+)$/im)?.[1] ||
-    raw.match(/Env[ií]o\s*:\s*(.+)$/im)?.[1] ||
-    "";
-
-  if (!productRaw || !totalRaw) return null;
-
-  let quantity = 1;
-  let product = clean(productRaw);
-
-  const qtyMatch =
-    product.match(/^(\d+)\s*x\s*(.+)$/i) ||
-    product.match(/^x\s*(\d+)\s+(.+)$/i) ||
-    product.match(/^(\d+)\s+(.+)$/i);
-
-  if (qtyMatch) {
-    quantity = sanitizeQuantity(Number(qtyMatch[1])) || 1;
-    product = clean(qtyMatch[2]);
-  }
-
-  const total = parseNumberGs(totalRaw);
-
-  let city = "";
-  let address = "";
-  const cityAddressMatch = envioRaw.match(/(?:gratis\s+)?(?:a|en)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+)\s*\((.+?)\)/i);
-  if (cityAddressMatch) {
-    city = clean(cityAddressMatch[1]);
-    address = clean(cityAddressMatch[2]);
-  }
-
-  return { product, quantity, total, city, address };
 }
 
 function isPriceQuery(text: string) {
@@ -464,8 +402,6 @@ function productsFromVisualCatalog(items: any[]): ProductItem[] {
         salesCopy: copy,
         images: productImages,
         palabra_clave: keyword,
-        prevent_repeat_24h: p?.prevent_repeat_24h !== false,
-        repeat_cooldown_hours: Math.max(1, Math.min(720, Number(p?.repeat_cooldown_hours || 24))),
       });
     }
   }
@@ -576,7 +512,7 @@ function parseBankData(training: string): BankData | null {
 function isGenericMarketingPhrase(normCanonical: string) {
   const words = normCanonical.split(" ").filter(Boolean);
   const genericWords = new Set([
-    "oferta", "ofertas", "promo", "promos", "promocion", "promoción", "especial",
+    "oferta", "ofertas", "promo", "promos", "promocion", "promoción",
     "descuento", "descuentos", "gratis", "hoy", "ahora", "antes",
     "stock", "limitado", "limitada", "envio", "envío", "delivery",
     "pagas", "pagás", "recibir", "unidad", "unidades", "solo",
@@ -585,70 +521,42 @@ function isGenericMarketingPhrase(normCanonical: string) {
   return words.length > 0 && words.every((w) => genericWords.has(w));
 }
 
-function isBadGenericProductName(name: string) {
-  const n = normalize(name);
-  if (!n) return true;
-  return (
-    isGenericMarketingPhrase(n) ||
-    /^(promocion especial|promo especial|oferta especial|oferta hoy|promocion|promo|oferta|precio especial|ultimas unidades|últimas unidades)$/.test(n)
-  );
-}
-
-function cleanProductCandidateName(candidate: string) {
-  let c = clean(candidate)
-    .replace(/[.,:;!¡¿?]+$/g, "")
-    .replace(/\b(limpias|limpiás|limpia|preparas|preparás|prepara|cocinas|cocinás|cocina|quita|remueve|sirve|funciona|ayuda|alivia)\b.*$/i, "")
-    .trim();
-
-  c = c.replace(/\s+/g, " ");
-  if (isBadGenericProductName(c)) return "";
-  const words = c.split(/\s+/).filter(Boolean);
-  if (words.length < 1 || words.length > 6) return "";
-  return c;
-}
-
 function extractProductNameFromCopy(text: string): string {
   const raw = clean(text);
   if (!raw) return "";
 
-  // ✅ FIX V25:
-  // Priorizar nombre real del producto en frases comerciales.
-  // Ejemplo real: "Con el Plumero Atrapa Polvo limpiás..." => Plumero Atrapa Polvo.
-  const conEl = raw.match(/\bcon\s+(?:el|la|los|las)\s+((?:[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]*\s*){1,6})/);
-  if (conEl) {
-    const candidate = cleanProductCandidateName(conEl[1]);
-    if (candidate) return candidate;
-  }
-
-  // ✅ Soporta: "1 Plumero → 89.000 Gs", "2 Plumeros → Solo 109.000 Gs"
-  // y también: "1 Crema: Gs. 129.000".
-  const simpleQtyName = raw.match(/^\s*(?:💥|🔥|✅|•|-)?\s*\d+\s+([A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñÑ®'’.]*(?:\s+[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñÑ®'’.]*){0,5})s?\s*(?:→|->|:|=|por|a|solo|solamente)\s*(?:solo\s+)?(?:Gs\.?|₲)?\s*\d/im);
-  if (simpleQtyName) {
-    const candidate = cleanProductCandidateName(simpleQtyName[1]);
-    if (candidate) return toTitleCase(candidate);
-  }
+  // ✅ FIX V16: detecta líneas tipo "1 Crema: Gs. 129.000" o "2 Cremas: Gs. 239.000".
+  const simpleQtyName = raw.match(/^\s*\d+\s+([A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñÑ]{2,30})s?\s*:\s*(?:Gs\.?|₲)?\s*\d/im);
+  if (simpleQtyName) return toTitleCase(clean(simpleQtyName[1]));
 
   const afterQty = raw.match(
-    /\b\d+\s+((?:[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]*\s*){1,5})\s*(?:→|->|por|a|solo|solamente)\s+(?:solo\s+)?(?:[Gg][Ss]\.?)?\s*\d/
+    /\b\d+\s+((?:[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]*\s*){1,5})\s*(?:por|a|solo|solamente)\s+(?:solo\s+)?(?:[Gg][Ss]\.?)?\s*\d/
   );
   if (afterQty) {
-    const candidate = cleanProductCandidateName(afterQty[1]);
-    if (candidate) return candidate;
+    const candidate = clean(afterQty[1]).replace(/[.,]+$/, "");
+    if (candidate.split(/\s+/).length <= 6) return candidate;
+  }
+
+  const conEl = raw.match(/\bcon\s+(?:el|la|los|las)\s+((?:[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]*\s*){1,6})/);
+  if (conEl) {
+    const candidate = clean(conEl[1]).replace(/[.,]+$/, "");
+    if (candidate.split(/\s+/).length <= 6) return candidate;
   }
 
   const lines = raw.split(/\n|[!?.]\s+/).map(clean).filter(Boolean);
   for (const line of lines) {
-    if (!/gs\.?\s*\d|\d[\d.\s]{3,}\s*gs|precio|oferta|promo|→|->/i.test(line)) continue;
-    if (/promocion especial|promoción especial|oferta especial|ultimas unidades|últimas unidades/i.test(line)) continue;
-    const m = line.match(/((?:[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]*\s*){1,6})/);
+    if (!/gs\.?\s*\d|precio|oferta|promo/i.test(line)) continue;
+    const m = line.match(/((?:[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]*\s*){2,6})/);
     if (m) {
-      const candidate = cleanProductCandidateName(m[1]);
-      if (candidate) return candidate;
+      const candidate = clean(m[1]).replace(/[.,]+$/, "");
+      const words = candidate.split(/\s+/);
+      if (words.length >= 2 && words.length <= 6) return candidate;
     }
   }
 
   return "";
 }
+
 function autoDetectProductsFromTraining(training: string, existing: ProductItem[]): ProductItem[] {
   const blocks = training
     .split(/\n\n---\n\n|\n{2,}/)
@@ -750,8 +658,6 @@ function parseTraining(training: string): ParsedTraining {
         fixedPackQuantity,
         salesCopy,
         palabra_clave: palabraClave || undefined,
-        prevent_repeat_24h: true,
-        repeat_cooldown_hours: 24,
       });
     }
   }
@@ -2406,15 +2312,6 @@ function wasProductTemplateSentRecently(context: any, productName: string, maxHo
   return diffHours >= 0 && diffHours <= maxHours;
 }
 
-
-function productRepeatCooldownHours(productInfo: ProductItem | null | undefined) {
-  if (!productInfo) return 24;
-  if (productInfo.prevent_repeat_24h === false) return 0;
-  const h = Number(productInfo.repeat_cooldown_hours || 24);
-  if (!Number.isFinite(h) || h <= 0) return 24;
-  return Math.max(1, Math.min(720, h));
-}
-
 function templateSentContextPatch(context: any, productName: string, didSendTemplate: boolean) {
   if (!didSendTemplate || !productName) return {};
   return {
@@ -3186,7 +3083,6 @@ function deterministicObservationAckMessage(state: ConversationState, parsed: Pa
 
 function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
   const o = state.order;
-  const exposeSalesCopy = Boolean(state.productInfo?.salesCopy && !o.city);
 
   return `
 Sos la IA vendedora de Mega Todo Store / One Store.
@@ -3219,8 +3115,8 @@ PRECIO/PROMO DEL PRODUCTO ACTUAL:
 ${productPriceText(state.productInfo, o.locked_offer, templatePricing) || "Sin producto actual."}
 
 ${
-  exposeSalesCopy
-    ? `COPY DE VENTA ORIGINAL DE ESTE PRODUCTO (SOLO EN ESTA ETAPA: enviarlo COMPLETO una sola vez, sin resumir, sin cortar y sin quitar párrafos. El PRECIO final que menciones debe ser EXACTAMENTE el de "PRECIO/PROMO DEL PRODUCTO ACTUAL" de arriba, nunca inventes ni cambies un número):
+  state.productInfo?.salesCopy
+    ? `COPY DE VENTA ORIGINAL DE ESTE PRODUCTO (OBLIGATORIO: enviarlo COMPLETO, sin resumir, sin cortar y sin quitar párrafos. El PRECIO final que menciones debe ser EXACTAMENTE el de "PRECIO/PROMO DEL PRODUCTO ACTUAL" de arriba, nunca inventes ni cambies un número):
 """
 ${state.productInfo.salesCopy}
 """
@@ -3233,7 +3129,7 @@ ${bankDataText(parsed)}
 REGLAS DURAS:
 - Respondé en español paraguayo/neutro, estilo WhatsApp.
 - Sé vendedor amable, cálido y fluido. Usá emojis comerciales moderados: 😊🔥🚚✅📦💰📍📲.
-- Si hay COPY DE VENTA ORIGINAL visible en este prompt, enviá ese copy completo una sola vez. Si NO aparece el copy en este prompt, PROHIBIDO repetir plantilla/copy largo.
+- Si hay COPY DE VENTA ORIGINAL del producto, NO lo resumas, NO lo acortes y NO le quites partes: enviá el copy completo aunque sea largo.
 - No digas que sos IA.
 - No menciones backend, sistema ni estado interno.
 - No inventes productos, precios, bancos, cuentas, enlaces, ciudades ni tiempos.
@@ -3260,7 +3156,7 @@ REGLAS DURAS:
   5) No recalcules total multiplicando precio de plantilla por cantidad.
   6) Solo usá el catálogo del entrenamiento cuando NO exista plantilla activa.
 - Nunca uses números de dirección, teléfono o calle como precio.
-- Si ya tenemos ciudad o datos del cliente, PROHIBIDO repetir el copy/plantilla completa. Respondé corto y pedí solo el dato faltante o dejá que el backend confirme.
+- Si hay "COPY DE VENTA ORIGINAL" para el producto actual y todavía falta ciudad, enviá TODO el copy original completo, sin resumir, sin recortar y sin cambiar el orden. Solo podés agregar al final la pregunta de ciudad. Nunca calcules ni escribas un precio distinto al ya provisto.
 - Nunca inventes otro producto. Si llegó plantilla nueva, es venta nueva.
 - Después de pedido confirmado, responder postventa si pregunta factura/entrega/pago/garantía.
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
@@ -3786,15 +3682,6 @@ export default async function handler(req: any, res: any) {
 
     let product = detectProduct(texto, parsed, productToUse);
 
-    // ✅ FIX V25: nunca usar nombres genéricos como producto real.
-    // Caso real: el bot mostraba "PROMOCIÓN ESPECIAL" como producto y por eso no confirmaba.
-    if (product && isBadGenericProductName(product)) {
-      const betterFromTemplate = clean(extractProductNameFromCopy(templatePricing?.raw || currentTemplatePricing?.raw || ""));
-      const betterDetected = betterFromTemplate ? detectProduct(betterFromTemplate, parsed, "") || betterFromTemplate : "";
-      product = betterDetected || "";
-      if (product && templatePricing) templatePricing = forceTemplatePricingProduct(templatePricing, product);
-    }
-
     // ✅ FIX V24:
     // Si el cliente pregunta precio de un producto que NO pudimos identificar,
     // no arrastrar producto viejo del contexto. Mejor preguntar cuál producto es.
@@ -4281,59 +4168,12 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
-    // ✅ FIX V25/V14: si por algún motivo Gemini redacta una confirmación flexible,
-    // igual guardamos en Pedidos como confirmed.
-    const flexibleConfirmation = parseFlexibleAiConfirmation(aiResponse);
-    if (flexibleConfirmation) {
-      const flexibleOrder: OrderData = {
-        ...orderData,
-        order_id: orderData.order_id || makeOrderId(fromNumber),
-        product: detectProduct(flexibleConfirmation.product, parsed, orderData.product) || orderData.product,
-        quantity: flexibleConfirmation.quantity || orderData.quantity || 1,
-        city: flexibleConfirmation.city || orderData.city,
-        address: flexibleConfirmation.address || orderData.address,
-        customer_name: orderData.customer_name,
-        phone: orderData.phone || fromNumber,
-        locked_offer: {
-          product: detectProduct(flexibleConfirmation.product, parsed, orderData.product) || orderData.product,
-          quantity: flexibleConfirmation.quantity || orderData.quantity || 1,
-          total: flexibleConfirmation.total,
-          source: "template",
-          fixed_quantity: true,
-        },
-        payment_proof_received: orderData.payment_proof_received || false,
-      };
-
-      const flexibleState = buildState(flexibleOrder, parsed);
-      if (hasAllRequiredOrderDataForDirectConfirmation(flexibleState)) {
-        await safeUpsertOrder(user_id, fromNumber, flexibleOrder, parsed, true);
-        return res.json({
-          response: postProcessResponse(aiResponse),
-          media_urls: undefined,
-          context: {
-            ...(context || {}),
-            current_product: flexibleOrder.product || null,
-            last_topic: flexibleOrder.product || context?.last_topic || null,
-            last_ad_offer: flexibleOrder.locked_offer || null,
-            order_data: flexibleOrder,
-            order_id: flexibleOrder.order_id || null,
-            payment_proof_received: flexibleOrder.payment_proof_received || false,
-            step: "pedido_confirmado",
-            updated_at: new Date().toISOString(),
-          },
-          debug: { flexible_ai_confirmation_saved: true },
-        });
-      }
-    }
-
     // ✅ FIX V24: anti-repetición 24h.
     // Si ya se mandó la plantilla/copy/imágenes de ESTE producto al mismo cliente,
     // no volvemos a bombardearlo con la misma plantilla. Respondemos corto y seguimos venta.
-    const repeatCooldownHours = productRepeatCooldownHours(finalState.productInfo);
     const repeatedTemplate24h = Boolean(
-      repeatCooldownHours > 0 &&
       finalState.productInfo?.canonical &&
-      wasProductTemplateSentRecently(context, finalState.productInfo.canonical, repeatCooldownHours)
+      wasProductTemplateSentRecently(context, finalState.productInfo.canonical, 24)
     );
 
     // ✅ FIX V18/V24: presentar copy completo solo la primera vez.
@@ -4404,7 +4244,6 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
             promoResponse,
             images_sent: imagesToSend?.length || 0,
             repeated_template_24h: repeatedTemplate24h,
-            repeat_cooldown_hours: repeatCooldownHours,
             did_send_template_this_turn: didSendTemplateThisTurn,
             producto_por_clave: productoPorClave?.palabra_clave || null,
           }
