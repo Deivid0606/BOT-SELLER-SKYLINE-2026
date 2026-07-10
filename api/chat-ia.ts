@@ -33,6 +33,8 @@ import { createClient } from "@supabase/supabase-js";
  * 27) FIX V18: Envía TODO el copy original del producto, sin resumir ni cortar.
  * 28) FIX V18: Cada producto soporta hasta 3 imágenes propias.
  * 29) FIX V19: Detecta ciudad aunque el cliente escriba saludo/frase: "hola soy de Carapeguá".
+ * 30) FIX V20: Detecta cantidad escrita en palabras/frases: "quiero una", "quiero dos", "dos nomás".
+ * 31) FIX V20: Si el cliente responde por audio, transcribe y procesa como texto; si falla, responde pidiendo texto.
  */
 
 const supabase = createClient(
@@ -926,9 +928,12 @@ function extractCityStatement(text: string): string {
 
 function extractQuantity(text: string) {
   const m = normalize(text);
+  if (!m) return 0;
 
   const wordMap: Record<string, number> = {
-    uno: 1, una: 1,
+    un: 1,
+    uno: 1,
+    una: 1,
     dos: 2,
     tres: 3,
     cuatro: 4,
@@ -940,31 +945,49 @@ function extractQuantity(text: string) {
     diez: 10,
   };
 
-  const q1 = m.match(/\b(\d+)\s*(unidad|unidades|u|und|unds|piezas|pieza)\b/);
-  if (q1) return sanitizeQuantity(Number(q1[1]));
+  // No tomar teléfonos como cantidad.
+  if (/^(?:09\d{6,}|5959\d{6,}|\+5959\d{6,})$/.test(clean(text))) return 0;
 
-  for (const [word, num] of Object.entries(wordMap)) {
-    const regex = new RegExp(`\\b${word}\\s*(unidad|unidades|u\\b|und\\b|unds\\b|piezas|pieza)`);
-    if (regex.test(m)) return sanitizeQuantity(num);
-  }
+  // "1", "2", "1 unidad", "2 unidades", "1u", "2 unds"
+  const onlyNumber = m.match(/^(\d{1,3})\s*(?:unidad|unidades|u|und|unds|pieza|piezas)?$/);
+  if (onlyNumber && !m.startsWith("09")) return sanitizeQuantity(Number(onlyNumber[1]));
 
-  const q2 = m.match(/\b(quiero|llevo|dame|mandame|reservame|solo|solamente|serian|serían|quiero llevar)\s+(\d+)\b/);
+  const q1 = m.match(/\b(\d{1,3})\s*(unidad|unidades|u|und|unds|piezas|pieza)\b/);
+  if (q1 && !q1[1].startsWith("09")) return sanitizeQuantity(Number(q1[1]));
+
+  // "quiero 2", "llevo 1", "mandame 3", "serían 2"
+  const q2 = m.match(/\b(quiero|kiero|qiero|llevo|dame|mandame|mándame|reservame|resérvame|solo|solamente|serian|serían|seria|sería|quiero llevar|voy a llevar|me llevo)\s+(\d{1,3})\b/);
   if (q2) return sanitizeQuantity(Number(q2[2]));
 
-  const q3 = m.match(/\b(\d+)\s+(quiero|llevo|dame|mandame|seria|sería)\b/);
-  if (q3) return sanitizeQuantity(Number(q3[1]));
+  // "2 quiero", "1 llevo"
+  const q3 = m.match(/\b(\d{1,3})\s+(quiero|llevo|dame|mandame|mándame|seria|sería|serian|serían)\b/);
+  if (q3 && !q3[1].startsWith("09")) return sanitizeQuantity(Number(q3[1]));
 
+  // "una unidad", "dos unidades", "un producto", "dos cremas"
   for (const [word, num] of Object.entries(wordMap)) {
-    const regex = new RegExp(`\\b(quiero|llevo|dame|mandame|reservame|solo|solamente|serian|serían)\\s+${word}\\b`);
-    if (regex.test(m)) return sanitizeQuantity(num);
+    const unitRegex = new RegExp(`\\b${word}\\s*(unidad|unidades|u\\b|und\\b|unds\\b|piezas|pieza|producto|productos|crema|cremas|item|items|ítem|ítems)\\b`);
+    if (unitRegex.test(m)) return sanitizeQuantity(num);
   }
 
-  if (/^\d+$/.test(m) && m.length <= 5 && !m.startsWith("09")) {
-    return sanitizeQuantity(Number(m));
+  // "quiero una", "quiero dos", "llevo una", "mandame dos", "dame una"
+  for (const [word, num] of Object.entries(wordMap)) {
+    const intentWordRegex = new RegExp(`\\b(quiero|kiero|qiero|llevo|dame|mandame|mándame|reservame|resérvame|solo|solamente|seria|sería|serian|serían|quiero llevar|voy a llevar|me llevo|pasame|pásame|envíame|enviame)\\s+${word}\\b`);
+    if (intentWordRegex.test(m)) return sanitizeQuantity(num);
   }
 
+  // "una nomás", "dos nomás", "una no más", "solo una"
   for (const [word, num] of Object.entries(wordMap)) {
-    if (new RegExp(`\\b${word}\\b`).test(m)) return sanitizeQuantity(num);
+    const casualRegex = new RegExp(`\\b(?:solo\\s+|solamente\\s+)?${word}\\s*(?:nomas|nomás|no mas|no más)?\\b`);
+    if (casualRegex.test(m)) return sanitizeQuantity(num);
+  }
+
+  // Último fallback: respuesta corta de una sola palabra: "una", "dos", "tres"
+  if (m.split(/\s+/).length <= 2) {
+    for (const [word, num] of Object.entries(wordMap)) {
+      if (new RegExp(`^${word}(?:\\s+(?:nomas|nomás|no mas|no más))?$`).test(m)) {
+        return sanitizeQuantity(num);
+      }
+    }
   }
 
   return 0;
@@ -2793,8 +2816,78 @@ Para agendarlo, me falta:
 
 function postProcessResponse(resp: string) {
   return clean(resp)
-    .replace(/\n{4,}/g, "\n\n")
-    .slice(0, 4000);
+    .replace(/\n{4,}/g, "\n\n");
+}
+
+
+function extractIncomingText(body: any) {
+  const candidates = [
+    body?.message,
+    body?.text,
+    body?.body,
+    body?.caption,
+    body?.transcription,
+    body?.transcript,
+    body?.audio_transcription,
+    body?.audioTranscript,
+    body?.speech_to_text,
+    body?.speechText,
+    body?.voice_text,
+    body?.voiceText,
+    body?.whisper_text,
+    body?.whisperText,
+    body?.data?.message,
+    body?.data?.text,
+    body?.data?.body,
+    body?.data?.caption,
+    body?.data?.transcription,
+    body?.data?.transcript,
+    body?.message?.text,
+    body?.message?.body,
+    body?.message?.caption,
+    body?.message?.transcription,
+    body?.message?.transcript,
+    body?.audio?.text,
+    body?.audio?.transcription,
+    body?.audio?.transcript,
+    body?.voice?.text,
+    body?.voice?.transcription,
+    body?.voice?.transcript,
+  ];
+
+  for (const c of candidates) {
+    const value = clean(c);
+    if (value) return value;
+  }
+
+  return "";
+}
+
+function isAudioLikeMedia({
+  media_url,
+  media_type,
+  mime_type,
+}: {
+  media_url?: string;
+  media_type?: string;
+  mime_type?: string;
+}) {
+  const mt = normalize(media_type || "");
+  const mime = clean(mime_type || "").toLowerCase();
+
+  return Boolean(
+    clean(media_url) &&
+      (
+        mt === "audio" ||
+        mt === "voice" ||
+        mt === "ptt" ||
+        mt === "nota de voz" ||
+        mt.includes("audio") ||
+        mt.includes("voice") ||
+        mt.includes("ptt") ||
+        mime.startsWith("audio/")
+      )
+  );
 }
 
 export default async function handler(req: any, res: any) {
@@ -2814,7 +2907,7 @@ export default async function handler(req: any, res: any) {
       mime_type,
     } = req.body;
 
-    let texto = clean(message);
+    let texto = extractIncomingText(req.body);
     const fromNumber = clean(from_number);
 
     if (!user_id) return res.status(400).json({ error: "Falta user_id" });
@@ -2830,6 +2923,36 @@ export default async function handler(req: any, res: any) {
 
     if (!iaConfig?.api_key) {
       return res.json({ response: "⚠️ La IA no está configurada o desactivada." });
+    }
+
+    const apiKey = iaConfig.api_key;
+    const model = iaConfig.model || "gemini-2.5-flash";
+
+    // ✅ FIX V20: si llega audio, transcribir ANTES de detectar producto/ciudad/cantidad.
+    // Si el proveedor ya manda transcripción, extractIncomingText(req.body) ya la usa.
+    const audioLike = isAudioLikeMedia({ media_url, media_type, mime_type });
+
+    if (audioLike && !texto) {
+      const fetched = await fetchMediaAsBase64(clean(media_url));
+      if (fetched) {
+        texto =
+          (await transcribeAudioWithGemini({
+            apiKey,
+            model,
+            audioBase64: fetched.data,
+            mime: clean(mime_type) || fetched.mime || "audio/ogg",
+          })) || "";
+      }
+
+      if (!texto) {
+        return res.json({
+          response: "🎧 Recibí tu audio, pero no pude leerlo automáticamente. ¿Podés escribirme por texto, por favor? 😊",
+          context: {
+            ...(context || {}),
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
     }
 
     const allTraining = await getAllTrainingData(user_id);
@@ -2857,22 +2980,6 @@ export default async function handler(req: any, res: any) {
       (templateAfterExplicitProductInterest
         ? forceTemplatePricingProduct(templateAfterExplicitProductInterest, recentExplicitProductInterest?.product || null)
         : getTemplatePricingFromHistory(history, parsed));
-
-    const apiKey = iaConfig.api_key;
-    const model = iaConfig.model || "gemini-2.5-flash";
-
-    if (media_url && media_type === "audio") {
-      const fetched = await fetchMediaAsBase64(clean(media_url));
-      if (fetched) {
-        texto =
-          (await transcribeAudioWithGemini({
-            apiKey,
-            model,
-            audioBase64: fetched.data,
-            mime: clean(mime_type) || fetched.mime || "audio/ogg",
-          })) || texto;
-      }
-    }
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
 
