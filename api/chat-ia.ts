@@ -1210,6 +1210,64 @@ function extractPhone(text: string) {
   return "";
 }
 
+// ✅ FIX V38: detecta si el texto menciona un número con "cara" de precio en guaraníes
+// ("129.000", "99000", "129,900"), para poder tratarlo como selección de oferta y para
+// que NUNCA se confunda con ciudad, teléfono o cualquier otro dato. No usa \b\d{4,7}\b
+// sobre números de más de 7 dígitos contiguos (evita falsos positivos con teléfonos
+// completos tipo 0981234567, que \b\d{4,7}\b no matchea por tener más dígitos pegados).
+function looksLikePriceMention(text: string) {
+  const raw = clean(text);
+  if (!raw) return false;
+  return /\d{1,3}(?:[.,]\d{3})+/.test(raw) || /\b\d{4,7}\b/.test(raw);
+}
+
+function parsePriceMentions(text: string): number[] {
+  const raw = clean(text);
+  const matches = raw.match(/\d{1,3}(?:[.,]\d{3})+|\b\d{4,7}\b/g) || [];
+  return matches
+    .map((m) => Number(m.replace(/[.,]/g, "")))
+    .filter((n) => Number.isFinite(n) && n >= 10000 && n <= 10000000);
+}
+
+// ✅ FIX V38: cuando el cliente nombra un precio conocido del producto actual
+// ("129.000 verdad", "quiero el de 129.000", "dame el de 99000", "el de 129900 nomás"),
+// eso equivale a elegir la oferta con ese precio — y por lo tanto su cantidad — aunque
+// el cliente no haya escrito ningún número de cantidad explícito ("1", "2", "dos", etc).
+// Nunca debe interpretarse como ciudad, ni perderse por no encajar en los patrones de
+// cantidad ya existentes.
+function extractQuantityFromPriceMention(
+  text: string,
+  productInfo: ProductItem | null,
+  templatePricing: TemplatePricing | null
+): number {
+  if (!productInfo) return 0;
+
+  const mentioned = parsePriceMentions(text);
+  if (!mentioned.length) return 0;
+
+  const candidateOffers: { quantity: number; total: number }[] = [];
+
+  if (productInfo.price1) candidateOffers.push({ quantity: 1, total: productInfo.price1 });
+  if (productInfo.price2) candidateOffers.push({ quantity: 2, total: productInfo.price2 });
+  if (productInfo.price3) candidateOffers.push({ quantity: 3, total: productInfo.price3 });
+  if (productInfo.fixedPackQuantity && productInfo.price1) {
+    candidateOffers.push({ quantity: productInfo.fixedPackQuantity, total: productInfo.price1 });
+  }
+
+  if (templatePricing && normalize(templatePricing.product) === normalize(productInfo.canonical)) {
+    for (const o of templatePricing.offers || []) {
+      candidateOffers.push({ quantity: o.quantity, total: o.total });
+    }
+  }
+
+  for (const price of mentioned) {
+    const match = candidateOffers.find((o) => o.total === price);
+    if (match) return match.quantity;
+  }
+
+  return 0;
+}
+
 function toTitleCase(str: string): string {
   return str.replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -3801,6 +3859,14 @@ export default async function handler(req: any, res: any) {
 
     let explicitQty = extractQuantity(texto);
 
+    // ✅ FIX V38: si no hay cantidad explícita pero el cliente nombró un precio
+    // conocido de este producto ("129.000 verdad", "quiero el de 129.000"),
+    // usamos esa mención de precio para inferir la cantidad/oferta elegida.
+    if (explicitQty === 0 && productInfo) {
+      const qtyFromPrice = extractQuantityFromPriceMention(texto, productInfo, templatePricing);
+      if (qtyFromPrice > 0) explicitQty = qtyFromPrice;
+    }
+
     if (
       explicitQty === 0 &&
       isAffirmative(texto) &&
@@ -3891,6 +3957,7 @@ export default async function handler(req: any, res: any) {
             : isCityStep &&
               !extractQuantity(texto) &&
               !extractPhone(texto) &&
+              !looksLikePriceMention(texto) &&
               !detectProduct(texto, parsed, "") &&
               !isQuestionLikeMessage(texto) &&
               !looksLikeSentenceNotCity(texto) &&
