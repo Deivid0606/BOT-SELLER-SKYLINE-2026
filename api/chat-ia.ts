@@ -1496,12 +1496,37 @@ function isSafeTemplatePricingMessage(text: string) {
 }
 
 function isFixedPackText(text: string) {
-  const n = normalize(text);
+  const raw = clean(text);
+  const n = normalize(raw);
 
-  // Un pack fijo existe SOLAMENTE cuando el vendedor lo declara literalmente.
-  // No inferirlo desde cantidades, talles, stock, pares, piezas dentro del producto,
-  // ni desde estructuras Producto/Cantidad/Precio.
-  return /\b(no se vende por unidad|no vendemos por unidad|solo pack|solo por pack|pack fijo|combo fijo|unicamente por el pack|únicamente por el pack|promocion valida unicamente por el pack|promoción válida únicamente por el pack|válida únicamente por el pack)\b/.test(n);
+  const explicitFixed =
+    /\b(no se vende por unidad|no vendemos por unidad|solo pack|solo por pack|pack fijo|combo fijo|unicamente por el pack|únicamente por el pack|promocion valida unicamente|promoción válida únicamente|valida unicamente por el pack|válida únicamente por el pack)\b/.test(n);
+
+  const structuredFixed =
+    /producto\s*:/i.test(raw) &&
+    /cantidad\s*:\s*\d+/i.test(raw) &&
+    /precio\s*:\s*(?:gs\.?\s*)?\d/i.test(raw);
+
+  return explicitFixed || structuredFixed;
+}
+
+function sanitizeCopyForOfferParsing(raw: string) {
+  // Evita confundir stock, talles, testimonios y precios anteriores con cantidades/ofertas.
+  // Ejemplos que deben ignorarse como cantidad: "ÚLTIMOS 35 PARES", "talles 35 al 45",
+  // "5.000 paraguayos". Ejemplos que deben ignorarse como precio vigente: "Farmacia: 280.000".
+  return clean(raw)
+    .split(/\r?\n/g)
+    .filter((line) => {
+      const n = normalize(line);
+      if (!n) return true;
+      if (/\b(ultimos?|quedan|stock|disponibles?|restan?)\b/.test(n)) return false;
+      if (/\b(talle|talles|calce|numero|numeros)\b/.test(n) && /\b\d{2}\s*(?:al|a|hasta|-)\s*\d{2}\b/.test(n)) return false;
+      if (/\b\d{2}\s*(?:al|a|hasta|-)\s*\d{2}\b/.test(n) && !/(?:gs|guarani|guaranies)/.test(n)) return false;
+      if (/\b(farmacia|antes|precio normal|precio regular|valor normal)\b/.test(n)) return false;
+      if (/\b\d[\d.]*\s+(?:paraguayos|clientes|personas|compradores)\b/.test(n)) return false;
+      return true;
+    })
+    .join("\n");
 }
 
 function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fixedQuantity: boolean } {
@@ -1634,9 +1659,7 @@ function hasTemplateBuyIntent(text: string) {
 
 function detectStructuredTemplatePricingFallback(text: string, parsed: ParsedTraining): TemplatePricing | null {
   const raw = clean(text);
-  // Estructura Producto + Cantidad + Precio no autoriza por sí sola inventar pack fijo.
-  // Debe declarar además que es pack/venta no unitaria.
-  if (!isStructuredSalesTemplateMessage(raw) || !isFixedPackText(raw)) return null;
+  if (!isStructuredSalesTemplateMessage(raw)) return null;
 
   const productLine = clean(raw.match(/producto\s*:\s*(.+)$/im)?.[1]);
   const qtyLine = raw.match(/cantidad\s*:\s*(\d+)\s*(?:unidad|unidades|u|und|unds|piezas|pieza)?/i);
@@ -1688,11 +1711,6 @@ function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): 
   const recentMessages = (history || []).slice(-30).reverse();
 
   for (const item of recentMessages) {
-    // Nunca convertir una respuesta del propio bot en plantilla/precio activo.
-    // Las plantillas comerciales solo pueden provenir de mensajes entrantes del cliente/sistema.
-    const role = normalize(item?.role || item?.sender || item?.type || "");
-    if (role === "assistant" || role === "model" || role === "bot" || role === "ai") continue;
-
     const content = clean(item?.content || item?.message || item?.text || item?.body || "");
     if (!content) continue;
     if (isConfirmedOrderMessage(content)) continue;
@@ -3460,53 +3478,6 @@ export default async function handler(req: any, res: any) {
     parsed.products = mergeProductsByPriority(visualProducts, parsed.products);
 
     attachProductImages(parsed.products, allTraining);
-
-    // ✅ FIX V35 ABSOLUTO: el catálogo visual es la fuente literal del mensaje.
-    // Si el cliente menciona un producto con intención de compra, responder ANTES de:
-    // - analizar precios/cantidades,
-    // - revisar historial,
-    // - construir templatePricing,
-    // - llamar a Gemini.
-    // De esta forma "35 al 45", "1 par = 2 plantillas" y "280.000 Gs"
-    // jamás pueden convertirse en un pack inventado.
-    const directCatalogProduct = encontrarProductoPorPalabraClave(texto, parsed.products);
-    const directCatalogInterest =
-      !!directCatalogProduct &&
-      (
-        hasExplicitProductInterestPhrase(texto) ||
-        extractExplicitProductInterest(texto, parsed) === directCatalogProduct.canonical
-      ) &&
-      !isQuestionLikeMessage(texto);
-
-    if (directCatalogInterest && clean(directCatalogProduct.salesCopy || "")) {
-      const directOrder = emptyOrder(makeOrderId(fromNumber));
-      directOrder.product = directCatalogProduct.canonical;
-
-      return res.json({
-        response: `${directCatalogProduct.salesCopy!.trim()}\n\n📍 ¿Para qué ciudad sería el envío? 😊`,
-        media_urls: directCatalogProduct.images?.length
-          ? directCatalogProduct.images.slice(0, 3)
-          : undefined,
-        context: {
-          ...(context || {}),
-          current_product: directCatalogProduct.canonical,
-          last_topic: directCatalogProduct.canonical,
-          last_ad_offer: null,
-          order_data: directOrder,
-          order_id: directOrder.order_id,
-          payment_proof_received: false,
-          step: "collecting_city",
-          updated_at: new Date().toISOString(),
-        },
-        debug: {
-          exact_catalog_copy_v35: true,
-          gemini_skipped: true,
-          template_parser_skipped: true,
-          product: directCatalogProduct.canonical,
-        },
-      });
-    }
-
     const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
 
     // ✅ FIX: Definir newTemplateSignal ANTES de usarlo (soluciona ReferenceError)
@@ -4208,17 +4179,6 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
         imagesToSend = finalState.productInfo.images.slice(0, 3);
         console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${finalState.productInfo.canonical}"`);
       }
-    }
-
-    // Última barrera: jamás permitir una afirmación de pack fijo si el copy
-    // del producto no contiene una declaración explícita de pack.
-    const productDeclaresFixedPack = isFixedPackText(finalState.productInfo?.salesCopy || "");
-    if (!productDeclaresFixedPack) {
-      aiResponse = clean(aiResponse)
-        .replace(/(?:^|\n)[^\n]*pack fijo de \d+ unidades[^\n]*(?:\n|$)/gi, "\n")
-        .replace(/(?:^|\n)[^\n]*no se vende por unidad[^\n]*(?:\n|$)/gi, "\n")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
     }
 
     return res.json({
