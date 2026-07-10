@@ -1926,6 +1926,41 @@ function isShortAcknowledgement(text: string) {
   return /^(ok|okay|dale|listo|gracias|muchas gracias|perfecto|bueno|👍|👌|🙏|genial|excelente|joya)$/.test(n);
 }
 
+function buildDeterministicAcknowledgementResponse(text: string, state: ConversationState) {
+  if (!isShortAcknowledgement(text)) return "";
+
+  const n = normalize(text);
+  const isThanks = /\b(gracias|muchas gracias|🙏)\b/.test(n) || clean(text) === "🙏";
+  const friendlyLead = isThanks
+    ? "¡Con mucho gusto! 😊"
+    : "¡Perfecto! 😊";
+
+  // Pedido ya cerrado: responder amable sin reabrir la venta.
+  if (state.step === "pedido_confirmado") {
+    return isThanks
+      ? "¡Con mucho gusto! 😊 Gracias por tu compra. Tu pedido ya quedó agendado y estaremos coordinando la entrega. 🚚📦"
+      : "¡Perfecto! 😊 Tu pedido ya quedó confirmado y agendado. 🚚📦";
+  }
+
+  // Venta activa: agradecer/confirmar y retomar exactamente el dato pendiente.
+  let continuation = "";
+  if (!state.order.product) {
+    continuation = "¿Qué producto te interesa?";
+  } else if (!state.order.city) {
+    continuation = "📍 Para continuar, ¿para qué ciudad sería el envío?";
+  } else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) {
+    continuation = "¿Cuántas unidades querés llevar?";
+  } else if (!state.order.customer_name) {
+    continuation = "Para completar el pedido, pasame tu nombre y apellido.";
+  } else if (state.coverage !== false && !state.order.address) {
+    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
+  } else if (!state.order.phone) {
+    continuation = "Por último, pasame un número de celular para coordinar la entrega.";
+  }
+
+  return `${friendlyLead}${continuation ? `\n\n${continuation}` : ""}`;
+}
+
 function isConversationClosing(text: string) {
   const n = normalize(text);
   if (!n) return false;
@@ -3526,6 +3561,12 @@ export default async function handler(req: any, res: any) {
       freshOrder = true;
     }
 
+    // ✅ FIX V29: "ok", "gracias", "dale", "perfecto", etc. no son una compra nueva.
+    // Mantienen el pedido actual y solo retoman el dato pendiente.
+    if (isShortAcknowledgement(texto) && context?.step !== "pedido_confirmado") {
+      freshOrder = false;
+    }
+
     if (freshOrder) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
     }
@@ -3578,6 +3619,7 @@ export default async function handler(req: any, res: any) {
     if (
       explicitQty === 0 &&
       isAffirmative(texto) &&
+      !isShortAcknowledgement(texto) &&
       context?.step === "collecting_quantity" &&
       productInfo &&
       !oldOrder.locked_offer &&
@@ -3991,16 +4033,25 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = deterministicBusinessResponse;
     }
 
+    // ✅ FIX V29: respuestas sociales cortas se contestan desde backend.
+    // Así "gracias", "ok", "dale" o "perfecto" no alteran datos ni dependen de Gemini.
+    const deterministicAcknowledgementResponse = buildDeterministicAcknowledgementResponse(texto, finalState);
+    if (deterministicAcknowledgementResponse) {
+      aiResponse = deterministicAcknowledgementResponse;
+    }
+
     // ✅ FIX V18: si estamos presentando el producto, enviar SIEMPRE el copy completo cargado.
     // No dejamos que Gemini lo resuma ni que postProcess lo corte.
     // ✅ FIX V26: una consulta del cliente tiene prioridad sobre el reenvío del copy.
     // Ej.: "DE DONDE SON" debe responderse y luego retomar la ciudad pendiente.
     const currentMessageIsQuestion = isQuestionLikeMessage(texto);
     const currentMessageHasQuantity = extractQuantity(texto) > 0;
+    const currentMessageIsAcknowledgement = isShortAcknowledgement(texto);
     const fullProductCopyResponse =
       !orderData.city &&
       !currentMessageIsQuestion &&
       !currentMessageHasQuantity &&
+      !currentMessageIsAcknowledgement &&
       (newTemplateSignal.isNew || !!detectProduct(texto, parsed, ""))
         ? buildFullProductCopyResponse(finalState, templatePricing)
         : "";
