@@ -39,6 +39,7 @@ import { createClient } from "@supabase/supabase-js";
  * 33) FIX V21: Si Gemini está sin cuota 429, intenta fallback con OpenAI Whisper si está configurado.
  * 34) FIX V21: Evita quedarse mudo; si audio no se puede transcribir, responde claro sin romper el pedido.
  * 35) FIX V22: Guarda observaciones de pago/fecha/horario/coordinar entrega sin perder la venta.
+ * 36) FIX V23: Responde determinísticamente cuando el cliente deja observación de pago/fecha/horario, sin depender de Gemini.
  */
 
 const supabase = createClient(
@@ -1221,7 +1222,7 @@ function extractOrderObservation(text: string): Partial<OrderData> {
   const dateWords = "hoy|manana|mañana|pasado|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo|fin de semana|quincena|fin de mes|[0-3]?\\d(?:\\/|-)[0-1]?\\d|[0-3]?\\d\\s*(?:de)?\\s*(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)";
   const hourWords = "de manana|de mañana|de tarde|de noche|a la manana|a la mañana|a la tarde|a la noche|despues de|después de|antes de|hasta las|desde las|a las|mediodia|mediodía|tarde nomas|tarde nomás|manana nomas|mañana nomás|noche nomas|noche nomás|\\b\\d{1,2}(?::\\d{2})?\\s*(?:hs|hrs|pm|am)?\\b";
 
-  if (/\b(no tengo plata|no tengo efectivo|no tengo dinero|sin plata|sin efectivo|ahora no tengo|cobro|cuando cobre|cobrar|sueldo|quincena|fin de mes|te pago|pago el|pagar el|puedo pagar|voy a pagar|pago cuando|pagar cuando)\b/.test(n)) {
+  if (/\b(no tengo plata|no tengo efectivo|no tengo dinero|sin plata|sin efectivo|ahora no tengo|cobro|cobrare|cobraré|cuando cobre|cuando cobro|cobrar|sueldo|salario|quincena|fin de mes|este mes|mes que viene|proximo mes|próximo mes|te pago|pago el|pagar el|puedo pagar|voy a pagar|pago cuando|pagar cuando|recién cobro|recien cobro)\b/.test(n)) {
     obs.payment_note = raw;
     obs.observation = mergeUniqueText(obs.observation, `Cliente indicó condición de pago: ${raw}`);
   }
@@ -2818,6 +2819,42 @@ ${bankDataText(parsed)} 📲
 Cuando me pases el comprobante, dejamos tu pedido confirmado 😊`;
 }
 
+
+function deterministicObservationAckMessage(state: ConversationState, parsed: ParsedTraining, observationPatch?: Partial<OrderData> | null) {
+  if (!hasOrderObservation(observationPatch || {})) return "";
+
+  const o = state.order;
+  const obs = observationBlock(o);
+  const intro = `Perfecto 😊 dejé anotada esa observación para tu pedido.${obs}`;
+
+  if (state.coverage === false && state.step === "waiting_payment_proof") {
+    const proofMsg = deterministicWaitingPaymentProofMessage(state, parsed);
+    if (proofMsg) return proofMsg;
+  }
+
+  if (!o.product) {
+    return `${intro}\n\nPara ayudarte bien, decime qué producto te interesa 😊`;
+  }
+
+  if (!o.city) {
+    return `${intro}\n\n📍 ¿Para qué ciudad sería el envío? 😊`;
+  }
+
+  if (!o.quantity) {
+    return `${intro}\n\n¿Cuántas unidades querés llevar? 😊`;
+  }
+
+  if (state.coverage === false && !o.payment_proof_received) {
+    return `${intro}\n\n🚚 Para tu zona hacemos envío por transportadora con pago anticipado.\n\nPara avanzar, enviame por favor:\n✅ nombre completo\n✅ número de celular\n✅ comprobante de transferencia\n\n${bankDataText(parsed)} 📲`;
+  }
+
+  if (state.missing.length) {
+    return `${intro}\n\n📦 Producto: ${o.product}\n🔢 Cantidad: ${o.quantity}\n💰 Total: ${formatGs(state.total)} Gs\n📍 Ciudad: ${o.city}\n\nPara agendarlo, me falta:\n✅ ${state.missing.join("\n✅ ")} 📲`;
+  }
+
+  return `${intro}\n\n✅ Tengo todos los datos del pedido. Nuestro equipo tendrá en cuenta esa observación para coordinar 😊`;
+}
+
 function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
   const o = state.order;
 
@@ -2976,7 +3013,7 @@ ${qtyQuestion}`;
 📦 Producto: ${o.product}
 ${promoLine}🔢 Cantidad: ${o.quantity}
 💰 Total: ${formatGs(state.total)} Gs
-📍 Ciudad: ${o.city}
+📍 Ciudad: ${o.city}${observationBlock(o)}
 
 Para agendarlo, me falta:
 ✅ ${state.missing.join("\n✅ ")} 📲`;
@@ -2989,7 +3026,7 @@ Para agendarlo, me falta:
 💰 Total: ${formatGs(state.total)} Gs
 👤 Cliente: ${o.customer_name}
 📍 Ciudad: ${o.city}
-📞 Teléfono: ${o.phone}${o.address ? `\n🏠 Dirección: ${o.address}` : ""}
+📞 Teléfono: ${o.phone}${o.address ? `\n🏠 Dirección: ${o.address}` : ""}${observationBlock(o)}
 
 ¡Gracias por tu compra! 💜`;
 }
@@ -3775,6 +3812,40 @@ export default async function handler(req: any, res: any) {
             : undefined,
         });
       }
+    }
+
+    const deterministicObservationResponse = deterministicObservationAckMessage(finalState, parsed, observationPatch);
+    if (!confirm && deterministicObservationResponse) {
+      return res.json({
+        response: deterministicObservationResponse,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || null,
+          last_topic: orderData.product || context?.last_topic || null,
+          last_ad_offer: orderData.locked_offer || null,
+          order_data: orderData,
+          order_id: orderData.order_id || null,
+          payment_proof_received: orderData.payment_proof_received || false,
+          step: finalState.step,
+          updated_at: new Date().toISOString(),
+        },
+        debug: true
+          ? {
+              deterministic_observation_response: true,
+              product: orderData.product,
+              quantity: orderData.quantity,
+              city: orderData.city,
+              coverage: finalState.coverage,
+              total: finalState.total,
+              missing: finalState.missing,
+              step: finalState.step,
+              observation: orderData.observation || null,
+              payment_note: orderData.payment_note || null,
+              preferred_delivery_date: orderData.preferred_delivery_date || null,
+              preferred_delivery_time: orderData.preferred_delivery_time || null,
+            }
+          : undefined,
+      });
     }
 
     const system = buildSalesSystemPrompt(parsed, finalState, templatePricing);
