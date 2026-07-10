@@ -422,9 +422,33 @@ function productsFromVisualCatalog(items: any[]): ProductItem[] {
   return result;
 }
 
+// ✅ FIX V36: normaliza el copy de venta para poder comparar contenido y detectar
+// duplicados aunque el nombre/palabra clave del producto no coincida exactamente.
+function normalizeCopyForDedup(copy: string) {
+  return normalize(copy).slice(0, 220);
+}
+
 function mergeProductsByPriority(primary: ProductItem[], secondary: ProductItem[]) {
   const merged: ProductItem[] = [];
-  const seen = new Set<string>();
+  const seenKeys = new Set<string>();
+  const seenCopies: string[] = [];
+
+  // ✅ FIX V36: un producto cargado como tarjeta (con Palabra Clave + imágenes) y el
+  // mismo copy pegado además como texto libre en "Entrenamiento Completo" generaban
+  // DOS entradas de producto distintas: la de la tarjeta (con imagen) y la detectada
+  // automáticamente del texto libre (sin imagen, autoDetectProductsFromTraining nunca
+  // asigna imágenes). Si sus nombres/alias no coincidían exactamente, la deduplicación
+  // por clave no las unificaba, y el matching en vivo podía terminar eligiendo la
+  // copia sin imagen. Acá agregamos una segunda pasada de deduplicación por CONTENIDO
+  // del copy: si dos productos comparten el mismo texto de venta (o uno contiene al
+  // otro), se conserva solo el primero que apareció — como "primary" (las tarjetas
+  // con imagen) se procesa antes que "secondary", la tarjeta con imagen siempre gana.
+  const isDuplicateCopy = (copyNorm: string) => {
+    if (!copyNorm) return false;
+    return seenCopies.some(
+      (c) => c && (c === copyNorm || c.includes(copyNorm) || copyNorm.includes(c))
+    );
+  };
 
   for (const product of [...primary, ...secondary]) {
     const names = [product.palabra_clave, product.canonical, product.product, ...(product.aliases || [])]
@@ -433,9 +457,13 @@ function mergeProductsByPriority(primary: ProductItem[], secondary: ProductItem[
       .filter(Boolean);
 
     const key = names.find((n) => n.length >= 3) || normalize(product.canonical || product.product);
-    if (!key || seen.has(key)) continue;
+    const copyNorm = normalizeCopyForDedup(product.salesCopy || "");
 
-    seen.add(key);
+    if (key && seenKeys.has(key)) continue;
+    if (copyNorm.length >= 40 && isDuplicateCopy(copyNorm)) continue;
+
+    if (key) seenKeys.add(key);
+    if (copyNorm.length >= 40) seenCopies.push(copyNorm);
     merged.push(product);
   }
 
@@ -4167,10 +4195,16 @@ export default async function handler(req: any, res: any) {
     const explicitProductInterestNow = hasExplicitProductInterestPhrase(texto);
     const productMentionNow = !!detectProduct(texto, parsed, "");
 
+    // ✅ FIX V37: una consulta que MENCIONA el producto (por palabra clave/alias),
+    // sin importar cómo esté formulada ("¿precio del afilador?", "tenés el afilador?",
+    // "info del afilador", "cuánto sale el afilador"), debe tratarse como pedido de
+    // información del producto y no como una consulta general de negocio (tipo
+    // "¿de dónde son?"). Antes, CUALQUIER "?" en el mensaje bloqueaba el copy/imagen
+    // completo aunque el cliente estuviera preguntando puntualmente por ese producto.
     const shouldPresentExactCatalogCopy = Boolean(
       clean(finalState.productInfo?.salesCopy || "") &&
       !orderData.city &&
-      !currentMessageIsQuestionBeforeAI &&
+      (!currentMessageIsQuestionBeforeAI || productMentionNow) &&
       !currentMessageHasQuantityBeforeAI &&
       !currentMessageIsAcknowledgementBeforeAI &&
       (
@@ -4178,6 +4212,7 @@ export default async function handler(req: any, res: any) {
         newTemplateSignal.isNew ||
         !!currentTemplatePricing ||
         explicitProductInterestNow ||
+        productMentionNow ||
         (!!productMentionNow && !context?.current_product)
       )
     );
@@ -4289,7 +4324,12 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     
     // Solo enviar imágenes al presentar el producto, no cuando el cliente hace una consulta.
     // Evita repetir imagen/copy ante "de dónde son", "cómo funciona", etc.
-    if (!orderData.city && !currentMessageIsQuestion && !currentMessageHasQuantity) {
+    // ✅ FIX V37: mismo criterio que en la presentación inicial — si el mensaje
+    // menciona el producto (por palabra clave/alias), se envían las imágenes aunque
+    // esté formulado como pregunta ("¿tenés el afilador?", "info del afilador", etc.).
+    // Solo se sigue bloqueando ante preguntas de negocio genéricas que no nombran
+    // ningún producto puntual.
+    if (!orderData.city && (!currentMessageIsQuestion || productMentionNow) && !currentMessageHasQuantity) {
       if (productoPorClave && productoPorClave.images?.length) {
         // ✅ Enviar hasta 3 imágenes del producto que coincide con la palabra clave
         imagesToSend = productoPorClave.images.slice(0, 3);
