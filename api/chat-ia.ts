@@ -40,7 +40,8 @@ import { createClient } from "@supabase/supabase-js";
  * 34) FIX V21: Evita quedarse mudo; si audio no se puede transcribir, responde claro sin romper el pedido.
  * 35) FIX V22: Guarda observaciones de pago/fecha/horario/coordinar entrega sin perder la venta.
  * 36) FIX V23: Responde determinísticamente cuando el cliente deja observación de pago/fecha/horario, sin depender de Gemini.
- * 37) FIX V24: Las preguntas intermedias no se guardan como nombre y siempre se repiten TODOS los datos realmente faltantes.
+ * 37) FIX V25: Separa consultas de ciudades; una pregunta corta nunca activa transportadora ni cobertura falsa.
+ * 38) FIX V25: Después de responder cualquier consulta, retoma exactamente el dato pendiente del pedido.
  */
 
 const supabase = createClient(
@@ -795,12 +796,48 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
   return prevOk?.canonical || "";
 }
 
+function isQuestionLikeMessage(text: string) {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!n) return false;
+
+  // Consultas frecuentes que nunca deben convertirse en ciudad, nombre o dirección.
+  return (
+    /[?¿]/.test(raw) ||
+    /^(de donde son|donde estan|donde queda|donde se encuentran|quienes son|como funciona|como se usa|como es|que incluye|que trae|cuanto tarda|cuando llega|tienen garantia|hay garantia|es original|hacen envios|envian|aceptan transferencia|como pago|formas de pago|puedo pagar|tienen local|tienen tienda|tienen sucursal)\b/.test(n) ||
+    /^(que|como|cuando|donde|por que|porque|cual|cuales|quien|quienes|cuanto|cuantos|cuanta|cuantas)\b/.test(n)
+  );
+}
+
+function exactKnownCity(text: string, parsed: ParsedTraining): string {
+  const n = normalize(text);
+  if (!n) return "";
+
+  const found = parsed.cities.find((c) => {
+    const alias = normalize(c.alias);
+    const canonical = normalize(c.canonical);
+    return n === alias || n === canonical;
+  });
+
+  return found?.canonical || "";
+}
+
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
+  // ✅ FIX V25: primero separar una ciudad real de una consulta.
+  // "DE DONDE SON" no es ciudad y nunca debe activar transportadora.
+  const exactCity = exactKnownCity(text, parsed);
+  if (exactCity) return exactCity;
+
+  const explicitCityStatement = extractCityStatement(text);
+  if (isQuestionLikeMessage(text) && !explicitCityStatement) {
+    return clean(prev || "");
+  }
+
   // ✅ FIX V19: detectar ciudad aunque venga mezclada con saludo/frase.
   // Ejemplos: "hola soy de Carapeguá", "buenas estoy en Capiatá",
   // "quiero para Luque", "me interesa, soy de San Lorenzo".
   const rawMsg = normalize(text);
-  const statementCity = extractCityStatement(text);
+  const statementCity = explicitCityStatement;
   const msg = normalize(statementCity || text);
 
   if (!msg && !rawMsg) return clean(prev || "");
@@ -1036,24 +1073,11 @@ function toTitleCase(str: string): string {
   return str.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function isCustomerQuestionOrInfoRequest(text: string) {
-  const n = normalize(text);
-  if (!n) return false;
-
-  return (
-    /[?¿]/.test(clean(text)) ||
-    /\b(de donde son|donde estan|donde queda|quienes son|como funciona|como se usa|cuanto tarda|cuando llega|hacen envio|tienen local|tienen garantia|es original|que incluye|que trae|formas de pago|como pago|puedo retirar)\b/.test(n) ||
-    /^(que|como|cuando|donde|por que|porque|cuanto|cual|quien|quienes)\b/.test(n)
-  );
-}
-
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const raw = clean(text);
   if (!raw) return "";
+  if (isQuestionLikeMessage(raw)) return "";
   if (extractQuantity(raw) > 0) return "";
-  // Una consulta intermedia no puede convertirse en nombre del cliente.
-  // Ejemplo crítico: "DE DONDE SON" antes se guardaba como customer_name.
-  if (isCustomerQuestionOrInfoRequest(raw)) return "";
 
   const isMultiLine = raw.includes("\n");
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
@@ -1283,8 +1307,6 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
 
   const isInvalidName =
     forbiddenNames.some((f) => nameNorm.includes(normalize(f))) ||
-    isCustomerQuestionOrInfoRequest(old?.customer_name || "") ||
-    /\b(de donde|donde|como|cuando|cuanto|quienes|que trae|que incluye)\b/.test(nameNorm) ||
     nameNorm.split(" ").length > 5;
 
   return {
@@ -2019,27 +2041,7 @@ function shouldStartFreshOrder({
     explicitInterest &&
     !!productFromMessage;
 
-  // Una respuesta como "2 quiero", "quiero 1", "dos unidades", etc.
-  // durante un pedido activo NO debe iniciar una venta nueva. Si se reinicia aquí,
-  // se borra la ciudad/cantidad ya recopilada y se vuelve a enviar el copy del producto.
-  const activeCollectionSteps = new Set([
-    "collecting_city",
-    "collecting_quantity",
-    "collecting_name",
-    "collecting_address",
-    "collecting_phone",
-    "waiting_payment_proof",
-  ]);
-
-  const isActiveOrderFlow =
-    activeCollectionSteps.has(clean(context?.step)) &&
-    !!oldOrder.product;
-
-  const explicitQuantityReply = extractQuantity(texto) > 0;
-
   const genericWantsPromo =
-    !isActiveOrderFlow &&
-    !explicitQuantityReply &&
     (isGenericBuyReply(texto) || isBuyIntent(texto)) &&
     promoResponse &&
     !!lockedProductByContext;
@@ -2047,10 +2049,6 @@ function shouldStartFreshOrder({
   const contextWasConfirmed = context?.step === "pedido_confirmado";
 
   const stale = isOrderStale(oldOrder, context?.updated_at || new Date().toISOString());
-
-  // Protección adicional: mientras se están recopilando datos del mismo pedido,
-  // conservar siempre el pedido actual, salvo que el cliente mencione otro producto.
-  if (isActiveOrderFlow && !productChanged) return false;
 
   return Boolean(productChanged || campaignClick || genericWantsPromo || contextWasConfirmed || stale);
 }
@@ -2103,7 +2101,10 @@ function getLockedOfferFromContext(context: any, oldOrder: OrderData, history: a
 
 function looksLikeSentenceNotCity(text: string) {
   const n = normalize(text);
-  return /\b(me interesa|te interesa|interesa|quiero|necesito|cuanto|cuánto|cuesta|precio|tienen|tenes|tenés|hay|dame|mandame|reservame|consulta|informacion|información|hola|buenas|gracias|comprar|compro)\b/.test(n);
+  return (
+    isQuestionLikeMessage(text) ||
+    /\b(me interesa|te interesa|interesa|quiero|necesito|cuanto|cuánto|cuesta|precio|tienen|tenes|tenés|hay|dame|mandame|reservame|consulta|informacion|información|hola|buenas|gracias|comprar|compro|de donde|donde son|donde estan|como funciona|que trae|garantia|original)\b/.test(n)
+  );
 }
 
 function hasPaymentProofText(text: string) {
@@ -2949,6 +2950,9 @@ REGLAS DURAS:
 - No menciones backend, sistema ni estado interno.
 - No inventes productos, precios, bancos, cuentas, enlaces, ciudades ni tiempos.
 - PROHIBIDO inventar ciudad. Si Ciudad = faltante, preguntá ciudad.
+- Una consulta del cliente (por ejemplo: "¿de dónde son?", "¿cómo funciona?", "¿tiene garantía?") NO es una ciudad ni un dato del pedido.
+- Si el cliente hace una consulta durante la compra: respondé primero la consulta usando SOLO el entrenamiento disponible y después retomá exactamente el siguiente dato faltante del ESTADO DEL PEDIDO.
+- Si después de responder la consulta todavía falta ciudad, preguntá ciudad. No menciones transportadora, falta de cobertura ni pago anticipado hasta tener una ciudad real.
 - Si Ciudad ya tiene valor en ESTADO DEL PEDIDO, PROHIBIDO volver a preguntar ciudad.
 - PROHIBIDO usar ciudad vieja si no aparece en ESTADO DEL PEDIDO.
 - Si falta producto, ofrecé catálogo/productos.
@@ -3070,19 +3074,6 @@ Para agendarlo, me falta:
 📞 Teléfono: ${o.phone}${o.address ? `\n🏠 Dirección: ${o.address}` : ""}${observationBlock(o)}
 
 ¡Gracias por tu compra! 💜`;
-}
-
-function appendExactMissingReminder(resp: string, state: ConversationState, customerText: string) {
-  if (!isCustomerQuestionOrInfoRequest(customerText)) return resp;
-
-  const pending = state.missing.filter((x) =>
-    ["nombre y apellido", "dirección exacta o ubicación", "número de celular", "comprobante de transferencia"].includes(x)
-  );
-
-  if (!pending.length) return resp;
-
-  const list = pending.map((x) => `✅ ${x}`).join("\n");
-  return `${clean(resp)}\n\nPara completar tu pedido todavía necesito:\n${list}`.trim();
 }
 
 function postProcessResponse(resp: string) {
@@ -3611,6 +3602,7 @@ export default async function handler(req: any, res: any) {
               !extractQuantity(texto) &&
               !extractPhone(texto) &&
               !detectProduct(texto, parsed, "") &&
+              !isQuestionLikeMessage(texto) &&
               !looksLikeSentenceNotCity(texto) &&
               normalize(texto).split(/\s+/).length <= 6
             ? clean(texto) || detectCity(texto, parsed, oldOrder.city)
@@ -3964,7 +3956,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     }
 
     return res.json({
-      response: postProcessResponse(appendExactMissingReminder(aiResponse, finalState, texto)),
+      response: postProcessResponse(aiResponse),
       media_urls: imagesToSend,
       context: {
         ...(context || {}),
