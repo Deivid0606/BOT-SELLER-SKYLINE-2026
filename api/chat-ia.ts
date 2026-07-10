@@ -35,6 +35,10 @@ import { createClient } from "@supabase/supabase-js";
  * 29) FIX V19: Detecta ciudad aunque el cliente escriba saludo/frase: "hola soy de Carapeguá".
  * 30) FIX V20: Detecta cantidad escrita en palabras/frases: "quiero una", "quiero dos", "dos nomás".
  * 31) FIX V20: Si el cliente responde por audio, transcribe y procesa como texto; si falla, responde pidiendo texto.
+ * 32) FIX V21: Audio real: busca URL/transcripción en múltiples campos del webhook.
+ * 33) FIX V21: Si Gemini está sin cuota 429, intenta fallback con OpenAI Whisper si está configurado.
+ * 34) FIX V21: Evita quedarse mudo; si audio no se puede transcribir, responde claro sin romper el pedido.
+ * 35) FIX V22: Guarda observaciones de pago/fecha/horario/coordinar entrega sin perder la venta.
  */
 
 const supabase = createClient(
@@ -112,6 +116,10 @@ type OrderData = {
   phone: string;
   locked_offer?: OfferItem | null;
   payment_proof_received?: boolean;
+  observation?: string;
+  preferred_delivery_date?: string;
+  preferred_delivery_time?: string;
+  payment_note?: string;
 };
 
 type ConversationState = {
@@ -179,6 +187,10 @@ function emptyOrder(orderId?: string): OrderData {
     phone: "",
     locked_offer: null,
     payment_proof_received: false,
+    observation: "",
+    preferred_delivery_date: "",
+    preferred_delivery_time: "",
+    payment_note: "",
   };
 }
 
@@ -1160,6 +1172,89 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   return "";
 }
 
+
+function mergeUniqueText(oldValue: any, newValue: any) {
+  const oldText = clean(oldValue);
+  const newText = clean(newValue);
+  if (!oldText) return newText;
+  if (!newText) return oldText;
+
+  const pieces = oldText
+    .split(/\s*\|\s*/g)
+    .map(clean)
+    .filter(Boolean);
+
+  const exists = pieces.some((p) => normalize(p) === normalize(newText) || normalize(p).includes(normalize(newText)) || normalize(newText).includes(normalize(p)));
+  if (!exists) pieces.push(newText);
+  return pieces.join(" | ");
+}
+
+function hasOrderObservation(order: Partial<OrderData> | null | undefined) {
+  return Boolean(
+    clean(order?.observation) ||
+    clean(order?.preferred_delivery_date) ||
+    clean(order?.preferred_delivery_time) ||
+    clean(order?.payment_note)
+  );
+}
+
+function observationLines(order: Partial<OrderData> | null | undefined) {
+  const lines: string[] = [];
+  if (clean(order?.observation)) lines.push(`📝 Observación: ${clean(order?.observation)}`);
+  if (clean(order?.payment_note)) lines.push(`💵 Nota de pago: ${clean(order?.payment_note)}`);
+  if (clean(order?.preferred_delivery_date)) lines.push(`📅 Fecha solicitada: ${clean(order?.preferred_delivery_date)}`);
+  if (clean(order?.preferred_delivery_time)) lines.push(`🕒 Horario solicitado: ${clean(order?.preferred_delivery_time)}`);
+  return lines;
+}
+
+function observationBlock(order: Partial<OrderData> | null | undefined) {
+  const lines = observationLines(order);
+  return lines.length ? `\n\n${lines.join("\n")}` : "";
+}
+
+function extractOrderObservation(text: string): Partial<OrderData> {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw || !n) return {};
+
+  const obs: Partial<OrderData> = {};
+  const dateWords = "hoy|manana|mañana|pasado|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo|fin de semana|quincena|fin de mes|[0-3]?\\d(?:\\/|-)[0-1]?\\d|[0-3]?\\d\\s*(?:de)?\\s*(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)";
+  const hourWords = "de manana|de mañana|de tarde|de noche|a la manana|a la mañana|a la tarde|a la noche|despues de|después de|antes de|hasta las|desde las|a las|mediodia|mediodía|tarde nomas|tarde nomás|manana nomas|mañana nomás|noche nomas|noche nomás|\\b\\d{1,2}(?::\\d{2})?\\s*(?:hs|hrs|pm|am)?\\b";
+
+  if (/\b(no tengo plata|no tengo efectivo|no tengo dinero|sin plata|sin efectivo|ahora no tengo|cobro|cuando cobre|cobrar|sueldo|quincena|fin de mes|te pago|pago el|pagar el|puedo pagar|voy a pagar|pago cuando|pagar cuando)\b/.test(n)) {
+    obs.payment_note = raw;
+    obs.observation = mergeUniqueText(obs.observation, `Cliente indicó condición de pago: ${raw}`);
+  }
+
+  const deliveryDateRegex = new RegExp(`\\b(recibir|recibo|recibirlo|entregar|entrega|traer|traigan|llevar|mandar|mandame|enviar|envio|envío|delivery|para)\\b[\\s\\S]{0,80}\\b(${dateWords})\\b`, "i");
+  const dateOnlyIntentRegex = new RegExp(`\\b(quiero|necesito|puede ser|seria|sería|me sirve|agendar|reservar|dejar)\\b[\\s\\S]{0,80}\\b(${dateWords})\\b`, "i");
+  if (deliveryDateRegex.test(n) || dateOnlyIntentRegex.test(n)) {
+    obs.preferred_delivery_date = raw;
+    obs.observation = mergeUniqueText(obs.observation, `Cliente solicita fecha especial: ${raw}`);
+  }
+
+  const timeRegex = new RegExp(`\\b(${hourWords})\\b`, "i");
+  if (timeRegex.test(n) && /\b(recibir|entregar|traer|llevar|mandar|enviar|delivery|estoy|puedo|solo|solamente|pasar|llegar|horario|hora|a las|despues|después|antes|hasta|desde|manana|mañana|tarde|noche)\b/.test(n)) {
+    obs.preferred_delivery_time = raw;
+    obs.observation = mergeUniqueText(obs.observation, `Cliente solicita horario especial: ${raw}`);
+  }
+
+  if (/\b(llamar antes|avisar antes|avisen antes|avisame antes|avisar|coordinar|coordinamos|no estoy|no voy a estar|estoy solo|solo estoy|porteria|portería|guardia|dejar con|retira|retirar)\b/.test(n)) {
+    obs.observation = mergeUniqueText(obs.observation, `Cliente pide coordinación especial: ${raw}`);
+  }
+
+  return obs;
+}
+
+function mergeOrderObservation(oldOrder: Partial<OrderData>, patch: Partial<OrderData>) {
+  return {
+    observation: mergeUniqueText(oldOrder?.observation, patch?.observation),
+    preferred_delivery_date: mergeUniqueText(oldOrder?.preferred_delivery_date, patch?.preferred_delivery_date),
+    preferred_delivery_time: mergeUniqueText(oldOrder?.preferred_delivery_time, patch?.preferred_delivery_time),
+    payment_note: mergeUniqueText(oldOrder?.payment_note, patch?.payment_note),
+  };
+}
+
 function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
   const productInfo = getProductInfo(old?.product || "", parsed);
   const nameNorm = normalize(old?.customer_name || "");
@@ -1187,6 +1282,10 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
     address: clean(old?.address || ""),
     locked_offer: old?.locked_offer || null,
     payment_proof_received: !!old?.payment_proof_received,
+    observation: clean(old?.observation || old?.observacion || ""),
+    preferred_delivery_date: clean(old?.preferred_delivery_date || ""),
+    preferred_delivery_time: clean(old?.preferred_delivery_time || ""),
+    payment_note: clean(old?.payment_note || ""),
   } as OrderData;
 }
 
@@ -1201,6 +1300,7 @@ function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
     address: ext.address || old.address || "",
     locked_offer: ext.locked_offer !== undefined ? ext.locked_offer : old.locked_offer || null,
     payment_proof_received: ext.payment_proof_received !== undefined ? !!ext.payment_proof_received : !!old.payment_proof_received,
+    ...mergeOrderObservation(old, ext || {}),
   };
 }
 
@@ -2213,7 +2313,7 @@ function buildHardInstruction(state: ConversationState) {
 
   if (coverage === false && order.quantity > 0) {
     if (missing.length > 0) {
-      return "Informar total, explicar envío por transportadora y pago anticipado. Mostrar datos de transferencia porque ya hay cantidad. Pedir SOLO lo faltante: nombre completo, teléfono y/o comprobante de transferencia. IMPORTANTE: no confirmar el pedido hasta recibir comprobante.";
+      return "Informar total, explicar envío por transportadora y pago anticipado. Mostrar datos de transferencia porque ya hay cantidad. Pedir SOLO lo faltante: nombre completo, teléfono y/o comprobante de transferencia. Si el cliente pidió fecha/horario/pagar después, aclarar que queda anotado como observación. IMPORTANTE: no confirmar el pedido hasta recibir comprobante.";
     }
     return "Confirmar el pedido por transportadora porque ya se recibió comprobante y datos.";
   }
@@ -2326,6 +2426,11 @@ async function safeUpsertOrder(
     quantity: order.quantity || 1,
     total_amount: state.total || null,
     status,
+    observation: order.observation || null,
+    observacion: order.observation || null,
+    preferred_delivery_date: order.preferred_delivery_date || null,
+    preferred_delivery_time: order.preferred_delivery_time || null,
+    payment_note: order.payment_note || null,
     fecha: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
@@ -2411,6 +2516,16 @@ async function fetchMediaAsBase64(url: string) {
   };
 }
 
+function isGeminiQuotaErrorPayload(data: any) {
+  const raw = JSON.stringify(data || {}).toLowerCase();
+  return (
+    raw.includes("resource_exhausted") ||
+    raw.includes("quota") ||
+    raw.includes("rate-limits") ||
+    raw.includes("429")
+  );
+}
+
 async function callGemini({
   apiKey,
   model,
@@ -2443,10 +2558,11 @@ async function callGemini({
     }
   );
 
-  const data = await r.json();
+  const data = await r.json().catch(() => ({}));
 
   if (!r.ok) {
     console.error("❌ Gemini:", JSON.stringify(data).slice(0, 800));
+    if (r.status === 429 || isGeminiQuotaErrorPayload(data)) return "__GEMINI_QUOTA_EXCEEDED__";
     return "";
   }
 
@@ -2481,6 +2597,67 @@ async function transcribeAudioWithGemini({
   });
 }
 
+async function transcribeAudioWithOpenAI({
+  audioBase64,
+  mime,
+}: {
+  audioBase64: string;
+  mime: string;
+}) {
+  const apiKey = clean(process.env.OPENAI_API_KEY || "");
+  if (!apiKey) return "";
+
+  try {
+    const ext = mime.includes("mpeg") ? "mp3" : mime.includes("mp4") ? "mp4" : mime.includes("wav") ? "wav" : mime.includes("webm") ? "webm" : "ogg";
+    const buffer = Buffer.from(audioBase64, "base64");
+    const form = new FormData();
+    form.append("model", "whisper-1");
+    form.append("language", "es");
+    form.append("response_format", "json");
+    form.append("file", new Blob([buffer], { type: mime || "audio/ogg" }), `audio.${ext}`);
+
+    const r = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+    });
+
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      console.error("❌ OpenAI Whisper:", JSON.stringify(data).slice(0, 800));
+      return "";
+    }
+
+    return clean(data?.text || "");
+  } catch (err) {
+    console.error("❌ OpenAI Whisper exception:", err);
+    return "";
+  }
+}
+
+async function transcribeAudioSmart({
+  apiKey,
+  model,
+  audioBase64,
+  mime,
+}: any) {
+  const geminiText = await transcribeAudioWithGemini({ apiKey, model, audioBase64, mime });
+  if (geminiText && geminiText !== "__GEMINI_QUOTA_EXCEEDED__") {
+    return { text: geminiText, reason: "gemini" };
+  }
+
+  // ✅ FIX V21: si Gemini quedó sin cuota 429, intentamos Whisper si OPENAI_API_KEY existe.
+  const openAiText = await transcribeAudioWithOpenAI({ audioBase64, mime });
+  if (openAiText) return { text: openAiText, reason: "openai_whisper" };
+
+  if (geminiText === "__GEMINI_QUOTA_EXCEEDED__") {
+    return { text: "", reason: "gemini_quota" };
+  }
+
+  return { text: "", reason: "transcription_failed" };
+}
+
+
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
   const addressPart = o.address ? ` — ${o.address}` : "";
@@ -2493,7 +2670,7 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
 ✅ Ubicación: ${o.city}${addressPart}
 ✅ Contacto: ${o.phone}
 ✅ Cantidad: ${o.quantity} u.
-💰 Total: ${formatGs(state.total)} Gs
+💰 Total: ${formatGs(state.total)} Gs${observationBlock(o)}
 
 🚚 Su encomienda será enviada por transportadora.
 
@@ -2518,7 +2695,7 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 ✅ Ubicación: ${o.city}${addressPart}
 ✅ Contacto: ${o.phone}
 ✅ Cantidad: ${o.quantity} u.
-💰 Total: ${formatGs(state.total)} Gs
+💰 Total: ${formatGs(state.total)} Gs${observationBlock(o)}
 
 🚚 Envío GRATIS · Pagás al recibir
 
@@ -2564,7 +2741,7 @@ ${bankDataText(parsed)} 📲`;
 ${o.locked_offer.quantity} unidades de ${o.product}
 💰 Total: ${formatGs(total)} Gs
 
-📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚
+📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚${observationBlock(o)}
 
 Ahora solo necesito:
 ✅ nombre y apellido
@@ -2593,7 +2770,7 @@ function deterministicAfterQuantityMessage(state: ConversationState, parsed: Par
 📦 ${o.product}
 🔢 Cantidad: ${o.quantity}
 ${promoLine}
-📍 Ciudad: ${o.city}
+📍 Ciudad: ${o.city}${observationBlock(o)}
 
 🚚 Para tu zona hacemos envío por transportadora con pago anticipado.
 
@@ -2630,7 +2807,7 @@ function deterministicWaitingPaymentProofMessage(state: ConversationState, parse
 💰 Total: ${formatGs(state.total)} Gs
 📍 Ciudad: ${o.city}
 👤 Cliente: ${o.customer_name}
-📞 Celular: ${o.phone}
+📞 Celular: ${o.phone}${observationBlock(o)}
 
 🚚 Para tu zona hacemos envío por transportadora con pago anticipado.
 
@@ -2666,6 +2843,7 @@ ESTADO DEL PEDIDO:
 - Total calculado: ${state.total ? `${formatGs(state.total)} Gs` : "aún no corresponde"}
 - Faltante: ${state.missing.length ? state.missing.join(", ") : "nada"}
 - Promo bloqueada desde plantilla: ${o.locked_offer ? `${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs` : "no"}
+- Observación del cliente: ${observationLines(o).length ? observationLines(o).join(" | ") : "sin observación"}
 
 FUENTE DE PRODUCTO / CANTIDAD / PRECIO:
 ${catalogForPrompt(parsed, state, templatePricing)}
@@ -2700,6 +2878,8 @@ REGLAS DURAS:
 - Si falta cantidad, preguntá cantidad.
 - Si la plantilla dice Producto + Cantidad + Precio, pack fijo, combo fijo, no se vende por unidad o únicamente por pack: NO preguntes cantidad, respetá cantidad y precio de la plantilla.
 - Si hay promo variable de 2 unidades y el cliente no especificó cantidad, NO asumas 1 unidad ni 2 unidades: preguntá si quiere 1 unidad o la promo.
+- Si el cliente pide fecha, horario, pagar cuando cobre, llamar antes o coordinar entrega, guardalo como observación y continuá cerrando la venta. No cortes la venta por eso.
+- Si hay observación, mencionála de forma natural como “lo dejamos anotado en observación”.
 - Si faltan datos, pedí SOLO lo faltante.
 - Si no hay cobertura y todavía falta cantidad, NO muestres datos bancarios.
 - Si no hay cobertura y ya hay cantidad, podés mostrar datos de transferencia.
@@ -2853,6 +3033,12 @@ function extractIncomingText(body: any) {
     body?.voice?.text,
     body?.voice?.transcription,
     body?.voice?.transcript,
+    body?.data?.audio?.text,
+    body?.data?.audio?.transcription,
+    body?.data?.audio?.transcript,
+    body?.data?.voice?.text,
+    body?.data?.voice?.transcription,
+    body?.data?.voice?.transcript,
   ];
 
   for (const c of candidates) {
@@ -2861,6 +3047,101 @@ function extractIncomingText(body: any) {
   }
 
   return "";
+}
+
+function firstHttpUrl(...values: any[]) {
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      const found = firstHttpUrl(...value);
+      if (found) return found;
+      continue;
+    }
+
+    const v = clean(value);
+    if (/^https?:\/\//i.test(v)) return v;
+  }
+
+  return "";
+}
+
+function extractMediaInfo(body: any) {
+  const mediaUrl = firstHttpUrl(
+    body?.media_url,
+    body?.mediaUrl,
+    body?.media,
+    body?.url,
+    body?.file_url,
+    body?.fileUrl,
+    body?.download_url,
+    body?.downloadUrl,
+    body?.audio_url,
+    body?.audioUrl,
+    body?.voice_url,
+    body?.voiceUrl,
+    body?.ptt_url,
+    body?.pttUrl,
+    body?.data?.media_url,
+    body?.data?.mediaUrl,
+    body?.data?.url,
+    body?.data?.file_url,
+    body?.data?.download_url,
+    body?.message?.media_url,
+    body?.message?.mediaUrl,
+    body?.message?.url,
+    body?.message?.file_url,
+    body?.message?.download_url,
+    body?.audio?.url,
+    body?.audio?.media_url,
+    body?.audio?.mediaUrl,
+    body?.audio?.file_url,
+    body?.audio?.download_url,
+    body?.voice?.url,
+    body?.voice?.media_url,
+    body?.voice?.mediaUrl,
+    body?.voice?.file_url,
+    body?.voice?.download_url,
+    body?.data?.audio?.url,
+    body?.data?.audio?.media_url,
+    body?.data?.audio?.mediaUrl,
+    body?.data?.voice?.url,
+    body?.data?.voice?.media_url,
+    body?.data?.voice?.mediaUrl
+  );
+
+  const mediaType = clean(
+    body?.media_type ||
+      body?.mediaType ||
+      body?.message_type ||
+      body?.messageType ||
+      body?.type ||
+      body?.data?.media_type ||
+      body?.data?.message_type ||
+      body?.data?.type ||
+      body?.message?.media_type ||
+      body?.message?.type ||
+      body?.audio?.type ||
+      body?.voice?.type ||
+      (body?.audio ? "audio" : "") ||
+      (body?.voice ? "voice" : "")
+  );
+
+  const mimeType = clean(
+    body?.mime_type ||
+      body?.mimeType ||
+      body?.mimetype ||
+      body?.media_mime_type ||
+      body?.data?.mime_type ||
+      body?.data?.mimeType ||
+      body?.message?.mime_type ||
+      body?.message?.mimeType ||
+      body?.audio?.mime_type ||
+      body?.audio?.mimeType ||
+      body?.voice?.mime_type ||
+      body?.voice?.mimeType ||
+      ""
+  );
+
+  return { media_url: mediaUrl, media_type: mediaType, mime_type: mimeType };
 }
 
 function isAudioLikeMedia({
@@ -2902,10 +3183,12 @@ export default async function handler(req: any, res: any) {
       from_number,
       context,
       history,
-      media_url,
-      media_type,
-      mime_type,
     } = req.body;
+
+    const mediaInfo = extractMediaInfo(req.body);
+    const media_url = mediaInfo.media_url;
+    const media_type = mediaInfo.media_type;
+    const mime_type = mediaInfo.mime_type;
 
     let texto = extractIncomingText(req.body);
     const fromNumber = clean(from_number);
@@ -2928,31 +3211,42 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    // ✅ FIX V20: si llega audio, transcribir ANTES de detectar producto/ciudad/cantidad.
+    // ✅ FIX V20/V21: si llega audio, transcribir ANTES de detectar producto/ciudad/cantidad.
     // Si el proveedor ya manda transcripción, extractIncomingText(req.body) ya la usa.
     const audioLike = isAudioLikeMedia({ media_url, media_type, mime_type });
 
     if (audioLike && !texto) {
       const fetched = await fetchMediaAsBase64(clean(media_url));
+      let transcriptionReason = "no_media";
+
       if (fetched) {
-        texto =
-          (await transcribeAudioWithGemini({
-            apiKey,
-            model,
-            audioBase64: fetched.data,
-            mime: clean(mime_type) || fetched.mime || "audio/ogg",
-          })) || "";
+        const transcribed = await transcribeAudioSmart({
+          apiKey,
+          model,
+          audioBase64: fetched.data,
+          mime: clean(mime_type) || fetched.mime || "audio/ogg",
+        });
+
+        texto = clean(transcribed.text);
+        transcriptionReason = transcribed.reason;
       }
 
       if (!texto) {
+        const noQuota = transcriptionReason === "gemini_quota";
         return res.json({
-          response: "🎧 Recibí tu audio, pero no pude leerlo automáticamente. ¿Podés escribirme por texto, por favor? 😊",
+          response: noQuota
+            ? "🎧 Recibí tu audio, pero el transcriptor está sin cuota en este momento. Escribime por texto, por favor, así sigo con tu pedido 😊"
+            : "🎧 Recibí tu audio, pero no pude leerlo automáticamente. ¿Podés escribirme por texto, por favor? 😊",
           context: {
             ...(context || {}),
+            audio_pending_text: true,
+            audio_transcription_reason: transcriptionReason,
             updated_at: new Date().toISOString(),
           },
         });
       }
+
+      console.log(`🎧 Audio transcripto (${transcriptionReason}): ${texto.slice(0, 160)}`);
     }
 
     const allTraining = await getAllTrainingData(user_id);
@@ -3237,6 +3531,7 @@ export default async function handler(req: any, res: any) {
     const qty = explicitQty;
     const name = extractName(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone, parsed);
     const address = extractAddress(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone, name);
+    const observationPatch = extractOrderObservation(texto);
 
     let orderData = mergeOrderData(
       oldOrder,
@@ -3248,6 +3543,7 @@ export default async function handler(req: any, res: any) {
         name,
         address,
         locked_offer: lockedOffer,
+        ...observationPatch,
       },
       product
     );
@@ -3512,7 +3808,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
     });
 
-    if (!aiResponse) {
+    if (!aiResponse || aiResponse === "__GEMINI_QUOTA_EXCEEDED__") {
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
