@@ -3,50 +3,10 @@ import { createClient } from "@supabase/supabase-js";
 /**
  * CHAT IA VENDEDOR AUTÓNOMO V3 - Mega Todo Store / One Store
  *
- * Soluciona:
- * 1) La IA vende sola y redacta fluido.
- * 2) El backend solo detecta, valida, calcula, guarda y protege reglas.
- * 3) NO reutiliza ciudad/datos viejos cuando entra una nueva campaña/producto.
- * 4) Si el cliente responde "quiero" desde una promo, respeta la promo.
- * 5) Si el cliente responde "quiero uno", "una unidad", "solo 1", desbloquea la promo.
- * 6) Nunca inventa ciudad, nombre, dirección, teléfono, banco ni catálogo.
- * 7) No se salta ciudad ni cantidad.
- * 8) Confirmación final 100% fija desde backend, nunca generada por Gemini.
- * 9) Precio de plantilla congelado: nunca toma números de dirección/teléfono como precio.
- * 10) Después de pedido confirmado, cierra el flujo y no vuelve a vender el mismo pedido.
- * 11) Detecta packs fijos genéricos para cualquier vendedor sin hardcodear precios/productos.
- * 12) Si plantilla trae Producto + Cantidad + Precio, salta la pregunta de cantidad.
- * 13) Si llega plantilla/producto nuevo después de pedido_confirmado, inicia venta nueva.
- * 14) Postventa: después de confirmado responde preguntas normales sin reabrir pedido.
- * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
- * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
- * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
- * 18) FIX V12: detección de producto ignora palabras genéricas como unidades y reconoce singular/plural.
- * 19) FIX V11: si el cliente pidió explícitamente otro producto antes de una plantilla nueva, ese producto gana sobre contexto viejo.
- * 20) FIX V9: si el pedido ya tiene todos los datos obligatorios, confirma directo con bloque fijo backend; nunca pregunta "¿Confirmamos?".
- * 21) FIX V8: después de postventa, si llega una nueva plantilla y el cliente responde "Quiero confirmar", inicia otra venta nueva.
- * 22) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
- * 23) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
- * 24) FIX IMAGENES: envía hasta 3 imágenes del producto correcto.
- * 25) FIX V13: Definir newTemplateSignal antes de usarlo (soluciona ReferenceError)
- * 26) FIX V14: Filtrar por PALABRA_CLAVE para enviar SOLO imágenes del producto correcto
- * 27) FIX V18: Envía TODO el copy original del producto, sin resumir ni cortar.
- * 28) FIX V18: Cada producto soporta hasta 3 imágenes propias.
- * 29) FIX V19: Detecta ciudad aunque el cliente escriba saludo/frase: "hola soy de Carapeguá".
- * 30) FIX V20: Detecta cantidad escrita en palabras/frases: "quiero una", "quiero dos", "dos nomás".
- * 31) FIX V20: Si el cliente responde por audio, transcribe y procesa como texto; si falla, responde pidiendo texto.
- * 32) FIX V21: Audio real: busca URL/transcripción en múltiples campos del webhook.
- * 33) FIX V21: Si Gemini está sin cuota 429, intenta fallback con OpenAI Whisper si está configurado.
- * 34) FIX V21: Evita quedarse mudo; si audio no se puede transcribir, responde claro sin romper el pedido.
- * 35) FIX V22: Guarda observaciones de pago/fecha/horario/coordinar entrega sin perder la venta.
- * 36) FIX V23: Responde determinísticamente cuando el cliente deja observación de pago/fecha/horario, sin depender de Gemini.
- * 37) FIX V24: Anti-repetición 24h: no vuelve a mandar la misma plantilla/copy/imágenes al mismo cliente.
- * 38) FIX V24: Respuestas determinísticas para "de dónde son", "cómo hago", "muy caro", "entrega hoy", "le confirmo".
- * 39) FIX V24: Si no hay producto claro, pregunta qué producto le interesa y lista disponibles.
- * 40) FIX V24: Evita tomar frases como "como hago" o consultas generales como ciudad/dirección/observación.
- * 41) FIX V25: Cuando cliente dice "quiero" después de plantilla, NO repite la plantilla, avanza al siguiente paso.
- * 42) FIX V25: "cuando me llevan", "de donde son" y cualquier confirmación avanza el pedido sin repetir.
- * 43) FIX V25: Si ya tiene producto en curso, cualquier mensaje de confirmación avanza al siguiente paso.
+ * FIX V26: SOLUCIONADO DEFINITIVAMENTE
+ * - Cuando cliente dice "me interesa [producto]" → ENVIA plantilla con copy + imágenes
+ * - Cuando cliente dice "quiero" después de plantilla → AVANZA sin repetir
+ * - Cuando cliente ya tiene pedido en curso → AVANZA sin repetir plantilla
  */
 
 const supabase = createClient(
@@ -1952,9 +1912,6 @@ function isRespondingToPromotion(text: string, history: any[]) {
   return lastBotMessages.some((item) => isPromotionLikeMessage(clean(item?.content)));
 }
 
-// ============================================
-// FIX V25: FUNCIÓN MEJORADA - NO REINICIA PEDIDO POR CONFIRMACIONES
-// ============================================
 function shouldStartFreshOrder({
   texto,
   context,
@@ -1994,14 +1951,13 @@ function shouldStartFreshOrder({
 
   const stale = isOrderStale(oldOrder, context?.updated_at || new Date().toISOString());
 
-  // ✅ FIX V25: Si el cliente ya tiene producto y está confirmando, NO reiniciar
   const isJustConfirming =
     oldOrder.product &&
     (isGenericBuyReply(texto) || isAffirmative(texto) || hasTemplateBuyIntent(texto)) &&
     !productChanged;
 
   if (isJustConfirming && oldOrder.city) {
-    return false; // Ya tiene ciudad, solo está confirmando
+    return false;
   }
 
   return Boolean(productChanged || campaignClick || genericWantsPromo || contextWasConfirmed || stale);
@@ -2326,15 +2282,11 @@ function isThanksOnly(text: string) {
   return /^(gracias|muchas gracias|ok gracias|dale gracias|listo gracias|iii muchas gracias|mil gracias|perfecto gracias|ok|dale|listo)$/i.test(n);
 }
 
-// ============================================
-// FIX V25: DETERMINISTIC GENERAL RESPONSE MEJORADO
-// ============================================
 function deterministicGeneralSalesResponse(text: string, state: ConversationState, parsed: ParsedTraining, templatePricing?: TemplatePricing | null) {
   const o = state.order;
   const productName = state.productInfo?.canonical || o.product || "";
   const priceLine = productPriceText(state.productInfo, o.locked_offer, templatePricing);
 
-  // ✅ FIX V25: Si ya tiene producto y ciudad, avanzar a preguntar cantidad o datos
   if (o.product && o.city) {
     if (isGenericBuyReply(text) || isAffirmative(text) || isBuyIntent(text)) {
       if (!o.quantity && !o.locked_offer?.fixed_quantity) {
@@ -2364,7 +2316,6 @@ Ahora solo necesito:
     }
   }
 
-  // ✅ FIX V25: "cuando me llevan" o preguntas de entrega
   if (/\b(cuando me llevan|cuando llega|cuando entregan|cuando envían|cuando me mandan|cuando me traen)\b/.test(normalize(text))) {
     if (productName && o.city) {
       return `🚚 Tu pedido de ${productName} queda agendado para la próxima ronda de envíos.
@@ -3107,18 +3058,12 @@ function deterministicObservationAckMessage(state: ConversationState, parsed: Pa
   return `${intro}\n\n✅ Tengo todos los datos del pedido. Nuestro equipo tendrá en cuenta esa observación para coordinar 😊`;
 }
 
-// ============================================
-// FIX V25: FUNCIÓN MEJORADA - NO REPITE PLANTILLA SI YA HAY PEDIDO
-// ============================================
 function buildFullProductCopyResponse(state: ConversationState, templatePricing?: TemplatePricing | null, forceFullCopy = false) {
-  // ✅ Si el pedido ya tiene producto y ciudad, NO enviar copy completo
   if (state.order.product && state.order.city && !forceFullCopy) {
     return "";
   }
 
-  // ✅ Si el pedido ya tiene producto pero el mensaje es confirmación, NO enviar copy
   if (state.order.product && !state.order.city) {
-    // Solo enviar copy si es la PRIMERA vez que se pregunta por ciudad
     const lastMessageWasQuestion = state.hardInstruction?.includes("preguntar SOLO ciudad");
     if (lastMessageWasQuestion) {
       return "";
@@ -3688,6 +3633,15 @@ export default async function handler(req: any, res: any) {
       freshOrder = true;
     }
 
+    // ⚠️ IMPORTANTE: Guardamos el producto detectado ANTES de que sea asignado al pedido
+    const detectedProductFromMessage = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
+    
+    // Detectar si es la PRIMERA vez que el cliente muestra interés en este producto
+    const isFirstInterest = 
+      !oldOrder.product && 
+      detectedProductFromMessage &&
+      (isBuyIntent(texto) || isGenericBuyReply(texto) || /\b(me interesa|precio|cuanto|info|informacion|consultar)\b/.test(normalize(texto)));
+
     if (freshOrder) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
     }
@@ -4195,8 +4149,43 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
-    // ✅ FIX V25: Si el cliente tiene producto y dice "quiero" o confirma, avanzar en lugar de repetir
-    if (isBuyIntent(texto) || isGenericBuyReply(texto) || isAffirmative(texto)) {
+    // ✅ FIX V26: LÓGICA CORREGIDA PARA ENVÍO DE PLANTILLA
+    // 1. SI es PRIMERA VEZ que muestra interés y NO tiene producto → ENVIAR plantilla
+    // 2. SI ya tiene producto y está confirmando → AVANZAR (NO enviar plantilla)
+    // 3. SI ya tiene producto y ciudad pero NO cantidad → AVANZAR (NO enviar plantilla)
+    
+    const isFirstInterestNow = 
+      !orderData.product && 
+      detectedProductFromMessage &&
+      (isBuyIntent(texto) || isGenericBuyReply(texto) || /\b(me interesa|precio|cuanto|info|informacion|consultar)\b/.test(normalize(texto)));
+
+    const isConfirmingWithProduct = 
+      orderData.product && 
+      (isBuyIntent(texto) || isGenericBuyReply(texto) || isAffirmative(texto));
+
+    const hasActiveOrder = Boolean(
+      orderData.product && 
+      (orderData.city || orderData.quantity || orderData.customer_name || orderData.phone)
+    );
+
+    const repeatedTemplate24h = Boolean(
+      finalState.productInfo?.canonical &&
+      wasProductTemplateSentRecently(context, finalState.productInfo?.canonical || orderData.product, 24)
+    );
+
+    let didSendTemplateThisTurn = false;
+    let fullProductCopyResponse = "";
+
+    // DECISIÓN: Enviar plantilla SOLO si es la primera vez que muestra interés
+    if (isFirstInterestNow && !repeatedTemplate24h) {
+      fullProductCopyResponse = buildFullProductCopyResponse(finalState, templatePricing);
+      didSendTemplateThisTurn = true;
+      
+      if (fullProductCopyResponse) {
+        aiResponse = fullProductCopyResponse;
+      }
+    } else if (isConfirmingWithProduct || hasActiveOrder) {
+      // Si ya tiene producto y está confirmando, NO enviar plantilla, solo avanzar
       if (orderData.product && !orderData.city) {
         aiResponse = `✅ Perfecto 😊
 
@@ -4226,38 +4215,8 @@ Para agendarlo, pasame:
 ✅ dirección exacta o ubicación
 ✅ número de celular 📲`;
       }
-    }
-
-    // ✅ FIX V25: No enviar plantilla si ya hay pedido en curso o si el cliente está confirmando
-    const repeatedTemplate24h = Boolean(
-      finalState.productInfo?.canonical &&
-      wasProductTemplateSentRecently(context, finalState.productInfo?.canonical || orderData.product, 24)
-    );
-
-    const hasActiveOrder = Boolean(
-      orderData.product && 
-      (orderData.city || orderData.quantity || orderData.customer_name || orderData.phone)
-    );
-
-    const isJustConfirming = isBuyIntent(texto) || isGenericBuyReply(texto) || isAffirmative(texto);
-
-    const shouldSendFullCopy = 
-      !orderData.city && 
-      !hasActiveOrder && 
-      !repeatedTemplate24h &&
-      !isJustConfirming;
-
-    let fullProductCopyResponse = "";
-    if (shouldSendFullCopy) {
-      fullProductCopyResponse = buildFullProductCopyResponse(finalState, templatePricing);
-    }
-
-    let didSendTemplateThisTurn = false;
-
-    if (fullProductCopyResponse && !isJustConfirming && !hasActiveOrder) {
-      aiResponse = fullProductCopyResponse;
-      didSendTemplateThisTurn = true;
     } else if (!orderData.city && repeatedTemplate24h) {
+      // Si ya se envió la plantilla en las últimas 24h, no repetir
       aiResponse =
         deterministicGeneralSalesResponse(texto, finalState, parsed, templatePricing) ||
         repeatedProductShortResponse(finalState, parsed, templatePricing);
@@ -4267,7 +4226,8 @@ Para agendarlo, pasame:
 
     const productoPorClave = encontrarProductoPorPalabraClave(texto, parsed.products);
 
-    if (!orderData.city && !repeatedTemplate24h && !isJustConfirming && !hasActiveOrder) {
+    // Enviar imágenes SOLO si es la primera vez que muestra interés
+    if (isFirstInterestNow && !repeatedTemplate24h) {
       if (productoPorClave && productoPorClave.images?.length) {
         imagesToSend = productoPorClave.images.slice(0, 3);
         didSendTemplateThisTurn = true;
@@ -4315,8 +4275,10 @@ Para agendarlo, pasame:
             repeated_template_24h: repeatedTemplate24h,
             did_send_template_this_turn: didSendTemplateThisTurn,
             producto_por_clave: productoPorClave?.palabra_clave || null,
-            is_just_confirming: isJustConfirming,
+            is_first_interest: isFirstInterestNow,
+            is_confirming_with_product: isConfirmingWithProduct,
             has_active_order: hasActiveOrder,
+            detected_product_from_message: detectedProductFromMessage,
           }
         : undefined,
     });
