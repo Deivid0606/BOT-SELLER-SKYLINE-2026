@@ -805,9 +805,40 @@ function isQuestionLikeMessage(text: string) {
   // Consultas frecuentes que nunca deben convertirse en ciudad, nombre o dirección.
   return (
     /[?¿]/.test(raw) ||
-    /^(de donde son|donde estan|donde queda|donde se encuentran|quienes son|como funciona|como se usa|como es|que incluye|que trae|cuanto tarda|cuando llega|tienen garantia|hay garantia|es original|hacen envios|envian|aceptan transferencia|como pago|formas de pago|puedo pagar|tienen local|tienen tienda|tienen sucursal)\b/.test(n) ||
+    // Tolera palabras delante y errores comunes: "pero de doinde son", "de dónde son ustedes".
+    /\b(?:pero\s+)?(?:de\s+)?d(?:o|oi|ó)nde\s+son(?:\s+ustedes)?\b/.test(n) ||
+    /\b(donde estan|donde queda|donde se encuentran|quienes son|como funciona|como se usa|como es|que incluye|que trae|cuanto tarda|cuando llega|tienen garantia|hay garantia|es original|hacen envios|envian|aceptan transferencia|como pago|formas de pago|puedo pagar|tienen local|tienen tienda|tienen sucursal)\b/.test(n) ||
     /^(que|como|cuando|donde|por que|porque|cual|cuales|quien|quienes|cuanto|cuantos|cuanta|cuantas)\b/.test(n)
   );
+}
+
+function buildDeterministicBusinessQuestionResponse(text: string, state: ConversationState) {
+  const n = normalize(text);
+  if (!n) return "";
+
+  // Respuesta fija: nunca dejar esta consulta a criterio de Gemini.
+  // Acepta: "de donde son", "pero de doinde son", "donde son ustedes", etc.
+  const asksOrigin =
+    /\b(?:pero\s+)?(?:de\s+)?d(?:o|oi|ó)nde\s+son(?:\s+ustedes)?\b/.test(n) ||
+    /\bde que ciudad son\b/.test(n) ||
+    /\bubicacion de ustedes\b/.test(n);
+
+  if (!asksOrigin) return "";
+
+  let continuation = "";
+  if (!state.order.city) {
+    continuation = "📍 ¿Para qué ciudad sería el envío?";
+  } else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) {
+    continuation = "¿Cuántas unidades querés llevar?";
+  } else if (!state.order.customer_name) {
+    continuation = "Para continuar, pasame tu nombre y apellido.";
+  } else if (state.coverage !== false && !state.order.address) {
+    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
+  } else if (!state.order.phone) {
+    continuation = "Por último, pasame un número de celular para coordinar la entrega.";
+  }
+
+  return `Somos de Asunción y hacemos envíos a todo el país. 😊${continuation ? `\n\n${continuation}` : ""}`;
 }
 
 function exactKnownCity(text: string, parsed: ParsedTraining): string {
@@ -3928,6 +3959,13 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
 
     if (!aiResponse || aiResponse === "__GEMINI_QUOTA_EXCEEDED__") {
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
+    }
+
+    // ✅ FIX V27: las preguntas frecuentes del negocio se responden de forma determinística.
+    // Esto evita que Gemini ignore "¿de dónde son?" y vuelva a vender el producto.
+    const deterministicBusinessResponse = buildDeterministicBusinessQuestionResponse(texto, finalState);
+    if (deterministicBusinessResponse) {
+      aiResponse = deterministicBusinessResponse;
     }
 
     // ✅ FIX V18: si estamos presentando el producto, enviar SIEMPRE el copy completo cargado.
