@@ -2002,7 +2002,27 @@ function shouldStartFreshOrder({
     explicitInterest &&
     !!productFromMessage;
 
+  // Una respuesta como "2 quiero", "quiero 1", "dos unidades", etc.
+  // durante un pedido activo NO debe iniciar una venta nueva. Si se reinicia aquí,
+  // se borra la ciudad/cantidad ya recopilada y se vuelve a enviar el copy del producto.
+  const activeCollectionSteps = new Set([
+    "collecting_city",
+    "collecting_quantity",
+    "collecting_name",
+    "collecting_address",
+    "collecting_phone",
+    "waiting_payment_proof",
+  ]);
+
+  const isActiveOrderFlow =
+    activeCollectionSteps.has(clean(context?.step)) &&
+    !!oldOrder.product;
+
+  const explicitQuantityReply = extractQuantity(texto) > 0;
+
   const genericWantsPromo =
+    !isActiveOrderFlow &&
+    !explicitQuantityReply &&
     (isGenericBuyReply(texto) || isBuyIntent(texto)) &&
     promoResponse &&
     !!lockedProductByContext;
@@ -2010,6 +2030,10 @@ function shouldStartFreshOrder({
   const contextWasConfirmed = context?.step === "pedido_confirmado";
 
   const stale = isOrderStale(oldOrder, context?.updated_at || new Date().toISOString());
+
+  // Protección adicional: mientras se están recopilando datos del mismo pedido,
+  // conservar siempre el pedido actual, salvo que el cliente mencione otro producto.
+  if (isActiveOrderFlow && !productChanged) return false;
 
   return Boolean(productChanged || campaignClick || genericWantsPromo || contextWasConfirmed || stale);
 }
