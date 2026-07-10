@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V3 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V33 - Mega Todo Store / One Store
  * FIX V31: No confunde stock/talles/precio anterior con pack fijo; reconoce "Hoy" como precio unitario.
  *
  * Soluciona:
@@ -41,6 +41,7 @@ import { createClient } from "@supabase/supabase-js";
  * 34) FIX V21: Evita quedarse mudo; si audio no se puede transcribir, responde claro sin romper el pedido.
  * 35) FIX V22: Guarda observaciones de pago/fecha/horario/coordinar entrega sin perder la venta.
  * 36) FIX V23: Responde determinísticamente cuando el cliente deja observación de pago/fecha/horario, sin depender de Gemini.
+ * 37) FIX V33 DEFINITIVO: el copy del catálogo se envía literal desde backend; Gemini nunca lo reescribe.
  * 37) FIX V30: Después de pedido confirmado, una intención explícita sobre otro producto reinicia la venta, incluso con errores como "mi interesa".
  * 37) FIX V26: Las consultas tienen prioridad; no reemplaza la respuesta con el copy ni reenvía imágenes mientras falta ciudad.
  * 37) FIX V25: Separa consultas de ciudades; una pregunta corta nunca activa transportadora ni cobertura falsa.
@@ -3095,7 +3096,7 @@ REGLAS DURAS:
   5) No recalcules total multiplicando precio de plantilla por cantidad.
   6) Solo usá el catálogo del entrenamiento cuando NO exista plantilla activa.
 - Nunca uses números de dirección, teléfono o calle como precio.
-- Si hay "COPY DE VENTA ORIGINAL" para el producto actual y todavía falta ciudad, enviá TODO el copy original completo, sin resumir, sin recortar y sin cambiar el orden. Solo podés agregar al final la pregunta de ciudad. Nunca calcules ni escribas un precio distinto al ya provisto.
+- El COPY DE VENTA ORIGINAL es texto literal e inmutable. Nunca lo reescribas, resumas, corrijas, traduzcas, formatees, expliques ni interpretes. Nunca agregues saludo, separadores, packs, precios o condiciones. En la presentación inicial el backend lo envía directamente y vos no intervenís.
 - Nunca inventes otro producto. Si llegó plantilla nueva, es venta nueva.
 - Después de pedido confirmado, responder postventa si pregunta factura/entrega/pago/garantía.
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
@@ -3133,9 +3134,8 @@ ${productsSummary(parsed)}
   if (!o.city) {
     const copy = state.productInfo?.salesCopy;
     const priceLine = productPriceText(state.productInfo, o.locked_offer, templatePricing);
-    const copyMentionsPrice = copy ? /gs\.?\s*\d[\d.\s]{3,}|\d[\d.\s]{3,}\s*gs/i.test(copy) : false;
     return copy
-      ? `${copy}${copyMentionsPrice ? "" : `\n\n${priceLine}`}\n\n📍 ¿Para qué ciudad sería el envío? 😊`
+      ? `${copy.trim()}\n\n📍 ¿Para qué ciudad sería el envío? 😊`
       : `¡Excelente elección! 🔥
 
 ${state.productInfo?.canonical || o.product}
@@ -4018,6 +4018,62 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    // ✅ FIX V33 DEFINITIVO: PRESENTACIÓN DEL PRODUCTO SIN GEMINI.
+    // El copy cargado por el usuario es un artefacto literal: no se resume, corrige,
+    // interpreta ni se mezcla con precios detectados. Solo se agrega la pregunta operativa.
+    const currentMessageIsQuestionBeforeAI = isQuestionLikeMessage(texto);
+    const currentMessageHasQuantityBeforeAI = extractQuantity(texto) > 0;
+    const currentMessageIsAcknowledgementBeforeAI = isShortAcknowledgement(texto);
+    const explicitProductInterestNow = hasExplicitProductInterestPhrase(texto);
+    const productMentionNow = !!detectProduct(texto, parsed, "");
+
+    const shouldPresentExactCatalogCopy = Boolean(
+      clean(finalState.productInfo?.salesCopy || "") &&
+      !orderData.city &&
+      !currentMessageIsQuestionBeforeAI &&
+      !currentMessageHasQuantityBeforeAI &&
+      !currentMessageIsAcknowledgementBeforeAI &&
+      (
+        freshOrder ||
+        newTemplateSignal.isNew ||
+        !!currentTemplatePricing ||
+        (explicitProductInterestNow && productMentionNow)
+      )
+    );
+
+    if (shouldPresentExactCatalogCopy) {
+      const exactCopyResponse = buildFullProductCopyResponse(finalState, templatePricing);
+      const exactImages = finalState.productInfo?.images?.length
+        ? finalState.productInfo.images.slice(0, 3)
+        : undefined;
+
+      return res.json({
+        // IMPORTANTE: no pasar por postProcessResponse; conserva el formato literal.
+        response: exactCopyResponse,
+        media_urls: exactImages,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || null,
+          last_topic: orderData.product || context?.last_topic || null,
+          last_ad_offer: orderData.locked_offer || null,
+          order_data: orderData,
+          order_id: orderData.order_id || null,
+          payment_proof_received: orderData.payment_proof_received || false,
+          step: finalState.step,
+          updated_at: new Date().toISOString(),
+        },
+        debug: true
+          ? {
+              exact_catalog_copy_backend: true,
+              gemini_skipped: true,
+              product: orderData.product,
+              city: orderData.city,
+              step: finalState.step,
+            }
+          : undefined,
+      });
+    }
+
     const system = buildSalesSystemPrompt(parsed, finalState, templatePricing);
 
     const contents = (history || [])
@@ -4067,30 +4123,10 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = deterministicAcknowledgementResponse;
     }
 
-    // ✅ FIX V18: si estamos presentando el producto, enviar SIEMPRE el copy completo cargado.
-    // No dejamos que Gemini lo resuma ni que postProcess lo corte.
-    // ✅ FIX V26: una consulta del cliente tiene prioridad sobre el reenvío del copy.
-    // Ej.: "DE DONDE SON" debe responderse y luego retomar la ciudad pendiente.
+    // El copy exacto ya fue atendido antes de llamar a Gemini (FIX V33).
+    // Desde este punto solo se procesan consultas, datos del pedido y postventa.
     const currentMessageIsQuestion = isQuestionLikeMessage(texto);
     const currentMessageHasQuantity = extractQuantity(texto) > 0;
-    const currentMessageIsAcknowledgement = isShortAcknowledgement(texto);
-    const hasExactCatalogCopy = !!clean(finalState.productInfo?.salesCopy || "");
-
-    // ✅ FIX V32: el copy exacto del catálogo tiene prioridad absoluta al presentar un producto.
-    // No depende de que detectProduct() vuelva a reconocer el texto ni de newTemplateSignal,
-    // porque esas señales pueden fallar con alias, errores ortográficos o nombres visuales.
-    // Las consultas, cantidades y respuestas sociales siguen excluidas para no repetir el copy.
-    const fullProductCopyResponse =
-      !orderData.city &&
-      hasExactCatalogCopy &&
-      !currentMessageIsQuestion &&
-      !currentMessageHasQuantity &&
-      !currentMessageIsAcknowledgement
-        ? buildFullProductCopyResponse(finalState, templatePricing)
-        : "";
-    if (fullProductCopyResponse) {
-      aiResponse = fullProductCopyResponse;
-    }
 
     // ✅ FIX IMAGENES: Enviar hasta 3 imágenes del producto que coincide con PALABRA_CLAVE
     let imagesToSend: string[] | undefined = undefined;
