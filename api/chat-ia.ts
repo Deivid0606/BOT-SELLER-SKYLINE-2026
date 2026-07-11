@@ -2281,13 +2281,27 @@ function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, hist
 
   const productInMessage = detectProduct(raw, parsed, "");
   const pricingInMessage = detectTemplatePricingSmart(raw, parsed);
-  const pricingFromHistory = getTemplatePricingFromHistory(history, parsed);
-  const lastTemplateProduct = getProductFromLastPromotion(history, parsed)?.canonical || "";
+
+  // ✅ FIX V44: pricingFromHistory (que escanea hasta 30 mensajes atrás, cruzando
+  // posiblemente varios productos distintos probados en la misma conversación) solo
+  // debe consultarse cuando el mensaje ACTUAL expresa intención real de compra
+  // ("quiero", "dale", etc.) — nunca para una palabra suelta como "precio", "info"
+  // o "cuanto" que no menciona ningún producto. Antes se consultaba siempre, y un
+  // simple "precio" terminaba enganchando un producto viejo de mucho más atrás en
+  // el historial, reiniciando el pedido activo sin que el cliente lo pidiera.
+  const hasCurrentBuyIntent = isGenericBuyReply(raw) || isBuyIntent(raw) || hasTemplateBuyIntent(raw);
+  const pricingFromHistory = hasCurrentBuyIntent ? getTemplatePricingFromHistory(history, parsed) : null;
+  const lastTemplateProduct = hasCurrentBuyIntent ? (getProductFromLastPromotion(history, parsed)?.canonical || "") : "";
   const effectivePricing = pricingInMessage || pricingFromHistory;
 
+  // ✅ FIX V44: isSafeTemplatePricingMessage matchea con que aparezca UNA sola
+  // palabra suelta como "precio" en el mensaje — es útil para escanear texto
+  // pegado/largo del historial, pero demasiado floja para decidir si el mensaje
+  // ACTUAL del cliente es una plantilla nueva pegada. Para eso alcanza con
+  // isPromotionLikeMessage (requiere emoji o palabras de promo más específicas) o
+  // con que el mensaje realmente traiga un precio+producto detectado (pricingInMessage).
   const pastedTemplate =
     isPromotionLikeMessage(raw) ||
-    isSafeTemplatePricingMessage(raw) ||
     !!pricingInMessage;
 
   const productInterest =
@@ -2295,7 +2309,7 @@ function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, hist
     hasExplicitProductInterestPhrase(raw);
 
   const wantsLastTemplate =
-    (isGenericBuyReply(raw) || isBuyIntent(raw)) &&
+    hasCurrentBuyIntent &&
     !!lastTemplateProduct;
 
   return {
@@ -3825,12 +3839,21 @@ export default async function handler(req: any, res: any) {
       ? (currentTemplateLockedOffer || getOfferFromLastPromotion(history, parsed))
       : getLockedOfferFromContext(context, oldOrder, history, parsed);
 
+    // ✅ FIX V44: si el mensaje no nombra ningún producto explícito ("precio", "ok",
+    // etc.) y ya hay un producto activo en el pedido actual (oldOrder.product), ese
+    // producto activo debe ganar SIEMPRE por sobre una "plantilla" encontrada en el
+    // historial lejano. Antes, templatePricing?.product (que puede venir de un
+    // producto completamente distinto probado varios mensajes atrás en la misma
+    // conversación) tenía prioridad sobre el producto realmente activo, y un simple
+    // "precio" sin nombre de producto podía hacer que el bot saltara a vender otro
+    // producto de la nada.
     let productToUse =
       currentTemplatePricing?.product ||
       ((isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) ? recentExplicitProductInterest?.product?.canonical || "" : "") ||
-      templatePricing?.product ||
-      newTemplateSignal.product ||
       productFromMessageInitial ||
+      newTemplateSignal.product ||
+      (!freshOrder ? oldOrder.product || "" : "") ||
+      templatePricing?.product ||
       "";
 
     if (!productToUse && (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))) {
