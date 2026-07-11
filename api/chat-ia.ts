@@ -3970,10 +3970,63 @@ export default async function handler(req: any, res: any) {
             ? detectCity(texto, parsed, oldOrder.city)
             : "");
 
+    // ✅ FIX V43: si la coincidencia de ciudad no es EXACTA contra la lista de
+    // cobertura (ej. el cliente escribió "Arega" en vez de "Aregua", que sí está
+    // registrada como alias), pedimos confirmación en vez de asumir directamente.
+    // Si ya había una confirmación pendiente de un turno anterior, la resolvemos
+    // primero con la respuesta del cliente (sí/no).
+    const pendingCityConfirmation = clean(context?.pending_city_confirmation || "");
+    let cityConfirmedNow = "";
+    let cityConfirmationDeclined = false;
+
+    if (pendingCityConfirmation && !oldOrder.city && !freshOrder) {
+      const msgNorm = normalize(texto);
+      if (/^(si|sí|correcto|exacto|esa|ese|esa es|es esa|asi es|así es|dale|ok)$/.test(msgNorm)) {
+        cityConfirmedNow = pendingCityConfirmation;
+      } else if (/^(no|no es esa|otra|nop|no es)$/.test(msgNorm)) {
+        cityConfirmationDeclined = true;
+      }
+    }
+
+    if (cityConfirmationDeclined) {
+      return res.json({
+        response: `😊 Entendido, ¿cuál sería tu ciudad entonces?`,
+        context: {
+          ...(context || {}),
+          pending_city_confirmation: null,
+          updated_at: new Date().toISOString(),
+        },
+      });
+    }
+
+    const effectiveDetectedCity = cityConfirmedNow || detectedCity;
+
+    const cityCandidateRaw = cityStatement || texto;
+    const isExactCityMatch =
+      !!cityConfirmedNow || (!!detectedCity && !!exactKnownCity(cityCandidateRaw, parsed));
+
+    const needsCityConfirmation =
+      !cityConfirmedNow &&
+      !!detectedCity &&
+      detectedCity !== oldOrder.city &&
+      !isExactCityMatch &&
+      !isQuestionLikeMessage(texto);
+
+    if (needsCityConfirmation) {
+      return res.json({
+        response: `📍 ¿Tu ciudad sería ${detectedCity}? 😊`,
+        context: {
+          ...(context || {}),
+          pending_city_confirmation: detectedCity,
+          updated_at: new Date().toISOString(),
+        },
+      });
+    }
+
     const phone = extractPhone(texto);
     const qty = explicitQty;
-    const name = extractName(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone, parsed);
-    const address = extractAddress(texto, detectedCity !== oldOrder.city ? detectedCity : "", phone, name);
+    const name = extractName(texto, effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "", phone, parsed);
+    const address = extractAddress(texto, effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "", phone, name);
     const observationPatch = extractOrderObservation(texto);
 
     let orderData = mergeOrderData(
@@ -3981,7 +4034,7 @@ export default async function handler(req: any, res: any) {
       {
         order_id: oldOrder.order_id || makeOrderId(fromNumber),
         quantity: qty,
-        city: detectedCity && detectedCity !== oldOrder.city ? detectedCity : "",
+        city: effectiveDetectedCity && effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
         phone,
         name,
         address,
