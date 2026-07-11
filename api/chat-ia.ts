@@ -1262,12 +1262,31 @@ function hasOrderObservation(order: Partial<OrderData> | null | undefined) {
 }
 
 function observationLines(order: Partial<OrderData> | null | undefined) {
-  const lines: string[] = [];
-  if (clean(order?.observation)) lines.push(`📝 Observación: ${clean(order?.observation)}`);
-  if (clean(order?.payment_note)) lines.push(`💵 Nota de pago: ${clean(order?.payment_note)}`);
-  if (clean(order?.preferred_delivery_date)) lines.push(`📅 Fecha solicitada: ${clean(order?.preferred_delivery_date)}`);
-  if (clean(order?.preferred_delivery_time)) lines.push(`🕒 Horario solicitado: ${clean(order?.preferred_delivery_time)}`);
-  return lines;
+  const values = [
+    clean(order?.observation),
+    clean(order?.payment_note),
+    clean(order?.preferred_delivery_date),
+    clean(order?.preferred_delivery_time),
+  ].filter(Boolean);
+
+  const unique: string[] = [];
+  for (const value of values) {
+    const parts = value.split(/\s*\|\s*/g).map(clean).filter(Boolean);
+    for (const part of parts) {
+      const normalizedPart = normalize(part);
+      const alreadyIncluded = unique.some((existing) => {
+        const normalizedExisting = normalize(existing);
+        return (
+          normalizedExisting === normalizedPart ||
+          normalizedExisting.includes(normalizedPart) ||
+          normalizedPart.includes(normalizedExisting)
+        );
+      });
+      if (!alreadyIncluded) unique.push(part);
+    }
+  }
+
+  return unique.length ? [`📝 Observación: ${unique.join(" | ")}`] : [];
 }
 
 function observationBlock(order: Partial<OrderData> | null | undefined) {
@@ -1286,24 +1305,24 @@ function extractOrderObservation(text: string): Partial<OrderData> {
 
   if (/\b(no tengo plata|no tengo efectivo|no tengo dinero|sin plata|sin efectivo|ahora no tengo|cobro|cobrare|cobraré|cuando cobre|cuando cobro|cobrar|sueldo|salario|quincena|fin de mes|este mes|mes que viene|proximo mes|próximo mes|te pago|pago el|pagar el|puedo pagar|voy a pagar|pago cuando|pagar cuando|recién cobro|recien cobro)\b/.test(n)) {
     obs.payment_note = raw;
-    obs.observation = mergeUniqueText(obs.observation, `Cliente indicó condición de pago: ${raw}`);
+    obs.observation = mergeUniqueText(obs.observation, raw);
   }
 
   const deliveryDateRegex = new RegExp(`\\b(recibir|recibo|recibirlo|entregar|entrega|traer|traigan|llevar|mandar|mandame|enviar|envio|envío|delivery|para)\\b[\\s\\S]{0,80}\\b(${dateWords})\\b`, "i");
   const dateOnlyIntentRegex = new RegExp(`\\b(quiero|necesito|puede ser|seria|sería|me sirve|agendar|reservar|dejar)\\b[\\s\\S]{0,80}\\b(${dateWords})\\b`, "i");
   if (deliveryDateRegex.test(n) || dateOnlyIntentRegex.test(n)) {
     obs.preferred_delivery_date = raw;
-    obs.observation = mergeUniqueText(obs.observation, `Cliente solicita fecha especial: ${raw}`);
+    obs.observation = mergeUniqueText(obs.observation, raw);
   }
 
   const timeRegex = new RegExp(`\\b(${hourWords})\\b`, "i");
   if (timeRegex.test(n) && /\b(recibir|entregar|traer|llevar|mandar|enviar|delivery|estoy|puedo|solo|solamente|pasar|llegar|horario|hora|a las|despues|después|antes|hasta|desde|manana|mañana|tarde|noche)\b/.test(n)) {
     obs.preferred_delivery_time = raw;
-    obs.observation = mergeUniqueText(obs.observation, `Cliente solicita horario especial: ${raw}`);
+    obs.observation = mergeUniqueText(obs.observation, raw);
   }
 
-  if (/\b(llamar antes|avisar antes|avisen antes|avisame antes|avisar|coordinar|coordinamos|no estoy|no voy a estar|estoy solo|solo estoy|porteria|portería|guardia|dejar con|retira|retirar)\b/.test(n)) {
-    obs.observation = mergeUniqueText(obs.observation, `Cliente pide coordinación especial: ${raw}`);
+  if (/\b(llamar antes|avisar antes|avisen antes|avisame antes|avísame antes|te aviso|yo aviso|les aviso|aviso luego|despues te aviso|después te aviso|avisar|coordinar|coordinamos|no estoy|no voy a estar|estoy solo|solo estoy|porteria|portería|guardia|dejar con|retira|retirar)\b/.test(n)) {
+    obs.observation = mergeUniqueText(obs.observation, raw);
   }
 
   return obs;
