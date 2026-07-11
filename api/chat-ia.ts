@@ -903,6 +903,20 @@ function hasCoverage(city: string, parsed: ParsedTraining) {
   });
 }
 
+function isTemporalDeliveryExpression(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /\b(hoy|manana|mañana|pasado manana|pasado mañana|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo|fin de semana|quincena|fin de mes|principio de mes|inicio de mes|proximo mes|próximo mes|mes que viene)\b/.test(n) ||
+    /\b(?:para|el|este|proximo|próximo)\s+(?:el\s+)?(?:lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)\b/.test(n) ||
+    /\b(?:a|para|hasta|desde)\s+(?:fin|fines|principio|inicio)\s+de\s+(?:mes|semana)\b/.test(n) ||
+    /\b(?:a las|desde las|hasta las|despues de|después de|antes de)\s+\d{1,2}(?::\d{2})?\s*(?:hs|hrs|am|pm)?\b/.test(n) ||
+    /\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/.test(n) ||
+    /\b\d{1,2}\s+de\s+(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b/.test(n)
+  );
+}
+
 function extractCityStatement(text: string): string {
   const raw = clean(text);
   const norm = normalize(raw);
@@ -914,6 +928,10 @@ function extractCityStatement(text: string): string {
     /^(hola|holaa|ola|buenas|buenos dias|buenos días|buen dia|buen día|hi|hey|buenas noches|buenas tardes|saludos|ok|dale|si|sí|no|gracias|de nada|listo|perfecto)[\s!.]*$/i;
 
   if (onlyGreeting.test(norm)) return "";
+
+  // Una fecha u horario de entrega nunca debe convertirse en ciudad.
+  // Ej.: "quiero para fin de mes", "puede ser para el sábado".
+  if (isTemporalDeliveryExpression(norm)) return "";
 
   const patterns: RegExp[] = [
     /\bsoy\s+de\s+la\s+ciudad\s+de\s+(.+)$/i,
@@ -953,6 +971,7 @@ function extractCityStatement(text: string): string {
       candidate.length >= 3 &&
       words.length <= 5 &&
       !/^\d+$/.test(candidate) &&
+      !isTemporalDeliveryExpression(candidate) &&
       !looksLikeSentenceNotCity(candidate)
     ) {
       return candidate;
@@ -2306,6 +2325,7 @@ function looksLikeSentenceNotCity(text: string) {
   const n = normalize(text);
   return (
     isQuestionLikeMessage(text) ||
+    isTemporalDeliveryExpression(n) ||
     /\b(me interesa|te interesa|interesa|quiero|necesito|cuanto|cuánto|cuesta|precio|tienen|tenes|tenés|hay|dame|mandame|reservame|consulta|informacion|información|hola|buenas|gracias|comprar|compro|de donde|donde son|donde estan|como funciona|que trae|garantia|original|datos|pasas|pasame|pásame|paso los|pagos|pago|pagar|cuenta|transferencia|alias|banco|comprobante|factura|numero de cuenta|número de cuenta)\b/.test(n)
   );
 }
