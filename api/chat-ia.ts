@@ -1,9 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V45 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V46 - Mega Todo Store / One Store
  * 
- * FIX V45: Resuelve el problema de repetir el copy completo cuando el cliente
+ * FIX V46: Resuelve definitivamente el problema de repetir el copy completo cuando el cliente
  * pregunta "precio" después de ya haber visto el producto.
  * 
  * Soluciona:
@@ -1865,23 +1865,51 @@ function wasProductCopyAlreadySent(history: any[], productInfo: ProductItem | nu
   });
 }
 
-// ✅ FIX V45: detecta si el copy de ESTE producto ya se envió en la conversación actual
+// ✅ FIX V46: detecta de forma robusta si el copy de ESTE producto ya fue enviado.
+// Tolera distintos nombres de rol y respuestas que agregan la pregunta de ciudad al final.
 function wasCopyAlreadySentInThisConversation(history: any[], productInfo: ProductItem | null): boolean {
   const copy = clean(productInfo?.salesCopy || "");
   if (!copy) return false;
 
-  // Buscar en los últimos mensajes del BOT (assistant/model)
-  const botMessages = (history || [])
-    .filter((h: any) => h.role === "assistant" || h.role === "model")
-    .slice(-6);
+  const normalizedCopy = normalize(copy);
+  const copyFingerprint = normalizedCopy
+    .split(/\s+/)
+    .slice(0, 18)
+    .join(" ");
 
-  return botMessages.some((item: any) => {
-    const content = clean(item?.content);
-    if (!content) return false;
+  return (history || [])
+    .slice(-20)
+    .some((item: any) => {
+      const role = normalize(
+        item?.role ||
+        item?.sender_type ||
+        item?.type ||
+        item?.from_role ||
+        item?.author ||
+        ""
+      );
 
-    // Si el mensaje del bot contiene el copy O empieza con el copy
-    return content === copy || content.startsWith(copy) || content.includes(copy);
-  });
+      const isBotMessage =
+        !role ||
+        ["assistant", "model", "bot", "ai", "agent", "system bot"].includes(role);
+
+      if (!isBotMessage) return false;
+
+      const content = historyText(item);
+      if (!content) return false;
+
+      const normalizedContent = normalize(content);
+
+      return (
+        content === copy ||
+        content.startsWith(copy) ||
+        content.includes(copy) ||
+        (
+          copyFingerprint.length >= 40 &&
+          normalizedContent.includes(copyFingerprint)
+        )
+      );
+    });
 }
 
 function isCatalogCopyHistoryMessage(text: string, parsed: ParsedTraining) {
@@ -3155,6 +3183,43 @@ function buildFullProductCopyResponse(state: ConversationState, _templatePricing
 📍 ¿Para qué ciudad sería el envío? 😊`;
 }
 
+// ✅ FIX V46: para consultas de precio posteriores al copy, responde solo precios
+// y avanza al siguiente dato pendiente, sin repetir el anuncio completo.
+function buildPriceOnlyResponse(
+  state: ConversationState,
+  templatePricing?: TemplatePricing | null
+) {
+  const productInfo = state.productInfo;
+  if (!productInfo) return "";
+
+  const priceText = productPriceText(
+    productInfo,
+    state.order.locked_offer,
+    templatePricing
+  );
+
+  if (!priceText) return "";
+
+  let continuation = "";
+
+  if (!state.order.city) {
+    continuation = "📍 ¿Para qué ciudad sería el envío? 😊";
+  } else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) {
+    continuation = "¿Cuántas unidades querés llevar? 😊";
+  } else if (!state.order.customer_name) {
+    continuation = "Para continuar, pasame tu nombre y apellido. 😊";
+  } else if (state.coverage !== false && !state.order.address) {
+    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega. 😊";
+  } else if (!state.order.phone) {
+    continuation = "Por último, pasame un número de celular para coordinar la entrega. 😊";
+  }
+
+  return `🔥 Precio de hoy:
+${priceText}${continuation ? `
+
+${continuation}` : ""}`;
+}
+
 function buildFallbackResponse(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
   const o = state.order;
 
@@ -4123,8 +4188,47 @@ export default async function handler(req: any, res: any) {
     const explicitProductInterestNow = hasExplicitProductInterestPhrase(texto);
     const productMentionNow = !!detectProduct(texto, parsed, "");
 
-    // ✅ FIX V45: verificar si el copy ya se envió antes en esta conversación
+    // ✅ FIX V46: verificar si el copy ya se envió antes en esta conversación
     const copyAlreadySentInConversation = wasCopyAlreadySentInThisConversation(history, finalState.productInfo);
+
+    // Una consulta corta de precio, después de haber mostrado el producto,
+    // se resuelve de forma determinística antes de Gemini y antes de cualquier
+    // lógica capaz de reconstruir el copy completo.
+    if (
+      isPriceQuery(texto) &&
+      copyAlreadySentInConversation &&
+      finalState.productInfo
+    ) {
+      const priceOnlyResponse = buildPriceOnlyResponse(finalState, templatePricing);
+
+      if (priceOnlyResponse) {
+        return res.json({
+          response: priceOnlyResponse,
+          context: {
+            ...(context || {}),
+            current_product: orderData.product || null,
+            last_topic: orderData.product || context?.last_topic || null,
+            last_ad_offer: orderData.locked_offer || null,
+            order_data: orderData,
+            order_id: orderData.order_id || null,
+            payment_proof_received: orderData.payment_proof_received || false,
+            step: finalState.step,
+            updated_at: new Date().toISOString(),
+          },
+          debug: true
+            ? {
+                deterministic_price_response: true,
+                gemini_skipped: true,
+                copy_already_sent: true,
+                product: orderData.product,
+                city: orderData.city,
+                quantity: orderData.quantity,
+                step: finalState.step,
+              }
+            : undefined,
+        });
+      }
+    }
 
     const shouldPresentExactCatalogCopy = Boolean(
       clean(finalState.productInfo?.salesCopy || "") &&
@@ -4224,6 +4328,8 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
 
     if (
       explicitProductInterestNow &&
+      !isPriceQuery(texto) &&
+      !copyAlreadySentInConversation &&
       clean(finalState.productInfo?.salesCopy || "") &&
       !currentMessageIsQuestionBeforeAI
     ) {
