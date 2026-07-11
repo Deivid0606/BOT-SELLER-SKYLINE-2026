@@ -3762,6 +3762,26 @@ export default async function handler(req: any, res: any) {
       freshOrder = false;
     }
 
+    // Una cantidad aislada (por ejemplo, "1" o "2 unidades") durante una
+    // compra activa NO debe iniciar un pedido nuevo. De lo contrario se pierde
+    // la ciudad ya confirmada y el bot vuelve a solicitarla.
+    if (
+      extractQuantity(texto) > 0 &&
+      clean(oldOrder.product) &&
+      context?.step !== "pedido_confirmado"
+    ) {
+      freshOrder = false;
+    }
+
+    // Una confirmación de ciudad pendiente también pertenece al pedido activo.
+    if (
+      clean(context?.pending_city_confirmation || "") &&
+      isAffirmative(texto) &&
+      context?.step !== "pedido_confirmado"
+    ) {
+      freshOrder = false;
+    }
+
     if (freshOrder) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
     }
@@ -3930,7 +3950,7 @@ export default async function handler(req: any, res: any) {
     let cityConfirmedNow = "";
     let cityConfirmationDeclined = false;
 
-    if (pendingCityConfirmation && !oldOrder.city && !freshOrder) {
+    if (pendingCityConfirmation && !oldOrder.city) {
       const msgNorm = normalize(texto);
       if (/^(si|sí|correcto|exacto|esa|ese|esa es|es esa|asi es|así es|dale|ok)$/.test(msgNorm)) {
         cityConfirmedNow = pendingCityConfirmation;
@@ -3951,6 +3971,10 @@ export default async function handler(req: any, res: any) {
     }
 
     const effectiveDetectedCity = cityConfirmedNow || detectedCity;
+    const cityWasCapturedNow = Boolean(
+      cityConfirmedNow ||
+      (effectiveDetectedCity && normalize(effectiveDetectedCity) !== normalize(oldOrder.city || ""))
+    );
 
     const cityCandidateRaw = cityStatement || texto;
     const isExactCityMatch =
@@ -4193,7 +4217,7 @@ export default async function handler(req: any, res: any) {
     if (
       !confirm &&
       orderData.city &&
-      (prevStep === "collecting_city" || !!cityConfirmedNow) &&
+      cityWasCapturedNow &&
       !orderData.locked_offer?.fixed_quantity
     ) {
       const cityCoverageResponse = deterministicAfterCityCoverageMessage(finalState);
@@ -4228,13 +4252,14 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    if (!confirm && prevStep === "collecting_quantity" && qty > 0 && orderData.city) {
+    if (!confirm && qty > 0 && orderData.city) {
       const deterministicQtyResponse = deterministicAfterQuantityMessage(finalState, parsed);
       if (deterministicQtyResponse) {
         return res.json({
           response: deterministicQtyResponse,
           context: {
             ...(context || {}),
+            pending_city_confirmation: null,
             current_product: orderData.product || null,
             last_topic: orderData.product || context?.last_topic || null,
             last_ad_offer: orderData.locked_offer || null,
