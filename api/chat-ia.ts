@@ -1,9 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V46 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V55 - Mega Todo Store / One Store
  * 
- * FIX V46: Resuelve definitivamente el problema de repetir el copy completo cuando el cliente
+ * V55 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
+ *
+ * Mantiene el fix que evita repetir el copy cuando el cliente
  * pregunta "precio" después de ya haber visto el producto.
  * 
  * Soluciona:
@@ -716,6 +718,199 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
   return prevOk?.canonical || "";
 }
 
+
+function detectProductsMentioned(text: string, parsed: ParsedTraining): ProductItem[] {
+  const msg = normalize(text);
+  if (!msg) return [];
+
+  const found: ProductItem[] = [];
+  const seen = new Set<string>();
+
+  for (const product of parsed.products || []) {
+    const candidates = [
+      product.palabra_clave || "",
+      product.product || "",
+      product.canonical || "",
+      ...(product.aliases || []),
+    ]
+      .flatMap((value) => splitKeywordAliases(value))
+      .map(normalize)
+      .filter((value) => value.length >= 4 && !isGenericProductWord(value));
+
+    const matches = Array.from(new Set(candidates)).some((candidate) => {
+      const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(msg);
+    });
+
+    if (!matches) continue;
+
+    const key = normalize(product.canonical || product.product);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    found.push(product);
+  }
+
+  return found;
+}
+
+function buildMultipleProductsClarification(products: ProductItem[], currentCity: string): string {
+  const names = products.map((p) => p.canonical || p.product).filter(Boolean);
+  if (names.length < 2) return "";
+
+  const joined = names.length === 2
+    ? `${names[0]} y ${names[1]}`
+    : `${names.slice(0, -1).join(", ")} y ${names[names.length - 1]}`;
+
+  return `¡Perfecto! Podemos prepararte ${joined}. 😊\n\nPara registrar correctamente las cantidades, decime cuántas unidades querés de cada producto.\n\nEjemplo: “1 ${names[0]} y 1 ${names[1]}”.${currentCity ? `\n\n📍 Mantengo la ciudad de envío: ${currentCity}.` : ""}`;
+}
+
+
+type MultiCartItem = {
+  product: string;
+  quantity: number;
+  unit_price: number;
+  total: number;
+};
+
+function getMultiCartFromContext(context: any, parsed: ParsedTraining): MultiCartItem[] {
+  const raw = Array.isArray(context?.multi_product_cart) ? context.multi_product_cart : [];
+  const result: MultiCartItem[] = [];
+  const seen = new Set<string>();
+
+  for (const item of raw) {
+    const info = getProductInfo(item?.product || "", parsed);
+    if (!info) continue;
+    const key = normalize(info.canonical);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const quantity = sanitizeQuantity(item?.quantity || 0);
+    const total = quantity > 0 ? calculateTotal(info.canonical, quantity, parsed, null) : 0;
+    result.push({
+      product: info.canonical,
+      quantity,
+      unit_price: info.price1 || 0,
+      total,
+    });
+  }
+
+  return result;
+}
+
+function createMultiCart(products: ProductItem[]): MultiCartItem[] {
+  return products.map((p) => ({
+    product: p.canonical,
+    quantity: 0,
+    unit_price: p.price1 || 0,
+    total: 0,
+  }));
+}
+
+function productOffersText(product: ProductItem): string {
+  const offers: string[] = [];
+  if (product.fixedPackQuantity && product.price1) {
+    offers.push(`${product.fixedPackQuantity} unidades → ${formatGs(product.price1)} Gs`);
+  } else {
+    if (product.price1) offers.push(`1 unidad → ${formatGs(product.price1)} Gs`);
+    if (product.price2) offers.push(`2 unidades → ${formatGs(product.price2)} Gs`);
+    if (product.price3) offers.push(`3 unidades → ${formatGs(product.price3)} Gs`);
+  }
+  return offers.join("\n");
+}
+
+function buildMultipleProductsInformation(products: ProductItem[], currentCity: string): string {
+  const sections = products.map((p, index) => {
+    const copy = clean(p.salesCopy || "");
+    const header = `──────────\n${index + 1}. ${p.canonical}\n──────────`;
+    return copy ? `${header}\n${copy}` : `${header}\n${productOffersText(p)}`;
+  });
+
+  const examples = products.map((p) => `1 ${p.canonical}`).join(" y ");
+  return `${sections.join("\n\n")}\n\n🛒 Podemos incluir ambos productos en el mismo pedido.\n\nDecime cuántos querés de cada uno.\nEjemplo: “${examples}”.${currentCity ? `\n\n📍 Ciudad de envío: ${currentCity}.` : ""}`;
+}
+
+function extractQuantityForNamedProduct(text: string, product: ProductItem): number {
+  const n = normalize(text);
+  if (!n) return 0;
+
+  const aliases = [product.canonical, product.product, product.palabra_clave || "", ...(product.aliases || [])]
+    .flatMap((v) => splitKeywordAliases(v))
+    .map(normalize)
+    .filter((v) => v.length >= 3 && !isGenericProductWord(v))
+    .sort((a, b) => b.length - a.length);
+
+  for (const alias of Array.from(new Set(aliases))) {
+    const e = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const before = n.match(new RegExp(`\\b(\\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)\\s+(?:unidad(?:es)?\\s+de\\s+)?${e}\\b`, "i"));
+    const after = n.match(new RegExp(`\\b${e}\\s*[:x-]?\\s*(\\d{1,3}|un|uno|una|dos|tres|cuatro|cinco)\\b`, "i"));
+    const token = before?.[1] || after?.[1];
+    if (!token) continue;
+    const words: Record<string, number> = { un:1, uno:1, una:1, dos:2, tres:3, cuatro:4, cinco:5 };
+    return sanitizeQuantity(words[normalize(token)] || Number(token));
+  }
+  return 0;
+}
+
+function applyQuantitiesToMultiCart(text: string, cart: MultiCartItem[], parsed: ParsedTraining): MultiCartItem[] {
+  const updated = cart.map((item) => ({ ...item }));
+  for (const item of updated) {
+    const info = getProductInfo(item.product, parsed);
+    if (!info) continue;
+    const quantity = extractQuantityForNamedProduct(text, info);
+    if (quantity > 0) {
+      item.quantity = quantity;
+      item.total = calculateTotal(info.canonical, quantity, parsed, null);
+      item.unit_price = info.price1 || 0;
+    }
+  }
+
+  // Si queda un solo producto sin cantidad y el mensaje es únicamente una cantidad,
+  // se asigna a ese producto pendiente.
+  const pending = updated.filter((i) => i.quantity <= 0);
+  const genericQty = extractQuantity(text);
+  if (pending.length === 1 && genericQty > 0) {
+    const info = getProductInfo(pending[0].product, parsed);
+    if (info) {
+      pending[0].quantity = genericQty;
+      pending[0].total = calculateTotal(info.canonical, genericQty, parsed, null);
+      pending[0].unit_price = info.price1 || 0;
+    }
+  }
+
+  return updated;
+}
+
+function multiCartSummary(cart: MultiCartItem[]) {
+  const lines = cart.map((item) => `📦 ${item.product}\n🔢 Cantidad: ${item.quantity}\n💰 Subtotal: ${formatGs(item.total)} Gs`);
+  const total = cart.reduce((sum, item) => sum + Number(item.total || 0), 0);
+  return `${lines.join("\n\n")}\n\n💵 Total del pedido: ${formatGs(total)} Gs`;
+}
+
+function multiCartMissingQuantities(cart: MultiCartItem[]) {
+  return cart.filter((i) => i.quantity <= 0).map((i) => i.product);
+}
+
+async function saveMultiProductOrders(
+  userId: string,
+  fromNumber: string,
+  cart: MultiCartItem[],
+  common: OrderData,
+  parsed: ParsedTraining,
+  groupId: string
+) {
+  for (let index = 0; index < cart.length; index++) {
+    const item = cart[index];
+    const child: OrderData = {
+      ...common,
+      order_id: `${groupId}-${index + 1}`,
+      product: item.product,
+      quantity: item.quantity,
+      locked_offer: null,
+      observation: mergeUniqueText(common.observation, `Pedido multiproducto ${groupId}`),
+    };
+    await safeUpsertOrder(userId, fromNumber, child, parsed, true);
+  }
+}
+
 function detectProductStrict(text: string, parsed: ParsedTraining): string {
   const msg = normalize(text);
   if (!msg) return "";
@@ -777,7 +972,9 @@ function isQuestionLikeMessage(text: string) {
     /[?¿]/.test(raw) ||
     /\b(?:pero\s+)?(?:de\s+)?d(?:o|oi|ó)nde\s+son(?:\s+ustedes)?\b/.test(n) ||
     /\b(donde estan|donde queda|donde se encuentran|quienes son|como funciona|como se usa|como es|que incluye|que trae|cuanto tarda|cuando llega|tienen garantia|hay garantia|es original|hacen envios|envian|aceptan transferencia|como pago|formas de pago|puedo pagar|tienen local|tienen tienda|tienen sucursal)\b/.test(n) ||
-    /^(que|como|cuando|donde|por que|porque|cual|cuales|quien|quienes|cuanto|cuantos|cuanta|cuantas)\b/.test(n)
+    /^(que|como|cuando|donde|por que|porque|cual|cuales|quien|quienes|cuanto|cuantos|cuanta|cuantas)\b/.test(n) ||
+    /\b(?:seria|sería)\s+(?:cuanto|cuánto|cuantos|cuántos)\b/.test(n) ||
+    /\b(?:es|seria|sería)\s+por\s+(?:calce|calse|talle|talla|par)\b/.test(n)
   );
 }
 
@@ -821,9 +1018,60 @@ function exactKnownCity(text: string, parsed: ParsedTraining): string {
   return found?.canonical || "";
 }
 
+function isClearlyNotCityMessage(text: string): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!n) return true;
+
+  // Confirmaciones, negaciones y respuestas conversacionales nunca son ciudades.
+  if (/^(si|sii|siii|sip|ok|dale|listo|correcto|exacto|no|nop|gracias|perfecto)$/i.test(n)) return true;
+
+  // Preguntas escritas sin signos o con errores frecuentes.
+  if (/\b(seria|sería|cuanto|cuánto|cuantos|cuántos|precio|costo|valor|sale|cuesta)\b/.test(n)) return true;
+
+  // Cantidades, teléfonos, números de casa, talles y calces.
+  if (extractQuantity(raw) > 0 || extractPhone(raw)) return true;
+  if (/\b(nro|numero|número|talle|talla|calce|calse|medida|par|pares)\b/.test(n)) return true;
+  if (/\d/.test(raw) && !/^\s*[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+\s*$/.test(raw)) return true;
+
+  // Direcciones, ubicaciones y referencias no deben reemplazar una ciudad ya capturada.
+  if (/\b(calle|avda|avenida|ruta|km|barrio|bsrrio|bario|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|edificio|piso|departamento|dpto|referencia|ubicacion|ubicación|direccion|dirección)\b/.test(n)) return true;
+  if (/maps\.app|google\.com\/maps/i.test(raw)) return true;
+
+  // Frases normales del proceso comercial que no son localidades.
+  if (/^(es|seria|sería|quiero|necesito|prefiero|puede|podria|podría|tengo|uso|calzo|mi talle)\b/.test(n)) return true;
+
+  return false;
+}
+
+function isPlausibleBareCityCandidate(text: string): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw || isClearlyNotCityMessage(raw) || isQuestionLikeMessage(raw)) return false;
+  if (isTemporalDeliveryExpression(raw)) return false;
+  if (detectProductsMentioned && false) return false; // referencia intencionalmente inactiva; el catálogo se valida en detectCity.
+
+  const words = n.split(/\s+/).filter(Boolean);
+  if (words.length < 1 || words.length > 5) return false;
+  if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(raw)) return false;
+  if (raw.length < 3 || raw.length > 60) return false;
+  return true;
+}
+
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const exactCity = exactKnownCity(text, parsed);
   if (exactCity) return exactCity;
+
+  // V56: preguntas, cantidades, direcciones, talles y respuestas como “sí”
+  // nunca pueden convertirse en una localidad inferida.
+  if (isClearlyNotCityMessage(text)) return clean(prev || "");
+
+  // V53: un mensaje que menciona un producto nunca puede convertirse en ciudad.
+  // Ej.: "el plumero y el pela papa" no debe coincidir de forma difusa con
+  // "Colonia Yguazú" ni con ninguna otra localidad del entrenamiento.
+  if (detectProductsMentioned(text, parsed).length > 0) {
+    return clean(prev || "");
+  }
 
   const explicitCityStatement = extractCityStatement(text);
   if (isQuestionLikeMessage(text) && !explicitCityStatement) {
@@ -887,7 +1135,7 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 
   if (bestScore >= 50) return best;
 
-  if (statementCity) return toTitleCase(statementCity);
+  if (statementCity && isPlausibleBareCityCandidate(statementCity)) return toTitleCase(statementCity);
 
   return clean(prev || "");
 }
@@ -936,6 +1184,11 @@ function extractCityStatement(text: string): string {
   // Una fecha u horario de entrega nunca debe convertirse en ciudad.
   // Ej.: "quiero para fin de mes", "puede ser para el sábado".
   if (isTemporalDeliveryExpression(norm)) return "";
+
+  // La validación contra productos se realiza también en detectCity, donde
+  // está disponible el catálogo completo. Aquí bloqueamos coordinaciones
+  // evidentes de artículos para que el patrón genérico "para ..." no las tome.
+  if (/\b(y|con|ademas|además)\b/.test(norm) && /\b(quiero|llevo|producto|productos|unidad|unidades)\b/.test(norm)) return "";
 
   const patterns: RegExp[] = [
     /\bsoy\s+de\s+la\s+ciudad\s+de\s+(.+)$/i,
@@ -1120,11 +1373,39 @@ function toTitleCase(str: string): string {
   return str.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+
+function looksLikeAddressSupplement(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /\b(calle|avda|avenida|ruta|km|barrio|bario|bsrrio|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|edificio|piso|departamento|porteria|portería|referencia)\b/.test(n) ||
+    /^(?:b+a?r+r?i?o|bsrrio|bo)\s+[a-z]/.test(n) ||
+    /\b(entre calles?|al lado de|frente a|cerca de|detras de|detrás de)\b/.test(n)
+  );
+}
+
+function mergeAddressSupplement(currentAddress: string, supplement: string): string {
+  const current = clean(currentAddress);
+  const extra = clean(supplement);
+  if (!current) return extra;
+  if (!extra) return current;
+
+  const currentNorm = normalize(current);
+  const extraNorm = normalize(extra);
+
+  if (currentNorm === extraNorm || currentNorm.includes(extraNorm)) return current;
+  if (extraNorm.includes(currentNorm)) return extra;
+
+  return `${current} — ${extra}`;
+}
+
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const raw = clean(text);
   if (!raw) return "";
   if (isQuestionLikeMessage(raw)) return "";
   if (extractQuantity(raw) > 0) return "";
+  if (looksLikeAddressSupplement(raw)) return "";
 
   const isMultiLine = raw.includes("\n");
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
@@ -1225,7 +1506,7 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
     const cleaned = clean(line);
     const normLine = normalize(cleaned);
 
-    if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote)\b/i.test(normLine)) {
+    if (/\b(calle|avda|avenida|ruta|km|barrio|bario|bsrrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|edificio|piso|departamento|porteria|portería|referencia)\b/i.test(normLine) || looksLikeAddressSupplement(cleaned)) {
       if (name && normalize(cleaned).includes(normalize(name))) continue;
       if (phone && cleaned.includes(phone)) continue;
       return cleaned;
@@ -3630,6 +3911,111 @@ export default async function handler(req: any, res: any) {
     parsed.products = mergeProductsByPriority(visualProducts, parsed.products);
 
     attachProductImages(parsed.products, allTraining);
+
+    const productsMentionedNow = detectProductsMentioned(texto, parsed);
+    let activeMultiCart = getMultiCartFromContext(context, parsed);
+
+    // V54: iniciar o ampliar un carrito multiproducto real.
+    if (productsMentionedNow.length >= 2 && activeMultiCart.length === 0) {
+      const existingOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
+      activeMultiCart = createMultiCart(productsMentionedNow);
+
+      return res.json({
+        response: buildMultipleProductsInformation(productsMentionedNow, existingOrder.city || ""),
+        context: {
+          ...(context || {}),
+          order_data: existingOrder,
+          current_product: null,
+          pending_multiple_products: productsMentionedNow.map((p) => p.canonical),
+          multi_product_cart: activeMultiCart,
+          multi_order_id: clean(context?.multi_order_id) || makeOrderId(fromNumber),
+          step: "collecting_multiple_product_quantities",
+          updated_at: new Date().toISOString(),
+        },
+        debug: {
+          deterministic_multiple_products: true,
+          products: productsMentionedNow.map((p) => p.canonical),
+          copies_presented: true,
+          preserved_city: existingOrder.city || null,
+        },
+      });
+    }
+
+    if (activeMultiCart.length >= 2) {
+      let commonOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
+      const multiOrderId = clean(context?.multi_order_id) || makeOrderId(fromNumber);
+      activeMultiCart = applyQuantitiesToMultiCart(texto, activeMultiCart, parsed);
+      const missingQty = multiCartMissingQuantities(activeMultiCart);
+
+      if (context?.step === "collecting_multiple_product_quantities" || missingQty.length > 0) {
+        if (missingQty.length > 0) {
+          return res.json({
+            response: `Perfecto 😊 Me falta la cantidad de:\n${missingQty.map((p) => `• ${p}`).join("\n")}\n\nPodés responder, por ejemplo: “1 ${missingQty[0]}”.`,
+            context: {
+              ...(context || {}),
+              order_data: commonOrder,
+              multi_product_cart: activeMultiCart,
+              multi_order_id: multiOrderId,
+              step: "collecting_multiple_product_quantities",
+              updated_at: new Date().toISOString(),
+            },
+          });
+        }
+
+        const nextStep = commonOrder.city ? "collecting_multiple_customer_data" : "collecting_multiple_city";
+        return res.json({
+          response: `${multiCartSummary(activeMultiCart)}\n\n${commonOrder.city ? "Ahora pasame tu nombre y apellido, dirección exacta y número de celular. 📲" : "📍 ¿Para qué ciudad sería el envío? 😊"}`,
+          context: {
+            ...(context || {}),
+            order_data: commonOrder,
+            multi_product_cart: activeMultiCart,
+            multi_order_id: multiOrderId,
+            step: nextStep,
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
+
+      if (!commonOrder.city) {
+        const detectedMultiCity = detectCity(texto, parsed, "");
+        if (detectedMultiCity) commonOrder.city = detectedMultiCity;
+        if (!commonOrder.city) {
+          return res.json({
+            response: "📍 ¿Para qué ciudad sería el envío? 😊",
+            context: { ...(context || {}), order_data: commonOrder, multi_product_cart: activeMultiCart, multi_order_id: multiOrderId, step: "collecting_multiple_city", updated_at: new Date().toISOString() },
+          });
+        }
+      }
+
+      const phone = extractPhone(texto);
+      const name = extractName(texto, commonOrder.city, phone, parsed);
+      const address = extractAddress(texto, commonOrder.city, phone, name);
+      if (name && !commonOrder.customer_name) commonOrder.customer_name = name;
+      if (phone) commonOrder.phone = phone;
+      if (address) commonOrder.address = mergeAddressSupplement(commonOrder.address, address);
+
+      const missingData: string[] = [];
+      if (!commonOrder.customer_name) missingData.push("nombre y apellido");
+      if (!commonOrder.phone) missingData.push("número de celular");
+      if (!commonOrder.address) missingData.push("dirección exacta o ubicación");
+
+      if (missingData.length > 0) {
+        const coverage = hasCoverage(commonOrder.city, parsed);
+        return res.json({
+          response: `${coverage ? `✅ Tenemos cobertura en ${commonOrder.city}.` : `😊 Hasta ${commonOrder.city} podemos enviarte por transportadora.`}\n\n${multiCartSummary(activeMultiCart)}\n\nPara finalizar me falta:\n✅ ${missingData.join("\n✅ ")}`,
+          context: { ...(context || {}), order_data: commonOrder, multi_product_cart: activeMultiCart, multi_order_id: multiOrderId, step: "collecting_multiple_customer_data", updated_at: new Date().toISOString() },
+        });
+      }
+
+      await saveMultiProductOrders(user_id, fromNumber, activeMultiCart, commonOrder, parsed, multiOrderId);
+      const coverage = hasCoverage(commonOrder.city, parsed);
+      return res.json({
+        response: `✅ PEDIDO CONFIRMADO\n\n${multiCartSummary(activeMultiCart)}\n\n👤 Cliente: ${commonOrder.customer_name}\n📍 Ciudad: ${commonOrder.city}\n🏠 Dirección: ${commonOrder.address}\n📞 Contacto: ${commonOrder.phone}\n\n${coverage ? "🚚 Envío contra entrega. Pagás al recibir." : "🚚 Envío por transportadora con pago anticipado."}\n\n¡Gracias por tu compra! 💜`,
+        context: { ...(context || {}), order_data: commonOrder, multi_product_cart: activeMultiCart, multi_order_id: multiOrderId, step: "pedido_confirmado_multiple", updated_at: new Date().toISOString() },
+        debug: { multi_product_order_confirmed: true, items: activeMultiCart.length, group_id: multiOrderId },
+      });
+    }
+
     const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
 
     const newTemplateSignal = isNewTemplateOrProductIntent(texto, parsed, history);
@@ -3670,6 +4056,32 @@ export default async function handler(req: any, res: any) {
         forceFreshOrderFromConfirmedTemplate = true;
         oldOrder = emptyOrder(makeOrderId(fromNumber));
       } else {
+        // V52: después de confirmar, un dato adicional de ubicación (por ejemplo
+        // "Barrio San Ramón") complementa la dirección. Nunca debe reemplazar
+        // el nombre del cliente ni iniciar otro pedido.
+        if (looksLikeAddressSupplement(texto)) {
+          oldOrder.address = mergeAddressSupplement(oldOrder.address, texto);
+
+          const updatedState = buildState(oldOrder, parsed);
+          await safeUpsertOrder(user_id, fromNumber, oldOrder, parsed, true);
+
+          return res.json({
+            response: `✅ ¡Perfecto! Agregué este dato a tu dirección: ${clean(texto)}\n\n${finalConfirmationMessage(updatedState, parsed)}`,
+            context: {
+              ...(context || {}),
+              order_data: oldOrder,
+              order_id: oldOrder.order_id || null,
+              step: "pedido_confirmado",
+              updated_at: new Date().toISOString(),
+            },
+            debug: {
+              post_confirmation_address_updated: true,
+              preserved_customer_name: oldOrder.customer_name,
+              updated_address: oldOrder.address,
+            },
+          });
+        }
+
         if (isShortAcknowledgement(texto) || isConversationClosing(texto)) {
           return res.json({
             response: `😊 ¡Perfecto, muchas gracias! Tu pedido ya quedó confirmado y agendado. 🚚📦`,
@@ -3923,28 +4335,35 @@ export default async function handler(req: any, res: any) {
     const isCityStep = prevStep === "collecting_city";
     const isDataCollectionStep = ["collecting_name", "collecting_address", "collecting_phone", "collecting_quantity"].includes(prevStep);
 
-    const detectedCityRaw = detectCity(texto, parsed, "");
+    const detectedCityRaw = detectCity(texto, parsed, oldOrder.city || "");
+    const exactCityFromMessage = exactKnownCity(texto, parsed);
+    const explicitDifferentCity = Boolean(
+      cityStatement &&
+      normalize(cityStatement) !== normalize(oldOrder.city || "") &&
+      isPlausibleBareCityCandidate(cityStatement)
+    );
+    const exactDifferentCity = Boolean(
+      exactCityFromMessage &&
+      normalize(exactCityFromMessage) !== normalize(oldOrder.city || "") &&
+      isPlausibleBareCityCandidate(texto)
+    );
 
-    const detectedCity =
-      (!freshOrder && oldOrder.city && ["collecting_quantity", "collecting_name", "collecting_address", "collecting_phone"].includes(prevStep))
-        ? oldOrder.city
-        : detectedCityRaw ||
-          (cityStatement && !extractQuantity(texto) && !extractPhone(texto)
-            ? cityStatement
-            : !freshOrder && isDataCollectionStep && oldOrder.city
-            ? oldOrder.city
-            : isCityStep &&
-              !extractQuantity(texto) &&
-              !extractPhone(texto) &&
-              !looksLikePriceMention(texto) &&
-              !detectProduct(texto, parsed, "") &&
-              !isQuestionLikeMessage(texto) &&
-              !looksLikeSentenceNotCity(texto) &&
-              normalize(texto).split(/\s+/).length <= 6
-            ? clean(texto) || detectCity(texto, parsed, oldOrder.city)
-            : !freshOrder
-            ? detectCity(texto, parsed, oldOrder.city)
-            : "");
+    // V56: una vez confirmada la ciudad, se conserva en todos los pasos.
+    // Solo cambia si el cliente declara expresamente otra ciudad o escribe
+    // exactamente otra localidad conocida. Una pregunta, dirección, talle,
+    // cantidad o respuesta corta jamás puede reemplazarla.
+    const detectedCity = oldOrder.city && !explicitDifferentCity && !exactDifferentCity
+      ? oldOrder.city
+      : explicitDifferentCity
+        ? toTitleCase(cityStatement)
+        : exactDifferentCity
+          ? exactCityFromMessage
+          : detectedCityRaw ||
+            (cityStatement && isPlausibleBareCityCandidate(cityStatement)
+              ? toTitleCase(cityStatement)
+              : isCityStep && isPlausibleBareCityCandidate(texto)
+                ? clean(texto)
+                : "");
 
     const pendingCityConfirmation = clean(context?.pending_city_confirmation || "");
     let cityConfirmedNow = "";
@@ -3988,11 +4407,13 @@ export default async function handler(req: any, res: any) {
     const hasExplicitCityStatement = Boolean(cityStatement);
 
     const needsCityConfirmation =
+      !oldOrder.city &&
       !cityConfirmedNow &&
       !!detectedCity &&
       detectedCity !== oldOrder.city &&
       !isExactCityMatch &&
       !hasExplicitCityStatement &&
+      isPlausibleBareCityCandidate(texto) &&
       !isQuestionLikeMessage(texto);
 
     if (needsCityConfirmation) {
