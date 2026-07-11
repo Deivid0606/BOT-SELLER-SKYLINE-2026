@@ -2990,18 +2990,18 @@ function deterministicAfterCityCoverageMessage(state: ConversationState) {
 
   if (state.coverage === false) {
     if (!o.quantity) {
-      return `📍 Para ${o.city} no contamos con entrega contra reembolso.
+      return `😊 Gracias. Hasta ${o.city} podemos enviarte por transportadora.
 
-🚚 Sí podemos enviarte por transportadora con pago anticipado.
+🚚 Para este tipo de envío trabajamos con pago anticipado.
 
-¿Cuántas unidades querés llevar? 😊`;
+¿Cuántas unidades querés llevar?`;
     }
 
-    return `📍 Para ${o.city} no contamos con entrega contra reembolso.
+    return `😊 Gracias. Hasta ${o.city} podemos enviarte por transportadora.
 
-🚚 El envío se realiza por transportadora con pago anticipado.
+🚚 Para este tipo de envío trabajamos con pago anticipado.
 
-Para continuar, pasame tu nombre completo y número de celular 😊`;
+Para continuar, pasame tu nombre completo y número de celular.`;
   }
 
   if (!o.quantity) {
@@ -3980,11 +3980,19 @@ export default async function handler(req: any, res: any) {
     const isExactCityMatch =
       !!cityConfirmedNow || (!!detectedCity && !!exactKnownCity(cityCandidateRaw, parsed));
 
+    // V51: cuando el cliente declara claramente su ciudad (por ejemplo,
+    // "soy de Arroyo Pora"), la guardamos directamente. Si no figura en la
+    // cobertura, el flujo determinístico ofrece transportadora sin hacer una
+    // confirmación innecesaria de la localidad. Solo confirmamos ciudades
+    // inferidas desde mensajes ambiguos o demasiado breves.
+    const hasExplicitCityStatement = Boolean(cityStatement);
+
     const needsCityConfirmation =
       !cityConfirmedNow &&
       !!detectedCity &&
       detectedCity !== oldOrder.city &&
       !isExactCityMatch &&
+      !hasExplicitCityStatement &&
       !isQuestionLikeMessage(texto);
 
     if (needsCityConfirmation) {
