@@ -808,24 +808,44 @@ function createMultiCart(products: ProductItem[]): MultiCartItem[] {
 function productOffersText(product: ProductItem): string {
   const offers: string[] = [];
   if (product.fixedPackQuantity && product.price1) {
-    offers.push(`${product.fixedPackQuantity} unidades → ${formatGs(product.price1)} Gs`);
+    offers.push(`🔥 ${product.fixedPackQuantity} unidades: ${formatGs(product.price1)} Gs`);
   } else {
-    if (product.price1) offers.push(`1 unidad → ${formatGs(product.price1)} Gs`);
-    if (product.price2) offers.push(`2 unidades → ${formatGs(product.price2)} Gs`);
-    if (product.price3) offers.push(`3 unidades → ${formatGs(product.price3)} Gs`);
+    if (product.price1) offers.push(`🔥 1 unidad: ${formatGs(product.price1)} Gs`);
+    if (product.price2) offers.push(`🔥 2 unidades: ${formatGs(product.price2)} Gs`);
+    if (product.price3) offers.push(`🔥 3 unidades: ${formatGs(product.price3)} Gs`);
   }
   return offers.join("\n");
 }
 
+function shortProductBenefit(product: ProductItem): string {
+  const raw = clean(product.salesCopy || "");
+  if (!raw) return "Disponible para agregar al mismo pedido.";
+
+  const lines = raw
+    .split(/\r?\n/g)
+    .map((line) => clean(line.replace(/^[^a-zA-ZÁÉÍÓÚáéíóúÑñ0-9]+/, "")))
+    .filter(Boolean)
+    .filter((line) => {
+      const n = normalize(line);
+      if (/\b(gs|precio|oferta|antes|hoy|stock|envio|envío|delivery|whatsapp|escribi|escribí|pedi|pedí)\b/.test(n)) return false;
+      if (/^\d+\s*(?:unidad|unidades|par|pares)?\b/.test(n)) return false;
+      return line.length >= 18;
+    });
+
+  const preferred = lines.find((line) => /\b(ideal|ayuda|sirve|permite|pica|pela|afila|absorbe|reduce|limpia|protege|alivia|procesa|tritura)\b/i.test(normalize(line))) || lines[0];
+  if (!preferred) return "Disponible para agregar al mismo pedido.";
+
+  const sentence = preferred.replace(/[.!?]+$/, "");
+  return sentence.length > 105 ? `${sentence.slice(0, 102).trim()}...` : `${sentence}.`;
+}
+
 function buildMultipleProductsInformation(products: ProductItem[], currentCity: string): string {
-  const sections = products.map((p, index) => {
-    const copy = clean(p.salesCopy || "");
-    const header = `──────────\n${index + 1}. ${p.canonical}\n──────────`;
-    return copy ? `${header}\n${copy}` : `${header}\n${productOffersText(p)}`;
+  const sections = products.map((p) => {
+    return `📦 *${p.canonical}*\n${shortProductBenefit(p)}\n${productOffersText(p)}`;
   });
 
   const examples = products.map((p) => `1 ${p.canonical}`).join(" y ");
-  return `${sections.join("\n\n")}\n\n🛒 Podemos incluir ambos productos en el mismo pedido.\n\nDecime cuántos querés de cada uno.\nEjemplo: “${examples}”.${currentCity ? `\n\n📍 Ciudad de envío: ${currentCity}.` : ""}`;
+  return `¡Claro! Tenemos estos productos disponibles 😊\n\n${sections.join("\n\n")}\n\n🛒 Podés llevarlos en un solo pedido.\n¿Cuántos querés de cada uno?\nEjemplo: “${examples}”.${currentCity ? `\n\n📍 Envío a: ${currentCity}.` : ""}`;
 }
 
 function extractQuantityForNamedProduct(text: string, product: ProductItem): number {
@@ -3915,10 +3935,59 @@ export default async function handler(req: any, res: any) {
     const productsMentionedNow = detectProductsMentioned(texto, parsed);
     let activeMultiCart = getMultiCartFromContext(context, parsed);
 
-    // V54: iniciar o ampliar un carrito multiproducto real.
+    // V57: iniciar carrito multiproducto con respuesta breve.
+    // Si el cliente ya indicó cantidades (ej. "1 peladora y 1 afilador"),
+    // no repetimos información: calculamos el carrito y avanzamos.
     if (productsMentionedNow.length >= 2 && activeMultiCart.length === 0) {
       const existingOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
-      activeMultiCart = createMultiCart(productsMentionedNow);
+      const multiOrderId = clean(context?.multi_order_id) || makeOrderId(fromNumber);
+      activeMultiCart = applyQuantitiesToMultiCart(texto, createMultiCart(productsMentionedNow), parsed);
+      const missingQty = multiCartMissingQuantities(activeMultiCart);
+      const hasAnyNamedQuantity = activeMultiCart.some((item) => item.quantity > 0);
+
+      if (missingQty.length === 0) {
+        const nextStep = existingOrder.city ? "collecting_multiple_customer_data" : "collecting_multiple_city";
+        return res.json({
+          response: `${multiCartSummary(activeMultiCart)}\n\n${existingOrder.city ? "Ahora pasame tu nombre y apellido, dirección exacta y número de celular. 📲" : "📍 ¿Para qué ciudad sería el envío? 😊"}`,
+          context: {
+            ...(context || {}),
+            order_data: existingOrder,
+            current_product: null,
+            pending_multiple_products: productsMentionedNow.map((p) => p.canonical),
+            multi_product_cart: activeMultiCart,
+            multi_order_id: multiOrderId,
+            step: nextStep,
+            updated_at: new Date().toISOString(),
+          },
+          debug: {
+            deterministic_multiple_products: true,
+            products: productsMentionedNow.map((p) => p.canonical),
+            quantities_received_in_first_message: true,
+            preserved_city: existingOrder.city || null,
+          },
+        });
+      }
+
+      if (hasAnyNamedQuantity) {
+        return res.json({
+          response: `Perfecto 😊 Me falta la cantidad de:\n${missingQty.map((p) => `• ${p}`).join("\n")}\n\nEjemplo: “1 ${missingQty[0]}”.`,
+          context: {
+            ...(context || {}),
+            order_data: existingOrder,
+            current_product: null,
+            pending_multiple_products: productsMentionedNow.map((p) => p.canonical),
+            multi_product_cart: activeMultiCart,
+            multi_order_id: multiOrderId,
+            step: "collecting_multiple_product_quantities",
+            updated_at: new Date().toISOString(),
+          },
+          debug: {
+            deterministic_multiple_products: true,
+            products: productsMentionedNow.map((p) => p.canonical),
+            partial_quantities_received: true,
+          },
+        });
+      }
 
       return res.json({
         response: buildMultipleProductsInformation(productsMentionedNow, existingOrder.city || ""),
@@ -3928,14 +3997,14 @@ export default async function handler(req: any, res: any) {
           current_product: null,
           pending_multiple_products: productsMentionedNow.map((p) => p.canonical),
           multi_product_cart: activeMultiCart,
-          multi_order_id: clean(context?.multi_order_id) || makeOrderId(fromNumber),
+          multi_order_id: multiOrderId,
           step: "collecting_multiple_product_quantities",
           updated_at: new Date().toISOString(),
         },
         debug: {
           deterministic_multiple_products: true,
           products: productsMentionedNow.map((p) => p.canonical),
-          copies_presented: true,
+          compact_promotions_presented: true,
           preserved_city: existingOrder.city || null,
         },
       });
