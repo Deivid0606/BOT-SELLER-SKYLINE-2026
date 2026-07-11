@@ -1346,7 +1346,12 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
     }
   }
 
-  if (/\d/.test(raw) && raw.length >= 8) {
+  // ✅ FIX V40: el fallback genérico de abajo toma como dirección CUALQUIER texto
+  // con un dígito y 8+ caracteres. Eso hacía que confirmaciones de precio con "?"
+  // ("129 mil verda ?") se guardaran como si fueran la dirección de entrega, y el
+  // pedido terminaba confirmándose sin que el cliente diera nunca una dirección
+  // real. Los mensajes con forma de pregunta nunca deben entrar por este fallback.
+  if (/\d/.test(raw) && raw.length >= 8 && !isQuestionLikeMessage(raw)) {
     let remaining = raw;
 
     if (name) {
@@ -2166,7 +2171,7 @@ function isPostSaleQuestion(text: string) {
 
   return (
     /\?/.test(text) ||
-    /\b(factura|boleta|comprobante|recibo|ruc|razon social|razón social|cedula|cédula|ci|datos fiscales|cuando|cuándo|llega|llego|llegaria|llegaría|entrega|delivery|envio|envío|demora|tarda|horario|hora|garantia|garantía|cambio|cambiar|direccion|dirección|telefono|teléfono|pagar|pago|efectivo|transferencia|delivery|seguimiento|estado|cancelar|anular)\b/.test(n)
+    /\b(factura|boleta|comprobante|recibo|ruc|razon social|razón social|cedula|cédula|ci|datos fiscales|datos bancarios|datos para transferir|datos para pagar|datos de transferencia|numero de cuenta|número de cuenta|cuenta bancaria|cual es el alias|cual es la cuenta|cuando|cuándo|llega|llego|llegaria|llegaría|entrega|delivery|envio|envío|demora|tarda|horario|hora|garantia|garantía|cambio|cambiar|direccion|dirección|telefono|teléfono|pagar|pago|efectivo|transferencia|delivery|seguimiento|estado|cancelar|anular)\b/.test(n)
   );
 }
 
@@ -2182,6 +2187,19 @@ function deterministicPostSaleResponse(text: string, order: OrderData, parsed: P
 
   if (/\b(factura|boleta|ruc|razon social|razón social|cedula|cédula)\b/.test(n)) {
     return `✅ Sí, contamos con FACTURA LEGAL 😊\n📎 Pasame tu RUC y Razón Social, o tu número de Cédula, y te la emitimos sin problema.`;
+  }
+
+  // ✅ FIX V41: si el cliente pide explícitamente los DATOS de transferencia/cuenta
+  // (aunque su ciudad tenga cobertura y pueda pagar en efectivo al recibir), hay que
+  // dárselos de una — nunca repetir "podés pagar efectivo o transferencia al
+  // delivery" cuando lo que pidió fue el número de cuenta para transferir ahora.
+  // Antes esto quedaba sin match y el bot repetía el mismo texto genérico varias
+  // veces seguidas sin responder lo que realmente se preguntó.
+  const asksBankDataDirectly =
+    /\b(datos bancarios|datos para transferir|datos para pagar|datos de transferencia|numero de cuenta|número de cuenta|cuenta bancaria|pasame los datos|dame los datos|cual es el alias|cual es la cuenta)\b/.test(n);
+
+  if (asksBankDataDirectly) {
+    return `💵 ¡Claro! Estos son los datos para transferir:\n\n${bankDataText(parsed)}\n\n📎 Cuando hagas la transferencia, pasame el comprobante así queda todo registrado 😊`;
   }
 
   if (/\b(cuando|cuándo|llega|llego|llegaria|llegaría|entrega|delivery|envio|envío|demora|tarda|horario|hora|seguimiento|estado)\b/.test(n)) {
