@@ -896,10 +896,14 @@ function hasCoverage(city: string, parsed: ParsedTraining) {
   const c = normalize(city);
   if (!c) return false;
 
+  // La cobertura debe depender de una coincidencia EXACTA con una ciudad o
+  // alias configurado. Las coincidencias parciales generaban falsos positivos:
+  // por ejemplo, una localidad no habilitada podía coincidir por una sola
+  // palabra con otra zona del entrenamiento.
   return parsed.cities.some((x) => {
     const a = normalize(x.alias);
     const cn = normalize(x.canonical);
-    return c === a || c === cn || c.includes(a) || a.includes(c);
+    return c === a || c === cn;
   });
 }
 
@@ -2977,6 +2981,38 @@ Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te espe
 Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
 }
 
+function deterministicAfterCityCoverageMessage(state: ConversationState) {
+  const o = state.order;
+  if (!o.product || !o.city) return "";
+
+  // Los packs fijos usan un mensaje más completo en otra función.
+  if (o.locked_offer?.fixed_quantity) return "";
+
+  if (state.coverage === false) {
+    if (!o.quantity) {
+      return `📍 Para ${o.city} no contamos con entrega contra reembolso.
+
+🚚 Sí podemos enviarte por transportadora con pago anticipado.
+
+¿Cuántas unidades querés llevar? 😊`;
+    }
+
+    return `📍 Para ${o.city} no contamos con entrega contra reembolso.
+
+🚚 El envío se realiza por transportadora con pago anticipado.
+
+Para continuar, pasame tu nombre completo y número de celular 😊`;
+  }
+
+  if (!o.quantity) {
+    return `✅ Tenemos cobertura en ${o.city} 😊
+
+¿Cuántas unidades querés llevar?`;
+  }
+
+  return "";
+}
+
 function deterministicAfterCityFixedOfferMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
   if (!o.product || !o.city || !o.locked_offer?.fixed_quantity) return "";
@@ -4148,6 +4184,44 @@ export default async function handler(req: any, res: any) {
                 total: finalState.total,
                 step: finalState.step,
                 locked_offer: orderData.locked_offer,
+              }
+            : undefined,
+        });
+      }
+    }
+
+    if (
+      !confirm &&
+      orderData.city &&
+      (prevStep === "collecting_city" || !!cityConfirmedNow) &&
+      !orderData.locked_offer?.fixed_quantity
+    ) {
+      const cityCoverageResponse = deterministicAfterCityCoverageMessage(finalState);
+      if (cityCoverageResponse) {
+        return res.json({
+          response: cityCoverageResponse,
+          context: {
+            ...(context || {}),
+            pending_city_confirmation: null,
+            current_product: orderData.product || null,
+            last_topic: orderData.product || context?.last_topic || null,
+            last_ad_offer: orderData.locked_offer || null,
+            order_data: orderData,
+            order_id: orderData.order_id || null,
+            payment_proof_received: orderData.payment_proof_received || false,
+            step: finalState.step,
+            updated_at: new Date().toISOString(),
+          },
+          debug: true
+            ? {
+                deterministic_city_coverage_response: true,
+                product: orderData.product,
+                quantity: orderData.quantity,
+                city: orderData.city,
+                coverage: finalState.coverage,
+                total: finalState.total,
+                missing: finalState.missing,
+                step: finalState.step,
               }
             : undefined,
         });
