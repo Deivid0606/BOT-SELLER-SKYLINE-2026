@@ -1,62 +1,19 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V33 - Mega Todo Store / One Store
- * FIX V31: No confunde stock/talles/precio anterior con pack fijo; reconoce "Hoy" como precio unitario.
- *
+ * CHAT IA VENDEDOR AUTÓNOMO V44 - Mega Todo Store / One Store
+ * FIX V44: Resuelve el problema de que "precio" suelto cambie de producto.
+ * 
  * Soluciona:
- * 1) La IA vende sola y redacta fluido.
- * 2) El backend solo detecta, valida, calcula, guarda y protege reglas.
- * 3) NO reutiliza ciudad/datos viejos cuando entra una nueva campaña/producto.
- * 4) Si el cliente responde "quiero" desde una promo, respeta la promo.
- * 5) Si el cliente responde "quiero uno", "una unidad", "solo 1", desbloquea la promo.
- * 6) Nunca inventa ciudad, nombre, dirección, teléfono, banco ni catálogo.
- * 7) No se salta ciudad ni cantidad.
- * 8) Confirmación final 100% fija desde backend, nunca generada por Gemini.
- * 9) Precio de plantilla congelado: nunca toma números de dirección/teléfono como precio.
- * 10) Después de pedido confirmado, cierra el flujo y no vuelve a vender el mismo pedido.
- * 11) Detecta packs fijos genéricos para cualquier vendedor sin hardcodear precios/productos.
- * 12) Si plantilla trae Producto + Cantidad + Precio, salta la pregunta de cantidad.
- * 13) Si llega plantilla/producto nuevo después de pedido_confirmado, inicia venta nueva.
- * 14) Postventa: después de confirmado responde preguntas normales sin reabrir pedido.
- * 15) FIX V4: extrae nombre correctamente en mensajes multilinea con ciudad + dirección.
- * 16) FIX V4: factura postventa responde factura de forma determinística, no delivery.
- * 17) FIX V5: después de pedido_confirmado, una plantilla/precio nuevo pegado por el cliente reinicia venta nueva antes de cierre postventa.
- * 18) FIX V12: detección de producto ignora palabras genéricas como unidades y reconoce singular/plural.
- * 19) FIX V11: si el cliente pidió explícitamente otro producto antes de una plantilla nueva, ese producto gana sobre contexto viejo.
- * 20) FIX V9: si el pedido ya tiene todos los datos obligatorios, confirma directo con bloque fijo backend; nunca pregunta "¿Confirmamos?".
- * 21) FIX V8: después de postventa, si llega una nueva plantilla y el cliente responde "Quiero confirmar", inicia otra venta nueva.
- * 22) FIX V7: cuando el cliente responde QUIERO a una plantilla nueva, el producto de la plantilla gana sobre contexto/historial viejo.
- * 23) FIX V6: si hay plantilla activa, producto/cantidad/precio salen SOLO de la plantilla; el catálogo/entrenamiento no compite.
- * 24) FIX IMAGENES: envía hasta 3 imágenes del producto correcto.
- * 25) FIX V13: Definir newTemplateSignal antes de usarlo (soluciona ReferenceError)
- * 26) FIX V14: Filtrar por PALABRA_CLAVE para enviar SOLO imágenes del producto correcto
- * 27) FIX V18: Envía TODO el copy original del producto, sin resumir ni cortar.
- * 28) FIX V18: Cada producto soporta hasta 3 imágenes propias.
- * 29) FIX V19: Detecta ciudad aunque el cliente escriba saludo/frase: "hola soy de Carapeguá".
- * 30) FIX V20: Detecta cantidad escrita en palabras/frases: "quiero una", "quiero dos", "dos nomás".
- * 31) FIX V20: Si el cliente responde por audio, transcribe y procesa como texto; si falla, responde pidiendo texto.
- * 32) FIX V21: Audio real: busca URL/transcripción en múltiples campos del webhook.
- * 33) FIX V21: Si Gemini está sin cuota 429, intenta fallback con OpenAI Whisper si está configurado.
- * 34) FIX V21: Evita quedarse mudo; si audio no se puede transcribir, responde claro sin romper el pedido.
- * 35) FIX V22: Guarda observaciones de pago/fecha/horario/coordinar entrega sin perder la venta.
- * 36) FIX V23: Responde determinísticamente cuando el cliente deja observación de pago/fecha/horario, sin depender de Gemini.
- * 37) FIX V34 DEFINITIVO: copy literal con doble seguro; el historial del bot nunca se reparsa como plantilla.
- * 37) FIX V30: Después de pedido confirmado, una intención explícita sobre otro producto reinicia la venta, incluso con errores como "mi interesa".
- * 37) FIX V26: Las consultas tienen prioridad; no reemplaza la respuesta con el copy ni reenvía imágenes mientras falta ciudad.
- * 37) FIX V25: Separa consultas de ciudades; una pregunta corta nunca activa transportadora ni cobertura falsa.
- * 38) FIX V25: Después de responder cualquier consulta, retoma exactamente el dato pendiente del pedido.
- * 39) FIX V28: Limpia ciudades inválidas guardadas por consultas de versiones anteriores.
- * 40) FIX V28: Respuestas de cantidad no reinician ventas activas ni reenvían el copy.
- * 41) FIX V28: Si llega cantidad antes de ciudad, conserva la cantidad y vuelve a pedir ciudad.
- * 42) FIX V35: Detección ESTRICTA de producto al leer plantillas del HISTORIAL (no del mensaje actual).
- *     Antes, un mensaje viejo de OTRO producto podía "ganar" por matching flojo de palabras
- *     y quedar pegado como pack fijo del producto que se está vendiendo ahora
- *     (ej: mostrar "35 unidades por 280.000 Gs" de una promo vieja de otro producto
- *     en vez de "1 = 159.000 Gs" del copy real que se acaba de cargar).
- * 43) FIX V35: Verificación de plausibilidad: un pack fijo / oferta bloqueada solo se acepta
- *     si su cantidad o su precio realmente aparecen en el copy propio de ESE producto.
- *     Si no hay coincidencia, se descarta y se cae al precio base del producto (price1).
+ * - Cliente: "Hola. ¿Precio de las plantillas porfa?"
+ * - IA: [Copy de PLANTILLAS] + "📍 ¿Para qué ciudad sería el envío?"
+ * - Cliente: "precio"
+ * - IA: 💰 Las plantillas están 159.000 Gs el par.
+ *      📍 ¿Para qué ciudad sería el envío? 😊
+ * 
+ * ✅ NUNCA muestra otro producto cuando el cliente pide "precio"
+ * ✅ Prioriza el producto activo en el pedido actual
+ * ✅ No usa plantillas del historial para palabras sueltas
  */
 
 const supabase = createClient(
@@ -86,7 +43,7 @@ type ProductItem = {
   fixedPackQuantity?: number;
   salesCopy?: string;
   images?: string[];
-  palabra_clave?: string; // ✅ NUEVO: palabra clave para filtrar
+  palabra_clave?: string;
 };
 
 type OfferItem = {
@@ -150,8 +107,6 @@ type ConversationState = {
   hardInstruction: string;
 };
 
-// ✅ FIX V15: Encontrar producto por PALABRA_CLAVE o ALIAS con normalización real.
-// Soporta palabras clave separadas por coma: "Crema, Varices" activa con "crema" o "varices".
 function encontrarProductoPorPalabraClave(mensaje: string, products: ProductItem[]): ProductItem | null {
   if (!products || products.length === 0) return null;
 
@@ -342,8 +297,6 @@ function visualProductNameFromKeyword(keyword: string, copy: string, aliases: st
   const fromCopy = extractProductNameFromCopy(copy);
   if (fromCopy) return toTitleCase(fromCopy);
 
-  // ✅ FIX V16: si la palabra clave viene como "Crema, Varices", no usarla completa
-  // como nombre del producto. Usar una parte limpia o un alias simple.
   const aliasParts = aliases
     .flatMap((a) => splitKeywordAliases(a))
     .map(clean)
@@ -422,8 +375,6 @@ function productsFromVisualCatalog(items: any[]): ProductItem[] {
   return result;
 }
 
-// ✅ FIX V36: normaliza el copy de venta para poder comparar contenido y detectar
-// duplicados aunque el nombre/palabra clave del producto no coincida exactamente.
 function normalizeCopyForDedup(copy: string) {
   return normalize(copy).slice(0, 220);
 }
@@ -433,16 +384,6 @@ function mergeProductsByPriority(primary: ProductItem[], secondary: ProductItem[
   const seenKeys = new Set<string>();
   const seenCopies: string[] = [];
 
-  // ✅ FIX V36: un producto cargado como tarjeta (con Palabra Clave + imágenes) y el
-  // mismo copy pegado además como texto libre en "Entrenamiento Completo" generaban
-  // DOS entradas de producto distintas: la de la tarjeta (con imagen) y la detectada
-  // automáticamente del texto libre (sin imagen, autoDetectProductsFromTraining nunca
-  // asigna imágenes). Si sus nombres/alias no coincidían exactamente, la deduplicación
-  // por clave no las unificaba, y el matching en vivo podía terminar eligiendo la
-  // copia sin imagen. Acá agregamos una segunda pasada de deduplicación por CONTENIDO
-  // del copy: si dos productos comparten el mismo texto de venta (o uno contiene al
-  // otro), se conserva solo el primero que apareció — como "primary" (las tarjetas
-  // con imagen) se procesa antes que "secondary", la tarjeta con imagen siempre gana.
   const isDuplicateCopy = (copyNorm: string) => {
     if (!copyNorm) return false;
     return seenCopies.some(
@@ -481,14 +422,9 @@ function parseCatalogUrl(training: string) {
 }
 
 function parseBankData(training: string): BankData | null {
-  // ✅ FIX V16: parser estricto de datos bancarios.
-  // Antes tomaba la frase "PAGO ANTICIPADO POR TRANSFERENCIA" como inicio de bloque
-  // y terminaba leyendo líneas de ciudades como si fueran CI/Banco/Cuenta.
   const explicitBlock =
     training.match(/(?:^|\n)\s*(?:DATOS_BANCARIOS|DATOS_TRANSFERENCIA|DATOS PARA TRANSFERENCIA|DATOS DE TRANSFERENCIA)\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:FIN_DATOS_BANCARIOS|FIN_DATOS_TRANSFERENCIA|CATALOGO_PRODUCTOS|LISTA COMPLETA POR CIUDAD|ZONAS CON COBERTURA|ZONAS SIN COBERTURA|---)|$)/i)?.[1] || "";
 
-  // Si no hay bloque formal, igual permitimos leer líneas sueltas con etiqueta exacta
-  // (Titular:, Banco:, N° de cuenta:, Alias:), pero nunca frases genéricas.
   const raw = clean(explicitBlock || training);
   if (!raw) return null;
 
@@ -539,7 +475,6 @@ function parseBankData(training: string): BankData | null {
   ], normalBankValue);
   const alias = getLine([/^Alias\s*[:\-]\s*(.+)$/i], normalBankValue);
 
-  // Limpia casos tipo "N° de cuenta: Familiar: 81-5932919" si Banco ya es Familiar.
   if (cuenta && banco && normalize(cuenta).startsWith(normalize(banco))) {
     const safeBank = banco.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     cuenta = clean(cuenta.replace(new RegExp(`^${safeBank}\\s*:?\\s*`, "i"), ""));
@@ -566,7 +501,6 @@ function extractProductNameFromCopy(text: string): string {
   const raw = clean(text);
   if (!raw) return "";
 
-  // ✅ FIX V16: detecta líneas tipo "1 Crema: Gs. 129.000" o "2 Cremas: Gs. 239.000".
   const simpleQtyName = raw.match(/^\s*\d+\s+([A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñÑ]{2,30})s?\s*:\s*(?:Gs\.?|₲)?\s*\d/im);
   if (simpleQtyName) return toTitleCase(clean(simpleQtyName[1]));
 
@@ -598,25 +532,6 @@ function extractProductNameFromCopy(text: string): string {
   return "";
 }
 
-// 🚫 FIX V39 — DESACTIVADO A PROPÓSITO.
-// El propio entrenamiento declara: "La sección CATALOGO_PRODUCTOS es la ÚNICA fuente
-// válida para detectar productos y precios." Sin embargo, esta función escaneaba TODO
-// el texto libre de "Entrenamiento Completo" buscando cualquier bloque con cara de
-// precio — incluyendo secciones que son solo EJEMPLOS de estilo para la IA (ej. una
-// plantilla de entrenamiento con "Procesador de Alimentos - 169.900 Gs" como muestra
-// de cómo redactar, no como producto real del vendedor).
-//
-// Eso generaba productos FANTASMA: entradas de catálogo con precios inventados que
-// ni el vendedor cargó ni existen en su tarjeta real de "Catálogo de Productos", y que
-// competían/contaminaban el catálogo real (esto es la causa raíz de varios bugs de
-// precios cruzados entre productos que veníamos parchando).
-//
-// Cada vendedor carga SU propio catálogo por dos vías legítimas y estructuradas:
-//   1) Tarjetas de "Catálogo de Productos" (palabra_clave + copy + imágenes) → productsFromVisualCatalog().
-//   2) Bloques PRODUCTO: dentro de CATALOGO_PRODUCTOS (formato legacy estructurado).
-// Ninguna de las dos necesita "adivinar" productos de texto libre, así que esta
-// función queda deshabilitada. El texto libre de "Entrenamiento Completo" ahora se usa
-// EXCLUSIVAMENTE para tono, reglas de negocio, ciudades de cobertura y datos bancarios.
 function autoDetectProductsFromTraining(_training: string, _existing: ProductItem[]): ProductItem[] {
   return [];
 }
@@ -647,7 +562,6 @@ function parseTraining(training: string): ParsedTraining {
     const packFijoRaw = Number(clean(block.match(/^PACK_FIJO:\s*(\d+)/im)?.[1]) || 0);
     const fixedPackQuantity = packFijoRaw > 1 ? packFijoRaw : undefined;
     
-    // ✅ NUEVO: Extraer PALABRA_CLAVE
     const palabraClave = clean(block.match(/^PALABRA_CLAVE:\s*(.+)$/im)?.[1]);
 
     if (product && canonical && price1 > 0) {
@@ -801,14 +715,6 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
   return prevOk?.canonical || "";
 }
 
-// ✅ FIX V35: Detección ESTRICTA de producto, usada exclusivamente para leer
-// plantillas/promos guardadas en el HISTORIAL. El matching flojo de detectProduct()
-// (con 30 puntos alcanza con una sola palabra genérica compartida) es correcto para
-// interpretar el mensaje ACTUAL del cliente, pero es peligroso para reinterpretar
-// mensajes viejos como "plantilla activa": un mensaje de otro producto puede colarse
-// y pisar el precio/cantidad real del producto que se está vendiendo ahora.
-// Acá exigimos: coincidencia exacta, o un alias de 2+ palabras contenido/conteniendo
-// el mensaje completo. Nada de matching por una sola palabra suelta.
 function detectProductStrict(text: string, parsed: ParsedTraining): string {
   const msg = normalize(text);
   if (!msg) return "";
@@ -842,17 +748,10 @@ function detectProductStrict(text: string, parsed: ParsedTraining): string {
   return bestScore >= 850 && best ? best.canonical : "";
 }
 
-// ✅ FIX V35: Verifica que una oferta (sobre todo pack fijo) realmente pertenezca
-// al producto que se le quiere asignar, chequeando que su cantidad y/o su precio
-// aparezcan efectivamente en el copy propio de ESE producto. Esto evita que un pack
-// fijo detectado en un mensaje viejo de otro producto (ej. "35 unidades por 280.000 Gs")
-// termine mostrándose como si fuera la promo del producto actual.
 function isPlausibleOfferForProduct(offer: OfferItem | null | undefined, product: ProductItem | null | undefined): boolean {
   if (!offer || !product) return false;
 
   const copy = normalize(product.salesCopy || "");
-  // Si el producto no tiene copy propio cargado, no podemos validar contra nada:
-  // dejamos pasar para no bloquear casos legítimos sin copy.
   if (!copy) return true;
 
   if (offer.fixed_quantity) {
@@ -873,10 +772,8 @@ function isQuestionLikeMessage(text: string) {
   const n = normalize(raw);
   if (!n) return false;
 
-  // Consultas frecuentes que nunca deben convertirse en ciudad, nombre o dirección.
   return (
     /[?¿]/.test(raw) ||
-    // Tolera palabras delante y errores comunes: "pero de doinde son", "de dónde son ustedes".
     /\b(?:pero\s+)?(?:de\s+)?d(?:o|oi|ó)nde\s+son(?:\s+ustedes)?\b/.test(n) ||
     /\b(donde estan|donde queda|donde se encuentran|quienes son|como funciona|como se usa|como es|que incluye|que trae|cuanto tarda|cuando llega|tienen garantia|hay garantia|es original|hacen envios|envian|aceptan transferencia|como pago|formas de pago|puedo pagar|tienen local|tienen tienda|tienen sucursal)\b/.test(n) ||
     /^(que|como|cuando|donde|por que|porque|cual|cuales|quien|quienes|cuanto|cuantos|cuanta|cuantas)\b/.test(n)
@@ -887,8 +784,6 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
   const n = normalize(text);
   if (!n) return "";
 
-  // Respuesta fija: nunca dejar esta consulta a criterio de Gemini.
-  // Acepta: "de donde son", "pero de doinde son", "donde son ustedes", etc.
   const asksOrigin =
     /\b(?:pero\s+)?(?:de\s+)?d(?:o|oi|ó)nde\s+son(?:\s+ustedes)?\b/.test(n) ||
     /\bde que ciudad son\b/.test(n) ||
@@ -926,8 +821,6 @@ function exactKnownCity(text: string, parsed: ParsedTraining): string {
 }
 
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
-  // ✅ FIX V25: primero separar una ciudad real de una consulta.
-  // "DE DONDE SON" no es ciudad y nunca debe activar transportadora.
   const exactCity = exactKnownCity(text, parsed);
   if (exactCity) return exactCity;
 
@@ -936,9 +829,6 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
     return clean(prev || "");
   }
 
-  // ✅ FIX V19: detectar ciudad aunque venga mezclada con saludo/frase.
-  // Ejemplos: "hola soy de Carapeguá", "buenas estoy en Capiatá",
-  // "quiero para Luque", "me interesa, soy de San Lorenzo".
   const rawMsg = normalize(text);
   const statementCity = explicitCityStatement;
   const msg = normalize(statementCity || text);
@@ -957,21 +847,17 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 
     let score = 0;
 
-    // Coincidencias exactas / directas
     if (msg === a || msg === cn) score += 120;
     else if (rawMsg === a || rawMsg === cn) score += 115;
 
-    // Ciudad dentro de frase
     if (msg.includes(a)) score += 95;
     if (rawMsg.includes(a)) score += 90;
     if (cn && msg.includes(cn)) score += 95;
     if (cn && rawMsg.includes(cn)) score += 90;
 
-    // Frase extraída dentro de ciudad compuesta
     if (a.includes(msg) && msg.length >= 3) score += 70;
     if (cn && cn.includes(msg) && msg.length >= 3) score += 70;
 
-    // Match por palabras para ciudades compuestas: "san lorenzo", "ciudad del este", etc.
     const aliasWords = a.split(/\s+/).filter((w) => w.length >= 3);
     const canonicalWords = cn.split(/\s+/).filter((w) => w.length >= 3);
     const wordsToCheck = Array.from(new Set([...aliasWords, ...canonicalWords]));
@@ -1000,8 +886,6 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 
   if (bestScore >= 50) return best;
 
-  // Si no encontró en lista, pero el cliente claramente dijo "soy de X", usamos X como ciudad.
-  // Esto permite ciudades fuera de cobertura/lista para derivar a transportadora.
   if (statementCity) return toTitleCase(statementCity);
 
   return clean(prev || "");
@@ -1030,8 +914,6 @@ function extractCityStatement(text: string): string {
 
   if (onlyGreeting.test(norm)) return "";
 
-  // ✅ FIX V19: no anclar al inicio. Detecta ciudad aunque antes haya saludo/producto.
-  // "hola soy de carapegua", "buenas, estoy en luque", "quiero para cde", etc.
   const patterns: RegExp[] = [
     /\bsoy\s+de\s+la\s+ciudad\s+de\s+(.+)$/i,
     /\bsoy\s+de\s+(.+)$/i,
@@ -1057,7 +939,6 @@ function extractCityStatement(text: string): string {
 
     let candidate = clean(match[1]);
 
-    // Corta cuando después de la ciudad vienen datos o intención.
     candidate = candidate
       .replace(/\b(quiero|qiero|kiero|me interesa|precio|cuanto|cuánto|consulta|comprar|compro|llevo|delivery|envio|envío|por favor|xfa|porfa|gracias|y quiero|y necesito|necesito|del producto|la crema|el producto)\b.*$/gi, "")
       .replace(/\b(mi nombre es|me llamo|soy)\b.*$/gi, "")
@@ -1099,43 +980,35 @@ function extractQuantity(text: string) {
     diez: 10,
   };
 
-  // No tomar teléfonos como cantidad.
   if (/^(?:09\d{6,}|5959\d{6,}|\+5959\d{6,})$/.test(clean(text))) return 0;
 
-  // "1", "2", "1 unidad", "2 unidades", "1u", "2 unds"
   const onlyNumber = m.match(/^(\d{1,3})\s*(?:unidad|unidades|u|und|unds|pieza|piezas)?$/);
   if (onlyNumber && !m.startsWith("09")) return sanitizeQuantity(Number(onlyNumber[1]));
 
   const q1 = m.match(/\b(\d{1,3})\s*(unidad|unidades|u|und|unds|piezas|pieza)\b/);
   if (q1 && !q1[1].startsWith("09")) return sanitizeQuantity(Number(q1[1]));
 
-  // "quiero 2", "llevo 1", "mandame 3", "serían 2"
   const q2 = m.match(/\b(quiero|kiero|qiero|llevo|dame|mandame|mándame|reservame|resérvame|solo|solamente|serian|serían|seria|sería|quiero llevar|voy a llevar|me llevo)\s+(\d{1,3})\b/);
   if (q2) return sanitizeQuantity(Number(q2[2]));
 
-  // "2 quiero", "1 llevo"
   const q3 = m.match(/\b(\d{1,3})\s+(quiero|llevo|dame|mandame|mándame|seria|sería|serian|serían)\b/);
   if (q3 && !q3[1].startsWith("09")) return sanitizeQuantity(Number(q3[1]));
 
-  // "una unidad", "dos unidades", "un producto", "dos cremas"
   for (const [word, num] of Object.entries(wordMap)) {
     const unitRegex = new RegExp(`\\b${word}\\s*(unidad|unidades|u\\b|und\\b|unds\\b|piezas|pieza|producto|productos|crema|cremas|item|items|ítem|ítems)\\b`);
     if (unitRegex.test(m)) return sanitizeQuantity(num);
   }
 
-  // "quiero una", "quiero dos", "llevo una", "mandame dos", "dame una"
   for (const [word, num] of Object.entries(wordMap)) {
     const intentWordRegex = new RegExp(`\\b(quiero|kiero|qiero|llevo|dame|mandame|mándame|reservame|resérvame|solo|solamente|seria|sería|serian|serían|quiero llevar|voy a llevar|me llevo|pasame|pásame|envíame|enviame)\\s+${word}\\b`);
     if (intentWordRegex.test(m)) return sanitizeQuantity(num);
   }
 
-  // "una nomás", "dos nomás", "una no más", "solo una"
   for (const [word, num] of Object.entries(wordMap)) {
     const casualRegex = new RegExp(`\\b(?:solo\\s+|solamente\\s+)?${word}\\s*(?:nomas|nomás|no mas|no más)?\\b`);
     if (casualRegex.test(m)) return sanitizeQuantity(num);
   }
 
-  // Último fallback: respuesta corta de una sola palabra: "una", "dos", "tres"
   if (m.split(/\s+/).length <= 2) {
     for (const [word, num] of Object.entries(wordMap)) {
       if (new RegExp(`^${word}(?:\\s+(?:nomas|nomás|no mas|no más))?$`).test(m)) {
@@ -1172,11 +1045,6 @@ function extractPhone(text: string) {
   return "";
 }
 
-// ✅ FIX V38: detecta si el texto menciona un número con "cara" de precio en guaraníes
-// ("129.000", "99000", "129,900"), para poder tratarlo como selección de oferta y para
-// que NUNCA se confunda con ciudad, teléfono o cualquier otro dato. No usa \b\d{4,7}\b
-// sobre números de más de 7 dígitos contiguos (evita falsos positivos con teléfonos
-// completos tipo 0981234567, que \b\d{4,7}\b no matchea por tener más dígitos pegados).
 function looksLikePriceMention(text: string) {
   const raw = clean(text);
   if (!raw) return false;
@@ -1191,12 +1059,6 @@ function parsePriceMentions(text: string): number[] {
     .filter((n) => Number.isFinite(n) && n >= 10000 && n <= 10000000);
 }
 
-// ✅ FIX V38: cuando el cliente nombra un precio conocido del producto actual
-// ("129.000 verdad", "quiero el de 129.000", "dame el de 99000", "el de 129900 nomás"),
-// eso equivale a elegir la oferta con ese precio — y por lo tanto su cantidad — aunque
-// el cliente no haya escrito ningún número de cantidad explícito ("1", "2", "dos", etc).
-// Nunca debe interpretarse como ciudad, ni perderse por no encajar en los patrones de
-// cantidad ya existentes.
 function extractQuantityFromPriceMention(
   text: string,
   productInfo: ProductItem | null,
@@ -1346,11 +1208,6 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
     }
   }
 
-  // ✅ FIX V40: el fallback genérico de abajo toma como dirección CUALQUIER texto
-  // con un dígito y 8+ caracteres. Eso hacía que confirmaciones de precio con "?"
-  // ("129 mil verda ?") se guardaran como si fueran la dirección de entrega, y el
-  // pedido terminaba confirmándose sin que el cliente diera nunca una dirección
-  // real. Los mensajes con forma de pregunta nunca deben entrar por este fallback.
   if (/\d/.test(raw) && raw.length >= 8 && !isQuestionLikeMessage(raw)) {
     let remaining = raw;
 
@@ -1377,7 +1234,6 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
 
   return "";
 }
-
 
 function mergeUniqueText(oldValue: any, newValue: any) {
   const oldText = clean(oldValue);
@@ -1475,8 +1331,6 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
     forbiddenNames.some((f) => nameNorm.includes(normalize(f))) ||
     nameNorm.split(" ").length > 5;
 
-  // ✅ FIX V28: limpia ciudades contaminadas por consultas guardadas en versiones anteriores.
-  // Ej.: "DE DONDE SON" / "PERO DE DOINDE SON" nunca pueden permanecer como ciudad.
   const oldCity = clean(old?.city || "");
   const sanitizedCity = isQuestionLikeMessage(oldCity) || looksLikeSentenceNotCity(oldCity)
     ? ""
@@ -1640,9 +1494,6 @@ function isFixedPackText(text: string) {
 }
 
 function sanitizeCopyForOfferParsing(raw: string) {
-  // Evita confundir stock, talles, testimonios y precios anteriores con cantidades/ofertas.
-  // Ejemplos que deben ignorarse como cantidad: "ÚLTIMOS 35 PARES", "talles 35 al 45",
-  // "5.000 paraguayos". Ejemplos que deben ignorarse como precio vigente: "Farmacia: 280.000".
   return clean(raw)
     .split(/\r?\n/g)
     .filter((line) => {
@@ -1687,7 +1538,6 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
   }
 
   const explicitPackPatterns = [
-    // ✅ FIX V16: precios del catálogo visual: "1 Crema: Gs. 129.000" / "2 Cremas: Gs. 239.000"
     /^[^0-9\n]{0,20}(\d+)\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]{3,40}s?\s*[:=]\s*(?:gs\.?\s*)?(\d[\d. ]{3,})(?:\s*(?:gs|guaran[ií]es))?/gim,
     /\b(?:pack|combo)\s*(?:de)?\s*(\d+)[^\n\r]{0,100}?(?:=|por|a|solo|solamente|→|->)\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/gi,
     /\b(\d+)\s*(?:unidades|unidad|u|und|unds|piezas|pieza|productos)?[^\n\r]{0,100}?(?:por|a|solo|solamente|=|→|->)\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/gi,
@@ -1756,9 +1606,6 @@ function detectTemplatePricingFromText(text: string, parsed: ParsedTraining, str
   const uniqueOffers = Array.from(unique.values()).sort((a, b) => a.quantity - b.quantity);
   if (!uniqueOffers.length) return null;
 
-  // Una sola oferta con cantidad > 1 NO significa automáticamente pack fijo.
-  // Solo es pack fijo cuando el copy lo declara explícitamente o viene estructurado
-  // como Producto + Cantidad + Precio.
   const hasFixed = uniqueOffers.some((o) => o.fixed_quantity) || fixedQuantity;
 
   return {
@@ -1854,8 +1701,6 @@ function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): 
 
     if (!looksLikeTemplate) continue;
 
-    // ✅ FIX V35: matching ESTRICTO de producto al reinterpretar mensajes viejos del
-    // historial. Evita que un mensaje de otro producto contamine la plantilla activa.
     const pricing = detectTemplatePricingSmart(content, parsed, true);
     if (pricing) return pricing;
   }
@@ -1974,7 +1819,6 @@ function getLastRealSalesTemplatePricing(history: any[], parsed: ParsedTraining)
     if (isCatalogCopyHistoryMessage(content, parsed)) continue;
     if (!isRealSalesTemplateMessage(content) && !isSafeTemplatePricingMessage(content) && !isStructuredSalesTemplateMessage(content)) continue;
 
-    // ✅ FIX V35: matching estricto también acá, mismo motivo que getTemplatePricingFromHistory.
     const pricing = detectTemplatePricingSmart(content, parsed, true);
     if (pricing) return pricing;
   }
@@ -2009,11 +1853,6 @@ function historyText(item: any) {
   return clean(item?.content || item?.message || item?.text || item?.body || "");
 }
 
-// ✅ FIX V42: detecta si el copy de ESTE producto ya se le mandó al cliente en algún
-// mensaje anterior del bot. Esto permite dejar de instruirle a Gemini que reenvíe el
-// copy completo en cada turno — antes, la instrucción "enviá el copy completo" era
-// incondicional, y Gemini terminaba repitiendo el mismo bloque de venta entero ante
-// mensajes como "quiero" o "quiero 1" en vez de avanzar el pedido.
 function wasProductCopyAlreadySent(history: any[], productInfo: ProductItem | null): boolean {
   const copy = clean(productInfo?.salesCopy || "");
   if (!copy) return false;
@@ -2025,9 +1864,6 @@ function wasProductCopyAlreadySent(history: any[], productInfo: ProductItem | nu
   });
 }
 
-// ✅ FIX V34: un copy que salió del propio catálogo nunca puede volver a entrar
-// desde el historial como una "plantilla nueva". Esto evita que stock, talles,
-// precios anteriores o frases como "1 PAR = 2 PLANTILLAS" se conviertan en packs.
 function isCatalogCopyHistoryMessage(text: string, parsed: ParsedTraining) {
   const raw = clean(text);
   if (!raw) return false;
@@ -2036,7 +1872,6 @@ function isCatalogCopyHistoryMessage(text: string, parsed: ParsedTraining) {
     const copy = clean(product.salesCopy || "");
     if (!copy) return false;
 
-    // El bot puede agregar únicamente la pregunta operativa al final.
     return raw === copy || raw.startsWith(copy + "\n") || raw.includes(copy);
   });
 }
@@ -2085,7 +1920,6 @@ function getTemplatePricingAfterHistoryIndex(history: any[], parsed: ParsedTrain
     if (isCatalogCopyHistoryMessage(content, parsed)) continue;
     if (!isRealSalesTemplateMessage(content) && !isSafeTemplatePricingMessage(content) && !isStructuredSalesTemplateMessage(content)) continue;
 
-    // ✅ FIX V35: matching estricto también en este recorrido de historial.
     const pricing = detectTemplatePricingSmart(content, parsed, true);
     if (pricing) return pricing;
   }
@@ -2100,9 +1934,6 @@ function forceTemplatePricingProduct(templatePricing: TemplatePricing | null, pr
   const productName = typeof product === "string" ? product : product.canonical;
   if (!productName) return templatePricing;
 
-  // ✅ FIX V35: al reasignar una plantilla a otro producto (ej. porque el cliente
-  // mostró interés explícito en otro producto), filtramos las ofertas que no sean
-  // plausibles para ESE producto puntual. Evita heredar un pack fijo ajeno.
   const sourceOffers = templatePricing.offers || [];
   const filteredOffers = productItem
     ? sourceOffers.filter((o) => isPlausibleOfferForProduct(o, productItem))
@@ -2125,8 +1956,6 @@ function hasExplicitProductInterestPhrase(text: string) {
   const n = normalize(text);
   if (!n) return false;
 
-  // Tolera errores frecuentes de escritura: "mi interesa", "me intereza",
-  // "me interesa la peladora", "quiero otro producto", etc.
   return /\b(me|mi)\s+intere(?:sa|za)|\bquiero(?:\s+comprar|\s+llevar)?|\bprecio|\bcuanto|\bconfirmar|\bagendar|\bcomprar|\bnecesito|\bconsulta|\binfo(?:rmacion)?\b/.test(n);
 }
 
@@ -2149,14 +1978,12 @@ function buildDeterministicAcknowledgementResponse(text: string, state: Conversa
     ? "¡Con mucho gusto! 😊"
     : "¡Perfecto! 😊";
 
-  // Pedido ya cerrado: responder amable sin reabrir la venta.
   if (state.step === "pedido_confirmado") {
     return isThanks
       ? "¡Con mucho gusto! 😊 Gracias por tu compra. Tu pedido ya quedó agendado y estaremos coordinando la entrega. 🚚📦"
       : "¡Perfecto! 😊 Tu pedido ya quedó confirmado y agendado. 🚚📦";
   }
 
-  // Venta activa: agradecer/confirmar y retomar exactamente el dato pendiente.
   let continuation = "";
   if (!state.order.product) {
     continuation = "¿Qué producto te interesa?";
@@ -2205,12 +2032,6 @@ function deterministicPostSaleResponse(text: string, order: OrderData, parsed: P
     return `✅ Sí, contamos con FACTURA LEGAL 😊\n📎 Pasame tu RUC y Razón Social, o tu número de Cédula, y te la emitimos sin problema.`;
   }
 
-  // ✅ FIX V41: si el cliente pide explícitamente los DATOS de transferencia/cuenta
-  // (aunque su ciudad tenga cobertura y pueda pagar en efectivo al recibir), hay que
-  // dárselos de una — nunca repetir "podés pagar efectivo o transferencia al
-  // delivery" cuando lo que pidió fue el número de cuenta para transferir ahora.
-  // Antes esto quedaba sin match y el bot repetía el mismo texto genérico varias
-  // veces seguidas sin responder lo que realmente se preguntó.
   const asksBankDataDirectly =
     /\b(datos bancarios|datos para transferir|datos para pagar|datos de transferencia|numero de cuenta|número de cuenta|cuenta bancaria|pasame los datos|dame los datos|cual es el alias|cual es la cuenta)\b/.test(n);
 
@@ -2282,24 +2103,16 @@ function isNewTemplateOrProductIntent(text: string, parsed: ParsedTraining, hist
   const productInMessage = detectProduct(raw, parsed, "");
   const pricingInMessage = detectTemplatePricingSmart(raw, parsed);
 
-  // ✅ FIX V44: pricingFromHistory (que escanea hasta 30 mensajes atrás, cruzando
-  // posiblemente varios productos distintos probados en la misma conversación) solo
-  // debe consultarse cuando el mensaje ACTUAL expresa intención real de compra
-  // ("quiero", "dale", etc.) — nunca para una palabra suelta como "precio", "info"
-  // o "cuanto" que no menciona ningún producto. Antes se consultaba siempre, y un
-  // simple "precio" terminaba enganchando un producto viejo de mucho más atrás en
-  // el historial, reiniciando el pedido activo sin que el cliente lo pidiera.
+  // ✅ FIX V44: pricingFromHistory solo se consulta cuando el mensaje ACTUAL
+  // expresa intención real de compra ("quiero", "dale", etc.)
   const hasCurrentBuyIntent = isGenericBuyReply(raw) || isBuyIntent(raw) || hasTemplateBuyIntent(raw);
   const pricingFromHistory = hasCurrentBuyIntent ? getTemplatePricingFromHistory(history, parsed) : null;
   const lastTemplateProduct = hasCurrentBuyIntent ? (getProductFromLastPromotion(history, parsed)?.canonical || "") : "";
   const effectivePricing = pricingInMessage || pricingFromHistory;
 
-  // ✅ FIX V44: isSafeTemplatePricingMessage matchea con que aparezca UNA sola
-  // palabra suelta como "precio" en el mensaje — es útil para escanear texto
-  // pegado/largo del historial, pero demasiado floja para decidir si el mensaje
-  // ACTUAL del cliente es una plantilla nueva pegada. Para eso alcanza con
-  // isPromotionLikeMessage (requiere emoji o palabras de promo más específicas) o
-  // con que el mensaje realmente traiga un precio+producto detectado (pricingInMessage).
+  // ✅ FIX V44: isSafeTemplatePricingMessage es demasiado floja para decidir si
+  // el mensaje ACTUAL es una plantilla nueva. Solo usamos promociones con emoji
+  // o precios/productos detectados realmente.
   const pastedTemplate =
     isPromotionLikeMessage(raw) ||
     !!pricingInMessage;
@@ -2368,9 +2181,6 @@ function shouldStartFreshOrder({
 
   const stale = isOrderStale(oldOrder, context?.updated_at || new Date().toISOString());
 
-  // ✅ FIX V28: una cantidad explícita durante un pedido activo NO inicia otra venta.
-  // "UNO QUIERO", "QUIERO 2", "DOS QUIERO", etc. deben completar la cantidad
-  // y conservar producto, ciudad y demás datos ya capturados.
   const explicitQuantityReply = extractQuantity(texto) > 0;
   const activeIncompleteOrder =
     !!oldOrder.product &&
@@ -2443,8 +2253,6 @@ function hasPaymentProofText(text: string) {
   return /\b(comprobante|transferi|transferí|transferencia hecha|ya pague|ya pagué|deposito|depósito|pague|pagué|adjunto|envio comprobante|envío comprobante|recibo)\b/.test(n);
 }
 
-// ✅ FIX V17: el comprobante NO se marca por texto ni por contexto viejo.
-// Solo cuenta si en ESTE mensaje llegó una imagen / PDF / documento adjunto.
 function hasPaymentProof(context: any, text: string, mediaUrl?: string, mediaType?: string) {
   const url = clean(mediaUrl);
   const type = clean(mediaType);
@@ -3022,7 +2830,6 @@ async function transcribeAudioSmart({
     return { text: geminiText, reason: "gemini" };
   }
 
-  // ✅ FIX V21: si Gemini quedó sin cuota 429, intentamos Whisper si OPENAI_API_KEY existe.
   const openAiText = await transcribeAudioWithOpenAI({ audioBase64, mime });
   if (openAiText) return { text: openAiText, reason: "openai_whisper" };
 
@@ -3032,7 +2839,6 @@ async function transcribeAudioSmart({
 
   return { text: "", reason: "transcription_failed" };
 }
-
 
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
@@ -3194,7 +3000,6 @@ ${bankDataText(parsed)} 📲
 Cuando me pases el comprobante, dejamos tu pedido confirmado 😊`;
 }
 
-
 function deterministicObservationAckMessage(state: ConversationState, parsed: ParsedTraining, observationPatch?: Partial<OrderData> | null) {
   if (!hasOrderObservation(observationPatch || {})) return "";
 
@@ -3330,8 +3135,6 @@ function buildFullProductCopyResponse(state: ConversationState, _templatePricing
   const copy = clean(state.productInfo?.salesCopy || "");
   if (!copy) return "";
 
-  // ✅ FIX V32: devolver el copy exactamente como fue cargado.
-  // Prohibido agregar saludo, separadores, precios inferidos, packs o explicaciones.
   return `${copy}
 
 📍 ¿Para qué ciudad sería el envío? 😊`;
@@ -3416,7 +3219,6 @@ function postProcessResponse(resp: string) {
   return clean(resp)
     .replace(/\n{4,}/g, "\n\n");
 }
-
 
 function extractIncomingText(body: any) {
   const candidates = [
@@ -3629,8 +3431,6 @@ export default async function handler(req: any, res: any) {
     const apiKey = iaConfig.api_key;
     const model = iaConfig.model || "gemini-2.5-flash";
 
-    // ✅ FIX V20/V21: si llega audio, transcribir ANTES de detectar producto/ciudad/cantidad.
-    // Si el proveedor ya manda transcripción, extractIncomingText(req.body) ya la usa.
     const audioLike = isAudioLikeMedia({ media_url, media_type, mime_type });
 
     if (audioLike && !texto) {
@@ -3671,15 +3471,12 @@ export default async function handler(req: any, res: any) {
     const trainingText = buildTrainingText(allTraining);
     const parsed = parseTraining(trainingText);
 
-    // ✅ FIX V15: El catálogo visual guardado en training_data.products tiene prioridad.
-    // Esto evita que el bot responda "afilador" con la imagen de "varices".
     const visualProducts = productsFromVisualCatalog(allTraining);
     parsed.products = mergeProductsByPriority(visualProducts, parsed.products);
 
     attachProductImages(parsed.products, allTraining);
     const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
 
-    // ✅ FIX: Definir newTemplateSignal ANTES de usarlo (soluciona ReferenceError)
     const newTemplateSignal = isNewTemplateOrProductIntent(texto, parsed, history);
 
     const recentExplicitProductInterest = getRecentExplicitProductInterestAfterConfirmed(history, parsed);
@@ -3788,7 +3585,6 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // ✅ newTemplateSignal ya está definido, ahora podemos usarlo
     const productFromMessageInitial = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
     const lockedProductInitial = getLockedProductFromContext(context, oldOrder, history, parsed);
     const promoResponse = isRespondingToPromotion(texto, history);
@@ -3807,8 +3603,6 @@ export default async function handler(req: any, res: any) {
       freshOrder = true;
     }
 
-    // ✅ FIX V29: "ok", "gracias", "dale", "perfecto", etc. no son una compra nueva.
-    // Mantienen el pedido actual y solo retoman el dato pendiente.
     if (isShortAcknowledgement(texto) && context?.step !== "pedido_confirmado") {
       freshOrder = false;
     }
@@ -3825,9 +3619,6 @@ export default async function handler(req: any, res: any) {
       ? getProductInfo(templatePricing.product, parsed)
       : null;
 
-    // ✅ FIX V35: descartamos esta oferta "de arranque" si no es plausible para el
-    // producto al que se le está por asignar (protección extra antes de usarla como
-    // lockedOfferByContext en un pedido recién iniciado).
     const currentTemplateLockedOffer =
       currentTemplateLockedOfferRaw && currentTemplateLockedOfferProductInfo
         ? (isPlausibleOfferForProduct(currentTemplateLockedOfferRaw, currentTemplateLockedOfferProductInfo)
@@ -3839,14 +3630,8 @@ export default async function handler(req: any, res: any) {
       ? (currentTemplateLockedOffer || getOfferFromLastPromotion(history, parsed))
       : getLockedOfferFromContext(context, oldOrder, history, parsed);
 
-    // ✅ FIX V44: si el mensaje no nombra ningún producto explícito ("precio", "ok",
-    // etc.) y ya hay un producto activo en el pedido actual (oldOrder.product), ese
-    // producto activo debe ganar SIEMPRE por sobre una "plantilla" encontrada en el
-    // historial lejano. Antes, templatePricing?.product (que puede venir de un
-    // producto completamente distinto probado varios mensajes atrás en la misma
-    // conversación) tenía prioridad sobre el producto realmente activo, y un simple
-    // "precio" sin nombre de producto podía hacer que el bot saltara a vender otro
-    // producto de la nada.
+    // ✅ FIX V44: si el mensaje no nombra ningún producto explícito ("precio", "ok", etc.)
+    // y ya hay un producto activo en el pedido actual, ese producto activo gana
     let productToUse =
       currentTemplatePricing?.product ||
       ((isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) ? recentExplicitProductInterest?.product?.canonical || "" : "") ||
@@ -3885,9 +3670,6 @@ export default async function handler(req: any, res: any) {
 
     let explicitQty = extractQuantity(texto);
 
-    // ✅ FIX V38: si no hay cantidad explícita pero el cliente nombró un precio
-    // conocido de este producto ("129.000 verdad", "quiero el de 129.000"),
-    // usamos esa mención de precio para inferir la cantidad/oferta elegida.
     if (explicitQty === 0 && productInfo) {
       const qtyFromPrice = extractQuantityFromPriceMention(texto, productInfo, templatePricing);
       if (qtyFromPrice > 0) explicitQty = qtyFromPrice;
@@ -3912,8 +3694,6 @@ export default async function handler(req: any, res: any) {
       const promoFromHistory = getOfferFromLastPromotion(history, parsed);
       const promoMatchesProduct = promoFromHistory && normalize(promoFromHistory.product) === normalize(productInfo.canonical);
       const fixedTemplateOfferRaw = getFixedTemplateOffer(templatePricing, productInfo.canonical);
-      // ✅ FIX V35: un pack fijo de plantilla solo se usa si es plausible para ESTE producto
-      // (su cantidad y/o precio deben aparecer en el copy propio del producto).
       const fixedTemplateOffer = isPlausibleOfferForProduct(fixedTemplateOfferRaw, productInfo)
         ? fixedTemplateOfferRaw
         : null;
@@ -3993,11 +3773,6 @@ export default async function handler(req: any, res: any) {
             ? detectCity(texto, parsed, oldOrder.city)
             : "");
 
-    // ✅ FIX V43: si la coincidencia de ciudad no es EXACTA contra la lista de
-    // cobertura (ej. el cliente escribió "Arega" en vez de "Aregua", que sí está
-    // registrada como alias), pedimos confirmación en vez de asumir directamente.
-    // Si ya había una confirmación pendiente de un turno anterior, la resolvemos
-    // primero con la respuesta del cliente (sí/no).
     const pendingCityConfirmation = clean(context?.pending_city_confirmation || "");
     let cityConfirmedNow = "";
     let cityConfirmationDeclined = false;
@@ -4112,7 +3887,6 @@ export default async function handler(req: any, res: any) {
     } else if (isSameOrderForPaymentProof(oldOrder, orderData)) {
       orderData.payment_proof_received = true;
     } else {
-      // 🔒 No arrastrar comprobantes de pedidos/contextos anteriores.
       orderData.payment_proof_received = false;
     }
 
@@ -4155,8 +3929,6 @@ export default async function handler(req: any, res: any) {
     let directConfirm = hasAllRequiredOrderDataForDirectConfirmation(finalState);
     let confirm = shouldConfirmOrder(finalState) || directConfirm;
 
-    // 🔒 BLOQUEO ABSOLUTO: ciudad sin cobertura / transportadora
-    // NUNCA confirma sin comprobante real adjunto.
     if (finalState.coverage === false && !orderData.payment_proof_received) {
       directConfirm = false;
       confirm = false;
@@ -4332,21 +4104,12 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // ✅ FIX V33 DEFINITIVO: PRESENTACIÓN DEL PRODUCTO SIN GEMINI.
-    // El copy cargado por el usuario es un artefacto literal: no se resume, corrige,
-    // interpreta ni se mezcla con precios detectados. Solo se agrega la pregunta operativa.
     const currentMessageIsQuestionBeforeAI = isQuestionLikeMessage(texto);
     const currentMessageHasQuantityBeforeAI = extractQuantity(texto) > 0;
     const currentMessageIsAcknowledgementBeforeAI = isShortAcknowledgement(texto);
     const explicitProductInterestNow = hasExplicitProductInterestPhrase(texto);
     const productMentionNow = !!detectProduct(texto, parsed, "");
 
-    // ✅ FIX V37: una consulta que MENCIONA el producto (por palabra clave/alias),
-    // sin importar cómo esté formulada ("¿precio del afilador?", "tenés el afilador?",
-    // "info del afilador", "cuánto sale el afilador"), debe tratarse como pedido de
-    // información del producto y no como una consulta general de negocio (tipo
-    // "¿de dónde son?"). Antes, CUALQUIER "?" en el mensaje bloqueaba el copy/imagen
-    // completo aunque el cliente estuviera preguntando puntualmente por ese producto.
     const shouldPresentExactCatalogCopy = Boolean(
       clean(finalState.productInfo?.salesCopy || "") &&
       !orderData.city &&
@@ -4370,7 +4133,6 @@ export default async function handler(req: any, res: any) {
         : undefined;
 
       return res.json({
-        // IMPORTANTE: no pasar por postProcessResponse; conserva el formato literal.
         response: exactCopyResponse,
         media_urls: exactImages,
         context: {
@@ -4432,23 +4194,16 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
-    // ✅ FIX V27: las preguntas frecuentes del negocio se responden de forma determinística.
-    // Esto evita que Gemini ignore "¿de dónde son?" y vuelva a vender el producto.
     const deterministicBusinessResponse = buildDeterministicBusinessQuestionResponse(texto, finalState);
     if (deterministicBusinessResponse) {
       aiResponse = deterministicBusinessResponse;
     }
 
-    // ✅ FIX V29: respuestas sociales cortas se contestan desde backend.
-    // Así "gracias", "ok", "dale" o "perfecto" no alteran datos ni dependen de Gemini.
     const deterministicAcknowledgementResponse = buildDeterministicAcknowledgementResponse(texto, finalState);
     if (deterministicAcknowledgementResponse) {
       aiResponse = deterministicAcknowledgementResponse;
     }
 
-    // ✅ FIX V34 DOBLE SEGURO: si por cualquier contexto heredado no se activó
-    // el retorno temprano, una intención explícita de producto con salesCopy
-    // reemplaza totalmente la salida de Gemini. Nunca se mezcla ni se explica.
     if (
       explicitProductInterestNow &&
       clean(finalState.productInfo?.salesCopy || "") &&
@@ -4458,31 +4213,18 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       templatePricing = null;
     }
 
-    // El copy exacto ya fue atendido antes de llamar a Gemini (FIX V33/V34).
-    // Desde este punto solo se procesan consultas, datos del pedido y postventa.
     const currentMessageIsQuestion = isQuestionLikeMessage(texto);
     const currentMessageHasQuantity = extractQuantity(texto) > 0;
 
-    // ✅ FIX IMAGENES: Enviar hasta 3 imágenes del producto que coincide con PALABRA_CLAVE
     let imagesToSend: string[] | undefined = undefined;
     
-    // ✅ Buscar producto por PALABRA_CLAVE o ALIAS
     const productoPorClave = encontrarProductoPorPalabraClave(texto, parsed.products);
     
-    // Solo enviar imágenes al presentar el producto, no cuando el cliente hace una consulta.
-    // Evita repetir imagen/copy ante "de dónde son", "cómo funciona", etc.
-    // ✅ FIX V37: mismo criterio que en la presentación inicial — si el mensaje
-    // menciona el producto (por palabra clave/alias), se envían las imágenes aunque
-    // esté formulado como pregunta ("¿tenés el afilador?", "info del afilador", etc.).
-    // Solo se sigue bloqueando ante preguntas de negocio genéricas que no nombran
-    // ningún producto puntual.
     if (!orderData.city && (!currentMessageIsQuestion || productMentionNow) && !currentMessageHasQuantity) {
       if (productoPorClave && productoPorClave.images?.length) {
-        // ✅ Enviar hasta 3 imágenes del producto que coincide con la palabra clave
         imagesToSend = productoPorClave.images.slice(0, 3);
         console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${productoPorClave.palabra_clave || productoPorClave.canonical}"`);
       } else if (finalState.productInfo?.images?.length) {
-        // Fallback: si no encontró por palabra clave, usar el producto detectado
         imagesToSend = finalState.productInfo.images.slice(0, 3);
         console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${finalState.productInfo.canonical}"`);
       }
