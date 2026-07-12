@@ -1025,6 +1025,10 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
     return `Entiendo 😊 Solo para confirmar: ¿ya no querés continuar con ${state.order.product}?`;
   }
 
+  if (isDeliveryCostQuestion(text)) {
+    return buildDeliveryCostResponse(state);
+  }
+
   if (isPaymentInformationQuestion(text)) {
     let continuation = "";
     if (!state.order.city) continuation = "📍 ¿Para qué ciudad sería el envío?";
@@ -1529,22 +1533,55 @@ function isPaymentInformationQuestion(text: string): boolean {
   );
 }
 
+function isDeliveryCostQuestion(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /\b(delivery|envio|envío|entrega|flete|transportadora|encomienda)\b[\s\S]{0,40}\b(cuanto|cuánto|costo|cuesta|sale|paga|pagar|gratis)\b/.test(n) ||
+    /\b(cuanto|cuánto|costo|cuesta|sale|paga|pagar)\b[\s\S]{0,40}\b(delivery|envio|envío|entrega|flete|transportadora|encomienda)\b/.test(n) ||
+    /\b(el|la)?\s*(delivery|envio|envío)\s+es\s+gratis\b/.test(n)
+  );
+}
+
+function buildDeliveryCostResponse(state: ConversationState): string {
+  const city = clean(state.order.city);
+  if (!city) {
+    return "🚚 Para confirmarte el costo del envío, decime primero tu ciudad.";
+  }
+
+  if (state.coverage === true) {
+    return `🚚 El delivery a ${city} es GRATIS 😊\nPagás solamente el producto cuando lo recibís.`;
+  }
+
+  return `🚚 Hasta ${city} enviamos por transportadora.\n\nEl costo de la encomienda lo define la transportadora según el destino y no está incluido en el precio del producto.\n\nPara este tipo de envío trabajamos con pago anticipado.`;
+}
+
 function extractExplicitKnownCityFromSentence(text: string, parsed: ParsedTraining): string {
   const raw = clean(text);
   const n = normalize(raw);
   if (!raw || !n) return "";
 
-  const hasCityLead = /\b(soy de|soi de|vivo en|estoy en|mi ciudad es|para envio a|para envío a|delivery a)\b/.test(n);
-  if (!hasCityLead) return "";
+  // Detecta una ciudad conocida dentro de mensajes mezclados con cantidad,
+  // nombre o precio. Ej.: "quiero uno para Asunción Roberto Lpetti".
+  const hasCityContext =
+    /\b(soy de|soi de|vivo en|estoy en|mi ciudad es|para|envio a|envío a|delivery a|mandar a|enviar a)\b/.test(n);
+
+  if (!hasCityContext) return "";
 
   const ordered = [...(parsed.cities || [])].sort(
-    (a, b) => Math.max(normalize(b.alias).length, normalize(b.canonical).length) - Math.max(normalize(a.alias).length, normalize(a.canonical).length)
+    (a, b) =>
+      Math.max(normalize(b.alias).length, normalize(b.canonical).length) -
+      Math.max(normalize(a.alias).length, normalize(a.canonical).length)
   );
 
   for (const city of ordered) {
-    const aliases = [city.alias, city.canonical].map(normalize).filter(Boolean);
-    if (aliases.some((alias) => new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\b`).test(n))) {
-      return city.canonical;
+    const aliases = Array.from(new Set([city.alias, city.canonical].map(normalize).filter(Boolean)));
+
+    for (const alias of aliases) {
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const cityRegex = new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i");
+      if (cityRegex.test(n)) return city.canonical;
     }
   }
 
@@ -1614,6 +1651,18 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   if (isIdentityDocumentText(raw)) return "";
   if (isDeliveryTimingMessage(raw)) return "";
   if (isInvoiceOrTaxDataMessage(raw) || isStandaloneTaxOrIdentityData(raw)) return "";
+
+  // Mensajes mixtos como "quiero uno para Asunción Roberto Lpetti el precio..."
+  // no deben convertirse completos en nombre. Solo aceptamos correcciones
+  // explícitas o dejamos el nombre pendiente para pedirlo de forma segura.
+  if (
+    parsed &&
+    extractExplicitKnownCityFromSentence(raw, parsed) &&
+    (looksLikePriceMention(raw) || extractQuantity(raw) > 0 || /\b(quiero|quisiera|llevo|para)\b/.test(normalize(raw)))
+  ) {
+    const explicitMixed = raw.match(/\b(?:mi nombre es|me llamo|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,4})/i)?.[1];
+    return explicitMixed ? toTitleCase(clean(explicitMixed)) : "";
+  }
 
   const isMultiLine = raw.includes("\n");
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
