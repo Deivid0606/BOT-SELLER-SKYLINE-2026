@@ -1150,6 +1150,41 @@ function isPlausibleBareCityCandidate(text: string): boolean {
   return true;
 }
 
+
+function canonicalizeStoredCity(value: string, parsed: ParsedTraining): string {
+  const raw = clean(value);
+  const n = normalize(raw);
+  if (!raw || !n) return "";
+
+  // Primero corrige valores contaminados guardados en contexto, por ejemplo:
+  // "Asuncion Roberto Lpetti El" -> "Asunción".
+  const hardKnownCities: Array<[RegExp, string]> = [
+    [/\b(asuncion|asu)\b/i, "Asunción"],
+    [/\b(fernando de la mora|fdo de la mora|fndo de la mora|fdo dela mora|fndo dela mora)\b/i, "Fernando de la Mora"],
+    [/\bsan lorenzo\b/i, "San Lorenzo"],
+    [/\bluque\b/i, "Luque"],
+    [/\b(lambare)\b/i, "Lambaré"],
+    [/\b(mariano roque alonso|mra)\b/i, "Mariano Roque Alonso"],
+  ];
+
+  for (const [pattern, canonical] of hardKnownCities) {
+    if (pattern.test(n)) return canonical;
+  }
+
+  const ordered = [...(parsed.cities || [])].sort(
+    (a, b) => Math.max(normalize(b.alias).length, normalize(b.canonical).length) - Math.max(normalize(a.alias).length, normalize(a.canonical).length)
+  );
+
+  for (const city of ordered) {
+    for (const alias of Array.from(new Set([city.alias, city.canonical].map(normalize).filter(Boolean)))) {
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(n)) return city.canonical;
+    }
+  }
+
+  return raw;
+}
+
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const exactCity = exactKnownCity(text, parsed);
   if (exactCity) return exactCity;
@@ -4774,7 +4809,15 @@ export default async function handler(req: any, res: any) {
     const isCityStep = prevStep === "collecting_city";
     const isDataCollectionStep = ["collecting_name", "collecting_address", "collecting_phone", "collecting_quantity"].includes(prevStep);
 
-    const detectedCityRaw = detectCity(texto, parsed, oldOrder.city || "");
+    // V63: sanea ciudades contaminadas que hayan quedado guardadas por una versión anterior.
+    // Ej.: "Asuncion Roberto Lpetti El" se convierte inmediatamente en "Asunción".
+    const sanitizedOldCity = canonicalizeStoredCity(oldOrder.city || "", parsed);
+    if (sanitizedOldCity && sanitizedOldCity !== oldOrder.city) {
+      oldOrder.city = sanitizedOldCity;
+    }
+
+    const explicitKnownCityFromMessage = extractExplicitKnownCityFromSentence(texto, parsed);
+    const detectedCityRaw = detectCity(texto, parsed, sanitizedOldCity || "");
     const exactCityFromMessage = exactKnownCity(texto, parsed);
     const explicitDifferentCity = Boolean(
       cityStatement &&
@@ -4791,13 +4834,15 @@ export default async function handler(req: any, res: any) {
     // Solo cambia si el cliente declara expresamente otra ciudad o escribe
     // exactamente otra localidad conocida. Una pregunta, dirección, talle,
     // cantidad o respuesta corta jamás puede reemplazarla.
-    const detectedCity = oldOrder.city && !explicitDifferentCity && !exactDifferentCity
-      ? oldOrder.city
-      : explicitDifferentCity
-        ? toTitleCase(cityStatement)
-        : exactDifferentCity
-          ? exactCityFromMessage
-          : detectedCityRaw ||
+    const detectedCity = explicitKnownCityFromMessage
+      ? explicitKnownCityFromMessage
+      : oldOrder.city && !explicitDifferentCity && !exactDifferentCity
+        ? canonicalizeStoredCity(oldOrder.city, parsed)
+        : explicitDifferentCity
+          ? canonicalizeStoredCity(cityStatement, parsed)
+          : exactDifferentCity
+            ? exactCityFromMessage
+            : detectedCityRaw ||
             (cityStatement && isPlausibleBareCityCandidate(cityStatement)
               ? toTitleCase(cityStatement)
               : isCityStep && isPlausibleBareCityCandidate(texto)
