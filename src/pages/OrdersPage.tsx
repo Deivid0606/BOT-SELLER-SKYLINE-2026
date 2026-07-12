@@ -81,6 +81,11 @@ type Order = {
   comprobante_url: string | null;
   detected_by_ai: boolean | null;
   created_at: string;
+  observation?: string | null;
+  observacion?: string | null;
+  preferred_delivery_date?: string | null;
+  preferred_delivery_time?: string | null;
+  payment_note?: string | null;
 };
 
 const ECOMMERCE_URL = "https://www.el-ecommercedcanpgroup.com";
@@ -266,6 +271,74 @@ function getOrderItems(order: Order) {
   }
 }
 
+function cleanText(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function isGenericProductLabel(value: string | null | undefined): boolean {
+  const n = cleanText(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return /^(oferta hoy|oferta|promo|promocion|producto|productos|articulo|item|sin producto)$/.test(n);
+}
+
+function getResolvedOrderItems(order: Order): OrderItem[] {
+  const items = getOrderItems(order)
+    .map((item) => ({
+      ...item,
+      product: cleanText(item.product || item.name),
+      quantity: Number(item.quantity || 1),
+      amount: Number(item.amount || item.price || 0),
+    }))
+    .filter((item) => item.product && !isGenericProductLabel(item.product));
+
+  if (items.length > 0) return items;
+
+  const product = cleanText(order.product);
+  if (product && !isGenericProductLabel(product)) {
+    return [{
+      product,
+      quantity: Number(order.quantity || 1),
+      amount: Number(order.total_amount || 0),
+    }];
+  }
+
+  return [];
+}
+
+function getPrimaryProductName(order: Order): string {
+  const items = getResolvedOrderItems(order);
+  if (items.length === 1) return cleanText(items[0].product || items[0].name);
+  if (items.length > 1) return items.map((item) => cleanText(item.product || item.name)).filter(Boolean).join(" + ");
+  return "Producto sin identificar";
+}
+
+function getOrderObservation(order: Order): string {
+  const values = [
+    order.observation,
+    order.observacion,
+    order.payment_note,
+    order.preferred_delivery_date,
+    order.preferred_delivery_time,
+  ]
+    .map(cleanText)
+    .filter(Boolean);
+
+  const unique: string[] = [];
+  for (const value of values) {
+    for (const part of value.split(/\s*\|\s*/g).map(cleanText).filter(Boolean)) {
+      const normalized = part.toLowerCase();
+      if (!unique.some((item) => item.toLowerCase() === normalized)) unique.push(part);
+    }
+  }
+  return unique.join(" | ");
+}
+
 // Función para limpiar y formatear número de teléfono
 function formatPhoneNumber(phone: string | null): string {
   if (!phone) return "";
@@ -441,11 +514,11 @@ export default function OrdersPage() {
       telefono: realChatNumber,
       ciudad: order.city || "",
       calle: order.address || "",
-      producto: order.product || "",
-      cantidad: String(order.quantity || 1),
+      producto: getPrimaryProductName(order),
+      cantidad: String(getResolvedOrderItems(order).reduce((sum, item) => sum + Number(item.quantity || 1), 0) || order.quantity || 1),
       total: order.total_amount || "",
       pago: order.metodo_pago || "",
-      observacion: `Producto: ${order.product || "Sin producto"}`,
+      observacion: getOrderObservation(order),
       origen: "seller-skyline",
     });
     window.open(`${ECOMMERCE_URL}/?${params.toString()}`, "_blank");
@@ -491,7 +564,7 @@ export default function OrdersPage() {
   // Top productos
   const productCount: Record<string, number> = {};
   orders.forEach(order => {
-    const productName = order.product || "Sin producto";
+    const productName = getPrimaryProductName(order);
     productCount[productName] = (productCount[productName] || 0) + 1;
   });
   const topProducts = Object.entries(productCount)
@@ -510,7 +583,8 @@ export default function OrdersPage() {
       order.customer_name?.toLowerCase().includes(searchTerm) ||
       order.phone?.toLowerCase().includes(searchTerm) ||
       order.from_number?.toLowerCase().includes(searchTerm) ||
-      order.product?.toLowerCase().includes(searchTerm) ||
+      getPrimaryProductName(order).toLowerCase().includes(searchTerm) ||
+      getOrderObservation(order).toLowerCase().includes(searchTerm) ||
       order.city?.toLowerCase().includes(searchTerm);
 
     const matchesFilter =
@@ -818,7 +892,9 @@ export default function OrdersPage() {
               const config = STATUS_CONFIG[status] || STATUS_CONFIG.pendiente;
               const Icon = config.icon;
               const chatNumber = order.from_number || order.phone || "";
-              const items = getOrderItems(order);
+              const items = getResolvedOrderItems(order);
+              const observation = getOrderObservation(order);
+              const primaryProductName = getPrimaryProductName(order);
               const fechaPedido = formatDateTime(order.created_at);
               const fechaCorta = formatDateShort(order.created_at);
 
@@ -873,9 +949,12 @@ export default function OrdersPage() {
                         </div>
                       ) : (
                         <div className="rounded-lg bg-zinc-800/50 p-2.5">
-                          <p className="truncate text-sm font-medium text-white">
-                            {order.product || "Producto"}
+                          <p className={`truncate text-sm font-medium ${primaryProductName === "Producto sin identificar" ? "text-amber-300" : "text-white"}`}>
+                            {primaryProductName}
                           </p>
+                          {primaryProductName === "Producto sin identificar" && (
+                            <p className="mt-1 text-[11px] text-amber-400">Revisar nombre guardado por el bot</p>
+                          )}
                           <div className="mt-0.5 flex items-center gap-3 text-xs text-zinc-400">
                             <span>Cant: {order.quantity || 1}</span>
                           </div>
@@ -905,6 +984,18 @@ export default function OrdersPage() {
                       <div className="mb-3 rounded-lg bg-zinc-800/30 p-2">
                         <p className="text-xs text-zinc-500">Dirección</p>
                         <p className="text-xs text-zinc-300">{order.address}</p>
+                      </div>
+                    )}
+
+                    {observation && (
+                      <div className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5">
+                        <div className="mb-1 flex items-center gap-1.5">
+                          <ReceiptText className="h-3.5 w-3.5 text-amber-400" />
+                          <p className="text-xs font-medium text-amber-300">Observaciones</p>
+                        </div>
+                        <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-zinc-300">
+                          {observation}
+                        </p>
                       </div>
                     )}
 
