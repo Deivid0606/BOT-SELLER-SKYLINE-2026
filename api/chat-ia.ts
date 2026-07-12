@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V60 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V62 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -640,6 +640,26 @@ function parseTraining(training: string): ParsedTraining {
     .filter((c) => c.length > 2 && !c.includes("━━"))
     .forEach((c) => addCity(c, c));
 
+  // V62: ciudades metropolitanas críticas como respaldo.
+  // Evita que una variación en el formato del entrenamiento deje a Asunción
+  // fuera de parsed.cities y active transportadora por error.
+  const fallbackCoveredCities: Array<[string, string]> = [
+    ["Asunción", "Asunción"],
+    ["Asuncion", "Asunción"],
+    ["Asu", "Asunción"],
+    ["Fernando de la Mora", "Fernando de la Mora"],
+    ["Fdo de la Mora", "Fernando de la Mora"],
+    ["Fndo de la Mora", "Fernando de la Mora"],
+    ["San Lorenzo", "San Lorenzo"],
+    ["Luque", "Luque"],
+    ["Lambaré", "Lambaré"],
+    ["Lambare", "Lambaré"],
+    ["Mariano Roque Alonso", "Mariano Roque Alonso"],
+    ["MRA", "Mariano Roque Alonso"],
+  ];
+
+  for (const [alias, canonical] of fallbackCoveredCities) addCity(alias, canonical);
+
   const cityMap = new Map<string, { alias: string; canonical: string }>();
   for (const c of cities) {
     const key = normalize(c.alias);
@@ -1067,6 +1087,20 @@ function exactKnownCity(text: string, parsed: ParsedTraining): string {
   const n = normalize(text);
   if (!n) return "";
 
+  const hardExact: Record<string, string> = {
+    asuncion: "Asunción",
+    asu: "Asunción",
+    "fernando de la mora": "Fernando de la Mora",
+    "fdo de la mora": "Fernando de la Mora",
+    "fndo de la mora": "Fernando de la Mora",
+    "san lorenzo": "San Lorenzo",
+    luque: "Luque",
+    lambare: "Lambaré",
+    "mariano roque alonso": "Mariano Roque Alonso",
+    mra: "Mariano Roque Alonso",
+  };
+  if (hardExact[n]) return hardExact[n];
+
   const found = parsed.cities.find((c) => {
     const alias = normalize(c.alias);
     const canonical = normalize(c.canonical);
@@ -1204,6 +1238,16 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 function hasCoverage(city: string, parsed: ParsedTraining) {
   const c = normalize(city);
   if (!c) return false;
+
+  const hardCovered = new Set([
+    "asuncion",
+    "fernando de la mora",
+    "san lorenzo",
+    "luque",
+    "lambare",
+    "mariano roque alonso",
+  ]);
+  if (hardCovered.has(c)) return true;
 
   // La cobertura debe depender de una coincidencia EXACTA con una ciudad o
   // alias configurado. Las coincidencias parciales generaban falsos positivos:
@@ -1561,6 +1605,21 @@ function extractExplicitKnownCityFromSentence(text: string, parsed: ParsedTraini
   const raw = clean(text);
   const n = normalize(raw);
   if (!raw || !n) return "";
+
+  // Respaldo determinístico para Asunción y área metropolitana.
+  // Se ejecuta antes de cualquier análisis difuso o de precio.
+  const hardKnownCities: Array<[RegExp, string]> = [
+    [/\b(asuncion|asu)\b/i, "Asunción"],
+    [/\b(fernando de la mora|fdo de la mora|fndo de la mora|fdo dela mora|fndo dela mora)\b/i, "Fernando de la Mora"],
+    [/\bsan lorenzo\b/i, "San Lorenzo"],
+    [/\bluque\b/i, "Luque"],
+    [/\b(lambare)\b/i, "Lambaré"],
+    [/\b(mariano roque alonso|mra)\b/i, "Mariano Roque Alonso"],
+  ];
+
+  for (const [pattern, canonical] of hardKnownCities) {
+    if (pattern.test(n)) return canonical;
+  }
 
   // Detecta una ciudad conocida dentro de mensajes mezclados con cantidad,
   // nombre o precio. Ej.: "quiero uno para Asunción Roberto Lpetti".
