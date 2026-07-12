@@ -1,9 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V58 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V60 - Mega Todo Store / One Store
  * 
- * V58 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
+ * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
  * Mantiene el fix que evita repetir el copy cuando el cliente
  * pregunta "precio" después de ya haber visto el producto.
@@ -1010,9 +1010,31 @@ function isQuestionLikeMessage(text: string) {
   );
 }
 
+
+function isAmbiguousProductRejection(text: string, currentProduct: string): boolean {
+  const n = normalize(text);
+  if (!n || !currentProduct) return false;
+  return /\b(no estoy interesad[oa]|ya no quiero|no me interesa|no quiero)\b/.test(n);
+}
+
 function buildDeterministicBusinessQuestionResponse(text: string, state: ConversationState) {
   const n = normalize(text);
   if (!n) return "";
+
+  if (isAmbiguousProductRejection(text, state.order.product || "")) {
+    return `Entiendo 😊 Solo para confirmar: ¿ya no querés continuar con ${state.order.product}?`;
+  }
+
+  if (isPaymentInformationQuestion(text)) {
+    let continuation = "";
+    if (!state.order.city) continuation = "📍 ¿Para qué ciudad sería el envío?";
+    else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) continuation = "¿Cuántas unidades querés llevar?";
+    else if (!state.order.customer_name) continuation = "Para continuar, pasame tu nombre y apellido.";
+    else if (!state.order.address) continuation = "Ahora pasame la dirección exacta o ubicación.";
+    else if (!state.order.phone) continuation = "Por último, pasame tu número de celular.";
+
+    return `💵 Podés pagar en efectivo o por transferencia al delivery cuando recibís tu pedido. 😊${continuation ? `\n\n${continuation}` : ""}`;
+  }
 
   const asksOrigin =
     /\b(?:pero\s+)?(?:de\s+)?d(?:o|oi|ó)nde\s+son(?:\s+ustedes)?\b/.test(n) ||
@@ -1093,6 +1115,9 @@ function isPlausibleBareCityCandidate(text: string): boolean {
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const exactCity = exactKnownCity(text, parsed);
   if (exactCity) return exactCity;
+
+  const explicitKnownCity = extractExplicitKnownCityFromSentence(text, parsed);
+  if (explicitKnownCity) return explicitKnownCity;
 
   // V56: preguntas, cantidades, direcciones, talles y respuestas como “sí”
   // nunca pueden convertirse en una localidad inferida.
@@ -1480,9 +1505,109 @@ function isStandaloneTaxOrIdentityData(text: string): boolean {
   );
 }
 
+
+function isPoliteClosingOrAcknowledgement(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /^(?:bueno\s+)?(?:muchas|muchisimas|muchísimas)?\s*gracias(?:\s+(?:igualmente|por todo|por la atencion|por la atención))?$/i.test(n) ||
+    /^(?:ok|okay|dale|listo|perfecto|bueno|genial|excelente|joya|esta bien|está bien)\s*,?\s*gracias$/i.test(n) ||
+    /^(?:gracias|muchas gracias|muchisimas gracias|muchísimas gracias|bueno gracias|gracias igualmente|de acuerdo gracias|todo bien gracias)$/i.test(n) ||
+    /^(?:ok|okay|dale|listo|perfecto|bueno|genial|excelente|joya|👍|👌|🙏)$/i.test(n)
+  );
+}
+
+function isPaymentInformationQuestion(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /\b(como|cómo|cual|cuál|que|qué)\b[\s\S]{0,35}\b(pago|pagar|transferencia|efectivo|contra entrega)\b/.test(n) ||
+    /\b(tengo que|se puede|puedo|debo)\b[\s\S]{0,30}\b(pagar|hacer transferencia|transferir)\b/.test(n) ||
+    /\b(formas?|metodos?|métodos?)\s+de\s+pago\b/.test(n)
+  );
+}
+
+function extractExplicitKnownCityFromSentence(text: string, parsed: ParsedTraining): string {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw || !n) return "";
+
+  const hasCityLead = /\b(soy de|soi de|vivo en|estoy en|mi ciudad es|para envio a|para envío a|delivery a)\b/.test(n);
+  if (!hasCityLead) return "";
+
+  const ordered = [...(parsed.cities || [])].sort(
+    (a, b) => Math.max(normalize(b.alias).length, normalize(b.canonical).length) - Math.max(normalize(a.alias).length, normalize(a.canonical).length)
+  );
+
+  for (const city of ordered) {
+    const aliases = [city.alias, city.canonical].map(normalize).filter(Boolean);
+    if (aliases.some((alias) => new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\b`).test(n))) {
+      return city.canonical;
+    }
+  }
+
+  return "";
+}
+
+function splitCompositeMessage(text: string): string[] {
+  return clean(text)
+    .split(/(?:\r?\n|[.!?]+\s+|;\s*)/g)
+    .map(clean)
+    .filter(Boolean);
+}
+
+function extractCompositeAddress(text: string, detectedCity: string, phone: string, name: string): string {
+  const pieces = splitCompositeMessage(text);
+  const selected: string[] = [];
+
+  for (const piece of pieces) {
+    const n = normalize(piece);
+    if (!n) continue;
+    if (isPaymentInformationQuestion(piece)) continue;
+    if (isInvoiceOrTaxDataMessage(piece) || isStandaloneTaxOrIdentityData(piece)) continue;
+    if (isDeliveryTimingMessage(piece)) continue;
+    if (isPoliteClosingOrAcknowledgement(piece)) continue;
+    if (phone && piece.includes(phone)) continue;
+    if (name && normalize(piece).includes(normalize(name))) continue;
+
+    const locationCue =
+      /\b(barrio|bario|bsrrio|calle|avenida|avda|ruta|km|casa|edificio|piso|departamento|dpto|manzana|mz|lote|puerto|compania|compañia|colonia|fraccion|fracción|asentamiento|zona|referencia|cerca|cuadra|ferreteria|ferretería|bodega|supermercado|iglesia|escuela|colegio|plaza|hospital|farmacia|frente|esquina|al lado|detras|detrás)\b/.test(n) ||
+      /-?\d{2}\.\d{3,}\s*,\s*-?\d{2}\.\d{3,}/.test(piece);
+
+    if (!locationCue) continue;
+
+    let cleanedPiece = clean(piece)
+      .replace(/^\s*(?:yo\s+)?(?:soy|vivo|estoy)\s+(?:de|en)\s+/i, "")
+      .replace(/^\s*(?:mi\s+)?(?:direccion|dirección|ubicacion|ubicación|referencia)\s*(?:es|:|-)?\s*/i, "");
+
+    if (detectedCity) {
+      const cityPattern = detectedCity
+        .split(/\s+/)
+        .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("\\s+");
+      cleanedPiece = cleanedPiece.replace(new RegExp(`^${cityPattern}\\s*[,;-]?\\s*`, "i"), "");
+    }
+
+    if (cleanedPiece && !selected.some((x) => normalize(x) === normalize(cleanedPiece))) {
+      selected.push(cleanedPiece);
+    }
+  }
+
+  return selected.join(" — ");
+}
+
+function isExplicitNameCorrection(text: string): boolean {
+  const n = normalize(text);
+  return /\b(mi nombre correcto es|corregir nombre|cambiar el nombre a|cambia el nombre a|el pedido es para|poner a nombre de)\b/.test(n);
+}
+
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const raw = clean(text);
   if (!raw) return "";
+  if (isPoliteClosingOrAcknowledgement(raw)) return "";
+  if (isPaymentInformationQuestion(raw)) return "";
   if (isQuestionLikeMessage(raw)) return "";
   if (extractQuantity(raw) > 0) return "";
   if (looksLikeAddressSupplement(raw)) return "";
@@ -1515,6 +1640,9 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     "cdo", "xq", "xfa", "xfavor", "porfavor", "porfa",
     "me", "te", "se", "lo", "la", "les", "nos",
     "para", "con", "por", "del", "mas",
+    "bueno muchas gracias", "muchisimas gracias", "muchísimas gracias",
+    "bueno gracias", "gracias igualmente", "ok gracias", "dale gracias",
+    "listo gracias", "perfecto gracias", "esta bien gracias", "está bien gracias",
   ];
 
   const questionVerbs =
@@ -1525,6 +1653,8 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     const normLine = normalize(cleaned);
     const words = cleaned.split(/\s+/).filter(Boolean);
 
+    if (isPoliteClosingOrAcknowledgement(cleaned)) return false;
+    if (isPaymentInformationQuestion(cleaned)) return false;
     if (words.length < 2 || words.length > 5) return false;
     if (/\d/.test(cleaned)) return false;
     if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)) return false;
@@ -1539,7 +1669,7 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     return true;
   };
 
-  const explicit = raw.match(/(?:soy|me llamo|mi nombre es|nombre)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,80})/i)?.[1];
+  const explicit = raw.match(/(?:mi nombre correcto es|cambiar el nombre a|cambia el nombre a|el pedido es para|poner a nombre de|me llamo|mi nombre es|nombre)\s*[:,-]?\s*([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,80})/i)?.[1];
   if (explicit) return toTitleCase(clean(explicit));
 
   const beforeSoy = raw.match(/^([a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,4})\s+soy\b/i)?.[1];
@@ -1587,6 +1717,9 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   if (explicit) return clean(explicit);
 
   if (raw.includes("maps.app") || raw.includes("google.com/maps")) return raw;
+
+  const compositeAddress = extractCompositeAddress(raw, detectedCity, phone, name);
+  if (compositeAddress) return compositeAddress;
 
   for (const line of lines) {
     const cleaned = clean(line);
@@ -1691,6 +1824,9 @@ function extractOrderObservation(text: string): Partial<OrderData> {
 
   const obs: Partial<OrderData> = {};
 
+  // Las preguntas informativas de pago se responden, pero no son observaciones.
+  const paymentInfoQuestion = isPaymentInformationQuestion(raw);
+
   // V59: toda solicitud o dato de facturación se conserva en una sola Observación.
   if (isInvoiceOrTaxDataMessage(raw) || isStandaloneTaxOrIdentityData(raw)) {
     obs.observation = mergeUniqueText(obs.observation, raw);
@@ -1699,7 +1835,7 @@ function extractOrderObservation(text: string): Partial<OrderData> {
   const dateWords = "hoy|manana|mañana|pasado|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo|fin de semana|quincena|fin de mes|[0-3]?\\d(?:\\/|-)[0-1]?\\d|[0-3]?\\d\\s*(?:de)?\\s*(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)";
   const hourWords = "de manana|de mañana|de tarde|de noche|a la manana|a la mañana|a la tarde|a la noche|despues de|después de|antes de|hasta las|desde las|a las|mediodia|mediodía|tarde nomas|tarde nomás|manana nomas|mañana nomás|noche nomas|noche nomás|\\b\\d{1,2}(?::\\d{2})?\\s*(?:hs|hrs|pm|am)?\\b";
 
-  if (/\b(no tengo plata|no tengo efectivo|no tengo dinero|sin plata|sin efectivo|ahora no tengo|cobro|cobrare|cobraré|cuando cobre|cuando cobro|cobrar|sueldo|salario|quincena|fin de mes|este mes|mes que viene|proximo mes|próximo mes|te pago|pago el|pagar el|puedo pagar|voy a pagar|pago cuando|pagar cuando|recién cobro|recien cobro)\b/.test(n)) {
+  if (!paymentInfoQuestion && /\b(no tengo plata|no tengo efectivo|no tengo dinero|sin plata|sin efectivo|ahora no tengo|cobro|cobrare|cobraré|cuando cobre|cuando cobro|cobrar|sueldo|salario|quincena|fin de mes|este mes|mes que viene|proximo mes|próximo mes|te pago|pago el|pagar el|voy a pagar|pago cuando|pagar cuando|recién cobro|recien cobro)\b/.test(n)) {
     obs.payment_note = raw;
     obs.observation = mergeUniqueText(obs.observation, raw);
   }
@@ -1717,7 +1853,9 @@ function extractOrderObservation(text: string): Partial<OrderData> {
     obs.observation = mergeUniqueText(obs.observation, raw);
   }
 
-  if (/\b(llamar antes|avisar antes|avisen antes|avisame antes|avísame antes|te aviso|yo aviso|les aviso|aviso luego|despues te aviso|después te aviso|avisar|coordinar|coordinamos|no estoy|no voy a estar|estoy solo|solo estoy|porteria|portería|guardia|dejar con|retira|retirar)\b/.test(n)) {
+  const explicitCoordination = /\b(llamar antes|avisar antes|avisen antes|avisame antes|avísame antes|te aviso|yo aviso|les aviso|aviso luego|despues te aviso|después te aviso|avisar|coordinar|coordinamos|porteria|portería|guardia|dejar con|retira|retirar)\b/.test(n);
+  const absenceCoordination = /\b(no estoy|no voy a estar|estoy solo|solo estoy)\b/.test(n) && /\b(casa|domicilio|direccion|dirección|entrega|delivery|recibir|horario|hora)\b/.test(n);
+  if (explicitCoordination || absenceCoordination) {
     obs.observation = mergeUniqueText(obs.observation, raw);
   }
 
@@ -1778,8 +1916,11 @@ function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
     product: product || old.product || "",
     quantity: ext.quantity > 0 ? sanitizeQuantity(ext.quantity) : sanitizeQuantity(old.quantity || 0),
     city: ext.city || old.city || "",
-    // No permitir que mensajes posteriores reemplacen datos ya confirmados.
-    customer_name: old.customer_name || ext.name || "",
+    // Un nombre confirmado solo cambia cuando el cliente lo corrige explícitamente.
+    customer_name:
+      old.customer_name && !ext.explicit_name_correction
+        ? old.customer_name
+        : (ext.name || old.customer_name || ""),
     phone: ext.phone || old.phone || "",
     address: ext.address
       ? mergeAddressSupplement(old.address || "", ext.address)
@@ -2431,8 +2572,7 @@ function isStrongNewPurchaseReply(text: string) {
 }
 
 function isShortAcknowledgement(text: string) {
-  const n = normalize(text);
-  return /^(ok|okay|dale|listo|gracias|muchas gracias|perfecto|bueno|👍|👌|🙏|genial|excelente|joya)$/.test(n);
+  return isPoliteClosingOrAcknowledgement(text);
 }
 
 function buildDeterministicAcknowledgementResponse(text: string, state: ConversationState) {
@@ -4273,7 +4413,9 @@ export default async function handler(req: any, res: any) {
 
         if (isShortAcknowledgement(texto) || isConversationClosing(texto)) {
           return res.json({
-            response: `😊 ¡Perfecto, muchas gracias! Tu pedido ya quedó confirmado y agendado. 🚚📦`,
+            response: oldOrder.customer_name
+              ? `¡Con mucho gusto, ${oldOrder.customer_name.split(/\s+/)[0]}! 😊 Tu pedido ya quedó confirmado y agendado. 🚚📦`
+              : `¡Con mucho gusto! 😊 Tu pedido ya quedó confirmado y agendado. 🚚📦`,
             context: {
               ...(context || {}),
               step: "pedido_confirmado",
