@@ -143,7 +143,7 @@ const STATUS_CONFIG: Record<
   cargado: {
     label: "Cargado",
     color: "#3b82f6",
-    bgColor: "bg-blue-500/10",
+    bgColor: "bg-violet-500/10",
     icon: Package,
     borderColor: "border-blue-500/30",
     glowColor: "shadow-blue-500/20",
@@ -179,12 +179,61 @@ const CHART_COLORS = ["#10b981", "#3b82f6", "#8b5cf6", "#ef4444", "#f59e0b", "#e
 // Ciudades para el top
 const TOP_CITIES = ["Asunción", "Ciudad del Este", "Pedro Juan Caballero", "Luque", "San Lorenzo"];
 
+function parseCurrencyValue(value: string | number | null | undefined): number {
+  if (value === null || value === undefined || value === "") return 0;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+
+  let raw = String(value)
+    .trim()
+    .replace(/\s/g, "")
+    .replace(/gs\.?/gi, "")
+    .replace(/[^0-9,.-]/g, "");
+
+  if (!raw) return 0;
+
+  const lastDot = raw.lastIndexOf(".");
+  const lastComma = raw.lastIndexOf(",");
+
+  if (lastDot >= 0 && lastComma >= 0) {
+    // El último separador es decimal; el otro es de miles.
+    if (lastComma > lastDot) {
+      raw = raw.replace(/\./g, "").replace(",", ".");
+    } else {
+      raw = raw.replace(/,/g, "");
+    }
+  } else if (lastComma >= 0) {
+    const decimals = raw.length - lastComma - 1;
+    raw = decimals > 0 && decimals <= 2 ? raw.replace(",", ".") : raw.replace(/,/g, "");
+  } else if (lastDot >= 0) {
+    const dotCount = (raw.match(/\./g) || []).length;
+    const decimals = raw.length - lastDot - 1;
+    // 129000.00 es decimal; 129.000 es separador de miles.
+    if (dotCount > 1 || decimals === 3) raw = raw.replace(/\./g, "");
+  }
+
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function formatCurrency(value: string | number | null | undefined) {
-  if (!value) return "0";
-  const cleanValue = typeof value === "string" ? value.replace(/\./g, "").replace(",", ".") : value;
-  const num = typeof cleanValue === "string" ? Number(cleanValue) : cleanValue;
-  if (isNaN(num)) return "0";
-  return Math.round(num).toLocaleString("es-PY", { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+  return Math.round(parseCurrencyValue(value)).toLocaleString("es-PY", {
+    maximumFractionDigits: 0,
+    minimumFractionDigits: 0,
+  });
+}
+
+function localDateInputValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function localDateBoundary(dateValue: string, endOfDay = false) {
+  const [year, month, day] = dateValue.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  date.setHours(endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0);
+  return date.toISOString();
 }
 
 // Función mejorada para formatear fecha con hora
@@ -368,7 +417,9 @@ export default function OrdersPage() {
   const [search, setSearch] = useState("");
   // FILTRO POR DEFECTO EN CONFIRMADOS
   const [activeFilter, setActiveFilter] = useState("confirmados");
-  const [dateFilter, setDateFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState("today");
+  const [dateFrom, setDateFrom] = useState(() => localDateInputValue());
+  const [dateTo, setDateTo] = useState(() => localDateInputValue());
   const [userId, setUserId] = useState<string | null>(null);
   const [selectedCity, setSelectedCity] = useState<string>("all");
 
@@ -391,19 +442,29 @@ export default function OrdersPage() {
     }
 
     if (dateFilter === "today") {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      query = query.gte("created_at", today.toISOString());
-    }
-    if (dateFilter === "week") {
+      const today = localDateInputValue();
+      query = query
+        .gte("created_at", localDateBoundary(today))
+        .lte("created_at", localDateBoundary(today, true));
+    } else if (dateFilter === "yesterday") {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const value = localDateInputValue(yesterday);
+      query = query
+        .gte("created_at", localDateBoundary(value))
+        .lte("created_at", localDateBoundary(value, true));
+    } else if (dateFilter === "week") {
       const weekAgo = new Date();
-      weekAgo.setDate(weekAgo.getDate() - 7);
-      query = query.gte("created_at", weekAgo.toISOString());
-    }
-    if (dateFilter === "month") {
+      weekAgo.setDate(weekAgo.getDate() - 6);
+      query = query.gte("created_at", localDateBoundary(localDateInputValue(weekAgo)));
+    } else if (dateFilter === "month") {
       const monthAgo = new Date();
       monthAgo.setMonth(monthAgo.getMonth() - 1);
-      query = query.gte("created_at", monthAgo.toISOString());
+      query = query.gte("created_at", localDateBoundary(localDateInputValue(monthAgo)));
+    } else if (dateFilter === "custom" && dateFrom && dateTo) {
+      query = query
+        .gte("created_at", localDateBoundary(dateFrom))
+        .lte("created_at", localDateBoundary(dateTo, true));
     }
 
     const { data, error } = await query;
@@ -428,7 +489,7 @@ export default function OrdersPage() {
     }
 
     setLoading(false);
-  }, [dateFilter, userId]);
+  }, [dateFilter, dateFrom, dateTo, userId]);
 
   useEffect(() => {
     if (userId) {
@@ -532,14 +593,14 @@ export default function OrdersPage() {
     cancelados: orders.filter((o) => normalizeStatus(o.status) === "cancelado").length,
     droppx: orders.filter((o) => normalizeStatus(o.status) === "droppx").length,
     ingresos: orders.reduce((sum, o) => {
-      const total = parseFloat(o.total_amount || "0");
-      return sum + (isNaN(total) ? 0 : total);
+      const total = parseCurrencyValue(o.total_amount);
+      return sum + total;
     }, 0),
     ingresosCargados: orders
       .filter((o) => normalizeStatus(o.status) === "cargado")
       .reduce((sum, o) => {
-        const total = parseFloat(o.total_amount || "0");
-        return sum + (isNaN(total) ? 0 : total);
+        const total = parseCurrencyValue(o.total_amount);
+        return sum + total;
       }, 0),
   };
 
@@ -602,18 +663,18 @@ export default function OrdersPage() {
   });
 
   return (
-    <div className="min-h-screen bg-[#0a0a0f]">
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,_#241038_0%,_#0d0714_34%,_#07060b_72%)] text-zinc-100">
       <div className="mx-auto flex max-w-[1600px] flex-col px-4 py-6 sm:px-6 lg:px-8">
         
         {/* HEADER */}
-        <div className="mb-6">
+        <div className="mb-6 rounded-2xl border border-violet-500/20 bg-[#120a1d]/85 p-5 shadow-[0_20px_70px_rgba(88,28,135,0.18)] backdrop-blur-xl">
           <div className="flex flex-col items-start justify-between gap-4 md:flex-row md:items-center">
             <div>
-              <h1 className="text-2xl font-bold text-white">Panel de Pedidos</h1>
-              <p className="text-sm text-zinc-400">Gestión operativa de pedidos, pagos y despacho</p>
+              <h1 className="text-2xl font-bold tracking-tight text-white">Panel de Pedidos</h1>
+              <p className="text-sm text-zinc-400">Gestión operativa de pedidos, pagos y despacho · métricas según el período seleccionado</p>
             </div>
             <div className="flex items-center gap-3">
-              <Badge variant="outline" className="border-zinc-700 bg-zinc-800/50 text-zinc-300">
+              <Badge variant="outline" className="border-violet-400/20 bg-violet-500/10 text-violet-100">
                 <Clock className="mr-1 h-3 w-3" />
                 Actualizado: {new Date().toLocaleTimeString()}
               </Badge>
@@ -626,39 +687,39 @@ export default function OrdersPage() {
           <MetricCard
             title="VENTAS"
             value={`${formatCurrency(stats.ingresosCargados)} Gs`}
-            subtitle="Total de pedidos cargados"
-            color="#3b82f6"
-            bgColor="bg-blue-500/10"
-            borderColor="border-blue-500/20"
+            subtitle={dateFilter === "today" ? "Ventas cargadas de hoy" : "Ventas cargadas del período"}
+            color="#c084fc"
+            bgColor="bg-violet-500/10"
+            borderColor="border-violet-400/25"
           />
           <MetricCard
             title="PEDIDOS"
             value={stats.total}
-            subtitle={`${stats.cargados} visibles`}
-            color="#8b5cf6"
+            subtitle={`${stats.cargados} cargados en el período`}
+            color="#a855f7"
             bgColor="bg-purple-500/10"
-            borderColor="border-purple-500/20"
+            borderColor="border-purple-400/25"
           />
           <MetricCard
             title="CONFIRMADOS"
             value={stats.confirmados}
             subtitle={`${stats.total > 0 ? Math.round((stats.confirmados / stats.total) * 100) : 0}% del total`}
-            color="#10b981"
+            color="#34d399"
             bgColor="bg-emerald-500/10"
-            borderColor="border-emerald-500/20"
+            borderColor="border-emerald-400/20"
           />
           <MetricCard
             title="COMISIÓN"
             value={`${formatCurrency(comision)} Gs`}
             subtitle={`Ticket promedio ${formatCurrency(ticketPromedio)} Gs`}
-            color="#ec4899"
-            bgColor="bg-pink-500/10"
-            borderColor="border-pink-500/20"
+            color="#f0abfc"
+            bgColor="bg-fuchsia-500/10"
+            borderColor="border-fuchsia-400/25"
           />
           <MetricCard
             title="CANCELADOS"
             value={stats.cancelados}
-            subtitle={`Taxa ${stats.total > 0 ? Math.round((stats.cancelados / stats.total) * 100) : 0}%`}
+            subtitle={`Tasa ${stats.total > 0 ? Math.round((stats.cancelados / stats.total) * 100) : 0}%`}
             color="#ef4444"
             bgColor="bg-red-500/10"
             borderColor="border-red-500/20"
@@ -668,7 +729,7 @@ export default function OrdersPage() {
         {/* GRÁFICOS Y DISTRIBUCIÓN */}
         <div className="mb-6 grid gap-4 lg:grid-cols-3">
           {/* Gráfico de torta */}
-          <Card className="border-zinc-800 bg-zinc-900/50 backdrop-blur-sm shadow-xl">
+          <Card className="border-violet-500/15 bg-[#120d19]/88 backdrop-blur-xl shadow-[0_18px_45px_rgba(0,0,0,0.28)]">
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
                 <PieChartIcon className="h-4 w-4 text-zinc-500" />
@@ -721,7 +782,7 @@ export default function OrdersPage() {
           </Card>
 
           {/* Top Ciudades */}
-          <Card className="border-zinc-800 bg-zinc-900/50 backdrop-blur-sm shadow-xl">
+          <Card className="border-violet-500/15 bg-[#120d19]/88 backdrop-blur-xl shadow-[0_18px_45px_rgba(0,0,0,0.28)]">
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
                 <MapPin className="h-4 w-4 text-zinc-500" />
@@ -736,13 +797,13 @@ export default function OrdersPage() {
                     <span className="w-32 text-sm text-zinc-400">{city.name}</span>
                     <div className="flex-1">
                       <div 
-                        className="h-2 rounded-full bg-blue-500/10"
+                        className="h-2 rounded-full bg-violet-500/10"
                         style={{ 
                           width: `${Math.max((city.value / Math.max(...cityData.map(c => c.value), 1)) * 100, 5)}%` 
                         }}
                       >
                         <div 
-                          className="h-2 rounded-full bg-blue-500 transition-all"
+                          className="h-2 rounded-full bg-gradient-to-r from-violet-500 to-fuchsia-400 transition-all"
                           style={{ 
                             width: `${(city.value / Math.max(...cityData.map(c => c.value), 1)) * 100}%` 
                           }}
@@ -762,7 +823,7 @@ export default function OrdersPage() {
           </Card>
 
           {/* Top Productos */}
-          <Card className="border-zinc-800 bg-zinc-900/50 backdrop-blur-sm shadow-xl">
+          <Card className="border-violet-500/15 bg-[#120d19]/88 backdrop-blur-xl shadow-[0_18px_45px_rgba(0,0,0,0.28)]">
             <CardHeader className="pb-2">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
                 <Package className="h-4 w-4 text-zinc-500" />
@@ -804,7 +865,7 @@ export default function OrdersPage() {
                 onClick={() => setActiveFilter(filter.id)}
                 className={`text-sm ${
                   activeFilter === filter.id
-                    ? "bg-blue-600 text-white hover:bg-blue-700"
+                    ? "bg-violet-600 text-white shadow-lg shadow-violet-950/40 hover:bg-violet-500"
                     : "text-zinc-400 hover:bg-zinc-800 hover:text-white"
                 }`}
               >
@@ -815,7 +876,7 @@ export default function OrdersPage() {
         </div>
 
         {/* FILTROS AVANZADOS */}
-        <Card className="mb-4 border-zinc-800 bg-zinc-900/50 backdrop-blur-sm shadow-xl">
+        <Card className="mb-4 border-violet-500/15 bg-[#120d19]/88 backdrop-blur-xl shadow-[0_18px_45px_rgba(0,0,0,0.28)]">
           <CardContent className="p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex flex-1 flex-wrap items-center gap-3">
@@ -825,11 +886,11 @@ export default function OrdersPage() {
                     placeholder="Buscar producto..."
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    className="border-zinc-700 bg-zinc-800/50 pl-9 text-sm text-white placeholder:text-zinc-500 focus:border-blue-500 focus:ring-blue-500"
+                    className="border-violet-400/20 bg-violet-950/25 pl-9 text-sm text-white placeholder:text-zinc-500 focus:border-violet-400 focus:ring-violet-500/30"
                   />
                 </div>
                 <Select value={selectedCity} onValueChange={setSelectedCity}>
-                  <SelectTrigger className="w-[140px] border-zinc-700 bg-zinc-800/50 text-sm text-white">
+                  <SelectTrigger className="w-[140px] border-violet-400/20 bg-violet-950/25 text-sm text-white">
                     <MapPin className="mr-2 h-4 w-4 text-zinc-500" />
                     <SelectValue placeholder="Ciudad" />
                   </SelectTrigger>
@@ -841,24 +902,47 @@ export default function OrdersPage() {
                   </SelectContent>
                 </Select>
                 <Select value={dateFilter} onValueChange={setDateFilter}>
-                  <SelectTrigger className="w-[130px] border-zinc-700 bg-zinc-800/50 text-sm text-white">
-                    <Calendar className="mr-2 h-4 w-4 text-zinc-500" />
-                    <SelectValue placeholder="Fechas" />
+                  <SelectTrigger className="w-[155px] border-violet-400/20 bg-violet-950/25 text-sm text-white">
+                    <Calendar className="mr-2 h-4 w-4 text-violet-300" />
+                    <SelectValue placeholder="Período" />
                   </SelectTrigger>
-                  <SelectContent className="border-zinc-700 bg-zinc-900">
-                    <SelectItem value="all">Todo el tiempo</SelectItem>
+                  <SelectContent className="border-violet-500/20 bg-[#140b20] text-zinc-100">
                     <SelectItem value="today">Hoy</SelectItem>
-                    <SelectItem value="week">Última semana</SelectItem>
+                    <SelectItem value="yesterday">Ayer</SelectItem>
+                    <SelectItem value="week">Últimos 7 días</SelectItem>
                     <SelectItem value="month">Último mes</SelectItem>
+                    <SelectItem value="custom">Rango personalizado</SelectItem>
+                    <SelectItem value="all">Todo el tiempo</SelectItem>
                   </SelectContent>
                 </Select>
+                {dateFilter === "custom" && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-xl border border-violet-500/15 bg-violet-950/20 p-2">
+                    <Input
+                      type="date"
+                      aria-label="Fecha inicial"
+                      value={dateFrom}
+                      max={dateTo || undefined}
+                      onChange={(event) => setDateFrom(event.target.value)}
+                      className="h-9 w-[145px] border-violet-400/20 bg-[#100918] text-xs text-white [color-scheme:dark]"
+                    />
+                    <span className="text-xs text-zinc-500">hasta</span>
+                    <Input
+                      type="date"
+                      aria-label="Fecha final"
+                      value={dateTo}
+                      min={dateFrom || undefined}
+                      onChange={(event) => setDateTo(event.target.value)}
+                      className="h-9 w-[145px] border-violet-400/20 bg-[#100918] text-xs text-white [color-scheme:dark]"
+                    />
+                  </div>
+                )}
               </div>
               <Button
                 variant="outline"
                 size="icon"
                 onClick={loadOrders}
                 disabled={loading}
-                className="border-zinc-700 bg-zinc-800/50 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                className="border-violet-400/20 bg-violet-950/25 text-zinc-400 hover:bg-zinc-800 hover:text-white"
               >
                 <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
               </Button>
@@ -901,7 +985,7 @@ export default function OrdersPage() {
               return (
                 <Card
                   key={order.id}
-                  className={`group overflow-hidden border-zinc-800 bg-zinc-900/50 backdrop-blur-sm shadow-xl transition-all hover:border-zinc-700 hover:shadow-2xl ${config.borderColor}`}
+                  className={`group overflow-hidden border-violet-500/15 bg-[#120d19]/88 backdrop-blur-xl shadow-[0_18px_45px_rgba(0,0,0,0.28)] transition-all hover:border-zinc-700 hover:shadow-2xl ${config.borderColor}`}
                 >
                   <CardContent className="p-4">
                     {/* Header con fecha de pedido */}
@@ -1035,7 +1119,7 @@ export default function OrdersPage() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="h-7 px-2 text-xs text-blue-400 hover:bg-blue-500/10"
+                          className="h-7 px-2 text-xs text-violet-300 hover:bg-violet-500/10"
                           onClick={() => updateStatus(order, "cargado")}
                         >
                           Cargar
@@ -1105,10 +1189,10 @@ function MetricCard({
     <Card className={`border ${borderColor} ${bgColor} bg-zinc-900/30 backdrop-blur-sm shadow-xl`}>
       <CardContent className="p-3">
         <p className="text-xs font-medium text-zinc-400">{title}</p>
-        <p className="text-lg font-bold" style={{ color }}>
+        <p className="mt-1 break-words text-xl font-bold leading-tight tracking-tight" style={{ color }}>
           {value}
         </p>
-        <p className="text-xs text-zinc-500">{subtitle}</p>
+        <p className="mt-1 text-xs leading-relaxed text-zinc-500">{subtitle}</p>
       </CardContent>
     </Card>
   );
