@@ -409,6 +409,51 @@ async function getCurrentUser() {
   return user;
 }
 
+function orderMatchesDateFilter(
+  order: Order,
+  dateFilter: string,
+  dateFrom: string,
+  dateTo: string
+): boolean {
+  if (dateFilter === "all") return true;
+
+  const createdAt = new Date(order.created_at).getTime();
+  if (!Number.isFinite(createdAt)) return false;
+
+  if (dateFilter === "today") {
+    const today = localDateInputValue();
+    return createdAt >= new Date(localDateBoundary(today)).getTime() &&
+      createdAt <= new Date(localDateBoundary(today, true)).getTime();
+  }
+
+  if (dateFilter === "yesterday") {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const value = localDateInputValue(yesterday);
+    return createdAt >= new Date(localDateBoundary(value)).getTime() &&
+      createdAt <= new Date(localDateBoundary(value, true)).getTime();
+  }
+
+  if (dateFilter === "week") {
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 6);
+    return createdAt >= new Date(localDateBoundary(localDateInputValue(weekAgo))).getTime();
+  }
+
+  if (dateFilter === "month") {
+    const monthAgo = new Date();
+    monthAgo.setMonth(monthAgo.getMonth() - 1);
+    return createdAt >= new Date(localDateBoundary(localDateInputValue(monthAgo))).getTime();
+  }
+
+  if (dateFilter === "custom" && dateFrom && dateTo) {
+    return createdAt >= new Date(localDateBoundary(dateFrom)).getTime() &&
+      createdAt <= new Date(localDateBoundary(dateTo, true)).getTime();
+  }
+
+  return true;
+}
+
 export default function OrdersPage() {
   const navigate = useNavigate();
 
@@ -441,31 +486,6 @@ export default function OrdersPage() {
       query = query.eq("user_id", userId);
     }
 
-    if (dateFilter === "today") {
-      const today = localDateInputValue();
-      query = query
-        .gte("created_at", localDateBoundary(today))
-        .lte("created_at", localDateBoundary(today, true));
-    } else if (dateFilter === "yesterday") {
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const value = localDateInputValue(yesterday);
-      query = query
-        .gte("created_at", localDateBoundary(value))
-        .lte("created_at", localDateBoundary(value, true));
-    } else if (dateFilter === "week") {
-      const weekAgo = new Date();
-      weekAgo.setDate(weekAgo.getDate() - 6);
-      query = query.gte("created_at", localDateBoundary(localDateInputValue(weekAgo)));
-    } else if (dateFilter === "month") {
-      const monthAgo = new Date();
-      monthAgo.setMonth(monthAgo.getMonth() - 1);
-      query = query.gte("created_at", localDateBoundary(localDateInputValue(monthAgo)));
-    } else if (dateFilter === "custom" && dateFrom && dateTo) {
-      query = query
-        .gte("created_at", localDateBoundary(dateFrom))
-        .lte("created_at", localDateBoundary(dateTo, true));
-    }
 
     const { data, error } = await query;
 
@@ -489,7 +509,7 @@ export default function OrdersPage() {
     }
 
     setLoading(false);
-  }, [dateFilter, dateFrom, dateTo, userId]);
+  }, [userId]);
 
   useEffect(() => {
     if (userId) {
@@ -585,23 +605,40 @@ export default function OrdersPage() {
     window.open(`${ECOMMERCE_URL}/?${params.toString()}`, "_blank");
   }
 
-  // Estadísticas
+  // El dashboard respeta la fecha seleccionada.
+  // La pestaña Confirmados usa siempre el histórico completo.
+  const periodOrders = orders.filter((order) =>
+    orderMatchesDateFilter(order, dateFilter, dateFrom, dateTo)
+  );
+  const allConfirmedOrders = orders.filter(
+    (order) => normalizeStatus(order.status) === "confirmado"
+  );
+
+  // Estadísticas del período seleccionado
   const stats = {
-    total: orders.length,
-    confirmados: orders.filter((o) => normalizeStatus(o.status) === "confirmado").length,
-    cargados: orders.filter((o) => normalizeStatus(o.status) === "cargado").length,
-    cancelados: orders.filter((o) => normalizeStatus(o.status) === "cancelado").length,
-    droppx: orders.filter((o) => normalizeStatus(o.status) === "droppx").length,
-    ingresos: orders.reduce((sum, o) => {
+    total: periodOrders.length,
+    confirmados: periodOrders.filter((o) => normalizeStatus(o.status) === "confirmado").length,
+    cargados: periodOrders.filter((o) => normalizeStatus(o.status) === "cargado").length,
+    cancelados: periodOrders.filter((o) => normalizeStatus(o.status) === "cancelado").length,
+    droppx: periodOrders.filter((o) => normalizeStatus(o.status) === "droppx").length,
+    ingresos: periodOrders.reduce((sum, o) => {
       const total = parseCurrencyValue(o.total_amount);
       return sum + total;
     }, 0),
-    ingresosCargados: orders
+    ingresosCargados: periodOrders
       .filter((o) => normalizeStatus(o.status) === "cargado")
       .reduce((sum, o) => {
         const total = parseCurrencyValue(o.total_amount);
         return sum + total;
       }, 0),
+  };
+
+  const filterCounts = {
+    total: periodOrders.length,
+    confirmados: allConfirmedOrders.length,
+    cargados: stats.cargados,
+    cancelados: stats.cancelados,
+    droppx: stats.droppx,
   };
 
   // Calcular comisión (ejemplo: 20% de los ingresos cargados)
@@ -619,12 +656,12 @@ export default function OrdersPage() {
   // Datos de ciudades
   const cityData = TOP_CITIES.map(city => ({
     name: city,
-    value: orders.filter(o => o.city?.toLowerCase().includes(city.toLowerCase())).length,
+    value: periodOrders.filter(o => o.city?.toLowerCase().includes(city.toLowerCase())).length,
   }));
 
   // Top productos
   const productCount: Record<string, number> = {};
-  orders.forEach(order => {
+  periodOrders.forEach(order => {
     const productName = getPrimaryProductName(order);
     productCount[productName] = (productCount[productName] || 0) + 1;
   });
@@ -635,7 +672,9 @@ export default function OrdersPage() {
   // Tasa de cobertura
   const tasaCobertura = stats.total > 0 ? Math.round((stats.cargados / stats.total) * 100) : 0;
 
-  const filteredOrders = orders.filter((order) => {
+  const listBaseOrders = activeFilter === "confirmados" ? allConfirmedOrders : periodOrders;
+
+  const filteredOrders = listBaseOrders.filter((order) => {
     const searchTerm = search.toLowerCase();
     const status = normalizeStatus(order.status);
 
@@ -682,7 +721,7 @@ export default function OrdersPage() {
           </div>
         </div>
 
-        {/* MÉTRICAS PRINCIPALES - CON DECIMALES */}
+        {/* MÉTRICAS PRINCIPALES - SIN DECIMALES */}
         <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <MetricCard
             title="VENTAS"
@@ -852,11 +891,11 @@ export default function OrdersPage() {
         </div>
 
         {/* FILTROS RÁPIDOS */}
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium text-zinc-300">Todos ({stats.total})</span>
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <span className="text-sm font-medium text-zinc-300">Todos ({filterCounts.total})</span>
           <span className="text-sm text-zinc-600">•</span>
           {FILTERS.map((filter) => {
-            const count = stats[filter.count as keyof typeof stats] || 0;
+            const count = filterCounts[filter.count as keyof typeof filterCounts] || 0;
             return (
               <Button
                 key={filter.id}
@@ -874,6 +913,10 @@ export default function OrdersPage() {
             );
           })}
         </div>
+
+        <p className="mb-4 text-xs text-zinc-500">
+          Confirmados muestra todo el historial. Los demás filtros y el dashboard respetan el período seleccionado.
+        </p>
 
         {/* FILTROS AVANZADOS */}
         <Card className="mb-4 border-violet-500/15 bg-[#120d19]/88 backdrop-blur-xl shadow-[0_18px_45px_rgba(0,0,0,0.28)]">
@@ -954,7 +997,7 @@ export default function OrdersPage() {
         <div className="mb-3 flex items-center justify-between">
           <p className="text-sm text-zinc-500">
             Mostrando <span className="font-semibold text-white">{filteredOrders.length}</span> de{" "}
-            <span className="font-semibold text-white">{orders.length}</span> filas
+            <span className="font-semibold text-white">{listBaseOrders.length}</span> filas
           </p>
         </div>
 
