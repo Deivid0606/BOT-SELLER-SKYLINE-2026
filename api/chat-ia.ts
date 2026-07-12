@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V62 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V64 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -1734,6 +1734,62 @@ function isExplicitNameCorrection(text: string): boolean {
   return /\b(mi nombre correcto es|corregir nombre|cambiar el nombre a|cambia el nombre a|el pedido es para|poner a nombre de)\b/.test(n);
 }
 
+/**
+ * V64: una declaración de procedencia nunca puede ser un nombre de cliente.
+ * Ejemplos bloqueados: "Soy de Areguá", "Vivo en Luque",
+ * "Estoy en Asunción" y "Para San Lorenzo" cuando el texto es solo ciudad.
+ */
+function isLocationDeclarationInsteadOfName(text: string, parsed?: ParsedTraining): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!n) return false;
+
+  if (/^(?:hola\s+)?(?:yo\s+)?(?:soy|soi|vivo|resido|estoy|somos)\s+(?:de|en)\b/.test(n)) {
+    return true;
+  }
+
+  if (/^(?:mi\s+)?(?:ciudad|localidad|zona)\s+(?:es|seria|sería)\b/.test(n)) {
+    return true;
+  }
+
+  if (!parsed) return false;
+
+  const city = canonicalizeStoredCity(raw, parsed);
+  const cityNorm = normalize(city);
+  const known = parsed.cities.some((item) => {
+    const alias = normalize(item.alias);
+    const canonical = normalize(item.canonical);
+    return cityNorm === alias || cityNorm === canonical;
+  });
+
+  if (!known) return false;
+
+  if (n === cityNorm) return true;
+  if (/^(?:para|de|desde|hacia)\s+/.test(n) && n.includes(cityNorm)) return true;
+
+  return false;
+}
+
+function isContaminatedCustomerName(value: string, parsed: ParsedTraining): boolean {
+  const raw = clean(value);
+  const n = normalize(raw);
+  if (!n) return true;
+
+  if (isLocationDeclarationInsteadOfName(raw, parsed)) return true;
+
+  if (/^(?:soy|soi|vivo|resido|estoy|somos)\s+(?:de|en)\b/.test(n)) return true;
+  if (/^(?:para|de|desde)\s+(?:la\s+)?(?:ciudad\s+de\s+)?/.test(n)) {
+    const city = canonicalizeStoredCity(raw, parsed);
+    if (normalize(city) !== n) return true;
+  }
+
+  return parsed.cities.some((city) => {
+    const alias = normalize(city.alias);
+    const canonical = normalize(city.canonical);
+    return n === alias || n === canonical || n === `soy de ${alias}` || n === `soy de ${canonical}` || n === `vivo en ${alias}` || n === `vivo en ${canonical}` || n === `estoy en ${alias}` || n === `estoy en ${canonical}`;
+  });
+}
+
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const raw = clean(text);
   if (!raw) return "";
@@ -1745,6 +1801,7 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   if (isIdentityDocumentText(raw)) return "";
   if (isDeliveryTimingMessage(raw)) return "";
   if (isInvoiceOrTaxDataMessage(raw) || isStandaloneTaxOrIdentityData(raw)) return "";
+  if (isLocationDeclarationInsteadOfName(raw, parsed)) return "";
 
   // Mensajes mixtos como "quiero uno para Asunción Roberto Lpetti el precio..."
   // no deben convertirse completos en nombre. Solo aceptamos correcciones
@@ -1798,6 +1855,7 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
 
     if (isPoliteClosingOrAcknowledgement(cleaned)) return false;
     if (isPaymentInformationQuestion(cleaned)) return false;
+    if (isLocationDeclarationInsteadOfName(cleaned, parsed)) return false;
     if (words.length < 2 || words.length > 5) return false;
     if (/\d/.test(cleaned)) return false;
     if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)) return false;
@@ -2026,7 +2084,8 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
 
   const isInvalidName =
     forbiddenNames.some((f) => nameNorm.includes(normalize(f))) ||
-    nameNorm.split(" ").length > 5;
+    nameNorm.split(" ").length > 5 ||
+    isContaminatedCustomerName(clean(old?.customer_name || ""), parsed);
 
   const oldCity = clean(old?.city || "");
   const sanitizedCity = isQuestionLikeMessage(oldCity) || looksLikeSentenceNotCity(oldCity)
@@ -2059,11 +2118,12 @@ function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
     product: product || old.product || "",
     quantity: ext.quantity > 0 ? sanitizeQuantity(ext.quantity) : sanitizeQuantity(old.quantity || 0),
     city: ext.city || old.city || "",
-    // Un nombre confirmado solo cambia cuando el cliente lo corrige explícitamente.
+    // V64: un nombre válido se protege, pero un valor contaminado por ciudad
+    // se reemplaza automáticamente cuando llega el nombre real.
     customer_name:
-      old.customer_name && !ext.explicit_name_correction
+      old.customer_name && !ext.explicit_name_correction && !ext.old_name_is_contaminated
         ? old.customer_name
-        : (ext.name || old.customer_name || ""),
+        : (ext.name || (ext.old_name_is_contaminated ? "" : old.customer_name) || ""),
     phone: ext.phone || old.phone || "",
     address: ext.address
       ? mergeAddressSupplement(old.address || "", ext.address)
@@ -4925,6 +4985,7 @@ export default async function handler(req: any, res: any) {
         city: effectiveDetectedCity && effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
         phone,
         name,
+        old_name_is_contaminated: isContaminatedCustomerName(clean((context?.order_data || {}).customer_name || ""), parsed),
         address,
         locked_offer: lockedOffer,
         ...observationPatch,
