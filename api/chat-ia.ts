@@ -1,9 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V55 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V58 - Mega Todo Store / One Store
  * 
- * V55 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
+ * V58 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
  * Mantiene el fix que evita repetir el copy cuando el cliente
  * pregunta "precio" después de ya haber visto el producto.
@@ -188,7 +188,19 @@ function parseNumberGs(raw: string) {
 
 function isPriceQuery(text: string) {
   const m = normalize(text);
-  return /\b(cuanto cuesta|precio|valor|costo|cuanto sale|cuanto vale|cuanto es|cuestan|sale)\b/.test(m);
+  if (!m) return false;
+
+  // Preguntas técnicas como "cuánto es el tiempo de cocción" no son precio.
+  const technicalQuestion =
+    /\b(tiempo|coccion|cocción|duracion|duración|minutos?|horas?|agua|cantidad de agua|temperatura|medida|capacidad|funciona|usar|uso|modo)\b/.test(m);
+
+  const explicitPriceWord = /\b(precio|valor|costo|cuesta|cuestan|sale|vale)\b/.test(m);
+  const explicitPricePhrase =
+    /\b(cuanto cuesta|cuanto sale|cuanto vale|cual es el precio|que precio|precio porfa|precio por favor)\b/.test(m);
+
+  if (technicalQuestion && !explicitPriceWord && !explicitPricePhrase) return false;
+
+  return explicitPriceWord || explicitPricePhrase;
 }
 
 function isBuyIntent(text: string) {
@@ -1420,12 +1432,63 @@ function mergeAddressSupplement(currentAddress: string, supplement: string): str
   return `${current} — ${extra}`;
 }
 
+function isIdentityDocumentText(text: string): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw) return false;
+
+  return (
+    /\b(ci|cedula|cédula|documento|ruc)\b/.test(n) ||
+    /^\s*\d{1,3}(?:[.\s]\d{3}){1,2}(?:[-\s]\d)?\s*$/.test(raw) ||
+    /^\s*\d{5,9}-\d\s*$/.test(raw)
+  );
+}
+
+function isDeliveryTimingMessage(text: string): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw || !n) return false;
+
+  return (
+    isTemporalDeliveryExpression(raw) ||
+    /\b(hoy|manana|mañana|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(n) ||
+    /\b(hasta|desde|antes|despues|después|a las|hora|horario)\b[\s\S]{0,30}\b\d{1,2}(?::\d{2})?\s*(?:hs|hrs|am|pm)?\b/.test(n)
+  );
+}
+
+function isInvoiceOrTaxDataMessage(text: string): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw || !n) return false;
+
+  return (
+    /\b(factura|factura legal|con factura|sin factura|facturar|facturacion|facturación|comprobante legal|credito fiscal|crédito fiscal)\b/.test(n) ||
+    /\b(ruc|razon social|razón social|nombre de factura|datos para factura|datos de facturacion|datos de facturación)\b/.test(n) ||
+    /\bfactura\s+(?:a|al)\s+nombre\s+de\b/.test(n) ||
+    /\b(?:mi|el)\s+ruc\s+(?:es|seria|sería)?\s*[:#-]?\s*\d/.test(n)
+  );
+}
+
+function isStandaloneTaxOrIdentityData(text: string): boolean {
+  const raw = clean(text);
+  if (!raw) return false;
+
+  return (
+    /^(?:ruc|ci|cedula|cédula|documento)\s*[:#-]?\s*\d[\d.\-\s]{4,}$/i.test(raw) ||
+    /^(?:razon social|razón social)\s*[:#-]\s*.+$/i.test(raw) ||
+    /^\d{5,9}-\d$/.test(raw.replace(/[.\s]/g, ""))
+  );
+}
+
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const raw = clean(text);
   if (!raw) return "";
   if (isQuestionLikeMessage(raw)) return "";
   if (extractQuantity(raw) > 0) return "";
   if (looksLikeAddressSupplement(raw)) return "";
+  if (isIdentityDocumentText(raw)) return "";
+  if (isDeliveryTimingMessage(raw)) return "";
+  if (isInvoiceOrTaxDataMessage(raw) || isStandaloneTaxOrIdentityData(raw)) return "";
 
   const isMultiLine = raw.includes("\n");
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
@@ -1514,6 +1577,9 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   const raw = clean(text);
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
   if (/^\d+$/.test(raw)) return "";
+  if (isIdentityDocumentText(raw)) return "";
+  if (isDeliveryTimingMessage(raw)) return "";
+  if (isInvoiceOrTaxDataMessage(raw) || isStandaloneTaxOrIdentityData(raw)) return "";
 
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
 
@@ -1624,6 +1690,12 @@ function extractOrderObservation(text: string): Partial<OrderData> {
   if (!raw || !n) return {};
 
   const obs: Partial<OrderData> = {};
+
+  // V59: toda solicitud o dato de facturación se conserva en una sola Observación.
+  if (isInvoiceOrTaxDataMessage(raw) || isStandaloneTaxOrIdentityData(raw)) {
+    obs.observation = mergeUniqueText(obs.observation, raw);
+  }
+
   const dateWords = "hoy|manana|mañana|pasado|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo|fin de semana|quincena|fin de mes|[0-3]?\\d(?:\\/|-)[0-1]?\\d|[0-3]?\\d\\s*(?:de)?\\s*(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)";
   const hourWords = "de manana|de mañana|de tarde|de noche|a la manana|a la mañana|a la tarde|a la noche|despues de|después de|antes de|hasta las|desde las|a las|mediodia|mediodía|tarde nomas|tarde nomás|manana nomas|mañana nomás|noche nomas|noche nomás|\\b\\d{1,2}(?::\\d{2})?\\s*(?:hs|hrs|pm|am)?\\b";
 
@@ -1706,9 +1778,12 @@ function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
     product: product || old.product || "",
     quantity: ext.quantity > 0 ? sanitizeQuantity(ext.quantity) : sanitizeQuantity(old.quantity || 0),
     city: ext.city || old.city || "",
-    customer_name: ext.name || old.customer_name || "",
+    // No permitir que mensajes posteriores reemplacen datos ya confirmados.
+    customer_name: old.customer_name || ext.name || "",
     phone: ext.phone || old.phone || "",
-    address: ext.address || old.address || "",
+    address: ext.address
+      ? mergeAddressSupplement(old.address || "", ext.address)
+      : old.address || "",
     locked_offer: ext.locked_offer !== undefined ? ext.locked_offer : old.locked_offer || null,
     payment_proof_received: ext.payment_proof_received !== undefined ? !!ext.payment_proof_received : !!old.payment_proof_received,
     ...mergeOrderObservation(old, ext || {}),
@@ -2428,6 +2503,17 @@ function deterministicPostSaleResponse(text: string, order: OrderData, parsed: P
 
   if (asksBankDataDirectly) {
     return `💵 ¡Claro! Estos son los datos para transferir:\n\n${bankDataText(parsed)}\n\n📎 Cuando hagas la transferencia, pasame el comprobante así queda todo registrado 😊`;
+  }
+
+  const asksFreeDelivery =
+    /\b(delivery|deli?very|drlivery|envio|envío)\b[\s\S]{0,25}\b(gratis|grati|gratuito|grayis)\b/.test(n) ||
+    /\b(gratis|grati|gratuito|grayis)\b[\s\S]{0,25}\b(delivery|deli?very|drlivery|envio|envío)\b/.test(n);
+
+  if (asksFreeDelivery) {
+    if (hasCoverage(order.city || "", parsed)) {
+      return `✅ Sí, el envío a ${order.city || "tu ciudad"} es GRATIS y pagás al recibir. 🚚😊`;
+    }
+    return `🚚 Hasta ${order.city || "tu zona"} enviamos por transportadora; el costo se coordina según la agencia y el destino.`;
   }
 
   if (/\b(cuando|cuándo|llega|llego|llegaria|llegaría|entrega|delivery|envio|envío|demora|tarda|horario|hora|seguimiento|estado)\b/.test(n)) {
@@ -4063,6 +4149,9 @@ export default async function handler(req: any, res: any) {
       if (phone) commonOrder.phone = phone;
       if (address) commonOrder.address = mergeAddressSupplement(commonOrder.address, address);
 
+      const multiObservationPatch = extractOrderObservation(texto);
+      Object.assign(commonOrder, mergeOrderObservation(commonOrder, multiObservationPatch));
+
       const missingData: string[] = [];
       if (!commonOrder.customer_name) missingData.push("nombre y apellido");
       if (!commonOrder.phone) missingData.push("número de celular");
@@ -4079,7 +4168,7 @@ export default async function handler(req: any, res: any) {
       await saveMultiProductOrders(user_id, fromNumber, activeMultiCart, commonOrder, parsed, multiOrderId);
       const coverage = hasCoverage(commonOrder.city, parsed);
       return res.json({
-        response: `✅ PEDIDO CONFIRMADO\n\n${multiCartSummary(activeMultiCart)}\n\n👤 Cliente: ${commonOrder.customer_name}\n📍 Ciudad: ${commonOrder.city}\n🏠 Dirección: ${commonOrder.address}\n📞 Contacto: ${commonOrder.phone}\n\n${coverage ? "🚚 Envío contra entrega. Pagás al recibir." : "🚚 Envío por transportadora con pago anticipado."}\n\n¡Gracias por tu compra! 💜`,
+        response: `✅ PEDIDO CONFIRMADO\n\n${multiCartSummary(activeMultiCart)}\n\n👤 Cliente: ${commonOrder.customer_name}\n📍 Ciudad: ${commonOrder.city}\n🏠 Dirección: ${commonOrder.address}\n📞 Contacto: ${commonOrder.phone}${observationBlock(commonOrder)}\n\n${coverage ? "🚚 Envío contra entrega. Pagás al recibir." : "🚚 Envío por transportadora con pago anticipado."}\n\n¡Gracias por tu compra! 💜`,
         context: { ...(context || {}), order_data: commonOrder, multi_product_cart: activeMultiCart, multi_order_id: multiOrderId, step: "pedido_confirmado_multiple", updated_at: new Date().toISOString() },
         debug: { multi_product_order_confirmed: true, items: activeMultiCart.length, group_id: multiOrderId },
       });
@@ -4147,6 +4236,37 @@ export default async function handler(req: any, res: any) {
               post_confirmation_address_updated: true,
               preserved_customer_name: oldOrder.customer_name,
               updated_address: oldOrder.address,
+            },
+          });
+        }
+
+        const postConfirmationObservation = extractOrderObservation(texto);
+        if (
+          clean(postConfirmationObservation.observation) ||
+          clean(postConfirmationObservation.preferred_delivery_date) ||
+          clean(postConfirmationObservation.preferred_delivery_time) ||
+          clean(postConfirmationObservation.payment_note)
+        ) {
+          Object.assign(
+            oldOrder,
+            mergeOrderObservation(oldOrder, postConfirmationObservation)
+          );
+
+          await safeUpsertOrder(user_id, fromNumber, oldOrder, parsed, true);
+
+          return res.json({
+            response: `📝 Perfecto, agregué esta observación a tu pedido: ${clean(texto)}\n\nEl delivery tendrá en cuenta la solicitud y te contactará para coordinar. 😊`,
+            context: {
+              ...(context || {}),
+              order_data: oldOrder,
+              order_id: oldOrder.order_id || null,
+              step: "pedido_confirmado",
+              updated_at: new Date().toISOString(),
+            },
+            debug: {
+              post_confirmation_observation_updated: true,
+              preserved_customer_name: oldOrder.customer_name,
+              preserved_address: oldOrder.address,
             },
           });
         }
