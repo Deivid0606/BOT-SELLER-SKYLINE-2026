@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V65 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V68 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -1050,7 +1050,7 @@ function isQuestionLikeMessage(text: string) {
   return (
     /[?¿]/.test(raw) ||
     /\b(?:pero\s+)?(?:de\s+)?d(?:o|oi|ó)nde\s+son(?:\s+ustedes)?\b/.test(n) ||
-    /\b(donde estan|donde queda|donde se encuentran|quienes son|como funciona|como se usa|como es|que incluye|que trae|cuanto tarda|cuando llega|tienen garantia|hay garantia|es original|hacen envios|envian|aceptan transferencia|como pago|formas de pago|puedo pagar|tienen local|tienen tienda|tienen sucursal)\b/.test(n) ||
+    /\b(donde estan|donde queda|donde se encuentran|quienes son|como funciona|como se usa|como es|que incluye|que trae|cuanto tarda|cuando llega|tienen garantia|hay garantia|es original|hacen envios|hacen envio|tienen delivery|cuentan con delivery|hay delivery|realizan delivery|envian|aceptan transferencia|como pago|formas de pago|puedo pagar|tienen local|tienen tienda|tienen sucursal|de donde traen|de donde viene|de donde es el producto)\b/.test(n) ||
     /^(que|como|cuando|donde|por que|porque|cual|cuales|quien|quienes|cuanto|cuantos|cuanta|cuantas)\b/.test(n) ||
     /\b(?:seria|sería)\s+(?:cuanto|cuánto|cuantos|cuántos)\b/.test(n) ||
     /\b(?:es|seria|sería)\s+por\s+(?:calce|calse|talle|talla|par)\b/.test(n)
@@ -1074,6 +1074,23 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
 
   if (isDeliveryCostQuestion(text)) {
     return buildDeliveryCostResponse(state);
+  }
+
+  const asksDeliveryAvailability =
+    /\b(cuentan con delivery|tienen delivery|hay delivery|hacen envios|hacen envio|realizan delivery|envian a domicilio|entregan a domicilio)\b/.test(n);
+
+  if (asksDeliveryAvailability) {
+    const continuation = state.order.city
+      ? state.order.quantity
+        ? !state.order.customer_name
+          ? "Para continuar, pasame tu nombre y apellido."
+          : !state.order.address
+            ? "Ahora pasame la dirección exacta o ubicación para la entrega."
+            : ""
+        : "¿Cuántas unidades querés llevar?"
+      : "📍 ¿Para qué ciudad sería el envío?";
+
+    return `¡Claro que sí! Contamos con delivery 😊${continuation ? `\n\n${continuation}` : ""}`;
   }
 
   if (isPaymentInformationQuestion(text)) {
@@ -1141,7 +1158,10 @@ function isClearlyNotCityMessage(text: string): boolean {
   if (!n) return true;
 
   // Confirmaciones, negaciones y respuestas conversacionales nunca son ciudades.
-  if (/^(si|sii|siii|sip|ok|dale|listo|correcto|exacto|no|nop|gracias|perfecto)$/i.test(n)) return true;
+  if (/^(si|sii|siii|sip|si asi es|sii asi es|siii asi es|asi es|correcto|exacto|esa es|es esa|ok|dale|listo|no|nop|gracias|perfecto)$/i.test(n)) return true;
+
+  // Consultas comerciales o sobre el origen nunca deben pasar al detector de ciudad.
+  if (/\b(cuentan con delivery|tienen delivery|hay delivery|hacen envios|hacen envio|realizan delivery|de donde traen|de donde viene|de donde es|ustedes de donde|donde son ustedes)\b/.test(n)) return true;
 
   // Preguntas escritas sin signos o con errores frecuentes.
   if (/\b(seria|sería|cuanto|cuánto|cuantos|cuántos|precio|costo|valor|sale|cuesta)\b/.test(n)) return true;
@@ -1845,6 +1865,8 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   if (isPoliteClosingOrAcknowledgement(raw)) return "";
   if (isPaymentInformationQuestion(raw)) return "";
   if (isQuestionLikeMessage(raw)) return "";
+  if (/^(?:si|sii|siii|sip|asi es|correcto|exacto)\b/.test(normalize(raw))) return "";
+  if (/\b(?:ustedes de donde|de donde traen|de donde viene|cuentan con delivery|tienen delivery|hay delivery)\b/.test(normalize(raw))) return "";
   if (extractQuantity(raw) > 0) return "";
   if (looksLikeAddressSupplement(raw)) return "";
   if (isIdentityDocumentText(raw)) return "";
@@ -5049,7 +5071,7 @@ export default async function handler(req: any, res: any) {
 
     if (pendingCityConfirmation && !oldOrder.city) {
       const msgNorm = normalize(texto);
-      if (/^(si|sí|correcto|exacto|esa|ese|esa es|es esa|asi es|así es|dale|ok)$/.test(msgNorm)) {
+      if (/^(si|sí|sii|siii|sip|si asi es|sí asi es|si así es|sí así es|sii asi es|siii asi es|correcto|exacto|esa|ese|esa es|es esa|asi es|así es|dale|ok)$/.test(msgNorm)) {
         cityConfirmedNow = pendingCityConfirmation;
       } else if (/^(no|no es esa|otra|nop|no es)$/.test(msgNorm)) {
         cityConfirmationDeclined = true;
