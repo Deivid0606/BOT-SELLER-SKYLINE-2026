@@ -1103,8 +1103,6 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
     continuation = "Para continuar, pasame tu nombre y apellido.";
   } else if (state.coverage !== false && !state.order.address) {
     continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
-  } else if (!state.order.phone) {
-    continuation = "Por último, pasame un número de celular para coordinar la entrega.";
   }
 
   return `Somos de Asunción y hacemos envíos a todo el país. 😊${continuation ? `\n\n${continuation}` : ""}`;
@@ -1464,6 +1462,21 @@ function extractQuantity(text: string) {
   }
 
   return 0;
+}
+
+
+function senderPhoneFallback(fromNumber: string): string {
+  const digits = clean(fromNumber).replace(/\D/g, "");
+  if (!digits) return "";
+
+  // WhatsApp suele entregar números paraguayos como 5959XXXXXXXX.
+  // Para mostrar/guardar el formato local lo convertimos a 09XXXXXXXX.
+  if (/^5959\d{8}$/.test(digits)) return `0${digits.slice(3)}`;
+  if (/^9\d{8}$/.test(digits)) return `0${digits}`;
+  if (/^09\d{8}$/.test(digits)) return digits;
+
+  // Para números internacionales de otros países conservamos todos los dígitos.
+  return digits;
 }
 
 function extractPhone(text: string) {
@@ -2904,8 +2917,6 @@ function buildDeterministicAcknowledgementResponse(text: string, state: Conversa
     continuation = "Para completar el pedido, pasame tu nombre y apellido.";
   } else if (state.coverage !== false && !state.order.address) {
     continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
-  } else if (!state.order.phone) {
-    continuation = "Por último, pasame un número de celular para coordinar la entrega.";
   }
 
   return `${friendlyLead}${continuation ? `\n\n${continuation}` : ""}`;
@@ -3204,14 +3215,12 @@ function nextStep(order: OrderData, coverage: boolean | null) {
 
   if (coverage === false) {
     if (!order.customer_name) return "collecting_name";
-    if (!order.phone) return "collecting_phone";
     if (!order.payment_proof_received) return "waiting_payment_proof";
     return "confirm_order";
   }
 
   if (!order.customer_name) return "collecting_name";
   if (!order.address) return "collecting_address";
-  if (!order.phone) return "collecting_phone";
   return "confirm_order";
 }
 
@@ -3224,7 +3233,6 @@ function getMissing(order: OrderData, coverage: boolean | null) {
   if (order.product && order.city && order.quantity) {
     if (!order.customer_name) missing.push("nombre y apellido");
     if (coverage !== false && !order.address) missing.push("dirección exacta o ubicación");
-    if (!order.phone) missing.push("número de celular");
     if (coverage === false && !order.payment_proof_received) missing.push("comprobante de transferencia");
   }
 
@@ -3449,7 +3457,7 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
 function shouldConfirmOrder(state: ConversationState) {
   const o = state.order;
 
-  if (!o.product || !o.city || !o.quantity || !o.customer_name || !o.phone) {
+  if (!o.product || !o.city || !o.quantity || !o.customer_name) {
     return false;
   }
 
@@ -3471,8 +3479,7 @@ function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState) 
     clean(o.product) &&
     clean(o.city) &&
     sanitizeQuantity(o.quantity) > 0 &&
-    clean(o.customer_name) &&
-    clean(o.phone)
+    clean(o.customer_name)
   );
 
   if (!hasBaseData) return false;
@@ -3510,6 +3517,8 @@ async function safeUpsertOrder(
   const canonicalProduct = getProductInfo(order.product, parsed)?.canonical || "";
   if (!canonicalProduct) return null;
   order.product = canonicalProduct;
+
+  if (!order.phone) order.phone = senderPhoneFallback(from);
 
   const state = buildState(order, parsed);
   const status = confirm && state.step === "confirm_order" ? "confirmed" : state.step === "confirm_order" ? "confirm_pending" : state.step;
@@ -3879,7 +3888,7 @@ ${o.locked_offer.quantity} unidades de ${o.product}
 Ahora solo necesito:
 ✅ nombre y apellido
 ✅ dirección exacta o ubicación
-✅ número de celular 📲`;
+✅ número de celular (opcional; si no lo pasás usamos este WhatsApp) 📲`;
 }
 
 function deterministicAfterQuantityMessage(state: ConversationState, parsed: ParsedTraining) {
@@ -3924,7 +3933,7 @@ ${promoLine}
 Ahora solo necesito:
 ✅ nombre y apellido
 ✅ dirección exacta o ubicación
-✅ número de celular 📲`;
+✅ número de celular (opcional; si no lo pasás usamos este WhatsApp) 📲`;
 }
 
 function deterministicWaitingPaymentProofMessage(state: ConversationState, parsed: ParsedTraining) {
@@ -4480,7 +4489,7 @@ export default async function handler(req: any, res: any) {
       if (missingQty.length === 0) {
         const nextStep = existingOrder.city ? "collecting_multiple_customer_data" : "collecting_multiple_city";
         return res.json({
-          response: `${multiCartSummary(activeMultiCart)}\n\n${existingOrder.city ? "Ahora pasame tu nombre y apellido, dirección exacta y número de celular. 📲" : "📍 ¿Para qué ciudad sería el envío? 😊"}`,
+          response: `${multiCartSummary(activeMultiCart)}\n\n${existingOrder.city ? "Ahora pasame tu nombre y apellido, dirección exacta. El celular es opcional; si no lo pasás usamos este WhatsApp. 📲" : "📍 ¿Para qué ciudad sería el envío? 😊"}`,
           context: {
             ...(context || {}),
             order_data: existingOrder,
@@ -4565,7 +4574,7 @@ export default async function handler(req: any, res: any) {
 
         const nextStep = commonOrder.city ? "collecting_multiple_customer_data" : "collecting_multiple_city";
         return res.json({
-          response: `${multiCartSummary(activeMultiCart)}\n\n${commonOrder.city ? "Ahora pasame tu nombre y apellido, dirección exacta y número de celular. 📲" : "📍 ¿Para qué ciudad sería el envío? 😊"}`,
+          response: `${multiCartSummary(activeMultiCart)}\n\n${commonOrder.city ? "Ahora pasame tu nombre y apellido, dirección exacta. El celular es opcional; si no lo pasás usamos este WhatsApp. 📲" : "📍 ¿Para qué ciudad sería el envío? 😊"}`,
           context: {
             ...(context || {}),
             order_data: commonOrder,
@@ -4593,6 +4602,7 @@ export default async function handler(req: any, res: any) {
       const address = extractAddress(texto, commonOrder.city, phone, name);
       if (name && !commonOrder.customer_name) commonOrder.customer_name = name;
       if (phone) commonOrder.phone = phone;
+      if (!commonOrder.phone) commonOrder.phone = senderPhoneFallback(fromNumber);
       if (address) commonOrder.address = mergeAddressSupplement(commonOrder.address, address);
 
       const multiObservationPatch = extractOrderObservation(texto);
@@ -4600,7 +4610,6 @@ export default async function handler(req: any, res: any) {
 
       const missingData: string[] = [];
       if (!commonOrder.customer_name) missingData.push("nombre y apellido");
-      if (!commonOrder.phone) missingData.push("número de celular");
       if (!commonOrder.address) missingData.push("dirección exacta o ubicación");
 
       if (missingData.length > 0) {
@@ -5187,6 +5196,13 @@ export default async function handler(req: any, res: any) {
     if (orderData.product && !getProductInfo(orderData.product, parsed)) {
       orderData.product = "";
       orderData.locked_offer = null;
+    }
+
+    // V67: el celular es opcional. Si el cliente no escribe uno válido,
+    // usamos el mismo número de WhatsApp desde el que está conversando.
+    // Un número explícito del cliente siempre tiene prioridad.
+    if (!orderData.phone) {
+      orderData.phone = senderPhoneFallback(fromNumber);
     }
 
     const state = buildState(orderData, parsed);
