@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Search,
@@ -122,6 +123,32 @@ function formatMessageDate(date: Date) {
   return format(date, "yyyy-MM-dd");
 }
 
+
+function firstDayOfCurrentMonth() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), 1);
+}
+
+function normalizeChatPhone(value?: string | null) {
+  let digits = String(value ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+
+  // WhatsApp/Supabase puede guardar el mismo número como 097..., 59597... o +59597...
+  if (digits.startsWith("595")) digits = digits.slice(3);
+  if (digits.startsWith("0")) digits = digits.slice(1);
+
+  return digits;
+}
+
+function sameCalendarDay(a?: Date, b?: Date) {
+  if (!a || !b) return false;
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
 function hexToRgba(hex: string, alpha: number) {
   const h = hex.replace("#", "");
   const bigint = parseInt(h.length === 3 ? h.split("").map(c => c + c).join("") : h, 16);
@@ -136,6 +163,9 @@ function hexToRgba(hex: string, alpha: number) {
 // ============================================================
 export default function InboxPage() {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
+  const requestedPhone = searchParams.get("phone") || "";
+  const normalizedRequestedPhone = normalizeChatPhone(requestedPhone);
 
   // Estado de chat
   const [selectedChatNumber, setSelectedChatNumber] = useState<string | null>(null);
@@ -144,8 +174,8 @@ export default function InboxPage() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [showEmojis, setShowEmojis] = useState(false);
   const [filterTag, setFilterTag] = useState<string | null>(null);
-  const [filterDateFrom, setFilterDateFrom] = useState<Date | undefined>(new Date());
-  const [filterDateTo, setFilterDateTo] = useState<Date | undefined>(new Date());
+  const [filterDateFrom, setFilterDateFrom] = useState<Date | undefined>(() => firstDayOfCurrentMonth());
+  const [filterDateTo, setFilterDateTo] = useState<Date | undefined>(() => new Date());
   const [showFilters, setShowFilters] = useState(false);
 
   // Datos
@@ -503,11 +533,31 @@ export default function InboxPage() {
       return;
     }
 
-    const selectedExists = filteredChats.some((chat) => chat.number === selectedChatNumber);
+    // La URL /inbox?phone=... tiene prioridad. La comparación se hace sin
+    // prefijos 595/0 para que todos los formatos del mismo WhatsApp coincidan.
+    if (normalizedRequestedPhone) {
+      const requestedChat = filteredChats.find(
+        (chat) => normalizeChatPhone(chat.number) === normalizedRequestedPhone
+      );
+
+      if (requestedChat && selectedChatNumber !== requestedChat.number) {
+        setSelectedChatNumber(requestedChat.number);
+        return;
+      }
+    }
+
+    const selectedExists = filteredChats.some(
+      (chat) => chat.number === selectedChatNumber
+    );
+
     if (!selectedChatNumber || !selectedExists) {
       setSelectedChatNumber(filteredChats[0].number);
     }
-  }, [filteredChats, selectedChatNumber]);
+  }, [
+    filteredChats,
+    selectedChatNumber,
+    normalizedRequestedPhone,
+  ]);
 
   useEffect(() => {
     const markAsProcessed = async () => {
@@ -539,11 +589,16 @@ export default function InboxPage() {
   // ============================================================
   const clearFilters = () => {
     setFilterTag(null);
-    setFilterDateFrom(new Date());
+    setFilterDateFrom(firstDayOfCurrentMonth());
     setFilterDateTo(new Date());
   };
 
-  const hasActiveFilters = !!(filterTag || filterDateFrom || filterDateTo);
+  const defaultDateFrom = firstDayOfCurrentMonth();
+  const defaultDateTo = new Date();
+  const hasCustomDateRange =
+    !sameCalendarDay(filterDateFrom, defaultDateFrom) ||
+    !sameCalendarDay(filterDateTo, defaultDateTo);
+  const hasActiveFilters = !!(filterTag || hasCustomDateRange);
 
   // ============================================================
   // ENVÍO DE MENSAJE CON BOTONES - CORREGIDO ✅
@@ -1216,6 +1271,9 @@ export default function InboxPage() {
                         <div className="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground uppercase mb-1.5">
                           <CalendarDays className="w-3 h-3" /> Rango de fechas
                         </div>
+                        <p className="mb-1.5 text-[10px] text-muted-foreground">
+                          Por defecto: desde el día 1 del mes hasta hoy.
+                        </p>
                         <div className="flex flex-col gap-1.5">
                           <div className="flex items-center gap-1.5">
                             <span className="text-[10px] text-muted-foreground w-10 shrink-0">Desde</span>
