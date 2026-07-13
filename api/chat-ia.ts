@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V64 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V65 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -308,19 +308,38 @@ function splitKeywordAliases(value: any): string[] {
     .filter(Boolean);
 }
 
+function isGenericProductLabel(value: any): boolean {
+  const n = normalize(value);
+  if (!n) return true;
+  return (
+    isGenericMarketingPhrase(n) ||
+    /^(oferta(?: de)? hoy|precio de hoy|promo(?:cion)?|promocion|producto|articulo|item|stock limitado|quedan pocos|llevate \d+|\d+ por \d+)$/.test(n)
+  );
+}
+
 function visualProductNameFromKeyword(keyword: string, copy: string, aliases: string[]) {
+  // V65: el nombre del producto nunca puede salir de una línea comercial
+  // como “Oferta HOY”. Primero intentamos recuperar un nombre descriptivo
+  // real del copy y luego usamos aliases/palabra clave seguros.
   const fromCopy = extractProductNameFromCopy(copy);
-  if (fromCopy) return toTitleCase(fromCopy);
+  if (fromCopy && !isGenericProductLabel(fromCopy)) return toTitleCase(fromCopy);
 
   const aliasParts = aliases
     .flatMap((a) => splitKeywordAliases(a))
     .map(clean)
-    .filter((a) => normalize(a).length >= 3 && !isGenericProductWord(a));
+    .filter((a) => normalize(a).length >= 3 && !isGenericProductWord(a) && !isGenericProductLabel(a));
+
+  const descriptiveAlias = aliasParts
+    .slice()
+    .sort((a, b) => normalize(b).length - normalize(a).length)
+    .find((a) => normalize(a).split(/\s+/).length >= 2);
+  if (descriptiveAlias) return toTitleCase(descriptiveAlias);
 
   const firstAlias = aliasParts.find(Boolean);
   if (firstAlias) return toTitleCase(firstAlias);
 
-  const firstKeyword = splitKeywordAliases(keyword).find((k) => normalize(k).length >= 3) || keyword;
+  const firstKeyword = splitKeywordAliases(keyword)
+    .find((k) => normalize(k).length >= 3 && !isGenericProductLabel(k)) || keyword;
   return toTitleCase(firstKeyword);
 }
 
@@ -516,37 +535,45 @@ function extractProductNameFromCopy(text: string): string {
   const raw = clean(text);
   if (!raw) return "";
 
+  const accept = (value: any) => {
+    const candidate = clean(value).replace(/^[^a-zA-ZÁÉÍÓÚáéíóúÑñ0-9]+/, "").replace(/[.,:;!?]+$/, "");
+    if (!candidate || isGenericProductLabel(candidate)) return "";
+    const words = candidate.split(/\s+/).filter(Boolean);
+    if (words.length < 1 || words.length > 10) return "";
+    return toTitleCase(candidate);
+  };
+
+  // Ej.: “Con el Procesador de Alimentos Premium RAF PRO® preparás...”
+  const introPatterns = [
+    /\bcon\s+(?:el|la|los|las)\s+(.{3,100}?)(?=\s+(?:preparas|preparás|podes|podés|vas a|te permite|permite|ideal para|logras|lográs|conseguis|conseguís)\b)/i,
+    /\b(?:este|esta|el|la)\s+(.{3,90}?)(?=\s+(?:sirve|ayuda|permite|es ideal|cuenta con|tiene)\b)/i,
+    /^\s*([^\n]{3,90}?)(?:\s*[–—-]\s*|\n)/,
+  ];
+  for (const pattern of introPatterns) {
+    const candidate = accept(raw.match(pattern)?.[1]);
+    if (candidate) return candidate;
+  }
+
   const simpleQtyName = raw.match(/^\s*\d+\s+([A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñÑ]{2,30})s?\s*:\s*(?:Gs\.?|₲)?\s*\d/im);
-  if (simpleQtyName) return toTitleCase(clean(simpleQtyName[1]));
+  const simpleCandidate = accept(simpleQtyName?.[1]);
+  if (simpleCandidate) return simpleCandidate;
 
   const afterQty = raw.match(
     /\b\d+\s+((?:[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]*\s*){1,5})\s*(?:por|a|solo|solamente)\s+(?:solo\s+)?(?:[Gg][Ss]\.?)?\s*\d/
   );
-  if (afterQty) {
-    const candidate = clean(afterQty[1]).replace(/[.,]+$/, "");
-    if (candidate.split(/\s+/).length <= 6) return candidate;
-  }
-
-  const conEl = raw.match(/\bcon\s+(?:el|la|los|las)\s+((?:[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]*\s*){1,6})/);
-  if (conEl) {
-    const candidate = clean(conEl[1]).replace(/[.,]+$/, "");
-    if (candidate.split(/\s+/).length <= 6) return candidate;
-  }
+  const qtyCandidate = accept(afterQty?.[1]);
+  if (qtyCandidate) return qtyCandidate;
 
   const lines = raw.split(/\n|[!?.]\s+/).map(clean).filter(Boolean);
   for (const line of lines) {
-    if (!/gs\.?\s*\d|precio|oferta|promo/i.test(line)) continue;
-    const m = line.match(/((?:[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]*\s*){2,6})/);
-    if (m) {
-      const candidate = clean(m[1]).replace(/[.,]+$/, "");
-      const words = candidate.split(/\s+/);
-      if (words.length >= 2 && words.length <= 6) return candidate;
-    }
+    if (/\b(oferta|promo|precio|antes|hoy|stock|quedan|llevate|llevá|gs)\b/i.test(normalize(line))) continue;
+    const title = line.match(/(?:^|\b)([A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]+(?:\s+(?:de|del|para|con|y|en|Premium|Pro|PRO|RAF|[A-ZÁÉÍÓÚÑ][a-zA-ZÁÉÍÓÚñ®'’.]+)){1,8})/);
+    const candidate = accept(title?.[1]);
+    if (candidate) return candidate;
   }
 
   return "";
 }
-
 function autoDetectProductsFromTraining(_training: string, _existing: ProductItem[]): ProductItem[] {
   return [];
 }
@@ -1340,8 +1367,10 @@ function extractCityStatement(text: string): string {
     /\bya\s+estoy\s+en\s+(.+)$/i,
     /\bde\s+la\s+ciudad\s+de\s+(.+)$/i,
     /\bciudad\s+de\s+(.+)$/i,
-    /\bmi\s+ciudad\s+es\s+(.+)$/i,
+    /\bmi\s+ciudad\s+(?:es|seria|sería)\s+(.+)$/i,
+    /^(.+?)\s+(?:es|seria|sería)\s+mi\s+ciudad$/i,
     /\bpara\s+la\s+ciudad\s+de\s+(.+)$/i,
+    /\b(?:quiero|necesito|seria|sería)\s+para\s+(.+)$/i,
     /\bpara\s+env[ií]o\s+a\s+(.+)$/i,
     /\bpara\s+enviar\s+a\s+(.+)$/i,
     /\benv[ií]o\s+a\s+(.+)$/i,
@@ -1656,10 +1685,14 @@ function extractExplicitKnownCityFromSentence(text: string, parsed: ParsedTraini
     if (pattern.test(n)) return canonical;
   }
 
-  // Detecta una ciudad conocida dentro de mensajes mezclados con cantidad,
-  // nombre o precio. Ej.: "quiero uno para Asunción Roberto Lpetti".
+  // V66: detecta ciudad conocida en frases naturales, tanto antes como
+  // después del indicador de ciudad.
+  // Ejemplos: "soy de Areguá", "quiero para Areguá",
+  // "Areguá es mi ciudad", "mi ciudad es Areguá".
   const hasCityContext =
-    /\b(soy de|soi de|vivo en|estoy en|mi ciudad es|para|envio a|envío a|delivery a|mandar a|enviar a)\b/.test(n);
+    /\b(soy de|soi de|vivo en|estoy en|resido en|mi ciudad es|mi ciudad seria|mi ciudad sería|para|para la ciudad de|quiero para|necesito para|envio a|envío a|delivery a|mandar a|enviar a|entrega en|entrega a)\b/.test(n) ||
+    /\b(es|seria|sería)\s+mi\s+ciudad\b/.test(n) ||
+    /\bmi\s+ciudad\b/.test(n);
 
   if (!hasCityContext) return "";
 
@@ -1748,9 +1781,11 @@ function isLocationDeclarationInsteadOfName(text: string, parsed?: ParsedTrainin
     return true;
   }
 
-  if (/^(?:mi\s+)?(?:ciudad|localidad|zona)\s+(?:es|seria|sería)\b/.test(n)) {
+  if (/^(?:mi\s+)?(?:ciudad|localidad|zona)\s+(?:(?:es|seria|sería)\b|de\s+)/.test(n)) {
     return true;
   }
+
+  if (/^(?:la\s+)?ciudad\s+de\s+/.test(n)) return true;
 
   if (!parsed) return false;
 
@@ -1778,6 +1813,7 @@ function isContaminatedCustomerName(value: string, parsed: ParsedTraining): bool
   if (isLocationDeclarationInsteadOfName(raw, parsed)) return true;
 
   if (/^(?:soy|soi|vivo|resido|estoy|somos)\s+(?:de|en)\b/.test(n)) return true;
+  if (/^(?:la\s+)?ciudad\s+de\s+/.test(n)) return true;
   if (/^(?:para|de|desde)\s+(?:la\s+)?(?:ciudad\s+de\s+)?/.test(n)) {
     const city = canonicalizeStoredCity(raw, parsed);
     if (normalize(city) !== n) return true;
@@ -1801,6 +1837,7 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   if (isIdentityDocumentText(raw)) return "";
   if (isDeliveryTimingMessage(raw)) return "";
   if (isInvoiceOrTaxDataMessage(raw) || isStandaloneTaxOrIdentityData(raw)) return "";
+  if (/^(?:la\s+)?ciudad\s+de\s+/i.test(normalize(raw))) return "";
   if (isLocationDeclarationInsteadOfName(raw, parsed)) return "";
 
   // Mensajes mixtos como "quiero uno para Asunción Roberto Lpetti el precio..."
@@ -1904,6 +1941,30 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   return "";
 }
 
+function stripPhoneFromAddress(value: string, phone?: string): string {
+  let result = clean(value);
+  if (!result) return "";
+
+  // Retira teléfonos paraguayos aun cuando vienen separados por espacios,
+  // puntos, guiones o acompañados por “mi celular”, “teléfono”, etc.
+  result = result.replace(/\b(?:mi\s+)?(?:celular|telefono|teléfono|tel|cel)(?:\s+(?:no|nro|numero|número))?\s*[:.#-]?\s*(?:\+?595\s*)?0?9\d(?:[\s.-]*\d){7,8}\b/gi, " ");
+  result = result.replace(/\b(?:\+?595\s*)?0?9\d(?:[\s.-]*\d){7,8}\b/g, " ");
+
+  if (phone) {
+    const digits = clean(phone).replace(/\D/g, "");
+    if (digits.length >= 9) {
+      const flexible = digits.split("").map((d) => `${d}[\\s.-]*`).join("");
+      result = result.replace(new RegExp(flexible, "g"), " ");
+    }
+  }
+
+  return result
+    .replace(/\b(?:mi\s+)?(?:celular|telefono|teléfono|tel|cel)(?:\s+(?:no|nro|numero|número))?\s*[:.#-]?\s*$/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/[\s,;.-]+$/g, "")
+    .trim();
+}
+
 function extractAddress(text: string, detectedCity: string, phone: string, name: string) {
   const raw = clean(text);
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
@@ -1915,7 +1976,7 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   const lines = raw.split("\n").filter((l) => clean(l).length > 0);
 
   const explicit = raw.match(/(?:direccion|dirección|dir|ubicacion|ubicación)\s*[:\-]?\s*(.+)/i)?.[1];
-  if (explicit) return clean(explicit);
+  if (explicit) return stripPhoneFromAddress(explicit, phone);
 
   if (raw.includes("maps.app") || raw.includes("google.com/maps")) return raw;
 
@@ -1929,7 +1990,7 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
     if (/\b(calle|avda|avenida|ruta|km|barrio|bario|bsrrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|edificio|piso|departamento|porteria|portería|referencia)\b/i.test(normLine) || looksLikeAddressSupplement(cleaned)) {
       if (name && normalize(cleaned).includes(normalize(name))) continue;
       if (phone && cleaned.includes(phone)) continue;
-      return cleaned;
+      return stripPhoneFromAddress(cleaned, phone);
     }
   }
 
@@ -1954,6 +2015,7 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
       remaining = remaining.replace(new RegExp(`\\b${word}\\b`, "gi"), "").trim();
     }
 
+    remaining = stripPhoneFromAddress(remaining, phone);
     if (remaining.length >= 5) return remaining;
   }
 
@@ -2018,12 +2080,41 @@ function observationBlock(order: Partial<OrderData> | null | undefined) {
   return lines.length ? `\n\n${lines.join("\n")}` : "";
 }
 
+function isDeliveryTimingQuestion(text: string): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw || !n) return false;
+  return (
+    /[?¿]/.test(raw) && /\b(hoy|manana|mañana|cuando|cuándo|que hora|qué hora|horario|entrega|llega|llegaria|llegaría|demora|tarda|tiempo)\b/.test(n)
+  ) || /^(?:seria|sería|puede ser|llega|entregan|entrega)\s+(?:hoy|manana|mañana)\b/.test(n);
+}
+
+function isConfirmedDeliveryPreference(text: string): boolean {
+  const n = normalize(text);
+  if (!n || isDeliveryTimingQuestion(text)) return false;
+  return (
+    /\b(me queda bien|prefiero|quiero recibir|necesito recibir|anota|anotá|dejame|déjame|agendame|agéndame|puede ser|que sea)\b[\s\S]{0,80}\b(hoy|manana|mañana|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)\b/.test(n) ||
+    /\b(hoy|manana|mañana)\b[\s\S]{0,80}\b(me queda bien|me sirve|estare|estaré|puedo recibir|prefiero)\b/.test(n)
+  );
+}
+
+function buildDeliveryTimingQuestionResponse(text: string, order: OrderData): string {
+  const n = normalize(text);
+  const requested = /\bmanana|mañana\b/.test(n) ? "mañana" : /\bhoy\b/.test(n) ? "hoy" : "la fecha consultada";
+  const product = clean(order.product) ? ` de ${order.product}` : "";
+  return `🚚 No podemos asegurar una hora exacta porque depende de la ruta del delivery. Tu pedido${product} se coordina según disponibilidad y el delivery te contacta antes de llegar.\n\n¿Querés que anote como preferencia de entrega para ${requested}?`;
+}
+
 function extractOrderObservation(text: string): Partial<OrderData> {
   const raw = clean(text);
   const n = normalize(raw);
   if (!raw || !n) return {};
 
   const obs: Partial<OrderData> = {};
+
+  // V65: una pregunta sobre fecha/hora no se guarda como instrucción.
+  // Solo se registra cuando el cliente confirma una preferencia real.
+  if (isDeliveryTimingQuestion(raw)) return {};
 
   // Las preguntas informativas de pago se responden, pero no son observaciones.
   const paymentInfoQuestion = isPaymentInformationQuestion(raw);
@@ -2043,7 +2134,7 @@ function extractOrderObservation(text: string): Partial<OrderData> {
 
   const deliveryDateRegex = new RegExp(`\\b(recibir|recibo|recibirlo|entregar|entrega|traer|traigan|llevar|mandar|mandame|enviar|envio|envío|delivery|para)\\b[\\s\\S]{0,80}\\b(${dateWords})\\b`, "i");
   const dateOnlyIntentRegex = new RegExp(`\\b(quiero|necesito|puede ser|seria|sería|me sirve|agendar|reservar|dejar)\\b[\\s\\S]{0,80}\\b(${dateWords})\\b`, "i");
-  if (deliveryDateRegex.test(n) || dateOnlyIntentRegex.test(n)) {
+  if ((deliveryDateRegex.test(n) || dateOnlyIntentRegex.test(n)) && isConfirmedDeliveryPreference(raw)) {
     obs.preferred_delivery_date = raw;
     obs.observation = mergeUniqueText(obs.observation, raw);
   }
@@ -2073,7 +2164,14 @@ function mergeOrderObservation(oldOrder: Partial<OrderData>, patch: Partial<Orde
 }
 
 function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
-  const productInfo = getProductInfo(old?.product || "", parsed);
+  let productInfo = getProductInfo(old?.product || "", parsed);
+
+  // V65: si una versión anterior guardó “Oferta HOY”, intentamos recuperar
+  // el producto real desde locked_offer o dejamos el campo vacío para que el
+  // producto actual/historial lo reponga; nunca confirmamos el genérico.
+  if (isGenericProductLabel(old?.product)) {
+    productInfo = getProductInfo(old?.locked_offer?.product || "", parsed);
+  }
   const nameNorm = normalize(old?.customer_name || "");
 
   const forbiddenNames = [
@@ -2115,7 +2213,9 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
 function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
   return {
     order_id: ext.order_id || old.order_id || "",
-    product: product || old.product || "",
+    product: !isGenericProductLabel(product)
+      ? product
+      : (!isGenericProductLabel(old.product) ? old.product : ""),
     quantity: ext.quantity > 0 ? sanitizeQuantity(ext.quantity) : sanitizeQuantity(old.quantity || 0),
     city: ext.city || old.city || "",
     // V64: un nombre válido se protege, pero un valor contaminado por ciudad
@@ -3406,7 +3506,10 @@ async function safeUpsertOrder(
   parsed: ParsedTraining,
   confirm = false
 ) {
-  if (!getProductInfo(order.product, parsed)) return null;
+  if (isGenericProductLabel(order.product)) return null;
+  const canonicalProduct = getProductInfo(order.product, parsed)?.canonical || "";
+  if (!canonicalProduct) return null;
+  order.product = canonicalProduct;
 
   const state = buildState(order, parsed);
   const status = confirm && state.step === "confirm_order" ? "confirmed" : state.step === "confirm_order" ? "confirm_pending" : state.step;
@@ -4583,6 +4686,20 @@ export default async function handler(req: any, res: any) {
           });
         }
 
+        if (isDeliveryTimingQuestion(texto)) {
+          return res.json({
+            response: buildDeliveryTimingQuestionResponse(texto, oldOrder),
+            context: {
+              ...(context || {}),
+              order_data: oldOrder,
+              order_id: oldOrder.order_id || null,
+              step: "pedido_confirmado",
+              updated_at: new Date().toISOString(),
+            },
+            debug: { post_confirmation_delivery_timing_question: true },
+          });
+        }
+
         const postConfirmationObservation = extractOrderObservation(texto);
         if (
           clean(postConfirmationObservation.observation) ||
@@ -4769,6 +4886,14 @@ export default async function handler(req: any, res: any) {
     }
 
     let product = detectProduct(texto, parsed, productToUse);
+
+    // V65: nunca permitir que títulos comerciales reemplacen el producto.
+    // Se prioriza el producto canónico previamente válido o el detectado en el mensaje.
+    const explicitCanonicalProduct = getProductInfo(detectProduct(texto, parsed, ""), parsed)?.canonical || "";
+    const previousCanonicalProduct = getProductInfo(oldOrder.product || "", parsed)?.canonical || "";
+    const candidateCanonicalProduct = getProductInfo(product || productToUse || "", parsed)?.canonical || "";
+    product = explicitCanonicalProduct || previousCanonicalProduct || candidateCanonicalProduct || "";
+    if (isGenericProductLabel(product)) product = "";
 
     if (
       (recentExplicitProductInterest?.product?.canonical || templatePricing?.product) &&
@@ -4976,6 +5101,20 @@ export default async function handler(req: any, res: any) {
     const name = extractName(texto, effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "", phone, parsed);
     const address = extractAddress(texto, effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "", phone, name);
     const observationPatch = extractOrderObservation(texto);
+
+    if (isDeliveryTimingQuestion(texto) && oldOrder.product) {
+      return res.json({
+        response: buildDeliveryTimingQuestionResponse(texto, oldOrder),
+        context: {
+          ...(context || {}),
+          order_data: oldOrder,
+          order_id: oldOrder.order_id || null,
+          step: nextStep(oldOrder, oldOrder.city ? hasCoverage(oldOrder.city, parsed) : null),
+          updated_at: new Date().toISOString(),
+        },
+        debug: { delivery_timing_question_without_state_reset: true },
+      });
+    }
 
     let orderData = mergeOrderData(
       oldOrder,
