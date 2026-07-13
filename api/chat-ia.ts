@@ -1852,6 +1852,23 @@ function isContaminatedCustomerName(value: string, parsed: ParsedTraining): bool
     if (normalize(city) !== n) return true;
   }
 
+  // V69: bloquea nombres contaminados que mezclan ciudad con una frase
+  // conversacional o pregunta. Ej.: "ASUNCION ESTOY YO CUANTO ES EL DELIVERY".
+  const containsKnownCity = parsed.cities.some((city) => {
+    const aliases = Array.from(new Set([city.alias, city.canonical].map(normalize).filter(Boolean)));
+    return aliases.some((alias) => {
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(n);
+    });
+  });
+
+  if (
+    containsKnownCity &&
+    /\b(estoy|soy|vivo|resido|yo|cuanto|cuesta|sale|delivery|envio|entrega|donde|como|gratis)\b/.test(n)
+  ) {
+    return true;
+  }
+
   return parsed.cities.some((city) => {
     const alias = normalize(city.alias);
     const canonical = normalize(city.canonical);
@@ -1874,6 +1891,27 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   if (isInvoiceOrTaxDataMessage(raw) || isStandaloneTaxOrIdentityData(raw)) return "";
   if (/^(?:la\s+)?ciudad\s+de\s+/i.test(normalize(raw))) return "";
   if (isLocationDeclarationInsteadOfName(raw, parsed)) return "";
+
+  // V69: cualquier mensaje que contenga una ciudad conocida junto con una
+  // consulta de delivery o una declaración de ubicación no puede ser nombre.
+  // Esto evita guardar "ASUNCION ESTOY" como cliente.
+  if (parsed) {
+    const n = normalize(raw);
+    const containsKnownCity = parsed.cities.some((city) => {
+      const aliases = Array.from(new Set([city.alias, city.canonical].map(normalize).filter(Boolean)));
+      return aliases.some((alias) => {
+        const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(n);
+      });
+    });
+
+    if (
+      containsKnownCity &&
+      /\b(estoy|soy|vivo|resido|yo|cuanto|cuesta|sale|delivery|envio|entrega|gratis|donde|como)\b/.test(n)
+    ) {
+      return "";
+    }
+  }
 
   // Mensajes mixtos como "quiero uno para Asunción Roberto Lpetti el precio..."
   // no deben convertirse completos en nombre. Solo aceptamos correcciones
@@ -1928,6 +1966,7 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     if (isPoliteClosingOrAcknowledgement(cleaned)) return false;
     if (isPaymentInformationQuestion(cleaned)) return false;
     if (isLocationDeclarationInsteadOfName(cleaned, parsed)) return false;
+    if (parsed && isContaminatedCustomerName(cleaned, parsed)) return false;
     if (words.length < 2 || words.length > 5) return false;
     if (/\d/.test(cleaned)) return false;
     if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)) return false;
