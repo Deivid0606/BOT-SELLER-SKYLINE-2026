@@ -756,7 +756,7 @@ function detectProduct(text: string, parsed: ParsedTraining, prev?: string) {
         .filter((w) => w.length >= 4 && !isGenericProductWord(w));
 
       const matched = Array.from(new Set(aliasWords)).filter((w) =>
-        msgWords.some((mw) => mw === w || mw.startsWith(w) || w.startsWith(mw))
+        msgWords.some((mw) => mw === w || (mw.length >= 4 && w.length >= 4 && (mw.startsWith(w) || w.startsWith(mw))))
       );
 
       if (matched.length > 0) {
@@ -1282,17 +1282,17 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
     if (a.includes(msg) && msg.length >= 3) score += 70;
     if (cn && cn.includes(msg) && msg.length >= 3) score += 70;
 
-    const aliasWords = a.split(/\s+/).filter((w) => w.length >= 3);
-    const canonicalWords = cn.split(/\s+/).filter((w) => w.length >= 3);
+    const aliasWords = a.split(/\s+/).filter((w) => w.length >= 4);
+    const canonicalWords = cn.split(/\s+/).filter((w) => w.length >= 4);
     const wordsToCheck = Array.from(new Set([...aliasWords, ...canonicalWords]));
 
     if (wordsToCheck.length >= 2) {
       const matchedMsg = wordsToCheck.filter((w) =>
-        msgWords.some((mw) => mw === w || mw.startsWith(w) || w.startsWith(mw))
+        msgWords.some((mw) => mw === w || (mw.length >= 4 && w.length >= 4 && (mw.startsWith(w) || w.startsWith(mw))))
       );
 
       const matchedRaw = wordsToCheck.filter((w) =>
-        rawWords.some((mw) => mw === w || mw.startsWith(w) || w.startsWith(mw))
+        rawWords.some((mw) => mw === w || (mw.length >= 4 && w.length >= 4 && (mw.startsWith(w) || w.startsWith(mw))))
       );
 
       const matched = matchedMsg.length >= matchedRaw.length ? matchedMsg : matchedRaw;
@@ -1308,8 +1308,14 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
     }
   }
 
-  if (bestScore >= 50) return best;
+  // V70: una coincidencia difusa débil nunca puede reemplazar una ciudad completa.
+  // Ej.: "Santa Rosa del Aguaray" no debe convertirse en "San Estanislao"
+  // solo porque "santa" comienza con "san".
+  if (bestScore >= 85) return best;
 
+  // Si el cliente escribió una localidad plausible que no figura en la lista,
+  // conservamos literalmente esa ciudad. Luego hasCoverage() devolverá false
+  // y el flujo informará transportadora + pago anticipado.
   if (statementCity && isPlausibleBareCityCandidate(statementCity)) return toTitleCase(statementCity);
 
   return clean(prev || "");
@@ -3893,16 +3899,18 @@ function deterministicAfterCityCoverageMessage(state: ConversationState) {
 
   if (state.coverage === false) {
     if (!o.quantity) {
-      return `😊 Gracias. Hasta ${o.city} podemos enviarte por transportadora.
+      return `📍 ${o.city} está fuera de nuestra zona de contra-entrega.
 
-🚚 Para este tipo de envío trabajamos con pago anticipado.
+😊 Igual podemos enviarte por transportadora 🚚
+💳 Para este destino el pago es anticipado.
 
 ¿Cuántas unidades querés llevar?`;
     }
 
-    return `😊 Gracias. Hasta ${o.city} podemos enviarte por transportadora.
+    return `📍 ${o.city} está fuera de nuestra zona de contra-entrega.
 
-🚚 Para este tipo de envío trabajamos con pago anticipado.
+😊 Igual podemos enviarte por transportadora 🚚
+💳 Para este destino el pago es anticipado.
 
 Para continuar, pasame tu nombre completo y número de celular.`;
   }
