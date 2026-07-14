@@ -1,6 +1,7 @@
-// api/webhook.js — V73 COMPLETO: IMAGEN + COPY + PREGUNTA DE CIUDAD SEPARADOS
+// api/webhook.js — V74: CIUDAD AUTOMÁTICA + IMAGEN SIN REPETIR
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + ✅ V73: imagen, copy y consulta amable de ciudad se envían como mensajes independientes
+// + ✅ V74: pregunta ciudad aunque el copy no la incluya y evita imágenes duplicadas
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
@@ -499,6 +500,85 @@ async function saveReceivedMessage({
   }
 }
 
+
+async function mediaFueEnviadaRecientemente(userId, from, mediaUrl, minutes = 45) {
+  const target = clean(mediaUrl);
+  if (!target) return false;
+
+  try {
+    const since = new Date(Date.now() - Math.max(1, minutes) * 60 * 1000).toISOString();
+    const { data, error } = await supabase
+      .from("inbox_messages")
+      .select("media_url, media_url_text, message, created_at")
+      .eq("user_id", userId)
+      .eq("sender_id", from)
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(40);
+
+    if (error) {
+      console.log("⚠️ No se pudo verificar media duplicada:", error.message || error);
+      return false;
+    }
+
+    return (data || []).some((row) => {
+      const values = [];
+      if (Array.isArray(row?.media_url)) values.push(...row.media_url);
+      else if (row?.media_url) values.push(row.media_url);
+      if (row?.media_url_text) values.push(row.media_url_text);
+      if (row?.message && String(row.message).includes(target)) values.push(target);
+      return values.some((value) => clean(value) === target);
+    });
+  } catch (err) {
+    console.log("⚠️ mediaFueEnviadaRecientemente error:", err.message || err);
+    return false;
+  }
+}
+
+function plantillaPareceComercial(texto, productName, plantilla) {
+  const raw = clean(texto);
+  const n = normalize(raw);
+  if (!raw || !clean(productName)) return false;
+  if (esMensajePedidoConfirmado(raw) || esBloqueDatosBancarios(raw)) return false;
+  if (/pedido confirmado|comprobante de transferencia|pago anticipado por transferencia/.test(n)) return false;
+
+  return Boolean(
+    plantilla?.id ||
+    plantilla?.media_url ||
+    plantilla?.variables?.media ||
+    /\b(precio|promo|promocion|oferta|unidad|unidades|gs|delivery|stock|beneficios?)\b/.test(n)
+  );
+}
+
+async function debeAgregarPreguntaCiudad({ userId, from, texto, productName, plantilla }) {
+  if (!plantillaPareceComercial(texto, productName, plantilla)) return false;
+
+  const ctx = await getContexto(userId, from);
+  const city = clean(ctx?.order_data?.city || ctx?.city || "");
+  if (city) return false;
+
+  // Evita duplicar la misma pregunta si ya salió hace pocos minutos.
+  try {
+    const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const { data } = await supabase
+      .from("inbox_messages")
+      .select("message, created_at")
+      .eq("user_id", userId)
+      .eq("sender_id", from)
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(15);
+
+    const alreadyAsked = (data || []).some((row) => {
+      const n = normalize(row?.message || "");
+      return /de que ciudad sos|para que ciudad seria el envio|cual es tu ciudad|modalidad de entrega/.test(n);
+    });
+    if (alreadyAsked) return false;
+  } catch {}
+
+  return true;
+}
+
 // ═══════════════════════════════════════════════════════════
 // PLANTILLAS CON BOTONES E IMAGEN - CORREGIDO CON DIAGNÓSTICO ✅
 // ═══════════════════════════════════════════════════════════
@@ -560,10 +640,22 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
   }
 
   const mensajePlantillaRaw = clean(plantilla?.content || fallbackText || "");
-  const {
-    mainText: mensajeFinal,
-    cityQuestion: preguntaCiudadSeparada,
-  } = separarPreguntaCiudad(mensajePlantillaRaw);
+  const separacionPlantilla = separarPreguntaCiudad(mensajePlantillaRaw);
+  const mensajeFinal = separacionPlantilla.mainText;
+  let preguntaCiudadSeparada = separacionPlantilla.cityQuestion;
+
+  if (
+    !preguntaCiudadSeparada &&
+    await debeAgregarPreguntaCiudad({
+      userId,
+      from,
+      texto: mensajePlantillaRaw,
+      productName,
+      plantilla,
+    })
+  ) {
+    preguntaCiudadSeparada = CITY_QUESTION_FRIENDLY;
+  }
   
   let firstImage = null;
   let imagenes = [];
@@ -618,13 +710,22 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     
     const baseUrl = 'https://bot-seller-skyline-2026.vercel.app';
     
+    const imageAlreadySent = firstImage
+      ? await mediaFueEnviadaRecientemente(userId, from, firstImage)
+      : false;
+    const imageForPayload = imageAlreadySent ? null : firstImage;
+
+    if (imageAlreadySent) {
+      console.log(`⏭️ Imagen repetida omitida en plantilla con botones: ${firstImage}`);
+    }
+
     const payload = {
       to: from,
       userId: userId,
       user_id: userId,
       message: mensajeFinal,
-      media_url: firstImage || null,
-      media_type: firstImage ? 'image' : null,
+      media_url: imageForPayload || null,
+      media_type: imageForPayload ? 'image' : null,
       buttons: buttons,
     };
 
@@ -710,6 +811,11 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
 
   for (let i = 0; i < imagenes.length; i++) {
     const url = imagenes[i];
+    const yaEnviada = await mediaFueEnviadaRecientemente(userId, from, url);
+    if (yaEnviada) {
+      console.log(`⏭️ Imagen repetida omitida en plantilla: ${url}`);
+      continue;
+    }
     const ok = await enviarMedia(userId, from, url, "image", "");
     if (ok) {
       await saveReceivedMessage({
@@ -1748,8 +1854,12 @@ export async function procesar(req, message, userId, from) {
         // Enviar SOLO la primera imagen (la principal)
         const url = data.media_urls[0];
         if (url) {
-          const ok = await enviarMedia(userId, from, url, "image", "");
-          if (ok) {
+          const yaEnviada = await mediaFueEnviadaRecientemente(userId, from, url);
+          if (yaEnviada) {
+            console.log(`⏭️ chat-ia devolvió una imagen ya enviada; se omite: ${url}`);
+          } else {
+            const ok = await enviarMedia(userId, from, url, "image", "");
+            if (ok) {
             await saveReceivedMessage({
               userId,
               from,
@@ -1757,6 +1867,7 @@ export async function procesar(req, message, userId, from) {
               messageType: "out_image",
               mediaUrl: url,
             });
+            }
           }
         }
       }
