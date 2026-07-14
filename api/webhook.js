@@ -1,5 +1,6 @@
-// api/webhook.js — CORREGIDO CON BOTONES E IMAGEN + INTERACTIVOS + CONTEXTO + DIAGNÓSTICO
+// api/webhook.js — V73 COMPLETO: IMAGEN + COPY + PREGUNTA DE CIUDAD SEPARADOS
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
+// + ✅ V73: imagen, copy y consulta amable de ciudad se envían como mensajes independientes
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
@@ -29,6 +30,95 @@ const normalize = (t) =>
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+
+
+const CITY_QUESTION_FRIENDLY =
+  "😊 Para confirmar la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
+
+/**
+ * Separa únicamente una pregunta de ciudad ubicada al final del mensaje.
+ * No toca respuestas de cobertura, transportadora, pago anticipado,
+ * confirmaciones de pedido ni preguntas de cantidad/datos personales.
+ */
+function separarPreguntaCiudad(texto) {
+  const original = clean(texto);
+  if (!original) {
+    return { mainText: "", cityQuestion: "", separated: false };
+  }
+
+  const patterns = [
+    /(?:\n\s*)?(?:📍\s*)?¿?\s*para\s+qu[eé]\s+ciudad\s+ser[ií]a\s+(?:el\s+)?env[ií]o\s*\??\s*(?:😊|🙂|📍|🚚)*\s*$/i,
+    /(?:\n\s*)?(?:📍\s*)?¿?\s*de\s+qu[eé]\s+ciudad\s+sos\s*\??\s*(?:😊|🙂|📍|🚚)*\s*$/i,
+    /(?:\n\s*)?(?:📍\s*)?¿?\s*cu[aá]l\s+es\s+tu\s+ciudad\s*\??\s*(?:😊|🙂|📍|🚚)*\s*$/i,
+    /(?:\n\s*)?(?:📍\s*)?¿?\s*a\s+qu[eé]\s+ciudad\s+(?:ser[ií]a|va)\s+(?:el\s+)?env[ií]o\s*\??\s*(?:😊|🙂|📍|🚚)*\s*$/i,
+    /(?:\n\s*)?(?:📍\s*)?¿?\s*en\s+qu[eé]\s+ciudad\s+te\s+encontr[aá]s\s*\??\s*(?:😊|🙂|📍|🚚)*\s*$/i,
+    /(?:\n\s*)?(?:📍\s*)?¿?\s*me\s+indic[aá]s\s+(?:por\s+favor\s+)?(?:de\s+)?qu[eé]\s+ciudad\s+sos\s*\??\s*(?:😊|🙂|📍|🚚)*\s*$/i,
+  ];
+
+  for (const pattern of patterns) {
+    if (!pattern.test(original)) continue;
+    const mainText = clean(original.replace(pattern, ""));
+    return {
+      mainText,
+      cityQuestion: CITY_QUESTION_FRIENDLY,
+      separated: true,
+    };
+  }
+
+  return { mainText: original, cityQuestion: "", separated: false };
+}
+
+async function enviarYGuardarTexto(userId, from, text, messageType = "out_text") {
+  const msg = clean(text);
+  if (!msg) return false;
+
+  const sent = await enviarMensaje(userId, from, msg);
+  if (!sent) return false;
+
+  await saveReceivedMessage({
+    userId,
+    from,
+    message: msg,
+    messageType,
+  });
+
+  return true;
+}
+
+/**
+ * Envía la respuesta principal y, cuando corresponde, la pregunta de ciudad
+ * en un segundo mensaje independiente.
+ */
+async function enviarRespuestaSeparada(userId, from, text, options = {}) {
+  const { mainText, cityQuestion, separated } = separarPreguntaCiudad(text);
+  const delayMs = Number.isFinite(Number(options.delayMs))
+    ? Math.max(0, Number(options.delayMs))
+    : 900;
+
+  let sentAny = false;
+
+  if (mainText) {
+    sentAny = (await enviarYGuardarTexto(userId, from, mainText, "out_text")) || sentAny;
+  }
+
+  if (cityQuestion) {
+    if (mainText && delayMs > 0) await sleep(delayMs);
+    sentAny = (await enviarYGuardarTexto(userId, from, cityQuestion, "out_text")) || sentAny;
+  }
+
+  // Si el mensaje era solamente una pregunta de ciudad que no coincidió
+  // con los patrones, se envía sin modificar.
+  if (!mainText && !cityQuestion && clean(text)) {
+    sentAny = (await enviarYGuardarTexto(userId, from, text, "out_text")) || sentAny;
+  }
+
+  return {
+    sent: sentAny,
+    mainText,
+    cityQuestion,
+    separated,
+  };
+}
 
 function splitMessage(text, max = 3500) {
   const msg = clean(text);
@@ -469,7 +559,11 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     console.log('⚠️ NO se guardó contexto: productName está vacío');
   }
 
-  const mensajeFinal = clean(plantilla?.content || fallbackText || "");
+  const mensajePlantillaRaw = clean(plantilla?.content || fallbackText || "");
+  const {
+    mainText: mensajeFinal,
+    cityQuestion: preguntaCiudadSeparada,
+  } = separarPreguntaCiudad(mensajePlantillaRaw);
   
   let firstImage = null;
   let imagenes = [];
@@ -594,6 +688,11 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
       });
     }
 
+    if (preguntaCiudadSeparada) {
+      await sleep(900);
+      await enviarYGuardarTexto(userId, from, preguntaCiudadSeparada, "out_text");
+    }
+
     if (plantilla?.id) {
       try {
         await supabase
@@ -607,33 +706,30 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     return plantilla;
   }
 
-  console.log('ℹ️ Sin botones, enviando mensaje normal');
-  
+  console.log('ℹ️ Sin botones, enviando imagen, copy y ciudad por separado');
+
   for (let i = 0; i < imagenes.length; i++) {
     const url = imagenes[i];
-    const caption = i === 0 && mensajeFinal ? mensajeFinal : "";
-    const ok = await enviarMedia(userId, from, url, "image", caption);
+    const ok = await enviarMedia(userId, from, url, "image", "");
     if (ok) {
       await saveReceivedMessage({
         userId,
         from,
-        message: caption || `[image] ${url}`,
+        message: `[image] ${url}`,
         messageType: "out_image",
         mediaUrl: url,
       });
     }
   }
 
-  if (imagenes.length === 0 && mensajeFinal) {
-    const sent = await enviarMensaje(userId, from, mensajeFinal);
-    if (sent) {
-      await saveReceivedMessage({
-        userId,
-        from,
-        message: mensajeFinal,
-        messageType: "out_text",
-      });
-    }
+  if (mensajeFinal) {
+    if (imagenes.length > 0) await sleep(450);
+    await enviarYGuardarTexto(userId, from, mensajeFinal, "out_text");
+  }
+
+  if (preguntaCiudadSeparada) {
+    if (mensajeFinal || imagenes.length > 0) await sleep(900);
+    await enviarYGuardarTexto(userId, from, preguntaCiudadSeparada, "out_text");
   }
 
   if (video) {
@@ -1492,15 +1588,12 @@ export async function procesar(req, message, userId, from) {
       if (data?.context) await saveContexto(userId, from, data.context);
       
       if (data?.response) {
-        const sent = await enviarMensaje(userId, from, data.response);
-        if (sent) {
-          await saveReceivedMessage({
-            userId,
-            from,
-            message: data.response,
-            messageType: "out_text",
-          });
-          
+        const envioRespuesta = await enviarRespuestaSeparada(
+          userId,
+          from,
+          data.response
+        );
+        if (envioRespuesta.sent) {          
           if (esMensajePedidoConfirmado(data.response)) {
             await detectarYGuardarPedidoConfirmado({
               userId,
@@ -1669,15 +1762,12 @@ export async function procesar(req, message, userId, from) {
       }
 
       if (data?.response) {
-        const sent = await enviarMensaje(userId, from, data.response);
-        if (sent) {
-          await saveReceivedMessage({
-            userId,
-            from,
-            message: data.response,
-            messageType: "out_text",
-          });
-
+        const envioRespuesta = await enviarRespuestaSeparada(
+          userId,
+          from,
+          data.response
+        );
+        if (envioRespuesta.sent) {
           if (esMensajePedidoConfirmado(data.response)) {
             await detectarYGuardarPedidoConfirmado({
               userId,
@@ -1734,15 +1824,12 @@ export async function procesar(req, message, userId, from) {
       }
 
       if (data?.response) {
-        const sent = await enviarMensaje(userId, from, data.response);
-        if (sent) {
-          await saveReceivedMessage({
-            userId,
-            from,
-            message: data.response,
-            messageType: "out_text",
-          });
-
+        const envioRespuesta = await enviarRespuestaSeparada(
+          userId,
+          from,
+          data.response
+        );
+        if (envioRespuesta.sent) {
           if (esMensajePedidoConfirmado(data.response)) {
             await detectarYGuardarPedidoConfirmado({
               userId,
@@ -1782,15 +1869,12 @@ export async function procesar(req, message, userId, from) {
       if (data?.context) await saveContexto(userId, from, data.context);
 
       if (data?.response) {
-        const sent = await enviarMensaje(userId, from, data.response);
-        if (sent) {
-          await saveReceivedMessage({
-            userId,
-            from,
-            message: data.response,
-            messageType: "out_text",
-          });
-
+        const envioRespuesta = await enviarRespuestaSeparada(
+          userId,
+          from,
+          data.response
+        );
+        if (envioRespuesta.sent) {
           if (esMensajePedidoConfirmado(data.response)) {
             await detectarYGuardarPedidoConfirmado({
               userId,
