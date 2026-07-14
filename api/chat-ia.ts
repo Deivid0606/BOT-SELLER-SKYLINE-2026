@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V76 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V78 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -4177,13 +4177,32 @@ function buildFullProductCopyResponse(state: ConversationState, _templatePricing
   const copy = clean(state.productInfo?.salesCopy || "");
   if (!copy) return "";
 
-  // V72: el copy comercial se entrega limpio. La pregunta de ciudad se envía
-  // como un segundo mensaje desde webhook para que la conversación sea más natural.
-  return copy;
+  // V78: la consulta de ciudad queda dentro de la respuesta principal.
+  // Así se envía siempre, aunque el webhook no procese follow_up_response.
+  return appendFriendlyCityQuestion(copy, state.order.city || "");
 }
 
 function buildFriendlyCityQuestion() {
-  return "😊 Para confirmar la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
+  return "😊 Para confirmar la cobertura y la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
+}
+
+function appendFriendlyCityQuestion(copy: string, city: string) {
+  const main = clean(copy);
+  if (!main || clean(city)) return main;
+
+  const question = buildFriendlyCityQuestion();
+  const normalizedMain = normalize(main);
+  const normalizedQuestion = normalize(question);
+
+  // Evita duplicar la consulta si el copy ya la contiene.
+  if (
+    normalizedMain.includes(normalizedQuestion) ||
+    /\b(para que ciudad seria el envio|de que ciudad sos|cual es tu ciudad|en que ciudad te encontras)\b/.test(normalizedMain)
+  ) {
+    return main;
+  }
+
+  return `${main}\n\n${question}`;
 }
 
 // ✅ FIX V46: para consultas de precio posteriores al copy, responde solo precios
@@ -5639,7 +5658,6 @@ export default async function handler(req: any, res: any) {
 
       return res.json({
         response: exactCopyResponse,
-        follow_up_response: buildFriendlyCityQuestion(),
         media_urls: exactImages,
         context: {
           ...(context || {}),
@@ -5721,7 +5739,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       !currentMessageIsQuestionBeforeAI
     ) {
       aiResponse = buildFullProductCopyResponse(finalState, null);
-      followUpResponse = !orderData.city ? buildFriendlyCityQuestion() : "";
+      followUpResponse = "";
       templatePricing = null;
     }
 
@@ -5753,7 +5771,6 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
 
     return res.json({
       response: postProcessResponse(aiResponse),
-      follow_up_response: followUpResponse || undefined,
       media_urls: imagesToSend,
       context: {
         ...(context || {}),
@@ -5784,7 +5801,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
             productFromMessageInitial,
             promoResponse,
             images_sent: imagesToSend?.length || 0,
-            follow_up_response: followUpResponse || null,
+            city_question_embedded_in_response: !orderData.city && aiResponse.includes(buildFriendlyCityQuestion()),
             producto_por_clave: productoPorClave?.palabra_clave || null,
             copy_already_sent_in_conversation: copyAlreadySentInConversation,
           }
