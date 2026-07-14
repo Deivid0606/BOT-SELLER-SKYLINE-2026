@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V68 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V76 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -5711,6 +5711,8 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = deterministicAcknowledgementResponse;
     }
 
+    let followUpResponse = "";
+
     if (
       explicitProductInterestNow &&
       !isPriceQuery(texto) &&
@@ -5719,6 +5721,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       !currentMessageIsQuestionBeforeAI
     ) {
       aiResponse = buildFullProductCopyResponse(finalState, null);
+      followUpResponse = !orderData.city ? buildFriendlyCityQuestion() : "";
       templatePricing = null;
     }
 
@@ -5729,7 +5732,16 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     
     const productoPorClave = encontrarProductoPorPalabraClave(texto, parsed.products);
     
-    if (!orderData.city && (!currentMessageIsQuestion || productMentionNow) && !currentMessageHasQuantity) {
+    // V76: las imágenes se envían solamente durante una presentación nueva.
+    // Respuestas como "QUIERO", "sí", consultas de precio o continuaciones
+    // no deben repetir la imagen que ya apareció con el copy.
+    if (
+      !orderData.city &&
+      !copyAlreadySentInConversation &&
+      !currentMessageIsAcknowledgementBeforeAI &&
+      (!currentMessageIsQuestion || productMentionNow) &&
+      !currentMessageHasQuantity
+    ) {
       if (productoPorClave && productoPorClave.images?.length) {
         imagesToSend = productoPorClave.images.slice(0, 3);
         console.log(`📸 Enviando ${imagesToSend.length} imagen(es) para "${productoPorClave.palabra_clave || productoPorClave.canonical}"`);
@@ -5741,6 +5753,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
 
     return res.json({
       response: postProcessResponse(aiResponse),
+      follow_up_response: followUpResponse || undefined,
       media_urls: imagesToSend,
       context: {
         ...(context || {}),
@@ -5771,6 +5784,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
             productFromMessageInitial,
             promoResponse,
             images_sent: imagesToSend?.length || 0,
+            follow_up_response: followUpResponse || null,
             producto_por_clave: productoPorClave?.palabra_clave || null,
             copy_already_sent_in_conversation: copyAlreadySentInConversation,
           }
