@@ -1,4 +1,4 @@
-// api/webhook.js — V74: CIUDAD AUTOMÁTICA + IMAGEN SIN REPETIR
+// api/webhook.js — V75: CIUDAD OBLIGATORIA TRAS COPY + SIN IMAGEN REPETIDA
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + ✅ V73: imagen, copy y consulta amable de ciudad se envían como mensajes independientes
 // + ✅ V74: pregunta ciudad aunque el copy no la incluya y evita imágenes duplicadas
@@ -583,7 +583,7 @@ async function debeAgregarPreguntaCiudad({ userId, from, texto, productName, pla
 // PLANTILLAS CON BOTONES E IMAGEN - CORREGIDO CON DIAGNÓSTICO ✅
 // ═══════════════════════════════════════════════════════════
 
-async function enviarPlantillaCompleta({ userId, from, templateName, fallbackText, productNameFallback }) {
+async function enviarPlantillaCompleta({ userId, from, templateName, fallbackText, productNameFallback, resetOrderForNewPresentation = false }) {
   console.log('🔍 ===== INICIO enviarPlantillaCompleta =====');
   console.log('🔍 userId:', userId);
   console.log('🔍 from:', from);
@@ -623,18 +623,44 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
   if (productName) {
     console.log(`📌 Guardando producto en contexto: "${productName}"`);
     const ctx = await getContexto(userId, from);
+    const previousOrder = ctx?.order_data || {};
+    const previousProduct = clean(previousOrder?.product || ctx?.current_product || "");
+    const productChanged = normalize(previousProduct) !== normalize(productName);
+    const shouldResetOrder = Boolean(resetOrderForNewPresentation || productChanged);
+
+    const nextOrderData = shouldResetOrder
+      ? {
+          product: productName,
+          quantity: 0,
+          city: "",
+          customer_name: "",
+          address: "",
+          phone: "",
+          locked_offer: null,
+          payment_proof_received: false,
+          observation: "",
+          preferred_delivery_date: "",
+          preferred_delivery_time: "",
+          payment_note: "",
+        }
+      : {
+          ...previousOrder,
+          product: productName,
+        };
+
     await saveContexto(userId, from, {
       ...ctx,
       current_product: productName,
       last_topic: productName,
       last_trigger: templateName || null,
-      order_data: {
-        ...(ctx?.order_data || {}),
-        product: productName,
-      },
+      step: shouldResetOrder ? "collecting_city" : ctx?.step || null,
+      order_data: nextOrderData,
       updated_at: new Date().toISOString(),
     });
-    console.log(`✅ Contexto guardado con current_product: "${productName}"`);
+
+    console.log(
+      `✅ Contexto guardado con current_product: "${productName}" | reset=${shouldResetOrder}`
+    );
   } else {
     console.log('⚠️ NO se guardó contexto: productName está vacío');
   }
@@ -646,13 +672,16 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
 
   if (
     !preguntaCiudadSeparada &&
-    await debeAgregarPreguntaCiudad({
-      userId,
-      from,
-      texto: mensajePlantillaRaw,
-      productName,
-      plantilla,
-    })
+    (
+      resetOrderForNewPresentation ||
+      await debeAgregarPreguntaCiudad({
+        userId,
+        from,
+        texto: mensajePlantillaRaw,
+        productName,
+        plantilla,
+      })
+    )
   ) {
     preguntaCiudadSeparada = CITY_QUESTION_FRIENDLY;
   }
@@ -1067,6 +1096,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
             templateName: trig.template,
             fallbackText: "",
             productNameFallback: trig.name,
+            resetOrderForNewPresentation: true,
           });
         } else {
           console.log(`📌 No hay plantilla, usando response como fallback`);
@@ -1076,6 +1106,7 @@ async function evaluarDisparadores({ userId, from, texto }) {
             templateName: null,
             fallbackText: trig.response,
             productNameFallback: trig.name,
+            resetOrderForNewPresentation: true,
           });
         }
         contenidoPrimary = clean(plantillaPrimary?.content || trig.response || "");
