@@ -1196,6 +1196,19 @@ function isPlausibleBareCityCandidate(text: string): boolean {
 }
 
 
+function isCompleteMultiwordLocality(text: string): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw || !n) return false;
+  if (isClearlyNotCityMessage(raw) || isQuestionLikeMessage(raw) || isTemporalDeliveryExpression(raw)) return false;
+  if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(raw)) return false;
+
+  const words = n.split(/\s+/).filter(Boolean);
+  // Una localidad completa como “Santa Rosa del Aguaray” no necesita
+  // confirmación. Se conserva literalmente y luego se evalúa cobertura exacta.
+  return words.length >= 3 && words.length <= 6;
+}
+
 function canonicalizeStoredCity(value: string, parsed: ParsedTraining): string {
   const raw = clean(value);
   const n = normalize(raw);
@@ -4164,9 +4177,13 @@ function buildFullProductCopyResponse(state: ConversationState, _templatePricing
   const copy = clean(state.productInfo?.salesCopy || "");
   if (!copy) return "";
 
-  return `${copy}
+  // V72: el copy comercial se entrega limpio. La pregunta de ciudad se envía
+  // como un segundo mensaje desde webhook para que la conversación sea más natural.
+  return copy;
+}
 
-📍 ¿Para qué ciudad sería el envío? 😊`;
+function buildFriendlyCityQuestion() {
+  return "😊 Para confirmar la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
 }
 
 // ✅ FIX V46: para consultas de precio posteriores al copy, responde solo precios
@@ -5153,22 +5170,19 @@ export default async function handler(req: any, res: any) {
     // inferidas desde mensajes ambiguos o demasiado breves.
     const hasExplicitCityStatement = Boolean(cityStatement);
 
-    const needsCityConfirmation =
-      !oldOrder.city &&
-      !cityConfirmedNow &&
-      !!detectedCity &&
-      detectedCity !== oldOrder.city &&
-      !isExactCityMatch &&
-      !hasExplicitCityStatement &&
-      isPlausibleBareCityCandidate(texto) &&
-      !isQuestionLikeMessage(texto);
+    // V72: nunca pedir una segunda confirmación de ciudad. Si el texto es un
+    // candidato válido, se guarda y se evalúa inmediatamente la modalidad.
+    // Así el cliente recibe en el mismo turno "contra-entrega" o
+    // "transportadora con pago anticipado".
+    const needsCityConfirmation = false;
 
     if (needsCityConfirmation) {
+      // Bloque conservado únicamente como referencia defensiva; no se ejecuta.
       return res.json({
-        response: `📍 ¿Tu ciudad sería ${detectedCity}? 😊`,
+        response: "😊 ¿De qué ciudad sos? Así te confirmo la modalidad de entrega. 📍",
         context: {
           ...(context || {}),
-          pending_city_confirmation: detectedCity,
+          pending_city_confirmation: null,
           updated_at: new Date().toISOString(),
         },
       });
@@ -5307,6 +5321,40 @@ export default async function handler(req: any, res: any) {
     if (finalState.coverage === false && !orderData.payment_proof_received) {
       directConfirm = false;
       confirm = false;
+    }
+
+    // V71: al confirmar una ciudad pendiente, informar SIEMPRE la modalidad
+    // antes de pedir nombre, dirección o cualquier otro dato.
+    if (!confirm && cityConfirmedNow && finalState.coverage === false) {
+      const mandatoryOutsideCoverageResponse = deterministicAfterCityCoverageMessage(finalState);
+      if (mandatoryOutsideCoverageResponse) {
+        if (orderData.product) {
+          await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
+        }
+
+        return res.json({
+          response: mandatoryOutsideCoverageResponse,
+          context: {
+            ...(context || {}),
+            pending_city_confirmation: null,
+            current_product: orderData.product || null,
+            last_topic: orderData.product || context?.last_topic || null,
+            last_ad_offer: orderData.locked_offer || null,
+            order_data: orderData,
+            order_id: orderData.order_id || null,
+            payment_proof_received: false,
+            step: finalState.step,
+            updated_at: new Date().toISOString(),
+          },
+          debug: {
+            mandatory_outside_coverage_after_city_confirmation: true,
+            city: orderData.city,
+            quantity: orderData.quantity,
+            coverage: finalState.coverage,
+            step: finalState.step,
+          },
+        });
+      }
     }
 
     if (orderData.product) {
@@ -5591,6 +5639,7 @@ export default async function handler(req: any, res: any) {
 
       return res.json({
         response: exactCopyResponse,
+        follow_up_response: buildFriendlyCityQuestion(),
         media_urls: exactImages,
         context: {
           ...(context || {}),
