@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V83 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V84 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -3608,7 +3608,13 @@ async function safeUpsertOrder(
   if (!order.phone) order.phone = senderPhoneFallback(from);
 
   const state = buildState(order, parsed);
-  const status = confirm && state.step === "confirm_order" ? "confirmed" : state.step === "confirm_order" ? "confirm_pending" : state.step;
+  // V84: si el backend ya decidió cerrar la venta, el registro debe quedar
+  // confirmado sin depender del paso interno en el que llegaron los datos.
+  const status = confirm
+    ? "confirmed"
+    : state.step === "confirm_order"
+      ? "confirm_pending"
+      : state.step;
 
   const orderId = clean(order.order_id);
   const payload: any = {
@@ -3624,6 +3630,11 @@ async function safeUpsertOrder(
     address: order.address || null,
     quantity: order.quantity || 1,
     total_amount: state.total || null,
+    items: [{
+      product: order.product,
+      quantity: order.quantity || 1,
+      amount: state.total || 0,
+    }],
     status,
     observation: order.observation || null,
     observacion: order.observation || null,
@@ -5418,11 +5429,43 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    let persistedOrderId: string | null = null;
+
     if (orderData.product) {
-      await safeUpsertOrder(user_id, fromNumber, orderData, parsed, confirm);
+      persistedOrderId = await safeUpsertOrder(user_id, fromNumber, orderData, parsed, confirm);
     }
 
     if (confirm) {
+      // V84: nunca mostrar PEDIDO CONFIRMADO si primero no se pudo guardar
+      // la venta en la tabla orders.
+      if (!persistedOrderId) {
+        console.error("❌ No se pudo guardar el pedido confirmado en orders", {
+          user_id,
+          fromNumber,
+          order_id: orderData.order_id,
+          product: orderData.product,
+        });
+
+        return res.status(500).json({
+          error: "No se pudo registrar el pedido confirmado",
+          response: "⚠️ Tuvimos un inconveniente al registrar tu pedido. Por favor, aguardá un momento y volvé a enviar tu último dato.",
+          context: {
+            ...(context || {}),
+            current_product: orderData.product || null,
+            order_data: orderData,
+            order_id: orderData.order_id || null,
+            step: "confirm_pending",
+            updated_at: new Date().toISOString(),
+          },
+          debug: {
+            confirmed_order_persistence_failed: true,
+            product: orderData.product,
+            quantity: orderData.quantity,
+            city: orderData.city,
+          },
+        });
+      }
+
       const fixedConfirmation = finalConfirmationMessage(finalState, parsed);
 
       return res.json({
@@ -5441,6 +5484,8 @@ export default async function handler(req: any, res: any) {
         debug: true
           ? {
               fixed_backend_confirmation: true,
+              persisted_order_id: persistedOrderId,
+              saved_to_orders: true,
               product: orderData.product,
               quantity: orderData.quantity,
               city: orderData.city,
