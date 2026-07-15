@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V86 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V87 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -1103,7 +1103,7 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
     else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) continuation = "¿Cuántas unidades querés llevar?";
     else if (!state.order.customer_name) continuation = "Para continuar, pasame tu nombre y apellido.";
     else if (!state.order.address) continuation = "Ahora pasame la dirección exacta o ubicación.";
-    else if (!state.order.phone) continuation = "Por último, pasame tu número de celular.";
+    
 
     return `💵 Podés pagar en efectivo o por transferencia al delivery cuando recibís tu pedido. 😊${continuation ? `\n\n${continuation}` : ""}`;
   }
@@ -3521,6 +3521,12 @@ function buildHardInstruction(state: ConversationState) {
 }
 
 function buildState(order: OrderData, parsed: ParsedTraining): ConversationState {
+  // V87: el número del WhatsApp se completa desde el contexto antes de calcular faltantes.
+  // Nunca se solicita nuevamente al cliente.
+  if (!order.phone) {
+    order.phone = clean((order as any).from_number || "");
+  }
+
   const productInfo = getProductInfo(order.product, parsed);
   const coverage = order.city ? hasCoverage(order.city, parsed) : null;
   const total = order.product && order.quantity ? calculateTotal(order.product, order.quantity, parsed, order.locked_offer) : 0;
@@ -4039,7 +4045,7 @@ ${o.locked_offer.quantity} unidades de ${o.product}
 
 💵 Para avanzar, realizá la transferencia y enviame el comprobante junto con:
 ✅ nombre completo
-✅ número de celular
+📞 Ya tengo tu número de WhatsApp
 
 ${bankDataText(parsed)} 📲`;
   }
@@ -4055,7 +4061,7 @@ ${o.locked_offer.quantity} unidades de ${o.product}
 Ahora solo necesito:
 ✅ nombre y apellido
 ✅ dirección exacta o ubicación
-✅ número de celular (opcional; si no lo pasás usamos este WhatsApp) 📲`;
+📞 Ya tengo tu número de WhatsApp: ${orderData.phone || senderPhoneFallback(fromNumber)}`;
 }
 
 function deterministicAfterQuantityMessage(state: ConversationState, parsed: ParsedTraining) {
@@ -4085,7 +4091,7 @@ ${promoLine}
 
 💵 Para avanzar, realizá la transferencia y enviame el comprobante junto con:
 ✅ nombre completo
-✅ número de celular
+📞 Ya tengo tu número de WhatsApp
 
 ${bankDataText(parsed)} 📲`;
   }
@@ -4100,7 +4106,7 @@ ${promoLine}
 Ahora solo necesito:
 ✅ nombre y apellido
 ✅ dirección exacta o ubicación
-✅ número de celular (opcional; si no lo pasás usamos este WhatsApp) 📲`;
+📞 Ya tengo tu número de WhatsApp: ${orderData.phone || senderPhoneFallback(fromNumber)}`;
 }
 
 function deterministicWaitingPaymentProofMessage(state: ConversationState, parsed: ParsedTraining) {
@@ -4152,7 +4158,7 @@ function deterministicObservationAckMessage(state: ConversationState, parsed: Pa
   }
 
   if (state.coverage === false && !o.payment_proof_received) {
-    return `${intro}\n\n🚚 Para tu zona hacemos envío por transportadora con pago anticipado.\n\nPara avanzar, enviame por favor:\n✅ nombre completo\n✅ número de celular\n✅ comprobante de transferencia\n\n${bankDataText(parsed)} 📲`;
+    return `${intro}\n\n🚚 Para tu zona hacemos envío por transportadora con pago anticipado.\n\nPara avanzar, enviame por favor:\n✅ nombre completo\n📞 Ya tengo tu número de WhatsApp\n✅ comprobante de transferencia\n\n${bankDataText(parsed)} 📲`;
   }
 
   if (state.missing.length) {
@@ -4818,6 +4824,7 @@ export default async function handler(req: any, res: any) {
         : getTemplatePricingFromHistory(history, parsed));
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
+    if (!oldOrder.phone) oldOrder.phone = senderPhoneFallback(fromNumber);
 
     let forceFreshOrderFromConfirmedTemplate = false;
 
@@ -5301,7 +5308,7 @@ export default async function handler(req: any, res: any) {
 
     if (isCityStep && !effectiveDetectedCity && messageIsPurchaseOrQuantity) {
       return res.json({
-        response: "¡Perfecto! 😊",
+        response: buildFriendlyCityQuestion(),
         context: {
           ...(context || {}),
           pending_city_confirmation: null,
