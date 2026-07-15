@@ -1,7 +1,7 @@
 // api/webhook.js — V75: CIUDAD OBLIGATORIA TRAS COPY + SIN IMAGEN REPETIDA
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + ✅ V73: imagen, copy y consulta amable de ciudad se envían como mensajes independientes
-// + ✅ V74: pregunta ciudad aunque el copy no la incluya y evita imágenes duplicadas
+// + ✅ V85: pregunta ciudad única con bloqueo anti-duplicado
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
@@ -35,6 +35,24 @@ const normalize = (t) =>
 
 const CITY_QUESTION_FRIENDLY =
   "😊 Para confirmar la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
+
+const cityQuestionLocks = new Map();
+
+function acquireCityQuestionLock(userId, from, ttlMs = 15000) {
+  const key = `${userId}:${from}`;
+  const now = Date.now();
+  const expiresAt = Number(cityQuestionLocks.get(key) || 0);
+  if (expiresAt > now) return false;
+
+  cityQuestionLocks.set(key, now + ttlMs);
+  setTimeout(() => {
+    if (Number(cityQuestionLocks.get(key) || 0) <= Date.now()) {
+      cityQuestionLocks.delete(key);
+    }
+  }, ttlMs + 1000);
+
+  return true;
+}
 
 /**
  * Separa únicamente una pregunta de ciudad ubicada al final del mensaje.
@@ -102,7 +120,7 @@ async function enviarRespuestaSeparada(userId, from, text, options = {}) {
     sentAny = (await enviarYGuardarTexto(userId, from, mainText, "out_text")) || sentAny;
   }
 
-  if (cityQuestion) {
+  if (cityQuestion && acquireCityQuestionLock(userId, from)) {
     if (mainText && delayMs > 0) await sleep(delayMs);
     sentAny = (await enviarYGuardarTexto(userId, from, cityQuestion, "out_text")) || sentAny;
   }
@@ -571,7 +589,7 @@ async function debeAgregarPreguntaCiudad({ userId, from, texto, productName, pla
 
     const alreadyAsked = (data || []).some((row) => {
       const n = normalize(row?.message || "");
-      return /de que ciudad sos|para que ciudad seria el envio|cual es tu ciudad|modalidad de entrega/.test(n);
+      return /de que ciudad sos|para que ciudad seria el envio|cual es tu ciudad|modalidad de entrega|confirmar la cobertura/.test(n);
     });
     if (alreadyAsked) return false;
   } catch {}
@@ -818,7 +836,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
       });
     }
 
-    if (preguntaCiudadSeparada) {
+    if (preguntaCiudadSeparada && acquireCityQuestionLock(userId, from)) {
       await sleep(900);
       await enviarYGuardarTexto(userId, from, preguntaCiudadSeparada, "out_text");
     }
