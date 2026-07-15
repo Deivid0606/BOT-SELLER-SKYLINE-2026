@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V88 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V90 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -3996,6 +3996,34 @@ async function transcribeAudioSmart({
   return { text: "", reason: "transcription_failed" };
 }
 
+
+function buildDeterministicMissingDataSummary(state: ConversationState) {
+  const o = state.order;
+  const lines = [
+    `📦 Producto: ${clean(o.product) || "—"}`,
+    `🔢 Cantidad: ${o.quantity || "—"}`,
+    `📍 Ciudad: ${clean(o.city) || "—"}`,
+    `📞 Celular: ${clean(o.phone) || "—"}`,
+  ];
+
+  const missing: string[] = [];
+
+  if (!clean(o.customer_name)) missing.push("nombre y apellido");
+  if (!clean(o.address) || isOnlyPurchaseWithSize(o.address)) missing.push("calle o dirección exacta");
+
+  // El teléfono nunca se pide: se toma del WhatsApp.
+  if (!clean(o.phone)) {
+    o.phone = senderPhoneFallback("");
+  }
+
+  if (!missing.length) return "";
+
+  return `${lines.join("\n")}
+
+Solo me falta:
+${missing.map((item) => `✅ ${item}`).join("\n")}`;
+}
+
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
   const location = [clean(o.city), clean(o.address)].filter(Boolean).join(" — ");
@@ -4205,7 +4233,8 @@ function deterministicObservationAckMessage(state: ConversationState, parsed: Pa
   }
 
   if (state.missing.length) {
-    return `${intro}\n\n📦 Producto: ${o.product}\n🔢 Cantidad: ${o.quantity}\n💰 Total: ${formatGs(state.total)} Gs\n📍 Ciudad: ${o.city}\n\nPara agendarlo, me falta:\n✅ ${state.missing.join("\n✅ ")} 📲`;
+    const deterministicSummary = buildDeterministicMissingDataSummary(state);
+    if (deterministicSummary) return deterministicSummary;
   }
 
   return `${intro}\n\n✅ Tengo todos los datos del pedido. Nuestro equipo tendrá en cuenta esa observación para coordinar 😊`;
@@ -4305,6 +4334,16 @@ REGLAS DURAS:
 - PROHIBIDO preguntar "¿Está todo correcto?", "¿Confirmamos?", "¿Querés confirmar?" o cualquier reconfirmación.
 - Cuando estén producto, cantidad, ciudad, nombre, dirección y teléfono, el backend guarda la venta y responde directamente con el formato fijo ✅ PEDIDO CONFIRMADO.
 - PROHIBIDO redactar un cierre libre. El único cierre válido es el generado por finalConfirmationMessage().
+- Cuando falte algún dato, mostrale un resumen fijo de lo que ya tenés y pedí solamente lo faltante.
+- PROHIBIDO pedir confirmación intermedia. Si ya están todos los datos, confirmá automáticamente.
+- Ejemplo si falta dirección:
+  📦 Producto: ...
+  🔢 Cantidad: ...
+  📍 Ciudad: ...
+  📞 Celular: ...
+  Solo me falta:
+  ✅ calle o dirección exacta
+
 - Frases como "quiero en calce 42", "talle 40" o "número 39" son VARIANTES, nunca direcciones.
 - Guardá el talle/calce en observación y seguí pidiendo una dirección exacta real.
 - Nunca uses una frase publicitaria como "Usalas con" como nombre de producto.
@@ -4387,6 +4426,11 @@ ${state.productInfo?.canonical || o.product}
 ${priceLine}
 
 📍 ¿Para qué ciudad sería el envío? 😊`;
+  }
+
+  const missingSummary = buildDeterministicMissingDataSummary(state);
+  if (missingSummary && o.product && o.city && o.quantity) {
+    return missingSummary;
   }
 
   if (!o.quantity) {
