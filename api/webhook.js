@@ -1,7 +1,7 @@
 // api/webhook.js — V75: CIUDAD OBLIGATORIA TRAS COPY + SIN IMAGEN REPETIDA
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + ✅ V73: imagen, copy y consulta amable de ciudad se envían como mensajes independientes
-// + ✅ V88: talle separado de dirección y producto canónico
+// + ✅ V90: sin reconfirmación y resumen fijo de faltantes
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
@@ -38,7 +38,7 @@ const CITY_QUESTION_FRIENDLY =
 
 const cityQuestionLocks = new Map();
 
-function acquireCityQuestionLock(userId, from, ttlMs = 2500) {
+function acquireCityQuestionLock(userId, from, ttlMs = 6000) {
   const key = `${userId}:${from}`;
   const now = Date.now();
   const expiresAt = Number(cityQuestionLocks.get(key) || 0);
@@ -65,7 +65,26 @@ function separarPreguntaCiudad(texto) {
     return { mainText: "", cityQuestion: "", separated: false };
   }
 
-  const patterns = [
+  // V89: primero detectar la oración amigable COMPLETA.
+  // Evita dejar como mensaje suelto:
+  // "Para confirmar la cobertura..., ¿me indicás por favor"
+  const fullFriendlyPatterns = [
+    /(?:\n\s*)?(?:😊\s*)?para\s+confirmar\s+la\s+cobertura\s+y\s+la\s+modalidad\s+de\s+entrega\s*,?\s*¿?\s*me\s+indic[aá]s\s+(?:por\s+favor\s+)?de\s+qu[eé]\s+ciudad\s+sos\s*\??\s*(?:😊|🙂|📍|🚚)*\s*$/i,
+    /(?:\n\s*)?(?:😊\s*)?para\s+confirmar\s+la\s+modalidad\s+de\s+entrega\s*,?\s*¿?\s*me\s+indic[aá]s\s+(?:por\s+favor\s+)?de\s+qu[eé]\s+ciudad\s+sos\s*\??\s*(?:😊|🙂|📍|🚚)*\s*$/i,
+  ];
+
+  for (const pattern of fullFriendlyPatterns) {
+    if (!pattern.test(original)) continue;
+
+    const mainText = clean(original.replace(pattern, ""));
+    return {
+      mainText,
+      cityQuestion: CITY_QUESTION_FRIENDLY,
+      separated: true,
+    };
+  }
+
+  const simplePatterns = [
     /(?:\n\s*)?(?:📍\s*)?¿?\s*para\s+qu[eé]\s+ciudad\s+ser[ií]a\s+(?:el\s+)?env[ií]o\s*\??\s*(?:😊|🙂|📍|🚚)*\s*$/i,
     /(?:\n\s*)?(?:📍\s*)?¿?\s*de\s+qu[eé]\s+ciudad\s+sos\s*\??\s*(?:😊|🙂|📍|🚚)*\s*$/i,
     /(?:\n\s*)?(?:📍\s*)?¿?\s*cu[aá]l\s+es\s+tu\s+ciudad\s*\??\s*(?:😊|🙂|📍|🚚)*\s*$/i,
@@ -74,11 +93,17 @@ function separarPreguntaCiudad(texto) {
     /(?:\n\s*)?(?:📍\s*)?¿?\s*me\s+indic[aá]s\s+(?:por\s+favor\s+)?(?:de\s+)?qu[eé]\s+ciudad\s+sos\s*\??\s*(?:😊|🙂|📍|🚚)*\s*$/i,
   ];
 
-  for (const pattern of patterns) {
+  for (const pattern of simplePatterns) {
     if (!pattern.test(original)) continue;
+
     const mainText = clean(original.replace(pattern, ""));
+
+    // No enviar prefijos incompletos que quedaron luego del recorte.
+    const incompletePrefix =
+      /(?:para\s+confirmar.*modalidad\s+de\s+entrega|me\s+indic[aá]s\s+por\s+favor)\s*,?\s*$/i.test(mainText);
+
     return {
-      mainText,
+      mainText: incompletePrefix ? "" : mainText,
       cityQuestion: CITY_QUESTION_FRIENDLY,
       separated: true,
     };
@@ -880,7 +905,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
     await enviarYGuardarTexto(userId, from, mensajeFinal, "out_text");
   }
 
-  if (preguntaCiudadSeparada) {
+  if (preguntaCiudadSeparada && acquireCityQuestionLock(userId, from)) {
     if (mensajeFinal || imagenes.length > 0) await sleep(900);
     await enviarYGuardarTexto(userId, from, preguntaCiudadSeparada, "out_text");
   }
