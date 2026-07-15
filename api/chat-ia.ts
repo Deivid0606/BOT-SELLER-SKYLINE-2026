@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V85 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V86 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -3600,46 +3600,77 @@ async function safeUpsertOrder(
   parsed: ParsedTraining,
   confirm = false
 ): Promise<string | null> {
-  if (!userId || !from || isGenericProductLabel(order.product)) return null;
+  if (!userId || !from) return null;
 
-  const canonicalProduct = getProductInfo(order.product, parsed)?.canonical || clean(order.product);
-  if (!canonicalProduct || isGenericProductLabel(canonicalProduct)) return null;
+  const productInfo = getProductInfo(order.product, parsed);
+  const canonicalProduct = productInfo?.canonical || clean(order.product);
+
+  if (!canonicalProduct || isGenericProductLabel(canonicalProduct)) {
+    console.error("❌ Producto inválido para guardar:", order.product);
+    return null;
+  }
 
   order.product = canonicalProduct;
+  order.quantity = sanitizeQuantity(order.quantity) || 1;
   if (!order.phone) order.phone = senderPhoneFallback(from);
 
   const state = buildState(order, parsed);
-  const status = confirm
-    ? "confirmed"
-    : state.step === "confirm_order"
-      ? "confirm_pending"
-      : state.step;
+  const total = Number(state.total || calculateTotal(order.product, order.quantity, parsed, order.locked_offer) || 0);
 
-  const payload: any = {
+  const paymentMethod = state.coverage === false
+    ? "pago_anticipado"
+    : "contra_entrega";
+
+  const basePayload: Record<string, any> = {
     user_id: userId,
     from_number: from,
     phone: order.phone || from,
-    product: order.product,
-    customer_name: order.customer_name || null,
-    city: order.city || null,
-    address: order.address || null,
-    quantity: order.quantity || 1,
-    total_amount: String(state.total || 0),
-    items: [{
-      product: order.product,
-      quantity: order.quantity || 1,
-      amount: state.total || 0,
-    }],
-    status,
-    detected_by_ai: true,
-    observation: order.observation || null,
-    preferred_delivery_date: order.preferred_delivery_date || null,
-    preferred_delivery_time: order.preferred_delivery_time || null,
-    payment_note: order.payment_note || null,
-    metodo_pago: state.coverage === false ? "pago_anticipado" : "contra_entrega",
+    product: canonicalProduct,
+    customer_name: clean(order.customer_name) || null,
+    city: clean(order.city) || null,
+    address: clean(order.address) || null,
+    quantity: order.quantity,
+    total_amount: String(total),
+    status: confirm ? "confirmado" : state.step,
   };
 
-  const IN_PROGRESS_STATUSES = [
+  const extendedPayload: Record<string, any> = {
+    ...basePayload,
+    items: [
+      {
+        product: canonicalProduct,
+        name: canonicalProduct,
+        quantity: order.quantity,
+        amount: total,
+        price: total,
+      },
+    ],
+    metodo_pago: paymentMethod,
+    detected_by_ai: true,
+    observation: clean(order.observation) || null,
+    preferred_delivery_date: clean(order.preferred_delivery_date) || null,
+    preferred_delivery_time: clean(order.preferred_delivery_time) || null,
+    payment_note: clean(order.payment_note) || null,
+  };
+
+  const mediumPayload: Record<string, any> = {
+    ...basePayload,
+    items: extendedPayload.items,
+    metodo_pago: paymentMethod,
+    detected_by_ai: true,
+  };
+
+  const payloadCandidates = [
+    extendedPayload,
+    mediumPayload,
+    basePayload,
+  ];
+
+  const confirmedStatusCandidates = confirm
+    ? ["confirmado", "confirmed"]
+    : [state.step];
+
+  const activeStatuses = [
     "draft",
     "selling",
     "collecting_city",
@@ -3649,59 +3680,118 @@ async function safeUpsertOrder(
     "collecting_address",
     "waiting_payment_proof",
     "confirm_pending",
+    "pending",
+    "pendiente",
   ];
 
-  const { data: inProgress, error: findError } = await supabase
+  const isConfirmedStatus = (value: any) => {
+    const n = normalize(value);
+    return n === "confirmado" || n === "confirmed";
+  };
+
+  const tryWrite = async (
+    mode: "update" | "insert",
+    payload: Record<string, any>,
+    rowId?: string
+  ): Promise<string | null> => {
+    for (const statusValue of confirmedStatusCandidates) {
+      const finalPayload = { ...payload, status: statusValue };
+
+      let query: any;
+      if (mode === "update" && rowId) {
+        query = supabase
+          .from("orders")
+          .update(finalPayload)
+          .eq("id", rowId)
+          .eq("user_id", userId);
+      } else {
+        query = supabase
+          .from("orders")
+          .insert(finalPayload);
+      }
+
+      const { data, error } = await query
+        .select("id, status")
+        .single();
+
+      if (error) {
+        console.error(`❌ orders ${mode} falló con status=${statusValue}:`, error);
+        continue;
+      }
+
+      if (!data?.id) continue;
+
+      if (confirm && !isConfirmedStatus(data.status)) {
+        console.error("❌ El registro no quedó confirmado:", data);
+        continue;
+      }
+
+      // Verificación final: volver a leer la fila real guardada.
+      const { data: verified, error: verifyError } = await supabase
+        .from("orders")
+        .select("id, status, product, quantity, total_amount, customer_name, city, address")
+        .eq("id", data.id)
+        .eq("user_id", userId)
+        .single();
+
+      if (verifyError || !verified?.id) {
+        console.error("❌ No se pudo verificar el pedido guardado:", verifyError);
+        continue;
+      }
+
+      if (confirm && !isConfirmedStatus(verified.status)) {
+        console.error("❌ La verificación final no encontró estado confirmado:", verified);
+        continue;
+      }
+
+      return verified.id;
+    }
+
+    return null;
+  };
+
+  let activeOrderId: string | null = null;
+
+  const { data: activeOrder, error: activeError } = await supabase
     .from("orders")
     .select("id")
     .eq("user_id", userId)
     .eq("from_number", from)
-    .in("status", IN_PROGRESS_STATUSES)
+    .in("status", activeStatuses)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
 
-  if (findError) console.error("❌ Error buscando pedido activo:", findError);
+  if (activeError) {
+    console.error("❌ Error buscando pedido activo:", activeError);
+  } else {
+    activeOrderId = activeOrder?.id || null;
+  }
 
-  if (inProgress?.id) {
-    const { data: updated, error: updateError } = await supabase
-      .from("orders")
-      .update(payload)
-      .eq("id", inProgress.id)
-      .eq("user_id", userId)
-      .select("id, status")
-      .single();
-
-    if (!updateError && updated?.id) {
-      const updatedStatus = normalize(updated.status);
-      if (confirm && updatedStatus !== "confirmed" && updatedStatus !== "confirmado") {
-        console.error("❌ Pedido actualizado sin estado confirmado:", updated);
-        return null;
-      }
-      return updated.id;
+  // Intenta actualizar el pedido activo con payload completo, medio y básico.
+  if (activeOrderId) {
+    for (const payload of payloadCandidates) {
+      const updatedId = await tryWrite("update", payload, activeOrderId);
+      if (updatedId) return updatedId;
     }
-
-    console.error("❌ Error actualizando pedido:", updateError);
   }
 
-  const { data: inserted, error: insertError } = await supabase
-    .from("orders")
-    .insert(payload)
-    .select("id, status")
-    .single();
-
-  if (insertError || !inserted?.id) {
-    console.error("❌ Error insertando pedido:", insertError);
-    return null;
+  // Si no había pedido activo o la actualización falló, crea uno nuevo.
+  for (const payload of payloadCandidates) {
+    const insertedId = await tryWrite("insert", payload);
+    if (insertedId) return insertedId;
   }
 
-  const insertedStatus = normalize(inserted.status);
-  if (confirm && insertedStatus !== "confirmed" && insertedStatus !== "confirmado") {
-    console.error("❌ Pedido insertado sin estado confirmado:", inserted);
-    return null;
-  }
+  console.error("❌ No se pudo guardar el pedido después de todos los reintentos", {
+    userId,
+    from,
+    product: canonicalProduct,
+    quantity: order.quantity,
+    total,
+    confirm,
+  });
 
-  return inserted.id;
+  return null;
 }
 
 async function fetchMediaAsBase64(url: string) {
@@ -3862,7 +3952,7 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
   const location = [clean(o.city), clean(o.address)].filter(Boolean).join(" — ");
 
   if (state.coverage === false) {
-    return `✅ *PEDIDO CONFIRMADO*
+    return `✅ PEDIDO CONFIRMADO
 
 📦 Producto: ${o.product}
 🔢 Cantidad: ${o.quantity} u.
@@ -3880,7 +3970,7 @@ Una vez despachado, te enviaremos el comprobante correspondiente. 📦
 ¡Muchas gracias por tu compra! 💜`;
   }
 
-  return `✅ *PEDIDO CONFIRMADO*
+  return `✅ PEDIDO CONFIRMADO
 
 📦 Producto: ${o.product}
 🔢 Cantidad: ${o.quantity} u.
@@ -4163,7 +4253,9 @@ REGLAS DURAS:
 - Si hay promo bloqueada desde plantilla, respetala y confirmala.
 - Si no hay plantilla activa ni promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
-- Nunca preguntes "¿Está todo correcto?" si ya están todos los datos. Si el pedido está completo, el backend responde directamente con ✅ PEDIDO CONFIRMADO y no se llama a Gemini.
+- PROHIBIDO preguntar "¿Está todo correcto?", "¿Confirmamos?", "¿Querés confirmar?" o cualquier reconfirmación.
+- Cuando estén producto, cantidad, ciudad, nombre, dirección y teléfono, el backend guarda la venta y responde directamente con el formato fijo ✅ PEDIDO CONFIRMADO.
+- PROHIBIDO redactar un cierre libre. El único cierre válido es el generado por finalConfirmationMessage().
 - En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
 `.trim();
 }
@@ -5439,7 +5531,7 @@ export default async function handler(req: any, res: any) {
 
         return res.status(500).json({
           error: "No se pudo registrar el pedido confirmado",
-          response: "⚠️ Tuvimos un inconveniente al registrar tu pedido. Por favor, aguardá un momento y volvé a enviar tu último dato.",
+          response: "⚠️ No pudimos registrar el pedido en el sistema todavía. Tus datos siguen guardados; escribí «CONFIRMAR PEDIDO» para reintentar.",
           context: {
             ...(context || {}),
             current_product: orderData.product || null,
