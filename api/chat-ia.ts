@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V82 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V83 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -1964,7 +1964,20 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   };
 
   const explicit = raw.match(/(?:mi nombre correcto es|cambiar el nombre a|cambia el nombre a|el pedido es para|poner a nombre de|me llamo|mi nombre es|nombre)\s*[:,-]?\s*([a-zA-ZÁÉÍÓÚáéíóúÑñ\s]{5,80})/i)?.[1];
-  if (explicit) return toTitleCase(clean(explicit));
+  if (explicit) {
+    const explicitClean = clean(explicit)
+      .split(/\b(?:calle|callejon|callejón|avda|avenida|ruta|km|barrio|casa|frente|esquina|rca|republica|república)\b/i)[0];
+    if (isValidNameLine(explicitClean)) return toTitleCase(explicitClean);
+  }
+
+  // V83: permite extraer el nombre aunque después venga inmediatamente
+  // la dirección, sin depender del orden de los datos.
+  const nameBeforeAddress = raw.match(
+    /^\s*([a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,3})\s+(?=(?:calle|callejon|callejón|avda|avenida|ruta|km|barrio|casa|frente|esquina|rca|republica|república|[a-zA-ZÁÉÍÓÚáéíóúÑñ]+\s+(?:cai|casi))\b)/i
+  )?.[1];
+  if (nameBeforeAddress && isValidNameLine(nameBeforeAddress)) {
+    return toTitleCase(clean(nameBeforeAddress));
+  }
 
   const beforeSoy = raw.match(/^([a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,4})\s+soy\b/i)?.[1];
   if (beforeSoy && isValidNameLine(beforeSoy)) return toTitleCase(clean(beforeSoy));
@@ -2039,11 +2052,42 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   const compositeAddress = extractCompositeAddress(raw, detectedCity, phone, name);
   if (compositeAddress) return compositeAddress;
 
+  // V83: nombre y dirección pueden llegar juntos y en cualquier orden.
+  // Ej.: "David Alcaraz caaballero cai rca de colombia".
+  // Si ya se detectó el nombre, se toma como dirección el resto del mensaje.
+  if (name) {
+    const escapedName = name
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("\\s+");
+
+    let remainder = raw.replace(new RegExp(`(?:^|\\b)${escapedName}(?:\\b|$)`, "i"), " ");
+    remainder = stripPhoneFromAddress(remainder, phone)
+      .replace(/\s{2,}/g, " ")
+      .replace(/^[,;:\-\s]+|[,;:\-\s]+$/g, "")
+      .trim();
+
+    const remainderNorm = normalize(remainder);
+    const hasAddressSignal =
+      /\b(calle|callejon|callejón|avda|avenida|ruta|km|barrio|bario|bsrrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|edificio|piso|departamento|porteria|portería|referencia|rca|republica|república|cai|colombia)\b/.test(remainderNorm) ||
+      remainder.split(/\s+/).filter(Boolean).length >= 3;
+
+    if (
+      hasAddressSignal &&
+      remainder.length >= 6 &&
+      !isQuestionLikeMessage(remainder) &&
+      !isPoliteClosingOrAcknowledgement(remainder)
+    ) {
+      return remainder;
+    }
+  }
+
   for (const line of lines) {
     const cleaned = clean(line);
     const normLine = normalize(cleaned);
 
-    if (/\b(calle|avda|avenida|ruta|km|barrio|bario|bsrrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|edificio|piso|departamento|porteria|portería|referencia)\b/i.test(normLine) || looksLikeAddressSupplement(cleaned)) {
+    if (/\b(calle|callejon|callejón|avda|avenida|ruta|km|barrio|bario|bsrrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|edificio|piso|departamento|porteria|portería|referencia|rca|republica|república|cai|colombia)\b/i.test(normLine) || looksLikeAddressSupplement(cleaned)) {
       if (name && normalize(cleaned).includes(normalize(name))) continue;
       if (phone && cleaned.includes(phone)) continue;
       return stripPhoneFromAddress(cleaned, phone);
@@ -3813,57 +3857,43 @@ async function transcribeAudioSmart({
 
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
-  const addressPart = o.address ? ` — ${o.address}` : "";
+  const location = [clean(o.city), clean(o.address)].filter(Boolean).join(" — ");
 
   if (state.coverage === false) {
-    return `✅ PEDIDO CONFIRMADO
+    return `✅ *PEDIDO CONFIRMADO*
 
-✅ Producto: ${o.product}
-✅ Cliente: ${o.customer_name}
-✅ Ubicación: ${o.city}${addressPart}
-✅ Contacto: ${o.phone}
-✅ Cantidad: ${o.quantity} u.
-💰 Total: ${formatGs(state.total)} Gs${observationBlock(o)}
+📦 Producto: ${o.product}
+🔢 Cantidad: ${o.quantity} u.
+💰 Total: ${formatGs(state.total)} Gs
 
-🚚 Su encomienda será enviada por transportadora.
+👤 Cliente: ${o.customer_name}
+📍 Ubicación: ${location}
+📞 Contacto: ${o.phone}${observationBlock(o)}
 
-📎 Ya recibimos tus datos y comprobante. Una vez procesado el envío, te estaremos enviando tu comprobante de despacho.
+🚚 Envío por transportadora
+💳 Pago anticipado confirmado
 
-⏰ Oferta válida hoy
+Una vez despachado, te enviaremos el comprobante correspondiente. 📦
 
-¡Gracias por elegirnos!!! 💜✨
-
-💵 Pago anticipado por transferencia.
-
-¡Gracias por tu compra! 🛍️✨
-
-
-Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
+¡Muchas gracias por tu compra! 💜`;
   }
 
-  return `✅ PEDIDO CONFIRMADO
+  return `✅ *PEDIDO CONFIRMADO*
 
-✅ Producto: ${o.product}
-✅ Cliente: ${o.customer_name}
-✅ Ubicación: ${o.city}${addressPart}
-✅ Contacto: ${o.phone}
-✅ Cantidad: ${o.quantity} u.
-💰 Total: ${formatGs(state.total)} Gs${observationBlock(o)}
+📦 Producto: ${o.product}
+🔢 Cantidad: ${o.quantity} u.
+💰 Total: ${formatGs(state.total)} Gs
 
-🚚 Envío GRATIS · Pagás al recibir
+👤 Cliente: ${o.customer_name}
+📍 Ubicación: ${location}
+📞 Contacto: ${o.phone}${observationBlock(o)}
 
-🚚 Tu pedido queda agendado para la próxima ronda de envíos. Si pagás al recibir, el delivery lo confirma al llegar a tu zona.
+🚚 Envío GRATIS
+💵 Pagás al recibir en efectivo o por transferencia al delivery.
 
-⏰ Oferta válida hoy
+Nuestro equipo se pondrá en contacto para coordinar la entrega. 📲
 
-¡Gracias por elegirnos!!! 💜✨
-
-💵 Podés pagar en EFECTIVO o TRANSFERENCIA AL DELIVERY cuando recibas tu producto. ¡Como te quede más cómodo! 🚚
-
-¡Gracias por tu compra! 🛍️✨
-
-
-Podés pedir cualquier producto con el mismo proceso rápido y seguro. ¡Te esperamos! 💜`;
+¡Muchas gracias por tu compra! 💜`;
 }
 
 function deterministicAfterCityCoverageMessage(state: ConversationState) {
