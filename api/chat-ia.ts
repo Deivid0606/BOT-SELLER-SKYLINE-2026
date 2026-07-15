@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V87 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V88 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -313,7 +313,7 @@ function isGenericProductLabel(value: any): boolean {
   if (!n) return true;
   return (
     isGenericMarketingPhrase(n) ||
-    /^(oferta(?: de)? hoy|precio de hoy|promo(?:cion)?|promocion|promocion especial|promoción especial|plumero promocion especial|plumero promoción especial|producto|articulo|item|stock limitado|quedan pocos|llevate \d+|\d+ por \d+)$/.test(n)
+    /^(oferta(?: de)? hoy|precio de hoy|promo(?:cion)?|promocion|promocion especial|promoción especial|plumero promocion especial|plumero promoción especial|usalas con|usala con|usalo con|usas con|producto|articulo|item|stock limitado|quedan pocos|llevate \d+|\d+ por \d+)$/.test(n)
   );
 }
 
@@ -327,7 +327,15 @@ function visualProductNameFromKeyword(keyword: string, copy: string, aliases: st
   const aliasParts = aliases
     .flatMap((a) => splitKeywordAliases(a))
     .map(clean)
-    .filter((a) => normalize(a).length >= 3 && !isGenericProductWord(a) && !isGenericProductLabel(a));
+    .filter((a) => {
+      const n = normalize(a);
+      return (
+        n.length >= 3 &&
+        !isGenericProductWord(a) &&
+        !isGenericProductLabel(a) &&
+        !/^(usa|usas|usala|usalo|usalas|lleva|llevate|aprovecha|aprovechá|compra|comprá|pedi|pedí)\b/.test(n)
+      );
+    });
 
   const descriptiveAlias = aliasParts
     .slice()
@@ -1154,6 +1162,30 @@ function exactKnownCity(text: string, parsed: ParsedTraining): string {
   });
 
   return found?.canonical || "";
+}
+
+
+function extractSizeOrVariant(text: string): string {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw || !n) return "";
+
+  const match = raw.match(
+    /\b(?:calce|calse|talle|talla|numero|número|nro|medida)\s*[:#-]?\s*(\d{1,3}(?:[.,]\d+)?)\b/i
+  );
+
+  if (!match?.[1]) return "";
+  return `Calce/talle solicitado: ${clean(match[1])}`;
+}
+
+function isOnlyPurchaseWithSize(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /\b(calce|calse|talle|talla|numero|número|nro|medida)\s*\d{1,3}\b/.test(n) &&
+    !/\b(calle|avda|avenida|ruta|km|barrio|casa|frente|esquina|manzana|mz|lote|edificio|piso|ubicacion|ubicación|direccion|dirección)\b/.test(n)
+  );
 }
 
 function isClearlyNotCityMessage(text: string): boolean {
@@ -2035,6 +2067,10 @@ function stripPhoneFromAddress(value: string, phone?: string): string {
 }
 
 function extractAddress(text: string, detectedCity: string, phone: string, name: string) {
+  if (isOnlyPurchaseWithSize(text)) {
+    return "";
+  }
+
   const raw = clean(text);
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
   if (/^\d+$/.test(raw)) return "";
@@ -2077,7 +2113,9 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
       hasAddressSignal &&
       remainder.length >= 6 &&
       !isQuestionLikeMessage(remainder) &&
-      !isPoliteClosingOrAcknowledgement(remainder)
+      !isPoliteClosingOrAcknowledgement(remainder) &&
+      !isOnlyPurchaseWithSize(remainder) &&
+      !isBuyIntent(remainder)
     ) {
       return remainder;
     }
@@ -2206,6 +2244,11 @@ function buildDeliveryTimingQuestionResponse(text: string, order: OrderData): st
 }
 
 function extractOrderObservation(text: string): Partial<OrderData> {
+  const sizeVariant = extractSizeOrVariant(text);
+  if (sizeVariant) {
+    return { observation: sizeVariant };
+  }
+
   const raw = clean(text);
   const n = normalize(raw);
   if (!raw || !n) return {};
@@ -4262,6 +4305,10 @@ REGLAS DURAS:
 - PROHIBIDO preguntar "¿Está todo correcto?", "¿Confirmamos?", "¿Querés confirmar?" o cualquier reconfirmación.
 - Cuando estén producto, cantidad, ciudad, nombre, dirección y teléfono, el backend guarda la venta y responde directamente con el formato fijo ✅ PEDIDO CONFIRMADO.
 - PROHIBIDO redactar un cierre libre. El único cierre válido es el generado por finalConfirmationMessage().
+- Frases como "quiero en calce 42", "talle 40" o "número 39" son VARIANTES, nunca direcciones.
+- Guardá el talle/calce en observación y seguí pidiendo una dirección exacta real.
+- Nunca uses una frase publicitaria como "Usalas con" como nombre de producto.
+
 - En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
 `.trim();
 }
@@ -5474,6 +5521,13 @@ export default async function handler(req: any, res: any) {
           };
         }
       }
+    }
+
+    if (isGenericProductLabel(orderData.product) || /^(usalas con|usala con|usalo con)$/i.test(normalize(orderData.product))) {
+      const recoveredProduct =
+        getProductInfo(context?.current_product || "", parsed)?.canonical ||
+        detectProduct(texto, parsed, context?.current_product || "");
+      if (recoveredProduct) orderData.product = recoveredProduct;
     }
 
     const finalState = buildState(orderData, parsed);
