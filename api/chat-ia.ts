@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V79 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V80 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -313,7 +313,7 @@ function isGenericProductLabel(value: any): boolean {
   if (!n) return true;
   return (
     isGenericMarketingPhrase(n) ||
-    /^(oferta(?: de)? hoy|precio de hoy|promo(?:cion)?|promocion|producto|articulo|item|stock limitado|quedan pocos|llevate \d+|\d+ por \d+)$/.test(n)
+    /^(oferta(?: de)? hoy|precio de hoy|promo(?:cion)?|promocion|promocion especial|promoción especial|plumero promocion especial|plumero promoción especial|producto|articulo|item|stock limitado|quedan pocos|llevate \d+|\d+ por \d+)$/.test(n)
   );
 }
 
@@ -1176,7 +1176,10 @@ function isClearlyNotCityMessage(text: string): boolean {
   if (/maps\.app|google\.com\/maps/i.test(raw)) return true;
 
   // Frases normales del proceso comercial que no son localidades.
-  if (/^(es|seria|sería|quiero|necesito|prefiero|puede|podria|podría|tengo|uso|calzo|mi talle)\b/.test(n)) return true;
+  if (/^(es|seria|sería|quiero|necesito|prefiero|puede|podria|podría|tengo|uso|calzo|mi talle|hice mi pedido|ya hice mi pedido|ya pedi|ya pedí|realice mi pedido|realicé mi pedido|tengo un pedido|mi pedido)\b/.test(n)) return true;
+
+  // Estados o comentarios del pedido nunca son ciudades.
+  if (/\b(hice mi pedido|ya hice el pedido|ya pedi|ya pedí|mi pedido|pedido realizado|pedido confirmado|quiero cambiar|quiero modificar)\b/.test(n)) return true;
 
   return false;
 }
@@ -1244,6 +1247,19 @@ function canonicalizeStoredCity(value: string, parsed: ParsedTraining): string {
 }
 
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
+  const rawInput = clean(text);
+
+  // V80: localidades con nombres de fecha se conservan como ciudad.
+  // Ej.: "25 de Diciembre, Dpto San Pedro".
+  const localityWithDepartment = rawInput.match(
+    /^\s*(\d{1,2}\s+de\s+[a-záéíóúñ]+)(?:\s*,?\s*(?:dpto\.?|departamento)\s+([a-záéíóúñ\s]+))?\s*$/i
+  );
+  if (localityWithDepartment) {
+    const locality = toTitleCase(clean(localityWithDepartment[1]));
+    const department = clean(localityWithDepartment[2]);
+    return department ? `${locality}, Dpto. ${toTitleCase(department)}` : locality;
+  }
+
   const exactCity = exactKnownCity(text, parsed);
   if (exactCity) return exactCity;
 
@@ -1896,6 +1912,9 @@ function isContaminatedCustomerName(value: string, parsed: ParsedTraining): bool
 }
 
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
+  const normalizedRawNameInput = normalize(text);
+  if (/\b(hice mi pedido|ya hice mi pedido|mi pedido|pedido confirmado|pedido realizado)\b/.test(normalizedRawNameInput)) return "";
+
   const raw = clean(text);
   if (!raw) return "";
   if (isPoliteClosingOrAcknowledgement(raw)) return "";
@@ -4177,15 +4196,51 @@ function buildFullProductCopyResponse(state: ConversationState, _templatePricing
   const copy = clean(state.productInfo?.salesCopy || "");
   if (!copy) return "";
 
-  // V79: el copy queda limpio. El webhook envía una sola consulta de ciudad
-  // como mensaje separado después de la imagen y el anuncio.
+  // V72: el copy comercial se entrega limpio. La pregunta de ciudad se envía
+  // como un segundo mensaje desde webhook para que la conversación sea más natural.
   return copy;
 }
 
 function buildFriendlyCityQuestion() {
-  return "😊 Para confirmar la cobertura y la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
+  return "😊 Para confirmar la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
 }
 
+// ✅ FIX V46: para consultas de precio posteriores al copy, responde solo precios
+// y avanza al siguiente dato pendiente, sin repetir el anuncio completo.
+function buildPriceOnlyResponse(
+  state: ConversationState,
+  templatePricing?: TemplatePricing | null
+) {
+  const productInfo = state.productInfo;
+  if (!productInfo) return "";
+
+  const priceText = productPriceText(
+    productInfo,
+    state.order.locked_offer,
+    templatePricing
+  );
+
+  if (!priceText) return "";
+
+  let continuation = "";
+
+  if (!state.order.city) {
+    continuation = "📍 ¿Para qué ciudad sería el envío? 😊";
+  } else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) {
+    continuation = "¿Cuántas unidades querés llevar? 😊";
+  } else if (!state.order.customer_name) {
+    continuation = "Para continuar, pasame tu nombre y apellido. 😊";
+  } else if (state.coverage !== false && !state.order.address) {
+    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega. 😊";
+  } else if (!state.order.phone) {
+    continuation = "Por último, pasame un número de celular para coordinar la entrega. 😊";
+  }
+
+  return `🔥 Precio de hoy:
+${priceText}${continuation ? `
+
+${continuation}` : ""}`;
+}
 
 function buildFallbackResponse(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
   const o = state.order;
@@ -4790,6 +4845,26 @@ export default async function handler(req: any, res: any) {
           });
         }
 
+        const postConfirmationNorm = normalize(texto);
+        if (/^(hola+|holi|buenas|buen dia|buen día|buenas tardes|buenas noches|saludos)$/.test(postConfirmationNorm)) {
+          return res.json({
+            response: "¡Buenas! 😊 ¿En qué puedo ayudarte?",
+            context: { ...(context || {}), step: "pedido_confirmado", updated_at: new Date().toISOString() },
+            debug: { post_confirmation_greeting: true },
+          });
+        }
+
+        if (/\b(quiero|llevo|dame|agregame|agregáme|cambiar|modificar)\b/.test(postConfirmationNorm) && (extractQuantity(texto) > 0 || /\b2\s*x\s*1\b/.test(postConfirmationNorm))) {
+          const reopenedOrder = emptyOrder(makeOrderId(fromNumber));
+          reopenedOrder.product = oldOrder.product || "";
+          reopenedOrder.quantity = extractQuantity(texto) || (/\b2\s*x\s*1\b/.test(postConfirmationNorm) ? 2 : 0);
+          return res.json({
+            response: `¡Perfecto! 😊 Tomo una nueva solicitud de ${reopenedOrder.quantity} unidades de ${reopenedOrder.product || "este producto"}.\n\n📍 ¿Para qué ciudad sería el envío?`,
+            context: { ...(context || {}), order_data: reopenedOrder, order_id: reopenedOrder.order_id, step: "collecting_city", updated_at: new Date().toISOString() },
+            debug: { reopened_after_confirmation: true, quantity: reopenedOrder.quantity },
+          });
+        }
+
         if (isShortAcknowledgement(texto) || isConversationClosing(texto)) {
           return res.json({
             response: oldOrder.customer_name
@@ -4952,7 +5027,9 @@ export default async function handler(req: any, res: any) {
     const previousCanonicalProduct = getProductInfo(oldOrder.product || "", parsed)?.canonical || "";
     const candidateCanonicalProduct = getProductInfo(product || productToUse || "", parsed)?.canonical || "";
     product = explicitCanonicalProduct || previousCanonicalProduct || candidateCanonicalProduct || "";
-    if (isGenericProductLabel(product)) product = "";
+    if (isGenericProductLabel(product) || /promoci[oó]n especial/i.test(product)) {
+      product = previousCanonicalProduct || explicitCanonicalProduct || "";
+    }
 
     if (
       (recentExplicitProductInterest?.product?.canonical || templatePricing?.product) &&
@@ -5603,6 +5680,7 @@ export default async function handler(req: any, res: any) {
 
       return res.json({
         response: exactCopyResponse,
+        follow_up_response: buildFriendlyCityQuestion(),
         media_urls: exactImages,
         context: {
           ...(context || {}),
@@ -5684,7 +5762,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       !currentMessageIsQuestionBeforeAI
     ) {
       aiResponse = buildFullProductCopyResponse(finalState, null);
-      followUpResponse = "";
+      followUpResponse = !orderData.city ? buildFriendlyCityQuestion() : "";
       templatePricing = null;
     }
 
@@ -5716,6 +5794,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
 
     return res.json({
       response: postProcessResponse(aiResponse),
+      follow_up_response: followUpResponse || undefined,
       media_urls: imagesToSend,
       context: {
         ...(context || {}),
@@ -5746,7 +5825,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
             productFromMessageInitial,
             promoResponse,
             images_sent: imagesToSend?.length || 0,
-            city_question_embedded_in_response: false,
+            follow_up_response: followUpResponse || null,
             producto_por_clave: productoPorClave?.palabra_clave || null,
             copy_already_sent_in_conversation: copyAlreadySentInConversation,
           }
