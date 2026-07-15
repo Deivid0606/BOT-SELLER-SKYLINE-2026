@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V80 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V81 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -78,7 +78,7 @@ type BankData = {
 
 type ParsedTraining = {
   products: ProductItem[];
-  cities: { alias: string; canonical: string }[];
+  cities: { alias: string; canonical: string; covered: boolean }[];
   catalogUrl: string;
   bankData: BankData | null;
   raw: string;
@@ -580,7 +580,7 @@ function autoDetectProductsFromTraining(_training: string, _existing: ProductIte
 
 function parseTraining(training: string): ParsedTraining {
   const products: ProductItem[] = [];
-  const cities: { alias: string; canonical: string }[] = [];
+  const cities: { alias: string; canonical: string; covered: boolean }[] = [];
 
   const catalog =
     training.match(/CATALOGO_PRODUCTOS([\s\S]*?)FIN_CATALOGO_PRODUCTOS/i)?.[1] || "";
@@ -624,73 +624,77 @@ function parseTraining(training: string): ParsedTraining {
   const autoProducts = autoDetectProductsFromTraining(training, products);
   products.push(...autoProducts);
 
-  const addCity = (alias: string, canonical?: string) => {
+  const addCity = (alias: string, canonical?: string, covered = true) => {
     const a = clean(alias);
     const c = clean(canonical || alias);
     if (!a || a.length < 2) return;
-    cities.push({ alias: a, canonical: c });
+    cities.push({ alias: a, canonical: c, covered });
   };
 
-  const citySection =
-    training.match(/LISTA COMPLETA POR CIUDAD([\s\S]*?)⚙️ INSTRUCCIÓN FINAL/i)?.[1] ||
-    training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] ||
-    "";
+  const parseCityBlocks = (section: string, defaultCovered: boolean) => {
+    const cityBlocks = clean(section).split(/📍\s*/g).filter(Boolean);
 
-  const cityBlocks = citySection.split(/📍\s*/g).filter(Boolean);
+    for (const block of cityBlocks) {
+      const lines = block.split("\n").map(clean).filter(Boolean);
+      const canonical = clean(lines[0]);
+      if (!canonical || canonical.length < 2) continue;
 
-  for (const block of cityBlocks) {
-    const lines = block.split("\n").map(clean).filter(Boolean);
-    const canonical = lines[0];
-    const variantsLine = lines.find((l) => l.startsWith("✅"));
+      const blockNorm = normalize(block);
+      const explicitlyNotCovered =
+        /\b(sin cobertura|fuera de cobertura|transportadora|pago anticipado|no contra entrega|sin contra entrega)\b/.test(blockNorm);
+      const covered = explicitlyNotCovered ? false : defaultCovered;
 
-    if (canonical && variantsLine) {
-      addCity(canonical, canonical);
-      variantsLine
-        .replace(/^✅\s*/, "")
-        .split(",")
-        .map(clean)
-        .filter(Boolean)
-        .forEach((v) => addCity(v, canonical));
+      addCity(canonical, canonical, covered);
+
+      const variantsLine = lines.find((line) => /^[✅✔]/.test(line));
+      if (variantsLine) {
+        variantsLine
+          .replace(/^[✅✔]\s*/, "")
+          .split(",")
+          .map(clean)
+          .filter(Boolean)
+          .forEach((variant) => addCity(variant, canonical, covered));
+      }
     }
-  }
+  };
 
-  const simpleCoverage =
-    training.match(/ZONAS CON COBERTURA([\s\S]*?)ZONAS SIN COBERTURA/i)?.[1] || "";
+  // Lista completa personalizada: cada bloque puede declarar explícitamente
+  // "sin cobertura", "transportadora" o "pago anticipado".
+  const completeCitySection =
+    training.match(/LISTA COMPLETA POR CIUDAD([\s\S]*?)⚙️ INSTRUCCIÓN FINAL/i)?.[1] || "";
+  if (completeCitySection) parseCityBlocks(completeCitySection, true);
 
-  simpleCoverage
-    .split("\n")
-    .filter((l) => l.includes(","))
-    .join(",")
-    .replace(/📍/g, "")
-    .split(",")
-    .map(clean)
-    .filter((c) => c.length > 2 && !c.includes("━━"))
-    .forEach((c) => addCity(c, c));
+  // Secciones explícitas del entrenamiento.
+  const coveredSection =
+    training.match(/ZONAS CON COBERTURA([\s\S]*?)(?:ZONAS SIN COBERTURA|⚙️ INSTRUCCIÓN FINAL|$)/i)?.[1] || "";
+  const uncoveredSection =
+    training.match(/ZONAS SIN COBERTURA([\s\S]*?)(?:⚙️ INSTRUCCIÓN FINAL|$)/i)?.[1] || "";
 
-  // V62: ciudades metropolitanas críticas como respaldo.
-  // Evita que una variación en el formato del entrenamiento deje a Asunción
-  // fuera de parsed.cities y active transportadora por error.
-  const fallbackCoveredCities: Array<[string, string]> = [
-    ["Asunción", "Asunción"],
-    ["Asuncion", "Asunción"],
-    ["Asu", "Asunción"],
-    ["Fernando de la Mora", "Fernando de la Mora"],
-    ["Fdo de la Mora", "Fernando de la Mora"],
-    ["Fndo de la Mora", "Fernando de la Mora"],
-    ["San Lorenzo", "San Lorenzo"],
-    ["Luque", "Luque"],
-    ["Lambaré", "Lambaré"],
-    ["Lambare", "Lambaré"],
-    ["Mariano Roque Alonso", "Mariano Roque Alonso"],
-    ["MRA", "Mariano Roque Alonso"],
-  ];
+  parseCityBlocks(coveredSection, true);
+  parseCityBlocks(uncoveredSection, false);
 
-  for (const [alias, canonical] of fallbackCoveredCities) addCity(alias, canonical);
+  const parseSimpleCityList = (section: string, covered: boolean) => {
+    clean(section)
+      .split(/\r?\n|,/g)
+      .map((line) => clean(line.replace(/^[📍✅✔❌🚚💳\-•]+\s*/, "")))
+      .filter((line) => {
+        const n = normalize(line);
+        if (!line || line.length < 3 || line.length > 80) return false;
+        if (/\b(pago|transportadora|contra entrega|cobertura|envio|envío|delivery|anticipado)\b/.test(n)) return false;
+        return /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(line);
+      })
+      .forEach((city) => addCity(city, city, covered));
+  };
 
-  const cityMap = new Map<string, { alias: string; canonical: string }>();
+  parseSimpleCityList(coveredSection, true);
+  parseSimpleCityList(uncoveredSection, false);
+
+  const cityMap = new Map<string, { alias: string; canonical: string; covered: boolean }>();
   for (const c of cities) {
     const key = normalize(c.alias);
-    if (key) cityMap.set(key, c);
+    if (!key) continue;
+    const existing = cityMap.get(key);
+    if (!existing || c.covered === false) cityMap.set(key, c);
   }
 
   return {
@@ -1158,7 +1162,7 @@ function isClearlyNotCityMessage(text: string): boolean {
   if (!n) return true;
 
   // Confirmaciones, negaciones y respuestas conversacionales nunca son ciudades.
-  if (/^(si|sii|siii|sip|si asi es|sii asi es|siii asi es|asi es|correcto|exacto|esa es|es esa|ok|dale|listo|no|nop|gracias|perfecto)$/i.test(n)) return true;
+  if (/^(si|sii|siii|sip|si asi es|sii asi es|siii asi es|asi es|correcto|exacto|esa es|es esa|ok|ok gracias|dale|listo|no|nop|gracias|muchas gracias|mil gracias|perfecto|esta bien|está bien)$/i.test(n)) return true;
 
   // Consultas comerciales o sobre el origen nunca deben pasar al detector de ciudad.
   if (/\b(cuentan con delivery|tienen delivery|hay delivery|hacen envios|hacen envio|realizan delivery|de donde traen|de donde viene|de donde es|ustedes de donde|donde son ustedes)\b/.test(n)) return true;
@@ -1217,162 +1221,62 @@ function canonicalizeStoredCity(value: string, parsed: ParsedTraining): string {
   const n = normalize(raw);
   if (!raw || !n) return "";
 
-  // Primero corrige valores contaminados guardados en contexto, por ejemplo:
-  // "Asuncion Roberto Lpetti El" -> "Asunción".
-  const hardKnownCities: Array<[RegExp, string]> = [
-    [/\b(asuncion|asu)\b/i, "Asunción"],
-    [/\b(fernando de la mora|fdo de la mora|fndo de la mora|fdo dela mora|fndo dela mora)\b/i, "Fernando de la Mora"],
-    [/\bsan lorenzo\b/i, "San Lorenzo"],
-    [/\bluque\b/i, "Luque"],
-    [/\b(lambare)\b/i, "Lambaré"],
-    [/\b(mariano roque alonso|mra)\b/i, "Mariano Roque Alonso"],
-  ];
-
-  for (const [pattern, canonical] of hardKnownCities) {
-    if (pattern.test(n)) return canonical;
-  }
-
   const ordered = [...(parsed.cities || [])].sort(
     (a, b) => Math.max(normalize(b.alias).length, normalize(b.canonical).length) - Math.max(normalize(a.alias).length, normalize(a.canonical).length)
   );
 
   for (const city of ordered) {
-    for (const alias of Array.from(new Set([city.alias, city.canonical].map(normalize).filter(Boolean)))) {
-      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const names = Array.from(new Set([city.alias, city.canonical].map(normalize).filter(Boolean)));
+    for (const name of names) {
+      if (n === name) return city.canonical;
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       if (new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(n)) return city.canonical;
     }
   }
 
-  return raw;
+  // Un valor viejo o contaminado que no existe en el entrenamiento se elimina.
+  return "";
 }
 
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
-  const rawInput = clean(text);
+  const raw = clean(text);
+  if (!raw) return canonicalizeStoredCity(prev || "", parsed);
 
-  // V80: localidades con nombres de fecha se conservan como ciudad.
-  // Ej.: "25 de Diciembre, Dpto San Pedro".
-  const localityWithDepartment = rawInput.match(
-    /^\s*(\d{1,2}\s+de\s+[a-záéíóúñ]+)(?:\s*,?\s*(?:dpto\.?|departamento)\s+([a-záéíóúñ\s]+))?\s*$/i
-  );
-  if (localityWithDepartment) {
-    const locality = toTitleCase(clean(localityWithDepartment[1]));
-    const department = clean(localityWithDepartment[2]);
-    return department ? `${locality}, Dpto. ${toTitleCase(department)}` : locality;
+  if (isClearlyNotCityMessage(raw) || detectProductsMentioned(raw, parsed).length > 0) {
+    return canonicalizeStoredCity(prev || "", parsed);
   }
 
-  const exactCity = exactKnownCity(text, parsed);
+  const exactCity = exactKnownCity(raw, parsed);
   if (exactCity) return exactCity;
 
-  const explicitKnownCity = extractExplicitKnownCityFromSentence(text, parsed);
+  const explicitKnownCity = extractExplicitKnownCityFromSentence(raw, parsed);
   if (explicitKnownCity) return explicitKnownCity;
 
-  // V56: preguntas, cantidades, direcciones, talles y respuestas como “sí”
-  // nunca pueden convertirse en una localidad inferida.
-  if (isClearlyNotCityMessage(text)) return clean(prev || "");
+  const statement = extractCityStatement(raw);
+  if (statement) {
+    const exactStatement = exactKnownCity(statement, parsed);
+    if (exactStatement) return exactStatement;
 
-  // V53: un mensaje que menciona un producto nunca puede convertirse en ciudad.
-  // Ej.: "el plumero y el pela papa" no debe coincidir de forma difusa con
-  // "Colonia Yguazú" ni con ninguna otra localidad del entrenamiento.
-  if (detectProductsMentioned(text, parsed).length > 0) {
-    return clean(prev || "");
+    const configuredInsideStatement = extractExplicitKnownCityFromSentence(statement, parsed);
+    if (configuredInsideStatement) return configuredInsideStatement;
   }
 
-  const explicitCityStatement = extractCityStatement(text);
-  if (isQuestionLikeMessage(text) && !explicitCityStatement) {
-    return clean(prev || "");
-  }
-
-  const rawMsg = normalize(text);
-  const statementCity = explicitCityStatement;
-  const msg = normalize(statementCity || text);
-
-  if (!msg && !rawMsg) return clean(prev || "");
-
-  let best = "";
-  let bestScore = 0;
-  const msgWords = msg.split(/\s+/).filter(Boolean);
-  const rawWords = rawMsg.split(/\s+/).filter(Boolean);
-
-  for (const c of parsed.cities) {
-    const a = normalize(c.alias);
-    const cn = normalize(c.canonical);
-    if (!a || a.length < 2) continue;
-
-    let score = 0;
-
-    if (msg === a || msg === cn) score += 120;
-    else if (rawMsg === a || rawMsg === cn) score += 115;
-
-    if (msg.includes(a)) score += 95;
-    if (rawMsg.includes(a)) score += 90;
-    if (cn && msg.includes(cn)) score += 95;
-    if (cn && rawMsg.includes(cn)) score += 90;
-
-    if (a.includes(msg) && msg.length >= 3) score += 70;
-    if (cn && cn.includes(msg) && msg.length >= 3) score += 70;
-
-    const aliasWords = a.split(/\s+/).filter((w) => w.length >= 4);
-    const canonicalWords = cn.split(/\s+/).filter((w) => w.length >= 4);
-    const wordsToCheck = Array.from(new Set([...aliasWords, ...canonicalWords]));
-
-    if (wordsToCheck.length >= 2) {
-      const matchedMsg = wordsToCheck.filter((w) =>
-        msgWords.some((mw) => mw === w || (mw.length >= 4 && w.length >= 4 && (mw.startsWith(w) || w.startsWith(mw))))
-      );
-
-      const matchedRaw = wordsToCheck.filter((w) =>
-        rawWords.some((mw) => mw === w || (mw.length >= 4 && w.length >= 4 && (mw.startsWith(w) || w.startsWith(mw))))
-      );
-
-      const matched = matchedMsg.length >= matchedRaw.length ? matchedMsg : matchedRaw;
-
-      if (matched.length >= Math.ceil(wordsToCheck.length * 0.65)) {
-        score += 65 + matched.length * 8;
-      }
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      best = c.canonical;
-    }
-  }
-
-  // V70: una coincidencia difusa débil nunca puede reemplazar una ciudad completa.
-  // Ej.: "Santa Rosa del Aguaray" no debe convertirse en "San Estanislao"
-  // solo porque "santa" comienza con "san".
-  if (bestScore >= 85) return best;
-
-  // Si el cliente escribió una localidad plausible que no figura en la lista,
-  // conservamos literalmente esa ciudad. Luego hasCoverage() devolverá false
-  // y el flujo informará transportadora + pago anticipado.
-  if (statementCity && isPlausibleBareCityCandidate(statementCity)) return toTitleCase(statementCity);
-
-  return clean(prev || "");
+  // V81: no existe inferencia difusa ni aceptación de texto libre.
+  // Si no está en el entrenamiento, no es ciudad.
+  return canonicalizeStoredCity(prev || "", parsed);
 }
 
 function hasCoverage(city: string, parsed: ParsedTraining) {
   const c = normalize(city);
   if (!c) return false;
 
-  const hardCovered = new Set([
-    "asuncion",
-    "fernando de la mora",
-    "san lorenzo",
-    "luque",
-    "lambare",
-    "mariano roque alonso",
-  ]);
-  if (hardCovered.has(c)) return true;
-
-  // La cobertura debe depender de una coincidencia EXACTA con una ciudad o
-  // alias configurado. Las coincidencias parciales generaban falsos positivos:
-  // por ejemplo, una localidad no habilitada podía coincidir por una sola
-  // palabra con otra zona del entrenamiento.
-  return parsed.cities.some((x) => {
-    const a = normalize(x.alias);
-    const cn = normalize(x.canonical);
-    return c === a || c === cn;
+  const configured = parsed.cities.find((item) => {
+    const alias = normalize(item.alias);
+    const canonical = normalize(item.canonical);
+    return c === alias || c === canonical;
   });
+
+  return configured ? configured.covered !== false : false;
 }
 
 function isTemporalDeliveryExpression(text: string): boolean {
@@ -5142,13 +5046,12 @@ export default async function handler(req: any, res: any) {
     const exactCityFromMessage = exactKnownCity(texto, parsed);
     const explicitDifferentCity = Boolean(
       cityStatement &&
-      normalize(cityStatement) !== normalize(oldOrder.city || "") &&
-      isPlausibleBareCityCandidate(cityStatement)
+      exactKnownCity(cityStatement, parsed) &&
+      normalize(exactKnownCity(cityStatement, parsed)) !== normalize(oldOrder.city || "")
     );
     const exactDifferentCity = Boolean(
       exactCityFromMessage &&
-      normalize(exactCityFromMessage) !== normalize(oldOrder.city || "") &&
-      isPlausibleBareCityCandidate(texto)
+      normalize(exactCityFromMessage) !== normalize(oldOrder.city || "")
     );
 
     // V56: una vez confirmada la ciudad, se conserva en todos los pasos.
@@ -5163,12 +5066,7 @@ export default async function handler(req: any, res: any) {
           ? canonicalizeStoredCity(cityStatement, parsed)
           : exactDifferentCity
             ? exactCityFromMessage
-            : detectedCityRaw ||
-            (cityStatement && isPlausibleBareCityCandidate(cityStatement)
-              ? toTitleCase(cityStatement)
-              : isCityStep && isPlausibleBareCityCandidate(texto)
-                ? clean(texto)
-                : "");
+            : detectedCityRaw;
 
     const pendingCityConfirmation = clean(context?.pending_city_confirmation || "");
     let cityConfirmedNow = "";
@@ -5226,6 +5124,21 @@ export default async function handler(req: any, res: any) {
           pending_city_confirmation: null,
           updated_at: new Date().toISOString(),
         },
+      });
+    }
+
+    if (isCityStep && !effectiveDetectedCity && !isQuestionLikeMessage(texto) && !isShortAcknowledgement(texto)) {
+      return res.json({
+        response: "😊 No pude identificar esa ciudad dentro de las localidades configuradas. ¿Me indicás nuevamente de qué ciudad sos? 📍",
+        context: {
+          ...(context || {}),
+          pending_city_confirmation: null,
+          order_data: oldOrder,
+          order_id: oldOrder.order_id || null,
+          step: "collecting_city",
+          updated_at: new Date().toISOString(),
+        },
+        debug: { rejected_unconfigured_city: true, received_text: texto },
       });
     }
 
