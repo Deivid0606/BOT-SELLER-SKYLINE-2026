@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V84 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V85 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -3599,69 +3599,45 @@ async function safeUpsertOrder(
   order: OrderData,
   parsed: ParsedTraining,
   confirm = false
-) {
-  if (isGenericProductLabel(order.product)) return null;
-  const canonicalProduct = getProductInfo(order.product, parsed)?.canonical || "";
-  if (!canonicalProduct) return null;
-  order.product = canonicalProduct;
+): Promise<string | null> {
+  if (!userId || !from || isGenericProductLabel(order.product)) return null;
 
+  const canonicalProduct = getProductInfo(order.product, parsed)?.canonical || clean(order.product);
+  if (!canonicalProduct || isGenericProductLabel(canonicalProduct)) return null;
+
+  order.product = canonicalProduct;
   if (!order.phone) order.phone = senderPhoneFallback(from);
 
   const state = buildState(order, parsed);
-  // V84: si el backend ya decidió cerrar la venta, el registro debe quedar
-  // confirmado sin depender del paso interno en el que llegaron los datos.
   const status = confirm
     ? "confirmed"
     : state.step === "confirm_order"
       ? "confirm_pending"
       : state.step;
 
-  const orderId = clean(order.order_id);
   const payload: any = {
     user_id: userId,
-    order_id: orderId || null,
     from_number: from,
     phone: order.phone || from,
     product: order.product,
-    producto: order.product,
     customer_name: order.customer_name || null,
     city: order.city || null,
-    ciudad: order.city || null,
     address: order.address || null,
     quantity: order.quantity || 1,
-    total_amount: state.total || null,
+    total_amount: String(state.total || 0),
     items: [{
       product: order.product,
       quantity: order.quantity || 1,
       amount: state.total || 0,
     }],
     status,
+    detected_by_ai: true,
     observation: order.observation || null,
-    observacion: order.observation || null,
     preferred_delivery_date: order.preferred_delivery_date || null,
     preferred_delivery_time: order.preferred_delivery_time || null,
     payment_note: order.payment_note || null,
-    fecha: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    metodo_pago: state.coverage === false ? "pago_anticipado" : "contra_entrega",
   };
-
-  if (order.locked_offer) payload.locked_offer = order.locked_offer;
-  if (order.payment_proof_received) payload.payment_proof_received = true;
-
-  if (orderId) {
-    const { data: existingByOrderId } = await supabase
-      .from("orders")
-      .select("id")
-      .eq("user_id", userId)
-      .eq("order_id", orderId)
-      .limit(1)
-      .maybeSingle();
-
-    if (existingByOrderId?.id) {
-      await supabase.from("orders").update(payload).eq("id", existingByOrderId.id);
-      return existingByOrderId.id;
-    }
-  }
 
   const IN_PROGRESS_STATUSES = [
     "draft",
@@ -3675,9 +3651,9 @@ async function safeUpsertOrder(
     "confirm_pending",
   ];
 
-  const { data: inProgress } = await supabase
+  const { data: inProgress, error: findError } = await supabase
     .from("orders")
-    .select("id, order_id")
+    .select("id")
     .eq("user_id", userId)
     .eq("from_number", from)
     .in("status", IN_PROGRESS_STATUSES)
@@ -3685,32 +3661,47 @@ async function safeUpsertOrder(
     .limit(1)
     .maybeSingle();
 
+  if (findError) console.error("❌ Error buscando pedido activo:", findError);
+
   if (inProgress?.id) {
-    const updatePayload = {
-      ...payload,
-      order_id: orderId || inProgress.order_id || makeOrderId(from),
-    };
-    await supabase.from("orders").update(updatePayload).eq("id", inProgress.id);
-    return inProgress.id;
+    const { data: updated, error: updateError } = await supabase
+      .from("orders")
+      .update(payload)
+      .eq("id", inProgress.id)
+      .eq("user_id", userId)
+      .select("id, status")
+      .single();
+
+    if (!updateError && updated?.id) {
+      const updatedStatus = normalize(updated.status);
+      if (confirm && updatedStatus !== "confirmed" && updatedStatus !== "confirmado") {
+        console.error("❌ Pedido actualizado sin estado confirmado:", updated);
+        return null;
+      }
+      return updated.id;
+    }
+
+    console.error("❌ Error actualizando pedido:", updateError);
   }
 
-  const insertPayload = {
-    ...payload,
-    order_id: orderId || makeOrderId(from),
-  };
-
-  const { data, error } = await supabase
+  const { data: inserted, error: insertError } = await supabase
     .from("orders")
-    .upsert(insertPayload, { onConflict: "user_id,order_id" })
-    .select("id")
+    .insert(payload)
+    .select("id, status")
     .single();
 
-  if (error) {
-    console.error("❌ orders upsert:", error);
+  if (insertError || !inserted?.id) {
+    console.error("❌ Error insertando pedido:", insertError);
     return null;
   }
 
-  return data?.id || null;
+  const insertedStatus = normalize(inserted.status);
+  if (confirm && insertedStatus !== "confirmed" && insertedStatus !== "confirmado") {
+    console.error("❌ Pedido insertado sin estado confirmado:", inserted);
+    return null;
+  }
+
+  return inserted.id;
 }
 
 async function fetchMediaAsBase64(url: string) {
@@ -5218,7 +5209,7 @@ export default async function handler(req: any, res: any) {
 
     if (isCityStep && !effectiveDetectedCity && messageIsPurchaseOrQuantity) {
       return res.json({
-        response: buildFriendlyCityQuestion(),
+        response: "¡Perfecto! 😊",
         context: {
           ...(context || {}),
           pending_city_confirmation: null,
