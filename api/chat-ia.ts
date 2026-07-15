@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V81 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V82 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -1180,7 +1180,7 @@ function isClearlyNotCityMessage(text: string): boolean {
   if (/maps\.app|google\.com\/maps/i.test(raw)) return true;
 
   // Frases normales del proceso comercial que no son localidades.
-  if (/^(es|seria|sería|quiero|necesito|prefiero|puede|podria|podría|tengo|uso|calzo|mi talle|hice mi pedido|ya hice mi pedido|ya pedi|ya pedí|realice mi pedido|realicé mi pedido|tengo un pedido|mi pedido)\b/.test(n)) return true;
+  if (/^(es|seria|sería|quiero|quiero uno|quiero una|quiero dos|quiero 1|quiero 2|necesito|prefiero|puede|podria|podría|tengo|uso|calzo|mi talle|hice mi pedido|ya hice mi pedido|ya pedi|ya pedí|realice mi pedido|realicé mi pedido|tengo un pedido|mi pedido)\b/.test(n)) return true;
 
   // Estados o comentarios del pedido nunca son ciudades.
   if (/\b(hice mi pedido|ya hice el pedido|ya pedi|ya pedí|mi pedido|pedido realizado|pedido confirmado|quiero cambiar|quiero modificar)\b/.test(n)) return true;
@@ -1240,35 +1240,75 @@ function canonicalizeStoredCity(value: string, parsed: ParsedTraining): string {
 
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const raw = clean(text);
-  if (!raw) return canonicalizeStoredCity(prev || "", parsed);
+  const previous = canonicalizeStoredCity(prev || "", parsed);
 
-  if (isClearlyNotCityMessage(raw) || detectProductsMentioned(raw, parsed).length > 0) {
-    return canonicalizeStoredCity(prev || "", parsed);
-  }
+  if (!raw) return previous;
 
+  // PRIMERO: una coincidencia exacta del entrenamiento siempre gana,
+  // incluso si contiene números, por ejemplo "Campo 9".
   const exactCity = exactKnownCity(raw, parsed);
   if (exactCity) return exactCity;
 
   const explicitKnownCity = extractExplicitKnownCityFromSentence(raw, parsed);
   if (explicitKnownCity) return explicitKnownCity;
 
-  const statement = extractCityStatement(raw);
-  if (statement) {
-    const exactStatement = exactKnownCity(statement, parsed);
-    if (exactStatement) return exactStatement;
-
-    const configuredInsideStatement = extractExplicitKnownCityFromSentence(statement, parsed);
-    if (configuredInsideStatement) return configuredInsideStatement;
+  // Nunca convertir respuestas comerciales, cantidades, agradecimientos,
+  // nombres, preguntas o productos en una ciudad.
+  if (
+    isClearlyNotCityMessage(raw) ||
+    isQuestionLikeMessage(raw) ||
+    detectProductsMentioned(raw, parsed).length > 0 ||
+    isBuyIntent(raw) ||
+    isGenericBuyReply(raw)
+  ) {
+    return previous;
   }
 
-  // V81: no existe inferencia difusa ni aceptación de texto libre.
-  // Si no está en el entrenamiento, no es ciudad.
-  return canonicalizeStoredCity(prev || "", parsed);
+  const statement = extractCityStatement(raw);
+  const candidate = clean(statement || raw);
+
+  if (!candidate) return previous;
+
+  const exactStatement = exactKnownCity(candidate, parsed);
+  if (exactStatement) return exactStatement;
+
+  const configuredInsideStatement = extractExplicitKnownCityFromSentence(candidate, parsed);
+  if (configuredInsideStatement) return configuredInsideStatement;
+
+  const normalizedCandidate = normalize(candidate);
+  const words = normalizedCandidate.split(/\s+/).filter(Boolean);
+
+  // Una localidad fuera de cobertura puede no estar en el entrenamiento.
+  // Se acepta únicamente cuando tiene forma clara de localidad.
+  // Admite ejemplos como "Campo 9", "Santa Rosa del Aguaray"
+  // o "25 de Diciembre".
+  const validLocalityShape =
+    words.length >= 1 &&
+    words.length <= 6 &&
+    candidate.length >= 3 &&
+    candidate.length <= 70 &&
+    /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(candidate) &&
+    /[a-zA-ZÁÉÍÓÚáéíóúÑñ]/.test(candidate);
+
+  if (!validLocalityShape) return previous;
+
+  // Bloqueo final de expresiones que tienen forma de texto pero no de localidad.
+  if (
+    /^(quiero|quiero uno|quiero una|quiero dos|quiero 1|quiero 2|uno|una|dos|tres|cuatro|cinco|2x1|2 x 1)$/i.test(normalizedCandidate) ||
+    /\b(gracias|pedido|precio|producto|promo|promocion|promoción|unidad|unidades|comprar|compro|quiero|necesito|delivery|envio|envío)\b/.test(normalizedCandidate)
+  ) {
+    return previous;
+  }
+
+  return toTitleCase(candidate);
 }
 
 function hasCoverage(city: string, parsed: ParsedTraining) {
   const c = normalize(city);
   if (!c) return false;
+
+  // V82: solamente las ciudades cargadas en el entrenamiento tienen
+  // contra-entrega. Toda localidad válida no configurada usa pago anticipado.
 
   const configured = parsed.cities.find((item) => {
     const alias = normalize(item.alias);
@@ -4106,7 +4146,7 @@ function buildFullProductCopyResponse(state: ConversationState, _templatePricing
 }
 
 function buildFriendlyCityQuestion() {
-  return "😊 Para confirmar la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
+  return "😊 Para confirmar la cobertura y la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
 }
 
 // ✅ FIX V46: para consultas de precio posteriores al copy, responde solo precios
@@ -5127,9 +5167,46 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    if (isCityStep && !effectiveDetectedCity && !isQuestionLikeMessage(texto) && !isShortAcknowledgement(texto)) {
+    // V82: "quiero", "quiero 1", "2x1" y respuestas de cantidad
+    // no son ciudades. Si todavía falta ciudad, simplemente se vuelve a pedir.
+    const messageIsPurchaseOrQuantity =
+      isBuyIntent(texto) ||
+      isGenericBuyReply(texto) ||
+      explicitQty > 0 ||
+      /\b\d+\s*x\s*1\b/i.test(normalize(texto));
+
+    if (isCityStep && !effectiveDetectedCity && messageIsPurchaseOrQuantity) {
       return res.json({
-        response: "😊 No pude identificar esa ciudad dentro de las localidades configuradas. ¿Me indicás nuevamente de qué ciudad sos? 📍",
+        response: buildFriendlyCityQuestion(),
+        context: {
+          ...(context || {}),
+          pending_city_confirmation: null,
+          order_data: {
+            ...oldOrder,
+            quantity: explicitQty > 0 ? explicitQty : oldOrder.quantity,
+          },
+          order_id: oldOrder.order_id || null,
+          step: "collecting_city",
+          updated_at: new Date().toISOString(),
+        },
+        debug: {
+          purchase_reply_while_waiting_city: true,
+          received_text: texto,
+          quantity_detected: explicitQty || null,
+        },
+      });
+    }
+
+    // Un texto que claramente no es ciudad recibe nuevamente la pregunta,
+    // pero nunca se marca como "fuera de cobertura".
+    if (
+      isCityStep &&
+      !effectiveDetectedCity &&
+      !isQuestionLikeMessage(texto) &&
+      !isShortAcknowledgement(texto)
+    ) {
+      return res.json({
+        response: buildFriendlyCityQuestion(),
         context: {
           ...(context || {}),
           pending_city_confirmation: null,
@@ -5138,7 +5215,7 @@ export default async function handler(req: any, res: any) {
           step: "collecting_city",
           updated_at: new Date().toISOString(),
         },
-        debug: { rejected_unconfigured_city: true, received_text: texto },
+        debug: { rejected_non_city_text: true, received_text: texto },
       });
     }
 
