@@ -1,7 +1,7 @@
 // api/webhook.js — V75: CIUDAD OBLIGATORIA TRAS COPY + SIN IMAGEN REPETIDA
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + ✅ V73: imagen, copy y consulta amable de ciudad se envían como mensajes independientes
-// + ✅ V86: pregunta ciudad única y cierre sincronizado con orders
+// + ✅ V87: pregunta ciudad inmediata y teléfono automático
 // + Descarga de audios/imágenes/videos a Supabase Storage (bucket: comprobantes)
 // + FIX: disparador secundario respeta el contexto del último producto
 // + ✅ AHORA RETORNA RESPUESTAS PARA WAHA QR
@@ -38,7 +38,7 @@ const CITY_QUESTION_FRIENDLY =
 
 const cityQuestionLocks = new Map();
 
-function acquireCityQuestionLock(userId, from, ttlMs = 15000) {
+function acquireCityQuestionLock(userId, from, ttlMs = 2500) {
   const key = `${userId}:${from}`;
   const now = Date.now();
   const expiresAt = Number(cityQuestionLocks.get(key) || 0);
