@@ -1,4 +1,4 @@
-// api/webhook.js — V94: chat-ia lee primero entrenamiento_completo para zonas y bancos
+// api/webhook.js — V95: precio real, contexto por historial y nombre protegido
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + ✅ V73: imagen, copy y consulta amable de ciudad se envían como mensajes independientes
 // + ✅ V93: CDE normalizado y objeciones de pago sin errores
