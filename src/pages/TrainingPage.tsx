@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { 
   GraduationCap, Plus, Trash2, BookOpen, Loader2, RefreshCw, 
-  ImagePlus, X, Copy, Sparkles, Zap, Package as PackageIcon, Key
+  ImagePlus, X, Copy, Sparkles, Zap, Package as PackageIcon, Key, CreditCard, MapPin, Building2, UserRound, Hash
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -14,6 +14,154 @@ interface ProductItem {
   copy: string;
   palabra_clave: string;
   alias: string[];
+}
+
+interface PaymentData {
+  titular: string;
+  cedula: string;
+  banco: string;
+  numero_cuenta: string;
+  alias: string;
+}
+
+interface CoverageCity {
+  id: string;
+  canonical: string;
+  aliases: string[];
+}
+
+const EMPTY_PAYMENT_DATA: PaymentData = {
+  titular: "",
+  cedula: "",
+  banco: "",
+  numero_cuenta: "",
+  alias: "",
+};
+
+const normalizeLine = (value: string) => value.replace(/\r/g, "").trim();
+
+function stripStructuredSections(training: string): string {
+  return training
+    .replace(
+      /(?:^|\n)\s*DATOS_BANCARIOS\s*:?\s*\n[\s\S]*?(?=\n\s*(?:FIN_DATOS_BANCARIOS|ZONAS CON COBERTURA|ZONAS SIN COBERTURA|⚙️ INSTRUCCIÓN FINAL|$))/i,
+      "\n"
+    )
+    .replace(/(?:^|\n)\s*FIN_DATOS_BANCARIOS\s*:?\s*/gi, "\n")
+    .replace(
+      /(?:^|\n)\s*ZONAS CON COBERTURA\s*:?\s*\n[\s\S]*?(?=\n\s*(?:ZONAS SIN COBERTURA|⚙️ INSTRUCCIÓN FINAL|$))/i,
+      "\n"
+    )
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function buildPaymentSection(payment: PaymentData): string {
+  const lines = [
+    payment.titular && `Titular: ${normalizeLine(payment.titular)}`,
+    payment.cedula && `CI: ${normalizeLine(payment.cedula)}`,
+    payment.banco && `Banco: ${normalizeLine(payment.banco)}`,
+    payment.numero_cuenta && `Número de cuenta: ${normalizeLine(payment.numero_cuenta)}`,
+    payment.alias && `Alias: ${normalizeLine(payment.alias)}`,
+  ].filter(Boolean);
+
+  if (!lines.length) return "";
+
+  return `DATOS_BANCARIOS
+${lines.join("\n")}
+FIN_DATOS_BANCARIOS`;
+}
+
+function buildCoverageSection(cities: CoverageCity[]): string {
+  const cleanCities = cities
+    .map((city) => ({
+      canonical: normalizeLine(city.canonical),
+      aliases: Array.from(
+        new Set(city.aliases.map(normalizeLine).filter(Boolean))
+      ),
+    }))
+    .filter((city) => city.canonical);
+
+  if (!cleanCities.length) return "";
+
+  const blocks = cleanCities.map((city) => {
+    const aliases = city.aliases.length
+      ? `\n✅ ${city.aliases.join(", ")}`
+      : "";
+    return `📍 ${city.canonical}${aliases}`;
+  });
+
+  return `ZONAS CON COBERTURA
+
+${blocks.join("\n\n")}`;
+}
+
+function mergeStructuredTraining(
+  baseTraining: string,
+  payment: PaymentData,
+  coverageCities: CoverageCity[]
+): string {
+  const base = stripStructuredSections(baseTraining);
+  const sections = [
+    base,
+    buildPaymentSection(payment),
+    buildCoverageSection(coverageCities),
+  ].filter(Boolean);
+
+  return sections.join("\n\n").trim();
+}
+
+function parsePaymentData(training: string): PaymentData {
+  const block =
+    training.match(
+      /(?:^|\n)\s*DATOS_BANCARIOS\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:FIN_DATOS_BANCARIOS|ZONAS CON COBERTURA|ZONAS SIN COBERTURA|⚙️ INSTRUCCIÓN FINAL|$))/i
+    )?.[1] || "";
+
+  const pick = (regex: RegExp) => normalizeLine(block.match(regex)?.[1] || "");
+
+  return {
+    titular: pick(/^\s*Titular\s*[:\-]\s*(.+)$/im),
+    cedula: pick(/^\s*(?:CI|Cédula|Cedula)\s*[:\-]\s*(.+)$/im),
+    banco: pick(/^\s*Banco\s*[:\-]\s*(.+)$/im),
+    numero_cuenta: pick(
+      /^\s*(?:Número de cuenta|Numero de cuenta|Nro\.? de cuenta|Cuenta)\s*[:\-]\s*(.+)$/im
+    ),
+    alias: pick(/^\s*Alias\s*[:\-]\s*(.+)$/im),
+  };
+}
+
+function parseCoverageCities(training: string): CoverageCity[] {
+  const section =
+    training.match(
+      /(?:^|\n)\s*ZONAS CON COBERTURA\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:ZONAS SIN COBERTURA|⚙️ INSTRUCCIÓN FINAL|$))/i
+    )?.[1] || "";
+
+  if (!section.trim()) return [];
+
+  return section
+    .split(/📍\s*/g)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => {
+      const lines = block
+        .split(/\r?\n/g)
+        .map((line) => normalizeLine(line))
+        .filter(Boolean);
+
+      const canonical = lines[0] || "";
+      const aliasLine = lines.find((line) => /^[✅✔]/.test(line)) || "";
+      const aliases = aliasLine
+        .replace(/^[✅✔]\s*/, "")
+        .split(",")
+        .map(normalizeLine)
+        .filter(Boolean);
+
+      return {
+        id: crypto.randomUUID(),
+        canonical,
+        aliases,
+      };
+    })
+    .filter((city) => city.canonical);
 }
 
 interface TrainingItem {
@@ -56,6 +204,10 @@ export default function TrainingPage() {
   const [entrenamientoCompleto, setEntrenamientoCompleto] = useState("");
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [mostrarCatalogo, setMostrarCatalogo] = useState(false);
+  const [paymentData, setPaymentData] = useState<PaymentData>(EMPTY_PAYMENT_DATA);
+  const [coverageCities, setCoverageCities] = useState<CoverageCity[]>([]);
+  const [mostrarPagos, setMostrarPagos] = useState(true);
+  const [mostrarCobertura, setMostrarCobertura] = useState(true);
   
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -228,6 +380,39 @@ export default function TrainingPage() {
     setProducts(prev => prev.filter(p => p.id !== productId));
   };
 
+
+  const handlePaymentChange = (field: keyof PaymentData, value: string) => {
+    setPaymentData((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const addCoverageCity = () => {
+    setCoverageCities((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        canonical: "",
+        aliases: [],
+      },
+    ]);
+    setMostrarCobertura(true);
+  };
+
+  const updateCoverageCity = (
+    id: string,
+    field: "canonical" | "aliases",
+    value: string | string[]
+  ) => {
+    setCoverageCities((prev) =>
+      prev.map((city) =>
+        city.id === id ? { ...city, [field]: value } : city
+      )
+    );
+  };
+
+  const removeCoverageCity = (id: string) => {
+    setCoverageCities((prev) => prev.filter((city) => city.id !== id));
+  };
+
   const handleSave = async () => {
     if (!user) {
       alert("Debes iniciar sesión");
@@ -239,7 +424,13 @@ export default function TrainingPage() {
       return;
     }
 
-    if (!entrenamientoCompleto.trim()) {
+    const finalTraining = mergeStructuredTraining(
+      entrenamientoCompleto,
+      paymentData,
+      coverageCities
+    );
+
+    if (!finalTraining.trim()) {
       alert("Por favor completa el Entrenamiento");
       return;
     }
@@ -282,10 +473,10 @@ export default function TrainingPage() {
         user_id: user.id,
         intent: intent.trim(),
         examples: examplesArray,
-        response: entrenamientoCompleto.trim(),
+        response: finalTraining,
         image_urls: imageUrls,
         products: normalizedProducts.length > 0 ? normalizedProducts : [],
-        entrenamiento_completo: entrenamientoCompleto.trim(),
+        entrenamiento_completo: finalTraining,
         is_active: true
       };
 
@@ -332,7 +523,10 @@ export default function TrainingPage() {
   const handleEdit = (item: TrainingItem) => {
     setIntent(item.intent);
     setExamples(item.examples.join('\n'));
-    setEntrenamientoCompleto(item.entrenamiento_completo || item.response || "");
+    const storedTraining = item.entrenamiento_completo || item.response || "";
+    setEntrenamientoCompleto(stripStructuredSections(storedTraining));
+    setPaymentData(parsePaymentData(storedTraining));
+    setCoverageCities(parseCoverageCities(storedTraining));
     setProducts((item.products || []).map(normalizeProductItem));
     setMostrarCatalogo(item.products && item.products.length > 0);
     setEditingId(item.id);
@@ -365,6 +559,10 @@ export default function TrainingPage() {
     setEntrenamientoCompleto("");
     setProducts([]);
     setMostrarCatalogo(false);
+    setPaymentData(EMPTY_PAYMENT_DATA);
+    setCoverageCities([]);
+    setMostrarPagos(true);
+    setMostrarCobertura(true);
     setEditingId(null);
   };
 
@@ -436,7 +634,7 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
 ...`}
             />
             <p className="text-[10px] text-muted-foreground mt-1">
-              Copiá y pegá todo el entrenamiento: reglas, respuestas, ciudades, etc.
+              Usá este campo para reglas, comportamiento y respuestas generales. Las ciudades y datos bancarios se cargan abajo.
             </p>
           </div>
 
@@ -583,6 +781,195 @@ Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segund
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+
+
+          {/* Datos de pago estructurados */}
+          <div className="border-t border-border pt-4">
+            <div className="mb-3 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => setMostrarPagos((prev) => !prev)}
+                className="flex items-center gap-2 text-xs font-medium text-foreground"
+              >
+                <CreditCard className="h-4 w-4 text-primary" />
+                💳 Datos de pago
+              </button>
+              <span className="text-[10px] text-muted-foreground">
+                Usados solo para envíos con pago anticipado
+              </span>
+            </div>
+
+            {mostrarPagos && (
+              <div className="grid grid-cols-1 gap-3 rounded-lg border border-border bg-secondary/20 p-3 md:grid-cols-2">
+                <div>
+                  <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <UserRound className="h-3 w-3" />
+                    Titular
+                  </label>
+                  <input
+                    value={paymentData.titular}
+                    onChange={(e) => handlePaymentChange("titular", e.target.value)}
+                    placeholder="Alexis Fabián Jara Amarilla"
+                    className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <Hash className="h-3 w-3" />
+                    Cédula
+                  </label>
+                  <input
+                    value={paymentData.cedula}
+                    onChange={(e) => handlePaymentChange("cedula", e.target.value)}
+                    placeholder="5.496.374"
+                    className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <Building2 className="h-3 w-3" />
+                    Banco
+                  </label>
+                  <input
+                    value={paymentData.banco}
+                    onChange={(e) => handlePaymentChange("banco", e.target.value)}
+                    placeholder="Banco Familiar"
+                    className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <CreditCard className="h-3 w-3" />
+                    Número de cuenta
+                  </label>
+                  <input
+                    value={paymentData.numero_cuenta}
+                    onChange={(e) => handlePaymentChange("numero_cuenta", e.target.value)}
+                    placeholder="123456789"
+                    className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <Key className="h-3 w-3" />
+                    Alias
+                  </label>
+                  <input
+                    value={paymentData.alias}
+                    onChange={(e) => handlePaymentChange("alias", e.target.value)}
+                    placeholder="5496374"
+                    className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Zonas con cobertura estructuradas */}
+          <div className="border-t border-border pt-4">
+            <div className="mb-3 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => setMostrarCobertura((prev) => !prev)}
+                className="flex items-center gap-2 text-xs font-medium text-foreground"
+              >
+                <MapPin className="h-4 w-4 text-primary" />
+                📍 Zonas con contra-entrega
+                {coverageCities.length > 0 && ` (${coverageCities.length})`}
+              </button>
+
+              <button
+                type="button"
+                onClick={addCoverageCity}
+                className="flex items-center gap-1 text-xs text-primary transition-colors hover:text-primary/80"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Añadir ciudad
+              </button>
+            </div>
+
+            {mostrarCobertura && (
+              <div className="space-y-3">
+                <p className="text-[10px] text-muted-foreground">
+                  Cargá únicamente las ciudades con pago contra-entrega. Toda localidad válida que no esté aquí se tratará como envío por transportadora con pago anticipado.
+                </p>
+
+                {coverageCities.length === 0 ? (
+                  <button
+                    type="button"
+                    onClick={addCoverageCity}
+                    className="w-full rounded-lg border border-dashed border-border p-5 text-center text-xs text-muted-foreground transition-colors hover:bg-secondary/30"
+                  >
+                    <MapPin className="mx-auto mb-2 h-7 w-7 opacity-40" />
+                    Agregar primera ciudad con cobertura
+                  </button>
+                ) : (
+                  <div className="max-h-[420px] space-y-3 overflow-y-auto pr-2">
+                    {coverageCities.map((city, index) => (
+                      <div
+                        key={city.id}
+                        className="rounded-lg border border-border bg-secondary/20 p-3"
+                      >
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="text-xs font-medium text-muted-foreground">
+                            Ciudad #{index + 1}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeCoverageCity(city.id)}
+                            className="text-destructive transition-colors hover:text-destructive/80"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                          <div>
+                            <label className="text-[10px] text-muted-foreground">
+                              Nombre oficial
+                            </label>
+                            <input
+                              value={city.canonical}
+                              onChange={(e) =>
+                                updateCoverageCity(city.id, "canonical", e.target.value)
+                              }
+                              placeholder="Ciudad del Este"
+                              className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] text-muted-foreground">
+                              Alias separados por coma
+                            </label>
+                            <input
+                              value={city.aliases.join(", ")}
+                              onChange={(e) =>
+                                updateCoverageCity(
+                                  city.id,
+                                  "aliases",
+                                  e.target.value
+                                    .split(",")
+                                    .map((alias) => alias.trim())
+                                    .filter(Boolean)
+                                )
+                              }
+                              placeholder="CDE, Cdad del Este"
+                              className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
