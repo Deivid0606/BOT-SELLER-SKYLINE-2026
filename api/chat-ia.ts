@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V90 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V91 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -1054,12 +1054,38 @@ function isPlausibleOfferForProduct(offer: OfferItem | null | undefined, product
   return true;
 }
 
+
+function isProductEffectivenessQuestion(text: string): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!n) return false;
+
+  return (
+    /\b(funciona|funcionara|funcionará|sirve|servira|servirá|anda|andara|andará|resulta|resultado|resultados|efectivo|efectiva)\b/.test(n) ||
+    /\b(sera cierto|será cierto|sera verdad|será verdad|de verdad funciona|realmente funciona|realmente sirve|si funciona|si sirve|da resultado|da resultados)\b/.test(n) ||
+    /^(sera|será)\s*,?\s*(anda|funciona|sirve|cierto|verdad)\s*\??$/.test(n) ||
+    /^(anda|funciona|sirve)\s+de\s+verdad\s*\??$/.test(n)
+  );
+}
+
+function buildProductEffectivenessResponse(state: ConversationState): string {
+  const product = clean(state.order.product || state.productInfo?.canonical || "este producto");
+  const cityContinuation = !clean(state.order.city)
+    ? "\n\n😊 Para confirmar la cobertura y la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍"
+    : !state.order.quantity && !state.order.locked_offer?.fixed_quantity
+      ? "\n\n¿Cuántas unidades querés llevar? 😊"
+      : "";
+
+  return `Sí 😊 ${product} está diseñado para cumplir la función indicada en la publicación. Usándolo correctamente, debería darte el resultado explicado en el anuncio.${cityContinuation}`;
+}
+
 function isQuestionLikeMessage(text: string) {
   const raw = clean(text);
   const n = normalize(raw);
   if (!n) return false;
 
   return (
+    isProductEffectivenessQuestion(raw) ||
     /[?¿]/.test(raw) ||
     /\b(?:pero\s+)?(?:de\s+)?d(?:o|oi|ó)nde\s+son(?:\s+ustedes)?\b/.test(n) ||
     /\b(donde estan|donde queda|donde se encuentran|quienes son|como funciona|como se usa|como es|que incluye|que trae|cuanto tarda|cuando llega|tienen garantia|hay garantia|es original|hacen envios|hacen envio|tienen delivery|cuentan con delivery|hay delivery|realizan delivery|envian|aceptan transferencia|como pago|formas de pago|puedo pagar|tienen local|tienen tienda|tienen sucursal|de donde traen|de donde viene|de donde es el producto)\b/.test(n) ||
@@ -1082,6 +1108,10 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
 
   if (isAmbiguousProductRejection(text, state.order.product || "")) {
     return `Entiendo 😊 Solo para confirmar: ¿ya no querés continuar con ${state.order.product}?`;
+  }
+
+  if (isProductEffectivenessQuestion(text)) {
+    return buildProductEffectivenessResponse(state);
   }
 
   if (isDeliveryCostQuestion(text)) {
@@ -1201,6 +1231,9 @@ function isClearlyNotCityMessage(text: string): boolean {
 
   // Preguntas escritas sin signos o con errores frecuentes.
   if (/\b(seria|sería|cuanto|cuánto|cuantos|cuántos|precio|costo|valor|sale|cuesta)\b/.test(n)) return true;
+
+  // Consultas de funcionamiento o resultado nunca son ciudades.
+  if (isProductEffectivenessQuestion(raw)) return true;
 
   // Cantidades, teléfonos, números de casa, talles y calces.
   if (extractQuantity(raw) > 0 || extractPhone(raw)) return true;
@@ -4300,7 +4333,8 @@ REGLAS DURAS:
 - No menciones backend, sistema ni estado interno.
 - No inventes productos, precios, bancos, cuentas, enlaces, ciudades ni tiempos.
 - PROHIBIDO inventar ciudad. Si Ciudad = faltante, preguntá ciudad.
-- Una consulta del cliente (por ejemplo: "¿de dónde son?", "¿cómo funciona?", "¿tiene garantía?") NO es una ciudad ni un dato del pedido.
+- Una consulta del cliente (por ejemplo: "¿de dónde son?", "¿cómo funciona?", "¿tiene garantía?", "será, anda", "¿funciona de verdad?") NO es una ciudad ni un dato del pedido.
+- Expresiones paraguayas o informales como "será anda", "será que funciona", "anda de verdad" o "da resultado" son consultas sobre el producto: respondé la consulta y retomá el dato faltante.
 - Si el cliente hace una consulta durante la compra: respondé primero la consulta usando SOLO el entrenamiento disponible y después retomá exactamente el siguiente dato faltante del ESTADO DEL PEDIDO.
 - Si después de responder la consulta todavía falta ciudad, preguntá ciudad. No menciones transportadora, falta de cobertura ni pago anticipado hasta tener una ciudad real.
 - Si Ciudad ya tiene valor en ESTADO DEL PEDIDO, PROHIBIDO volver a preguntar ciudad.
