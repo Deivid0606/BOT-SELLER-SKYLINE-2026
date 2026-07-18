@@ -1,5 +1,5 @@
-// ORDERS PAGE — DASHBOARD OSCURO CORPORATIVO (v2)
-// Mejoras: vista previa del chat en modal, tarjeta rediseñada
+// ORDERS PAGE — DASHBOARD OSCURO CORPORATIVO (v3)
+// Mejoras: vista previa real desde inbox_messages, tarjeta rediseñada
 // (fecha/hora + precio + qué compró + observación destacada),
 // y botones para marcar Entregado / Cancelado.
 
@@ -93,12 +93,11 @@ type Order = {
 
 type ChatMessage = {
   id: string;
-  from_number: string | null;
-  to_number: string | null;
-  direction: "in" | "out" | string;
-  body: string | null;
+  direction: "in" | "out";
+  body: string;
   created_at: string;
   media_url?: string | null;
+  message_type?: string | null;
 };
 
 /* ============================================================
@@ -300,10 +299,45 @@ function getOrderObservation(order: Order): string {
 
 function formatPhoneNumber(phone: string | null): string {
   if (!phone) return "";
-  let c = phone.replace(/[\s\-.()]/g, "");
+  let c = phone.replace(/[^0-9]/g, "");
   if (c.startsWith("0")) c = c.substring(1);
   if (!c.startsWith("595")) c = "595" + c;
   return c;
+}
+
+function getPhoneVariants(phone: string | null | undefined): string[] {
+  const raw = clean(phone);
+  const digits = raw.replace(/\D/g, "");
+  const international = formatPhoneNumber(raw || null);
+  const local =
+    international.startsWith("595") && international.length > 3
+      ? `0${international.slice(3)}`
+      : digits.startsWith("0")
+        ? digits
+        : digits
+          ? `0${digits}`
+          : "";
+
+  const withoutCountry =
+    international.startsWith("595") ? international.slice(3) : digits.replace(/^0/, "");
+
+  return Array.from(
+    new Set(
+      [
+        raw,
+        digits,
+        international,
+        local,
+        withoutCountry,
+        `${international}@c.us`,
+        `${international}@s.whatsapp.net`,
+        `${digits}@c.us`,
+        `${digits}@s.whatsapp.net`,
+      ]
+        .map(clean)
+        .filter(Boolean)
+    )
+  );
 }
 
 async function getCurrentUser() {
@@ -433,23 +467,52 @@ export default function OrdersPage() {
   }
 
   async function openPreview(order: Order) {
+    // Abrimos el modal inmediatamente para que el usuario vea que respondió el clic.
     setPreviewOrder(order);
     setPreviewMessages([]);
     setPreviewLoading(true);
-    const number = formatPhoneNumber(order.from_number || order.phone);
+
     try {
-      // Ajustá el nombre de tabla/columnas a tu esquema real de mensajes.
+      const variants = getPhoneVariants(order.from_number || order.phone);
+
+      if (!userId) {
+        throw new Error("No se pudo identificar al usuario actual.");
+      }
+
+      if (!variants.length) {
+        throw new Error("El pedido no tiene un número de WhatsApp válido.");
+      }
+
+      // El webhook guarda todos los mensajes en inbox_messages.
+      // sender_id conserva el identificador/número original del chat.
       const { data, error } = await supabase
-        .from("messages")
-        .select("*")
-        .or(`from_number.eq.${number},to_number.eq.${number}`)
+        .from("inbox_messages")
+        .select("id, sender_id, from_number, message, message_type, media_url_text, created_at")
+        .eq("user_id", userId)
+        .in("sender_id", variants)
         .order("created_at", { ascending: true })
-        .limit(200);
+        .limit(300);
+
       if (error) throw error;
-      setPreviewMessages((data as ChatMessage[]) || []);
-    } catch (e) {
-      console.error(e);
-      toast.error("No se pudo cargar la conversación");
+
+      const normalizedMessages: ChatMessage[] = (data || []).map((row: any) => {
+        const messageType = clean(row.message_type).toLowerCase();
+        const isOutgoing = messageType.startsWith("out_");
+
+        return {
+          id: String(row.id),
+          direction: isOutgoing ? "out" : "in",
+          body: clean(row.message),
+          created_at: row.created_at,
+          media_url: clean(row.media_url_text) || null,
+          message_type: messageType,
+        };
+      });
+
+      setPreviewMessages(normalizedMessages);
+    } catch (error: any) {
+      console.error("Error cargando vista previa:", error);
+      toast.error(error?.message || "No se pudo cargar la conversación");
     } finally {
       setPreviewLoading(false);
     }
@@ -777,7 +840,7 @@ export default function OrdersPage() {
 
       {/* MODAL VISTA PREVIA CHAT */}
       <Dialog open={!!previewOrder} onOpenChange={(o) => !o && setPreviewOrder(null)}>
-        <DialogContent className="max-w-2xl border-white/10 bg-[#0d0818] p-0 text-white">
+        <DialogContent className="z-[100] max-h-[92vh] w-[calc(100vw-24px)] max-w-2xl overflow-hidden border-white/10 bg-[#0d0818] p-0 text-white shadow-2xl">
           <DialogHeader className="border-b border-white/10 p-4">
             <DialogTitle className="flex items-center gap-2 text-white">
               <MessageSquare className="h-4 w-4 text-violet-400" />
@@ -788,7 +851,7 @@ export default function OrdersPage() {
               {formatPhoneNumber(previewOrder?.from_number || previewOrder?.phone || "")}
             </DialogDescription>
           </DialogHeader>
-          <ScrollArea className="h-[520px] px-4 py-4">
+          <ScrollArea className="h-[65vh] max-h-[520px] px-4 py-4">
             {previewLoading ? (
               <div className="flex h-full items-center justify-center text-sm text-zinc-500">
                 <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> Cargando conversación...
@@ -796,7 +859,7 @@ export default function OrdersPage() {
             ) : previewMessages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center text-sm text-zinc-500">
                 <MessageSquare className="mb-2 h-8 w-8 opacity-40" />
-                No hay mensajes para mostrar
+                No se encontraron mensajes guardados para este número
               </div>
             ) : (
               <div className="space-y-3">
@@ -811,11 +874,19 @@ export default function OrdersPage() {
                             : "rounded-br-sm bg-violet-600 text-white"
                         }`}
                       >
-                        {m.body ? (
-                          <p className="whitespace-pre-wrap">{m.body}</p>
-                        ) : (
-                          <em className="opacity-60">[media]</em>
+                        {m.media_url && (
+                          <img
+                            src={m.media_url}
+                            alt="Archivo enviado en el chat"
+                            className="mb-2 max-h-64 w-full rounded-lg object-contain"
+                            loading="lazy"
+                          />
                         )}
+                        {m.body ? (
+                          <p className="whitespace-pre-wrap break-words">{m.body}</p>
+                        ) : !m.media_url ? (
+                          <em className="opacity-60">[Mensaje sin texto]</em>
+                        ) : null}
                         <p
                           className={`mt-1 text-[10px] ${
                             isIn ? "text-zinc-400" : "text-violet-100/80"
