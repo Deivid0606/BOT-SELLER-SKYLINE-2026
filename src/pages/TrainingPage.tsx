@@ -1,7 +1,7 @@
 import { motion } from "framer-motion";
 import { 
   GraduationCap, Plus, Trash2, BookOpen, Loader2, RefreshCw, 
-  ImagePlus, X, Copy, Sparkles, Zap, Package as PackageIcon, Key, CreditCard, MapPin, Building2, UserRound, Hash
+  ImagePlus, X, Copy, Sparkles, Zap, Package as PackageIcon, Key
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -14,154 +14,6 @@ interface ProductItem {
   copy: string;
   palabra_clave: string;
   alias: string[];
-}
-
-interface PaymentData {
-  titular: string;
-  cedula: string;
-  banco: string;
-  numero_cuenta: string;
-  alias: string;
-}
-
-interface CoverageCity {
-  id: string;
-  canonical: string;
-  aliases: string[];
-}
-
-const EMPTY_PAYMENT_DATA: PaymentData = {
-  titular: "",
-  cedula: "",
-  banco: "",
-  numero_cuenta: "",
-  alias: "",
-};
-
-const normalizeLine = (value: string) => value.replace(/\r/g, "").trim();
-
-function stripStructuredSections(training: string): string {
-  return training
-    .replace(
-      /(?:^|\n)\s*DATOS_BANCARIOS\s*:?\s*\n[\s\S]*?(?=\n\s*(?:FIN_DATOS_BANCARIOS|ZONAS CON COBERTURA|ZONAS SIN COBERTURA|⚙️ INSTRUCCIÓN FINAL)|\s*$)/i,
-      "\n"
-    )
-    .replace(/(?:^|\n)\s*FIN_DATOS_BANCARIOS\s*:?\s*/gi, "\n")
-    .replace(
-      /(?:^|\n)\s*ZONAS CON COBERTURA\s*:?\s*\n[\s\S]*?(?=\n\s*(?:ZONAS SIN COBERTURA|⚙️ INSTRUCCIÓN FINAL)|\s*$)/i,
-      "\n"
-    )
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function buildPaymentSection(payment: PaymentData): string {
-  const lines = [
-    payment.titular && `Titular: ${normalizeLine(payment.titular)}`,
-    payment.cedula && `CI: ${normalizeLine(payment.cedula)}`,
-    payment.banco && `Banco: ${normalizeLine(payment.banco)}`,
-    payment.numero_cuenta && `Número de cuenta: ${normalizeLine(payment.numero_cuenta)}`,
-    payment.alias && `Alias: ${normalizeLine(payment.alias)}`,
-  ].filter(Boolean);
-
-  if (!lines.length) return "";
-
-  return `DATOS_BANCARIOS
-${lines.join("\n")}
-FIN_DATOS_BANCARIOS`;
-}
-
-function buildCoverageSection(cities: CoverageCity[]): string {
-  const cleanCities = cities
-    .map((city) => ({
-      canonical: normalizeLine(city.canonical),
-      aliases: Array.from(
-        new Set(city.aliases.map(normalizeLine).filter(Boolean))
-      ),
-    }))
-    .filter((city) => city.canonical);
-
-  if (!cleanCities.length) return "";
-
-  const blocks = cleanCities.map((city) => {
-    const aliases = city.aliases.length
-      ? `\n✅ ${city.aliases.join(", ")}`
-      : "";
-    return `📍 ${city.canonical}${aliases}`;
-  });
-
-  return `ZONAS CON COBERTURA
-
-${blocks.join("\n\n")}`;
-}
-
-function mergeStructuredTraining(
-  baseTraining: string,
-  payment: PaymentData,
-  coverageCities: CoverageCity[]
-): string {
-  const base = stripStructuredSections(baseTraining);
-  const sections = [
-    base,
-    buildPaymentSection(payment),
-    buildCoverageSection(coverageCities),
-  ].filter(Boolean);
-
-  return sections.join("\n\n").trim();
-}
-
-function parsePaymentData(training: string): PaymentData {
-  const block =
-    training.match(
-      /(?:^|\n)\s*DATOS_BANCARIOS\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:FIN_DATOS_BANCARIOS|ZONAS CON COBERTURA|ZONAS SIN COBERTURA|⚙️ INSTRUCCIÓN FINAL)|\s*$)/i
-    )?.[1] || "";
-
-  const pick = (regex: RegExp) => normalizeLine(block.match(regex)?.[1] || "");
-
-  return {
-    titular: pick(/^\s*Titular\s*[:\-]\s*(.+)$/im),
-    cedula: pick(/^\s*(?:CI|Cédula|Cedula)\s*[:\-]\s*(.+)$/im),
-    banco: pick(/^\s*Banco\s*[:\-]\s*(.+)$/im),
-    numero_cuenta: pick(
-      /^\s*(?:Número de cuenta|Numero de cuenta|Nro\.? de cuenta|Cuenta)\s*[:\-]\s*(.+)$/im
-    ),
-    alias: pick(/^\s*Alias\s*[:\-]\s*(.+)$/im),
-  };
-}
-
-function parseCoverageCities(training: string): CoverageCity[] {
-  const section =
-    training.match(
-      /(?:^|\n)\s*ZONAS CON COBERTURA\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:ZONAS SIN COBERTURA|⚙️ INSTRUCCIÓN FINAL)|\s*$)/i
-    )?.[1] || "";
-
-  if (!section.trim()) return [];
-
-  return section
-    .split(/📍\s*/g)
-    .map((block) => block.trim())
-    .filter(Boolean)
-    .map((block) => {
-      const lines = block
-        .split(/\r?\n/g)
-        .map((line) => normalizeLine(line))
-        .filter(Boolean);
-
-      const canonical = lines[0] || "";
-      const aliasLine = lines.find((line) => /^[✅✔]/.test(line)) || "";
-      const aliases = aliasLine
-        .replace(/^[✅✔]\s*/, "")
-        .split(",")
-        .map(normalizeLine)
-        .filter(Boolean);
-
-      return {
-        id: crypto.randomUUID(),
-        canonical,
-        aliases,
-      };
-    })
-    .filter((city) => city.canonical);
 }
 
 interface TrainingItem {
@@ -194,201 +46,6 @@ const normalizeProductItem = (product: ProductItem): ProductItem => {
   };
 };
 
-
-function normalizeCoverageKey(value: string): string {
-  return normalizeLine(value)
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function parseBulkCoverageInput(input: string): CoverageCity[] {
-  const raw = input.replace(/\r/g, "").trim();
-  if (!raw) return [];
-
-  const parsed: CoverageCity[] = [];
-
-  const addCity = (canonicalValue: string, aliasValues: string[]) => {
-    const canonical = normalizeLine(
-      canonicalValue
-        .replace(/^[📍✅✔•\-]+\s*/, "")
-        .replace(/^\d+[.)]\s*/, "")
-    );
-
-    if (!canonical) return;
-
-    const aliases = Array.from(
-      new Map(
-        [canonical, ...aliasValues]
-          .map((value) =>
-            normalizeLine(
-              value
-                .replace(/^[📍✅✔•\-]+\s*/, "")
-                .replace(/^alias(?:es)?\s*[:\-]\s*/i, "")
-            )
-          )
-          .filter(Boolean)
-          .map((value) => [normalizeCoverageKey(value), value])
-      ).values()
-    );
-
-    parsed.push({
-      id: crypto.randomUUID(),
-      canonical,
-      aliases,
-    });
-  };
-
-  // Formato principal:
-  // 📍 Ciudad
-  // ✅ alias 1, alias 2
-  if (/📍/.test(raw)) {
-    raw
-      .split(/(?=📍\s*)/g)
-      .map((block) => block.trim())
-      .filter(Boolean)
-      .forEach((block) => {
-        const lines = block
-          .split("\n")
-          .map(normalizeLine)
-          .filter(Boolean);
-
-        const canonicalLine =
-          lines.find((line) => /^📍/.test(line)) || lines[0] || "";
-
-        const canonical = canonicalLine.replace(/^📍\s*/, "");
-        const aliasLines = lines
-          .filter((line) => /^[✅✔]/.test(line) || /^alias(?:es)?\s*[:\-]/i.test(line))
-          .flatMap((line) =>
-            line
-              .replace(/^[✅✔]\s*/, "")
-              .replace(/^alias(?:es)?\s*[:\-]\s*/i, "")
-              .split(/[,;|]/g)
-              .map(normalizeLine)
-              .filter(Boolean)
-          );
-
-        addCity(canonical, aliasLines);
-      });
-  } else {
-    // Formatos alternativos:
-    // Ciudad del Este | CDE, Cdad del Este
-    // Ciudad del Este: CDE, Cdad del Este
-    // Ciudad del Este
-    raw
-      .split("\n")
-      .map(normalizeLine)
-      .filter(Boolean)
-      .forEach((line) => {
-        let canonical = line;
-        let aliasPart = "";
-
-        if (line.includes("|")) {
-          const parts = line.split("|");
-          canonical = parts.shift() || "";
-          aliasPart = parts.join(",");
-        } else {
-          const colon = line.match(/^([^:]{2,80})\s*:\s*(.+)$/);
-          if (colon) {
-            canonical = colon[1];
-            aliasPart = colon[2];
-          }
-        }
-
-        const aliases = aliasPart
-          .split(/[,;|]/g)
-          .map(normalizeLine)
-          .filter(Boolean);
-
-        addCity(canonical, aliases);
-      });
-  }
-
-  // Unificar ciudades repetidas y combinar alias.
-  const merged = new Map<string, CoverageCity>();
-
-  for (const city of parsed) {
-    const key = normalizeCoverageKey(city.canonical);
-    if (!key) continue;
-
-    const existing = merged.get(key);
-    if (!existing) {
-      merged.set(key, city);
-      continue;
-    }
-
-    const aliases = Array.from(
-      new Map(
-        [...existing.aliases, ...city.aliases]
-          .map((alias) => [normalizeCoverageKey(alias), alias])
-          .filter(([key]) => Boolean(key))
-      ).values()
-    );
-
-    merged.set(key, { ...existing, aliases });
-  }
-
-  return Array.from(merged.values());
-}
-
-
-function mergeCoverageCities(
-  current: CoverageCity[],
-  incoming: CoverageCity[]
-): CoverageCity[] {
-  const merged = new Map<string, CoverageCity>();
-
-  for (const city of [...current, ...incoming]) {
-    const canonical = normalizeLine(city.canonical);
-    const key = normalizeCoverageKey(canonical);
-    if (!key) continue;
-
-    const existing = merged.get(key);
-    const aliases = Array.from(
-      new Map(
-        [
-          canonical,
-          ...(existing?.aliases || []),
-          ...(city.aliases || []),
-        ]
-          .map(normalizeLine)
-          .filter(Boolean)
-          .map((alias) => [normalizeCoverageKey(alias), alias])
-          .filter(([aliasKey]) => Boolean(aliasKey))
-      ).values()
-    );
-
-    merged.set(key, {
-      id: existing?.id || city.id || crypto.randomUUID(),
-      canonical: existing?.canonical || canonical,
-      aliases,
-    });
-  }
-
-  return Array.from(merged.values()).sort((a, b) =>
-    a.canonical.localeCompare(b.canonical, "es")
-  );
-}
-
-function coverageCitiesToBulkText(cities: CoverageCity[]): string {
-  return cities
-    .filter((city) => normalizeLine(city.canonical))
-    .map((city) => {
-      const aliases = city.aliases
-        .filter(
-          (alias) =>
-            normalizeCoverageKey(alias) !== normalizeCoverageKey(city.canonical)
-        )
-        .join(", ");
-
-      return `📍 ${city.canonical}${aliases ? `\n✅ ${aliases}` : ""}`;
-    })
-    .join("\n\n");
-}
-
 export default function TrainingPage() {
   const { user } = useAuth();
   const [trainingData, setTrainingData] = useState<TrainingItem[]>([]);
@@ -399,11 +56,6 @@ export default function TrainingPage() {
   const [entrenamientoCompleto, setEntrenamientoCompleto] = useState("");
   const [products, setProducts] = useState<ProductItem[]>([]);
   const [mostrarCatalogo, setMostrarCatalogo] = useState(false);
-  const [paymentData, setPaymentData] = useState<PaymentData>(EMPTY_PAYMENT_DATA);
-  const [coverageCities, setCoverageCities] = useState<CoverageCity[]>([]);
-  const [bulkCoverageText, setBulkCoverageText] = useState("");
-  const [mostrarPagos, setMostrarPagos] = useState(true);
-  const [mostrarCobertura, setMostrarCobertura] = useState(true);
   
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -576,82 +228,6 @@ export default function TrainingPage() {
     setProducts(prev => prev.filter(p => p.id !== productId));
   };
 
-
-  const handlePaymentChange = (field: keyof PaymentData, value: string) => {
-    setPaymentData((prev) => ({ ...prev, [field]: value }));
-  };
-
-
-  const processBulkCoverage = () => {
-    const parsedCities = parseBulkCoverageInput(bulkCoverageText);
-
-    if (!parsedCities.length) {
-      alert("No se encontraron ciudades válidas en el texto pegado.");
-      return;
-    }
-
-    const result = mergeCoverageCities(coverageCities, parsedCities);
-    setCoverageCities(result);
-    setBulkCoverageText(coverageCitiesToBulkText(result));
-
-    alert(`✅ ${result.length} zonas listas para guardar.`);
-  };
-
-  const replaceWithBulkCoverage = () => {
-    const parsedCities = parseBulkCoverageInput(bulkCoverageText);
-
-    if (!parsedCities.length) {
-      alert("No se encontraron ciudades válidas en el texto pegado.");
-      return;
-    }
-
-    const result = parsedCities.sort((a, b) =>
-      a.canonical.localeCompare(b.canonical, "es")
-    );
-
-    setCoverageCities(result);
-    setBulkCoverageText(coverageCitiesToBulkText(result));
-    alert(`✅ Lista reemplazada con ${result.length} zonas.`);
-  };
-
-  const exportCoverageToEditor = () => {
-    setBulkCoverageText(coverageCitiesToBulkText(coverageCities));
-  };
-
-  const clearCoverageCities = () => {
-    if (!confirm("¿Eliminar todas las zonas cargadas?")) return;
-    setCoverageCities([]);
-    setBulkCoverageText("");
-  };
-
-  const addCoverageCity = () => {
-    setCoverageCities((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        canonical: "",
-        aliases: [],
-      },
-    ]);
-    setMostrarCobertura(true);
-  };
-
-  const updateCoverageCity = (
-    id: string,
-    field: "canonical" | "aliases",
-    value: string | string[]
-  ) => {
-    setCoverageCities((prev) =>
-      prev.map((city) =>
-        city.id === id ? { ...city, [field]: value } : city
-      )
-    );
-  };
-
-  const removeCoverageCity = (id: string) => {
-    setCoverageCities((prev) => prev.filter((city) => city.id !== id));
-  };
-
   const handleSave = async () => {
     if (!user) {
       alert("Debes iniciar sesión");
@@ -663,51 +239,8 @@ export default function TrainingPage() {
       return;
     }
 
-    // V4: al guardar, procesamos automáticamente todo lo pegado en
-    // la carga masiva. Ya no es obligatorio presionar antes
-    // “Procesar y agregar”.
-    const pastedCoverage = bulkCoverageText.trim()
-      ? parseBulkCoverageInput(bulkCoverageText)
-      : [];
-
-    const finalCoverageCities = bulkCoverageText.trim()
-      ? mergeCoverageCities([], pastedCoverage)
-      : mergeCoverageCities([], coverageCities);
-
-    if (bulkCoverageText.trim() && !finalCoverageCities.length) {
-      alert(
-        "No se pudieron interpretar las zonas pegadas. Revisá el formato antes de guardar."
-      );
-      return;
-    }
-
-    setCoverageCities(finalCoverageCities);
-    setBulkCoverageText(coverageCitiesToBulkText(finalCoverageCities));
-
-    const finalTraining = mergeStructuredTraining(
-      entrenamientoCompleto,
-      paymentData,
-      finalCoverageCities
-    );
-
-    if (!finalTraining.trim()) {
+    if (!entrenamientoCompleto.trim()) {
       alert("Por favor completa el Entrenamiento");
-      return;
-    }
-
-    // Verificación antes de enviar a Supabase: lo que guardamos debe poder
-    // leerse nuevamente con la misma cantidad de ciudades.
-    const verifiedCoverage = parseCoverageCities(finalTraining);
-
-    if (verifiedCoverage.length !== finalCoverageCities.length) {
-      console.error("❌ Verificación de cobertura fallida", {
-        esperadas: finalCoverageCities.length,
-        recuperadas: verifiedCoverage.length,
-        finalTraining,
-      });
-      alert(
-        `No se pudo verificar la lista de cobertura. Esperadas: ${finalCoverageCities.length}; recuperadas: ${verifiedCoverage.length}.`
-      );
       return;
     }
 
@@ -749,10 +282,10 @@ export default function TrainingPage() {
         user_id: user.id,
         intent: intent.trim(),
         examples: examplesArray,
-        response: finalTraining,
+        response: entrenamientoCompleto.trim(),
         image_urls: imageUrls,
         products: normalizedProducts.length > 0 ? normalizedProducts : [],
-        entrenamiento_completo: finalTraining,
+        entrenamiento_completo: entrenamientoCompleto.trim(),
         is_active: true
       };
 
@@ -770,7 +303,7 @@ export default function TrainingPage() {
           console.error("❌ Error al actualizar:", error);
           alert("Error al actualizar: " + error.message);
         } else {
-          alert(`✅ Datos actualizados y verificados. ${verifiedCoverage.length} zonas con cobertura guardadas.`);
+          alert("✅ Datos actualizados correctamente");
           resetForm();
           await loadTrainingData();
         }
@@ -783,7 +316,7 @@ export default function TrainingPage() {
           console.error("❌ Error al guardar:", error);
           alert("Error al guardar: " + error.message);
         } else {
-          alert(`✅ Datos guardados y verificados. ${verifiedCoverage.length} zonas con cobertura guardadas.`);
+          alert("✅ Datos guardados correctamente");
           resetForm();
           await loadTrainingData();
         }
@@ -799,25 +332,8 @@ export default function TrainingPage() {
   const handleEdit = (item: TrainingItem) => {
     setIntent(item.intent);
     setExamples(item.examples.join('\n'));
-    const storedTraining = item.entrenamiento_completo || item.response || "";
-    setEntrenamientoCompleto(stripStructuredSections(storedTraining));
-    setPaymentData(parsePaymentData(storedTraining));
-    const parsedCoverage = parseCoverageCities(storedTraining);
-    setCoverageCities(parsedCoverage);
-    setBulkCoverageText(coverageCitiesToBulkText(parsedCoverage));
+    setEntrenamientoCompleto(item.entrenamiento_completo || item.response || "");
     setProducts((item.products || []).map(normalizeProductItem));
-
-    if (
-      /ZONAS CON COBERTURA/i.test(storedTraining) &&
-      parsedCoverage.length === 0
-    ) {
-      console.error(
-        "❌ El registro contiene ZONAS CON COBERTURA, pero no se pudieron interpretar."
-      );
-      alert(
-        "El registro contiene una sección de cobertura, pero no se pudo leer. Volvé a guardar con esta versión."
-      );
-    }
     setMostrarCatalogo(item.products && item.products.length > 0);
     setEditingId(item.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -849,11 +365,6 @@ export default function TrainingPage() {
     setEntrenamientoCompleto("");
     setProducts([]);
     setMostrarCatalogo(false);
-    setPaymentData(EMPTY_PAYMENT_DATA);
-    setCoverageCities([]);
-    setBulkCoverageText("");
-    setMostrarPagos(true);
-    setMostrarCobertura(true);
     setEditingId(null);
   };
 
@@ -925,7 +436,7 @@ CUANDO EL CLIENTE ESCRIBE UN NÚMERO SOLO:
 ...`}
             />
             <p className="text-[10px] text-muted-foreground mt-1">
-              Usá este campo para reglas, comportamiento y respuestas generales. Las ciudades y datos bancarios se cargan abajo.
+              Copiá y pegá todo el entrenamiento: reglas, respuestas, ciudades, etc.
             </p>
           </div>
 
@@ -1072,247 +583,6 @@ Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segund
                     </div>
                   </div>
                 ))}
-              </div>
-            )}
-          </div>
-
-
-          {/* Datos de pago estructurados */}
-          <div className="border-t border-border pt-4">
-            <div className="mb-3 flex items-center justify-between">
-              <button
-                type="button"
-                onClick={() => setMostrarPagos((prev) => !prev)}
-                className="flex items-center gap-2 text-xs font-medium text-foreground"
-              >
-                <CreditCard className="h-4 w-4 text-primary" />
-                💳 Datos de pago
-              </button>
-              <span className="text-[10px] text-muted-foreground">
-                Usados solo para envíos con pago anticipado
-              </span>
-            </div>
-
-            {mostrarPagos && (
-              <div className="grid grid-cols-1 gap-3 rounded-lg border border-border bg-secondary/20 p-3 md:grid-cols-2">
-                <div>
-                  <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                    <UserRound className="h-3 w-3" />
-                    Titular
-                  </label>
-                  <input
-                    value={paymentData.titular}
-                    onChange={(e) => handlePaymentChange("titular", e.target.value)}
-                    placeholder="Alexis Fabián Jara Amarilla"
-                    className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                    <Hash className="h-3 w-3" />
-                    Cédula
-                  </label>
-                  <input
-                    value={paymentData.cedula}
-                    onChange={(e) => handlePaymentChange("cedula", e.target.value)}
-                    placeholder="5.496.374"
-                    className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                    <Building2 className="h-3 w-3" />
-                    Banco
-                  </label>
-                  <input
-                    value={paymentData.banco}
-                    onChange={(e) => handlePaymentChange("banco", e.target.value)}
-                    placeholder="Banco Familiar"
-                    className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
-                  />
-                </div>
-
-                <div>
-                  <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                    <CreditCard className="h-3 w-3" />
-                    Número de cuenta
-                  </label>
-                  <input
-                    value={paymentData.numero_cuenta}
-                    onChange={(e) => handlePaymentChange("numero_cuenta", e.target.value)}
-                    placeholder="123456789"
-                    className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
-                  />
-                </div>
-
-                <div className="md:col-span-2">
-                  <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                    <Key className="h-3 w-3" />
-                    Alias
-                  </label>
-                  <input
-                    value={paymentData.alias}
-                    onChange={(e) => handlePaymentChange("alias", e.target.value)}
-                    placeholder="5496374"
-                    className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Zonas con cobertura — carga masiva */}
-          <div className="border-t border-border pt-4">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <button
-                type="button"
-                onClick={() => setMostrarCobertura((prev) => !prev)}
-                className="flex items-center gap-2 text-xs font-medium text-foreground"
-              >
-                <MapPin className="h-4 w-4 text-primary" />
-                📍 Zonas con contra-entrega
-                {coverageCities.length > 0 && ` (${coverageCities.length})`}
-              </button>
-
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={exportCoverageToEditor}
-                  className="rounded-md border border-border bg-secondary/40 px-2.5 py-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-secondary/70"
-                >
-                  Ver lista cargada
-                </button>
-                <button
-                  type="button"
-                  onClick={clearCoverageCities}
-                  className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-[10px] text-destructive transition-colors hover:bg-destructive/20"
-                >
-                  Limpiar todo
-                </button>
-              </div>
-            </div>
-
-            {mostrarCobertura && (
-              <div className="space-y-4">
-                <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
-                  <div className="mb-2 flex items-center justify-between">
-                    <div>
-                      <p className="text-xs font-semibold text-foreground">
-                        Carga masiva de zonas
-                      </p>
-                      <p className="mt-0.5 text-[10px] text-muted-foreground">
-                        Pegá toda tu lista. Al presionar Guardar o Actualizar también se procesa automáticamente.
-                      </p>
-                    </div>
-                    <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary">
-                      {bulkCoverageText.trim()
-                        ? parseBulkCoverageInput(bulkCoverageText).length
-                        : coverageCities.length} detectadas
-                    </span>
-                  </div>
-
-                  <textarea
-                    value={bulkCoverageText}
-                    onChange={(e) => setBulkCoverageText(e.target.value)}
-                    rows={14}
-                    className="w-full resize-y rounded-lg border border-border bg-secondary/50 px-3 py-2 font-mono text-xs leading-relaxed placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none"
-                    placeholder={`📍 Asunción
-✅ ASU, Asuncion, Capital
-
-📍 Ciudad del Este
-✅ CDE, Cdad del Este, Ciudad Este
-
-📍 Fernando de la Mora
-✅ FDM, Fdo de la Mora`}
-                  />
-
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={processBulkCoverage}
-                      className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-                    >
-                      <Zap className="h-3.5 w-3.5" />
-                      Procesar y agregar
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={replaceWithBulkCoverage}
-                      className="flex items-center gap-1.5 rounded-lg border border-border bg-secondary px-3 py-2 text-xs font-medium transition-colors hover:bg-secondary/80"
-                    >
-                      <RefreshCw className="h-3.5 w-3.5" />
-                      Reemplazar lista actual
-                    </button>
-                  </div>
-
-                  <div className="mt-3 rounded-md border border-border/60 bg-background/40 p-2.5 text-[10px] leading-relaxed text-muted-foreground">
-                    <strong className="text-foreground">Formatos aceptados:</strong>
-                    <br />
-                    <span>📍 Ciudad + ✅ alias separados por coma</span>
-                    <br />
-                    <span>Ciudad | alias 1, alias 2</span>
-                    <br />
-                    <span>Ciudad: alias 1, alias 2</span>
-                    <br />
-                    <span>Una ciudad por línea, aunque no tenga alias</span>
-                  </div>
-                </div>
-
-                {coverageCities.length > 0 && (
-                  <div className="rounded-lg border border-border bg-secondary/20 p-3">
-                    <div className="mb-2 flex items-center justify-between">
-                      <p className="text-xs font-medium">
-                        Vista previa de zonas procesadas
-                      </p>
-                      <span className="text-[10px] text-muted-foreground">
-                        Mostrando {Math.min(coverageCities.length, 12)} de{" "}
-                        {coverageCities.length}
-                      </span>
-                    </div>
-
-                    <div className="grid max-h-[340px] grid-cols-1 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
-                      {coverageCities.slice(0, 12).map((city) => (
-                        <div
-                          key={city.id}
-                          className="rounded-md border border-border/70 bg-background/40 p-2"
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="truncate text-xs font-medium text-foreground">
-                                📍 {city.canonical}
-                              </p>
-                              <p className="mt-1 line-clamp-2 text-[10px] text-muted-foreground">
-                                {city.aliases.length
-                                  ? city.aliases.join(", ")
-                                  : "Sin alias"}
-                              </p>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => removeCoverageCity(city.id)}
-                              className="shrink-0 text-destructive/70 hover:text-destructive"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    {coverageCities.length > 12 && (
-                      <p className="mt-2 text-center text-[10px] text-muted-foreground">
-                        Hay {coverageCities.length - 12} zonas adicionales guardadas.
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                <p className="text-[10px] text-muted-foreground">
-                  Solo cargá ciudades con contra-entrega. Toda localidad válida que no aparezca aquí será tratada como envío por transportadora con pago anticipado.
-                </p>
               </div>
             )}
           </div>
