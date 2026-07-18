@@ -334,6 +334,45 @@ function parseBulkCoverageInput(input: string): CoverageCity[] {
   return Array.from(merged.values());
 }
 
+
+function mergeCoverageCities(
+  current: CoverageCity[],
+  incoming: CoverageCity[]
+): CoverageCity[] {
+  const merged = new Map<string, CoverageCity>();
+
+  for (const city of [...current, ...incoming]) {
+    const canonical = normalizeLine(city.canonical);
+    const key = normalizeCoverageKey(canonical);
+    if (!key) continue;
+
+    const existing = merged.get(key);
+    const aliases = Array.from(
+      new Map(
+        [
+          canonical,
+          ...(existing?.aliases || []),
+          ...(city.aliases || []),
+        ]
+          .map(normalizeLine)
+          .filter(Boolean)
+          .map((alias) => [normalizeCoverageKey(alias), alias])
+          .filter(([aliasKey]) => Boolean(aliasKey))
+      ).values()
+    );
+
+    merged.set(key, {
+      id: existing?.id || city.id || crypto.randomUUID(),
+      canonical: existing?.canonical || canonical,
+      aliases,
+    });
+  }
+
+  return Array.from(merged.values()).sort((a, b) =>
+    a.canonical.localeCompare(b.canonical, "es")
+  );
+}
+
 function coverageCitiesToBulkText(cities: CoverageCity[]): string {
   return cities
     .filter((city) => normalizeLine(city.canonical))
@@ -551,39 +590,11 @@ export default function TrainingPage() {
       return;
     }
 
-    setCoverageCities((current) => {
-      const merged = new Map<string, CoverageCity>();
+    const result = mergeCoverageCities(coverageCities, parsedCities);
+    setCoverageCities(result);
+    setBulkCoverageText(coverageCitiesToBulkText(result));
 
-      for (const city of [...current, ...parsedCities]) {
-        const key = normalizeCoverageKey(city.canonical);
-        if (!key) continue;
-
-        const existing = merged.get(key);
-        if (!existing) {
-          merged.set(key, city);
-          continue;
-        }
-
-        const aliases = Array.from(
-          new Map(
-            [...existing.aliases, ...city.aliases]
-              .map((alias) => [normalizeCoverageKey(alias), alias])
-              .filter(([aliasKey]) => Boolean(aliasKey))
-          ).values()
-        );
-
-        merged.set(key, { ...existing, aliases });
-      }
-
-      const result = Array.from(merged.values()).sort((a, b) =>
-        a.canonical.localeCompare(b.canonical, "es")
-      );
-
-      setBulkCoverageText(coverageCitiesToBulkText(result));
-      return result;
-    });
-
-    alert(`✅ ${parsedCities.length} zonas procesadas correctamente.`);
+    alert(`✅ ${result.length} zonas listas para guardar.`);
   };
 
   const replaceWithBulkCoverage = () => {
@@ -652,10 +663,31 @@ export default function TrainingPage() {
       return;
     }
 
+    // V4: al guardar, procesamos automáticamente todo lo pegado en
+    // la carga masiva. Ya no es obligatorio presionar antes
+    // “Procesar y agregar”.
+    const pastedCoverage = bulkCoverageText.trim()
+      ? parseBulkCoverageInput(bulkCoverageText)
+      : [];
+
+    const finalCoverageCities = bulkCoverageText.trim()
+      ? mergeCoverageCities([], pastedCoverage)
+      : mergeCoverageCities([], coverageCities);
+
+    if (bulkCoverageText.trim() && !finalCoverageCities.length) {
+      alert(
+        "No se pudieron interpretar las zonas pegadas. Revisá el formato antes de guardar."
+      );
+      return;
+    }
+
+    setCoverageCities(finalCoverageCities);
+    setBulkCoverageText(coverageCitiesToBulkText(finalCoverageCities));
+
     const finalTraining = mergeStructuredTraining(
       entrenamientoCompleto,
       paymentData,
-      coverageCities
+      finalCoverageCities
     );
 
     if (!finalTraining.trim()) {
@@ -722,7 +754,7 @@ export default function TrainingPage() {
           console.error("❌ Error al actualizar:", error);
           alert("Error al actualizar: " + error.message);
         } else {
-          alert("✅ Datos actualizados correctamente");
+          alert(`✅ Datos actualizados correctamente. ${finalCoverageCities.length} zonas con cobertura guardadas.`);
           resetForm();
           await loadTrainingData();
         }
@@ -735,7 +767,7 @@ export default function TrainingPage() {
           console.error("❌ Error al guardar:", error);
           alert("Error al guardar: " + error.message);
         } else {
-          alert("✅ Datos guardados correctamente");
+          alert(`✅ Datos guardados correctamente. ${finalCoverageCities.length} zonas con cobertura guardadas.`);
           resetForm();
           await loadTrainingData();
         }
@@ -1143,11 +1175,13 @@ Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segund
                         Carga masiva de zonas
                       </p>
                       <p className="mt-0.5 text-[10px] text-muted-foreground">
-                        Pegá toda tu lista de ciudades y alias de una sola vez.
+                        Pegá toda tu lista. Al presionar Guardar o Actualizar también se procesa automáticamente.
                       </p>
                     </div>
                     <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary">
-                      {coverageCities.length} cargadas
+                      {bulkCoverageText.trim()
+                        ? parseBulkCoverageInput(bulkCoverageText).length
+                        : coverageCities.length} detectadas
                     </span>
                   </div>
 
