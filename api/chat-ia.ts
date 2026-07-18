@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V92 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V94 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -253,7 +253,15 @@ function buildTrainingText(items: any[]) {
   return items
     .map((i) => {
       const examples = Array.isArray(i.examples) ? i.examples.join("\n") : "";
-      return `${i.intent || ""}\n${examples}\n${i.response || ""}`;
+
+      // V94: la fuente principal del entrenamiento es entrenamiento_completo.
+      // response queda únicamente como compatibilidad con registros antiguos.
+      const trainingBody =
+        clean(i.entrenamiento_completo) ||
+        clean(i.response) ||
+        "";
+
+      return `${i.intent || ""}\n${examples}\n${trainingBody}`;
     })
     .join("\n\n---\n\n");
 }
@@ -546,6 +554,12 @@ function extractProductNameFromCopy(text: string): string {
   const accept = (value: any) => {
     const candidate = clean(value).replace(/^[^a-zA-ZÁÉÍÓÚáéíóúÑñ0-9]+/, "").replace(/[.,:;!?]+$/, "");
     if (!candidate || isGenericProductLabel(candidate)) return "";
+    const candidateNorm = normalize(candidate);
+    if (
+      /^(olvidate|olvídate|recupera|recuperá|aprovecha|aprovechá|cocina|cociná|respira|respirá|camina|caminá|deja|dejá)\b/.test(candidateNorm)
+    ) {
+      return "";
+    }
     const words = candidate.split(/\s+/).filter(Boolean);
     if (words.length < 1 || words.length > 10) return "";
     return toTitleCase(candidate);
@@ -1211,6 +1225,10 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
     return `¡Claro que sí! Contamos con delivery 😊${continuation ? `\n\n${continuation}` : ""}`;
   }
 
+  if (isPayOnDeliveryRequest(text)) {
+    return buildPayOnDeliveryResponse(state);
+  }
+
   if (isPaymentInformationQuestion(text)) {
     let continuation = "";
     if (!state.order.city) continuation = "📍 ¿Para qué ciudad sería el envío?";
@@ -1218,6 +1236,13 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
     else if (!state.order.customer_name) continuation = "Para continuar, pasame tu nombre y apellido.";
     else if (!state.order.address) continuation = "Ahora pasame la dirección exacta o ubicación.";
     
+
+    if (state.coverage === false && state.order.city) {
+      return `📍 Para ${state.order.city} el envío es por transportadora.
+
+💳 En este caso el pago es anticipado por transferencia.
+📎 Para confirmar el pedido necesitamos la foto o PDF del comprobante.`;
+    }
 
     return `💵 Podés pagar en efectivo o por transferencia al delivery cuando recibís tu pedido. 😊${continuation ? `\n\n${continuation}` : ""}`;
   }
@@ -1258,6 +1283,9 @@ function exactKnownCity(text: string, parsed: ParsedTraining): string {
     lambare: "Lambaré",
     "mariano roque alonso": "Mariano Roque Alonso",
     mra: "Mariano Roque Alonso",
+    cde: "Ciudad del Este",
+    "ciudad del este": "Ciudad del Este",
+    "cdad del este": "Ciudad del Este",
   };
   if (hardExact[n]) return hardExact[n];
 
@@ -1783,6 +1811,41 @@ function isPoliteClosingOrAcknowledgement(text: string): boolean {
   );
 }
 
+
+function isPayOnDeliveryRequest(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /\b(pago|pagar|abona|abono|quiero pagar|puedo pagar)\b[\s\S]{0,45}\b(cuando llegue|cuando me llegue|cuando entreguen|cuando me entreguen|al recibir|contra entrega|en la entrega)\b/.test(n) ||
+    /\b(al recibir|contra entrega|cuando llegue|cuando entreguen|cuando me entreguen)\b[\s\S]{0,45}\b(pago|pagar|efectivo|transferencia)\b/.test(n) ||
+    /^(pago cuando me entreguen|pago al recibir|quiero pagar al recibir|contra entrega)$/i.test(n)
+  );
+}
+
+function buildPayOnDeliveryResponse(state: ConversationState): string {
+  const city = clean(state.order.city);
+
+  if (!city) {
+    return "😊 Para confirmarte si podés pagar al recibir, primero indicame de qué ciudad sos. 📍";
+  }
+
+  if (state.coverage === true) {
+    const continuation = !state.order.customer_name
+      ? "\n\nAhora solo necesito tu nombre y apellido."
+      : !state.order.address
+        ? "\n\nAhora solo me falta la calle o dirección exacta para la entrega."
+        : "";
+
+    return `✅ Sí, para ${city} podés pagar cuando recibís tu pedido, en efectivo o por transferencia al delivery.${continuation}`;
+  }
+
+  return `📍 Para ${city} el envío se realiza por transportadora y no contamos con pago contra entrega.
+
+💳 Para este destino el pago es anticipado por transferencia.
+📎 Después del pago, enviame la foto o PDF del comprobante para confirmar el pedido.`;
+}
+
 function isPaymentInformationQuestion(text: string): boolean {
   const n = normalize(text);
   if (!n) return false;
@@ -1832,6 +1895,7 @@ function extractExplicitKnownCityFromSentence(text: string, parsed: ParsedTraini
     [/\bluque\b/i, "Luque"],
     [/\b(lambare)\b/i, "Lambaré"],
     [/\b(mariano roque alonso|mra)\b/i, "Mariano Roque Alonso"],
+    [/\b(cde|ciudad del este|cdad del este)\b/i, "Ciudad del Este"],
   ];
 
   for (const [pattern, canonical] of hardKnownCities) {
@@ -2014,6 +2078,16 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   if (isInvoiceOrTaxDataMessage(raw) || isStandaloneTaxOrIdentityData(raw)) return "";
   if (/^(?:la\s+)?ciudad\s+de\s+/i.test(normalize(raw))) return "";
   if (isLocationDeclarationInsteadOfName(raw, parsed)) return "";
+
+  // V93: una frase que contiene una ciudad conocida y no declara nombre
+  // nunca puede convertirse en cliente. Ej.: "En Ciudad del Este".
+  if (
+    parsed &&
+    extractExplicitKnownCityFromSentence(raw, parsed) &&
+    !/\b(mi nombre es|me llamo|soy)\b/.test(normalize(raw))
+  ) {
+    return "";
+  }
 
   // V69: cualquier mensaje que contenga una ciudad conocida junto con una
   // consulta de delivery o una declaración de ubicación no puede ser nombre.
@@ -4410,6 +4484,9 @@ REGLAS DURAS:
 - No inventes productos, precios, bancos, cuentas, enlaces, ciudades ni tiempos.
 - PROHIBIDO inventar ciudad. Si Ciudad = faltante, preguntá ciudad.
 - Una consulta del cliente (por ejemplo: "¿de dónde son?", "¿cómo funciona?", "¿tiene garantía?", "será, anda", "¿funciona de verdad?") NO es una ciudad ni un dato del pedido.
+- "CDE", "Ciudad del Este", "Cdad del Este" y frases como "en Ciudad del Este" deben normalizarse a Ciudad del Este.
+- Una frase de ubicación jamás puede convertirse en nombre del cliente.
+- Si el cliente pide pagar al recibir y la ciudad no tiene cobertura, explicá amablemente que el pago es anticipado; no arrojes error ni cambies la ciudad.
 - Expresiones paraguayas o informales como "será anda", "será que funciona", "anda de verdad" o "da resultado" son consultas sobre el producto: respondé la consulta y retomá el dato faltante.
 - Para responder si funciona, usá EXCLUSIVAMENTE el nombre y el COPY DE VENTA del producto activo.
 - Mencioná de 1 a 3 beneficios concretos presentes en ese copy. No uses una respuesta genérica si hay información específica del producto.
@@ -6199,8 +6276,25 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     });
   } catch (error: any) {
     console.error("❌ chat-ia-vendedor-v3:", error);
-    return res.status(500).json({
-      error: error.message || "Error interno",
+
+    const safeContext = req.body?.context || {};
+    const safeOrder = safeContext?.order_data || {};
+    const safeMessage = clean(req.body?.message || "");
+
+    return res.status(200).json({
+      response: isPayOnDeliveryRequest(safeMessage)
+        ? "😊 Para indicarte correctamente la forma de pago, decime nuevamente tu ciudad. Si tu zona no tiene contra-entrega, el envío es por transportadora y el pago es anticipado."
+        : "😊 No pude procesar ese dato correctamente. Volvé a enviarlo, por favor.",
+      context: {
+        ...safeContext,
+        order_data: safeOrder,
+        step: safeContext?.step || "selling",
+        updated_at: new Date().toISOString(),
+      },
+      debug: {
+        recovered_from_internal_error: true,
+        error: error?.message || "Error interno",
+      },
     });
   }
 }
