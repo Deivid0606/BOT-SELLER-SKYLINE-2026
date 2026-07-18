@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V94 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V95 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -400,12 +400,25 @@ function productsFromVisualCatalog(items: any[]): ProductItem[] {
 
       const { offers, fixedQuantity } = parseRawOffers(copy, canonical);
       const sortedOffers = offers.slice().sort((a, b) => a.quantity - b.quantity);
-      const price1 = sortedOffers.find((o) => o.quantity === 1)?.total || sortedOffers[0]?.total || 1;
+      const price1 =
+        sortedOffers.find((o) => o.quantity === 1)?.total ||
+        sortedOffers[0]?.total ||
+        0;
       const price2 = fixedQuantity ? undefined : sortedOffers.find((o) => o.quantity === 2)?.total;
       const price3 = fixedQuantity ? undefined : sortedOffers.find((o) => o.quantity === 3)?.total;
       const fixedPackQuantity = fixedQuantity
         ? (sortedOffers.find((o) => o.fixed_quantity)?.quantity || sortedOffers[0]?.quantity || undefined)
         : undefined;
+
+      if (price1 < 10000) {
+        console.error("❌ Precio inválido en catálogo visual", {
+          keyword,
+          canonical,
+          copy: copy.slice(0, 300),
+          offers: sortedOffers,
+        });
+        continue;
+      }
 
       result.push({
         product: canonical,
@@ -2079,6 +2092,14 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
   if (/^(?:la\s+)?ciudad\s+de\s+/i.test(normalize(raw))) return "";
   if (isLocationDeclarationInsteadOfName(raw, parsed)) return "";
 
+  // V95: abreviaturas de calles, avenidas y referencias nunca son nombres.
+  if (
+    /^(?:fdo|fdo\.|fndo|av|av\.|avda|rca|gral|mcal)\s+(?:de\s+)?/i.test(raw) ||
+    /\b(pinedo|padres jesuitas|jesuitas)\b/i.test(normalize(raw))
+  ) {
+    return "";
+  }
+
   // V93: una frase que contiene una ciudad conocida y no declara nombre
   // nunca puede convertirse en cliente. Ej.: "En Ciudad del Este".
   if (
@@ -2168,7 +2189,9 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     if (/\d/.test(cleaned)) return false;
     if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)) return false;
     if (cleaned.length < 4 || cleaned.length > 60) return false;
-    if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|san pedro|santa|bario)\b/i.test(normLine)) return false;
+    if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|san pedro|santa|bario|pinedo|padres jesuitas|jesuitas)\b/i.test(normLine)) return false;
+    if (/^(fdo|fdo\.|fndo|av|av\.|avda|rca|gral|mcal)\b/i.test(normLine)) return false;
+    if (/\b(?:fdo|fdo\.|fndo)\s+de\b/i.test(normLine)) return false;
     if (questionVerbs.test(normLine)) return false;
     if (detectedCity && normalize(cleaned) === normalize(detectedCity)) return false;
     if (forbidden.some((f) => normLine === normalize(f) || normLine.startsWith(normalize(f) + " ") || normLine.endsWith(" " + normalize(f)))) return false;
@@ -2728,9 +2751,9 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
 
   const explicitPackPatterns = [
     /^[^0-9\n]{0,20}(\d+)\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]{3,40}s?\s*[:=]\s*(?:gs\.?\s*)?(\d[\d. ]{3,})(?:\s*(?:gs|guaran[ií]es))?/gim,
-    /\b(?:pack|combo)\s*(?:de)?\s*(\d+)[^\n\r]{0,100}?(?:=|por|a|solo|solamente|→|->)\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/gi,
-    /\b(\d+)\s*(?:unidades|unidad|u|und|unds|piezas|pieza|productos)?[^\n\r]{0,100}?(?:por|a|solo|solamente|=|→|->)\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/gi,
-    /(?:^|\n|\*)\s*(\d+)\s*(?:unidad|unidades|u|und|unds)?\s*(?:→|->|-|:|=|por|x|a)?\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/gi,
+    /\b(?:pack|combo)\s*(?:de)?\s*(\d+)[^\n\r]{0,100}?(?:=|por|a|solo|solamente|→|➜|➡|->)\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/gi,
+    /\b(\d+)\s*(?:unidades|unidad|u|und|unds|piezas|pieza|productos)?[^\n\r]{0,100}?(?:por|a|solo|solamente|=|→|➜|➡|->)\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/gi,
+    /(?:^|\n|\*)\s*(\d+)\s*(?:unidad|unidades|u|und|unds)?\s*(?:→|➜|➡|->|-|:|=|por|x|a)?\s*(?:gs\.?\s*)?(\d[\d. ]{3,})\s*(?:gs|guaran[ií]es)?/gi,
   ];
 
   for (const pattern of explicitPackPatterns) {
@@ -2872,6 +2895,79 @@ function isNewPastedTemplatePurchase(text: string, parsed: ParsedTraining) {
     (isStructuredSalesTemplateMessage(raw) || isSafeTemplatePricingMessage(raw)) &&
     /(?:gs\.?|guaran[ií]es|\d[\d.\s]{3,})/i.test(raw)
   );
+}
+
+
+function getHistoryText(item: any): string {
+  return clean(
+    item?.message ||
+    item?.body ||
+    item?.text ||
+    item?.content ||
+    item?.response ||
+    ""
+  );
+}
+
+function isIncomingHistoryItem(item: any): boolean {
+  const direction = normalize(item?.direction || item?.message_type || item?.type || "");
+  if (!direction) return true;
+
+  return (
+    direction === "in" ||
+    direction === "incoming" ||
+    direction === "received" ||
+    direction.startsWith("in ") ||
+    direction.startsWith("in_") ||
+    direction.includes("received")
+  );
+}
+
+function recoverRecentCityFromHistory(history: any[], parsed: ParsedTraining): string {
+  const list = Array.isArray(history) ? history.slice(-50).reverse() : [];
+
+  for (const item of list) {
+    if (!isIncomingHistoryItem(item)) continue;
+
+    const value = getHistoryText(item);
+    if (!value) continue;
+
+    const exact = exactKnownCity(value, parsed);
+    if (exact) return exact;
+
+    const explicit = extractExplicitKnownCityFromSentence(value, parsed);
+    if (explicit) return explicit;
+  }
+
+  return "";
+}
+
+function recoverRecentValidNameFromHistory(
+  history: any[],
+  city: string,
+  phone: string,
+  parsed: ParsedTraining
+): string {
+  const list = Array.isArray(history) ? history.slice(-50).reverse() : [];
+
+  for (const item of list) {
+    if (!isIncomingHistoryItem(item)) continue;
+
+    const value = getHistoryText(item);
+    if (!value) continue;
+
+    const candidate = extractName(value, city, phone, parsed);
+
+    if (
+      candidate &&
+      candidate.split(/\s+/).filter(Boolean).length >= 2 &&
+      !isContaminatedCustomerName(candidate, parsed)
+    ) {
+      return candidate;
+    }
+  }
+
+  return "";
 }
 
 function getTemplatePricingFromHistory(history: any[], parsed: ParsedTraining): TemplatePricing | null {
@@ -3744,6 +3840,22 @@ function buildHardInstruction(state: ConversationState) {
   }
 
   return "Confirmar pedido completo. No preguntes si está todo correcto. El backend responde con el formato fijo de PEDIDO CONFIRMADO.";
+}
+
+
+function sanitizeProductPrices(parsed: ParsedTraining) {
+  for (const product of parsed.products) {
+    if (product.price1 > 0 && product.price1 < 10000) {
+      console.error("❌ Precio menor a 10.000 descartado", {
+        product: product.canonical,
+        price1: product.price1,
+      });
+      product.price1 = 0;
+    }
+
+    if (product.price2 && product.price2 < 10000) product.price2 = undefined;
+    if (product.price3 && product.price3 < 10000) product.price3 = undefined;
+  }
 }
 
 function buildState(order: OrderData, parsed: ParsedTraining): ConversationState {
@@ -4932,6 +5044,7 @@ export default async function handler(req: any, res: any) {
     parsed.products = mergeProductsByPriority(visualProducts, parsed.products);
 
     attachProductImages(parsed.products, allTraining);
+    sanitizeProductPrices(parsed);
 
     const productsMentionedNow = detectProductsMentioned(texto, parsed);
     let activeMultiCart = getMultiCartFromContext(context, parsed);
@@ -5544,7 +5657,7 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    const effectiveDetectedCity = cityConfirmedNow || detectedCity;
+    let effectiveDetectedCity = cityConfirmedNow || detectedCity;
     const cityWasCapturedNow = Boolean(
       cityConfirmedNow ||
       (effectiveDetectedCity && normalize(effectiveDetectedCity) !== normalize(oldOrder.city || ""))
@@ -5633,8 +5746,44 @@ export default async function handler(req: any, res: any) {
 
     const phone = extractPhone(texto);
     const qty = explicitQty;
-    const name = extractName(texto, effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "", phone, parsed);
-    const address = extractAddress(texto, effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "", phone, name);
+
+    const coordinateLikeMessage =
+      /^\s*(?:📍\s*)?(?:ubicacion|ubicación)?\s*:?-?\s*-?\d{1,3}\.\d+\s*,\s*-?\d{1,3}\.\d+\s*$/i.test(texto);
+
+    const historyRecoveredCity =
+      !oldOrder.city && coordinateLikeMessage
+        ? recoverRecentCityFromHistory(history, parsed)
+        : "";
+
+    if (!effectiveDetectedCity && historyRecoveredCity) {
+      effectiveDetectedCity = historyRecoveredCity;
+    }
+
+    const detectedName = extractName(
+      texto,
+      effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
+      phone,
+      parsed
+    );
+
+    const historyRecoveredName =
+      !oldOrder.customer_name
+        ? recoverRecentValidNameFromHistory(
+            history,
+            effectiveDetectedCity || oldOrder.city || "",
+            phone || oldOrder.phone || "",
+            parsed
+          )
+        : "";
+
+    const name = detectedName || historyRecoveredName;
+
+    const address = extractAddress(
+      texto,
+      effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
+      phone,
+      name
+    );
     const observationPatch = extractOrderObservation(texto);
 
     if (isDeliveryTimingQuestion(texto) && oldOrder.product) {
@@ -5669,6 +5818,28 @@ export default async function handler(req: any, res: any) {
 
     if (!orderData.city && oldOrder.city && qty > 0) {
       orderData.city = oldOrder.city;
+    }
+
+    if (!orderData.city && historyRecoveredCity) {
+      orderData.city = historyRecoveredCity;
+    }
+
+    const protectedHistoryName = recoverRecentValidNameFromHistory(
+      history,
+      orderData.city || oldOrder.city || "",
+      orderData.phone || oldOrder.phone || "",
+      parsed
+    );
+
+    if (
+      protectedHistoryName &&
+      (
+        !orderData.customer_name ||
+        isContaminatedCustomerName(orderData.customer_name, parsed) ||
+        /^(fdo|fndo|avda|rca|gral|mcal)\b/i.test(normalize(orderData.customer_name))
+      )
+    ) {
+      orderData.customer_name = protectedHistoryName;
     }
 
     if (
@@ -5767,6 +5938,11 @@ export default async function handler(req: any, res: any) {
     const finalState = buildState(orderData, parsed);
     let directConfirm = hasAllRequiredOrderDataForDirectConfirmation(finalState);
     let confirm = shouldConfirmOrder(finalState) || directConfirm;
+
+    if (finalState.total < 10000) {
+      directConfirm = false;
+      confirm = false;
+    }
 
     if (finalState.coverage === false && !orderData.payment_proof_received) {
       directConfirm = false;
