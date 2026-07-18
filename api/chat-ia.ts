@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V91 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V92 - Mega Todo Store / One Store
  * 
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
@@ -1069,14 +1069,90 @@ function isProductEffectivenessQuestion(text: string): boolean {
 }
 
 function buildProductEffectivenessResponse(state: ConversationState): string {
-  const product = clean(state.order.product || state.productInfo?.canonical || "este producto");
-  const cityContinuation = !clean(state.order.city)
-    ? "\n\n😊 Para confirmar la cobertura y la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍"
-    : !state.order.quantity && !state.order.locked_offer?.fixed_quantity
-      ? "\n\n¿Cuántas unidades querés llevar? 😊"
-      : "";
+  const product =
+    clean(state.productInfo?.canonical) ||
+    clean(state.order.product) ||
+    "este producto";
 
-  return `Sí 😊 ${product} está diseñado para cumplir la función indicada en la publicación. Usándolo correctamente, debería darte el resultado explicado en el anuncio.${cityContinuation}`;
+  const copy = clean(state.productInfo?.salesCopy || "");
+
+  const usefulLines = copy
+    .split(/\r?\n/g)
+    .map((line) =>
+      clean(
+        line
+          .replace(/^[^a-zA-ZÁÉÍÓÚáéíóúÑñ0-9]+/, "")
+          .replace(/\s+/g, " ")
+      )
+    )
+    .filter(Boolean)
+    .filter((line) => {
+      const n = normalize(line);
+
+      if (line.length < 12 || line.length > 170) return false;
+
+      if (
+        /\b(gs|precio|precios|oferta|promo|promocion|promoción|antes|hoy|stock|quedan|envio|envío|delivery|whatsapp|escribi|escribí|pedi|pedí|comprá|compra|garantia|garantía|devolvemos|unidad|unidades)\b/.test(n)
+      ) {
+        return false;
+      }
+
+      return /\b(ayuda|sirve|permite|ideal|diseñado|disenado|reduce|alivia|absorbe|soporte|protege|limpia|atrapa|afila|filo|tritura|pica|procesa|mezcla|hidrata|rejuvenece|corrige|mejora|respira|vapor|calienta|elimina|fortalece|comodidad|impacto|postura|arco|dolor|resultado|funciona)\b/.test(n);
+    });
+
+  const uniqueBenefits: string[] = [];
+  for (const line of usefulLines) {
+    const normalizedLine = normalize(line);
+    if (
+      !uniqueBenefits.some((existing) => {
+        const normalizedExisting = normalize(existing);
+        return (
+          normalizedExisting === normalizedLine ||
+          normalizedExisting.includes(normalizedLine) ||
+          normalizedLine.includes(normalizedExisting)
+        );
+      })
+    ) {
+      uniqueBenefits.push(line.replace(/[.!?]+$/, ""));
+    }
+
+    if (uniqueBenefits.length >= 3) break;
+  }
+
+  let explanation = "";
+
+  if (uniqueBenefits.length > 0) {
+    explanation =
+      `Sí 😊 El ${product} está diseñado para cumplir la función explicada en la publicación.\n\n` +
+      `${uniqueBenefits.map((benefit) => `✅ ${benefit}`).join("\n")}\n\n` +
+      `El resultado depende de usarlo correctamente y de cada caso particular.`;
+  } else if (copy) {
+    explanation =
+      `Sí 😊 El ${product} funciona para el uso explicado en la publicación. ` +
+      `Está pensado para brindar los beneficios indicados en su descripción cuando se utiliza correctamente.`;
+  } else {
+    explanation =
+      `Sí 😊 El ${product} está diseñado para cumplir la función indicada. ` +
+      `El resultado depende del uso correcto y de cada caso particular.`;
+  }
+
+  let continuation = "";
+
+  if (!clean(state.order.city)) {
+    continuation =
+      "😊 Para confirmar la cobertura y la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
+  } else if (
+    !state.order.quantity &&
+    !state.order.locked_offer?.fixed_quantity
+  ) {
+    continuation = "¿Cuántas unidades querés llevar? 😊";
+  } else if (!clean(state.order.customer_name)) {
+    continuation = "Para continuar, pasame tu nombre y apellido. 😊";
+  } else if (!clean(state.order.address)) {
+    continuation = "Ahora solo me falta la calle o dirección exacta para la entrega. 📍";
+  }
+
+  return `${explanation}${continuation ? `\n\n${continuation}` : ""}`;
 }
 
 function isQuestionLikeMessage(text: string) {
@@ -4335,6 +4411,9 @@ REGLAS DURAS:
 - PROHIBIDO inventar ciudad. Si Ciudad = faltante, preguntá ciudad.
 - Una consulta del cliente (por ejemplo: "¿de dónde son?", "¿cómo funciona?", "¿tiene garantía?", "será, anda", "¿funciona de verdad?") NO es una ciudad ni un dato del pedido.
 - Expresiones paraguayas o informales como "será anda", "será que funciona", "anda de verdad" o "da resultado" son consultas sobre el producto: respondé la consulta y retomá el dato faltante.
+- Para responder si funciona, usá EXCLUSIVAMENTE el nombre y el COPY DE VENTA del producto activo.
+- Mencioná de 1 a 3 beneficios concretos presentes en ese copy. No uses una respuesta genérica si hay información específica del producto.
+- No inventes resultados, porcentajes, tiempos ni garantías que no estén escritos en el copy.
 - Si el cliente hace una consulta durante la compra: respondé primero la consulta usando SOLO el entrenamiento disponible y después retomá exactamente el siguiente dato faltante del ESTADO DEL PEDIDO.
 - Si después de responder la consulta todavía falta ciudad, preguntá ciudad. No menciones transportadora, falta de cobertura ni pago anticipado hasta tener una ciudad real.
 - Si Ciudad ya tiene valor en ESTADO DEL PEDIDO, PROHIBIDO volver a preguntar ciudad.
