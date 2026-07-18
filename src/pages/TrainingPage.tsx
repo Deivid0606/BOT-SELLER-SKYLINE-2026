@@ -194,6 +194,162 @@ const normalizeProductItem = (product: ProductItem): ProductItem => {
   };
 };
 
+
+function normalizeCoverageKey(value: string): string {
+  return normalizeLine(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseBulkCoverageInput(input: string): CoverageCity[] {
+  const raw = input.replace(/\r/g, "").trim();
+  if (!raw) return [];
+
+  const parsed: CoverageCity[] = [];
+
+  const addCity = (canonicalValue: string, aliasValues: string[]) => {
+    const canonical = normalizeLine(
+      canonicalValue
+        .replace(/^[📍✅✔•\-]+\s*/, "")
+        .replace(/^\d+[.)]\s*/, "")
+    );
+
+    if (!canonical) return;
+
+    const aliases = Array.from(
+      new Map(
+        [canonical, ...aliasValues]
+          .map((value) =>
+            normalizeLine(
+              value
+                .replace(/^[📍✅✔•\-]+\s*/, "")
+                .replace(/^alias(?:es)?\s*[:\-]\s*/i, "")
+            )
+          )
+          .filter(Boolean)
+          .map((value) => [normalizeCoverageKey(value), value])
+      ).values()
+    );
+
+    parsed.push({
+      id: crypto.randomUUID(),
+      canonical,
+      aliases,
+    });
+  };
+
+  // Formato principal:
+  // 📍 Ciudad
+  // ✅ alias 1, alias 2
+  if (/📍/.test(raw)) {
+    raw
+      .split(/(?=📍\s*)/g)
+      .map((block) => block.trim())
+      .filter(Boolean)
+      .forEach((block) => {
+        const lines = block
+          .split("\n")
+          .map(normalizeLine)
+          .filter(Boolean);
+
+        const canonicalLine =
+          lines.find((line) => /^📍/.test(line)) || lines[0] || "";
+
+        const canonical = canonicalLine.replace(/^📍\s*/, "");
+        const aliasLines = lines
+          .filter((line) => /^[✅✔]/.test(line) || /^alias(?:es)?\s*[:\-]/i.test(line))
+          .flatMap((line) =>
+            line
+              .replace(/^[✅✔]\s*/, "")
+              .replace(/^alias(?:es)?\s*[:\-]\s*/i, "")
+              .split(/[,;|]/g)
+              .map(normalizeLine)
+              .filter(Boolean)
+          );
+
+        addCity(canonical, aliasLines);
+      });
+  } else {
+    // Formatos alternativos:
+    // Ciudad del Este | CDE, Cdad del Este
+    // Ciudad del Este: CDE, Cdad del Este
+    // Ciudad del Este
+    raw
+      .split("\n")
+      .map(normalizeLine)
+      .filter(Boolean)
+      .forEach((line) => {
+        let canonical = line;
+        let aliasPart = "";
+
+        if (line.includes("|")) {
+          const parts = line.split("|");
+          canonical = parts.shift() || "";
+          aliasPart = parts.join(",");
+        } else {
+          const colon = line.match(/^([^:]{2,80})\s*:\s*(.+)$/);
+          if (colon) {
+            canonical = colon[1];
+            aliasPart = colon[2];
+          }
+        }
+
+        const aliases = aliasPart
+          .split(/[,;|]/g)
+          .map(normalizeLine)
+          .filter(Boolean);
+
+        addCity(canonical, aliases);
+      });
+  }
+
+  // Unificar ciudades repetidas y combinar alias.
+  const merged = new Map<string, CoverageCity>();
+
+  for (const city of parsed) {
+    const key = normalizeCoverageKey(city.canonical);
+    if (!key) continue;
+
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, city);
+      continue;
+    }
+
+    const aliases = Array.from(
+      new Map(
+        [...existing.aliases, ...city.aliases]
+          .map((alias) => [normalizeCoverageKey(alias), alias])
+          .filter(([key]) => Boolean(key))
+      ).values()
+    );
+
+    merged.set(key, { ...existing, aliases });
+  }
+
+  return Array.from(merged.values());
+}
+
+function coverageCitiesToBulkText(cities: CoverageCity[]): string {
+  return cities
+    .filter((city) => normalizeLine(city.canonical))
+    .map((city) => {
+      const aliases = city.aliases
+        .filter(
+          (alias) =>
+            normalizeCoverageKey(alias) !== normalizeCoverageKey(city.canonical)
+        )
+        .join(", ");
+
+      return `📍 ${city.canonical}${aliases ? `\n✅ ${aliases}` : ""}`;
+    })
+    .join("\n\n");
+}
+
 export default function TrainingPage() {
   const { user } = useAuth();
   const [trainingData, setTrainingData] = useState<TrainingItem[]>([]);
@@ -206,6 +362,7 @@ export default function TrainingPage() {
   const [mostrarCatalogo, setMostrarCatalogo] = useState(false);
   const [paymentData, setPaymentData] = useState<PaymentData>(EMPTY_PAYMENT_DATA);
   const [coverageCities, setCoverageCities] = useState<CoverageCity[]>([]);
+  const [bulkCoverageText, setBulkCoverageText] = useState("");
   const [mostrarPagos, setMostrarPagos] = useState(true);
   const [mostrarCobertura, setMostrarCobertura] = useState(true);
   
@@ -385,6 +542,77 @@ export default function TrainingPage() {
     setPaymentData((prev) => ({ ...prev, [field]: value }));
   };
 
+
+  const processBulkCoverage = () => {
+    const parsedCities = parseBulkCoverageInput(bulkCoverageText);
+
+    if (!parsedCities.length) {
+      alert("No se encontraron ciudades válidas en el texto pegado.");
+      return;
+    }
+
+    setCoverageCities((current) => {
+      const merged = new Map<string, CoverageCity>();
+
+      for (const city of [...current, ...parsedCities]) {
+        const key = normalizeCoverageKey(city.canonical);
+        if (!key) continue;
+
+        const existing = merged.get(key);
+        if (!existing) {
+          merged.set(key, city);
+          continue;
+        }
+
+        const aliases = Array.from(
+          new Map(
+            [...existing.aliases, ...city.aliases]
+              .map((alias) => [normalizeCoverageKey(alias), alias])
+              .filter(([aliasKey]) => Boolean(aliasKey))
+          ).values()
+        );
+
+        merged.set(key, { ...existing, aliases });
+      }
+
+      const result = Array.from(merged.values()).sort((a, b) =>
+        a.canonical.localeCompare(b.canonical, "es")
+      );
+
+      setBulkCoverageText(coverageCitiesToBulkText(result));
+      return result;
+    });
+
+    alert(`✅ ${parsedCities.length} zonas procesadas correctamente.`);
+  };
+
+  const replaceWithBulkCoverage = () => {
+    const parsedCities = parseBulkCoverageInput(bulkCoverageText);
+
+    if (!parsedCities.length) {
+      alert("No se encontraron ciudades válidas en el texto pegado.");
+      return;
+    }
+
+    const result = parsedCities.sort((a, b) =>
+      a.canonical.localeCompare(b.canonical, "es")
+    );
+
+    setCoverageCities(result);
+    setBulkCoverageText(coverageCitiesToBulkText(result));
+    alert(`✅ Lista reemplazada con ${result.length} zonas.`);
+  };
+
+  const exportCoverageToEditor = () => {
+    setBulkCoverageText(coverageCitiesToBulkText(coverageCities));
+  };
+
+  const clearCoverageCities = () => {
+    if (!confirm("¿Eliminar todas las zonas cargadas?")) return;
+    setCoverageCities([]);
+    setBulkCoverageText("");
+  };
+
   const addCoverageCity = () => {
     setCoverageCities((prev) => [
       ...prev,
@@ -526,7 +754,9 @@ export default function TrainingPage() {
     const storedTraining = item.entrenamiento_completo || item.response || "";
     setEntrenamientoCompleto(stripStructuredSections(storedTraining));
     setPaymentData(parsePaymentData(storedTraining));
-    setCoverageCities(parseCoverageCities(storedTraining));
+    const parsedCoverage = parseCoverageCities(storedTraining);
+    setCoverageCities(parsedCoverage);
+    setBulkCoverageText(coverageCitiesToBulkText(parsedCoverage));
     setProducts((item.products || []).map(normalizeProductItem));
     setMostrarCatalogo(item.products && item.products.length > 0);
     setEditingId(item.id);
@@ -561,6 +791,7 @@ export default function TrainingPage() {
     setMostrarCatalogo(false);
     setPaymentData(EMPTY_PAYMENT_DATA);
     setCoverageCities([]);
+    setBulkCoverageText("");
     setMostrarPagos(true);
     setMostrarCobertura(true);
     setEditingId(null);
@@ -872,9 +1103,9 @@ Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segund
             )}
           </div>
 
-          {/* Zonas con cobertura estructuradas */}
+          {/* Zonas con cobertura — carga masiva */}
           <div className="border-t border-border pt-4">
-            <div className="mb-3 flex items-center justify-between">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
               <button
                 type="button"
                 onClick={() => setMostrarCobertura((prev) => !prev)}
@@ -885,91 +1116,141 @@ Con el Procesador de Alimentos Premium RAF PRO® preparás tus comidas en segund
                 {coverageCities.length > 0 && ` (${coverageCities.length})`}
               </button>
 
-              <button
-                type="button"
-                onClick={addCoverageCity}
-                className="flex items-center gap-1 text-xs text-primary transition-colors hover:text-primary/80"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Añadir ciudad
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={exportCoverageToEditor}
+                  className="rounded-md border border-border bg-secondary/40 px-2.5 py-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-secondary/70"
+                >
+                  Ver lista cargada
+                </button>
+                <button
+                  type="button"
+                  onClick={clearCoverageCities}
+                  className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-[10px] text-destructive transition-colors hover:bg-destructive/20"
+                >
+                  Limpiar todo
+                </button>
+              </div>
             </div>
 
             {mostrarCobertura && (
-              <div className="space-y-3">
-                <p className="text-[10px] text-muted-foreground">
-                  Cargá únicamente las ciudades con pago contra-entrega. Toda localidad válida que no esté aquí se tratará como envío por transportadora con pago anticipado.
-                </p>
+              <div className="space-y-4">
+                <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-semibold text-foreground">
+                        Carga masiva de zonas
+                      </p>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">
+                        Pegá toda tu lista de ciudades y alias de una sola vez.
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-medium text-primary">
+                      {coverageCities.length} cargadas
+                    </span>
+                  </div>
 
-                {coverageCities.length === 0 ? (
-                  <button
-                    type="button"
-                    onClick={addCoverageCity}
-                    className="w-full rounded-lg border border-dashed border-border p-5 text-center text-xs text-muted-foreground transition-colors hover:bg-secondary/30"
-                  >
-                    <MapPin className="mx-auto mb-2 h-7 w-7 opacity-40" />
-                    Agregar primera ciudad con cobertura
-                  </button>
-                ) : (
-                  <div className="max-h-[420px] space-y-3 overflow-y-auto pr-2">
-                    {coverageCities.map((city, index) => (
-                      <div
-                        key={city.id}
-                        className="rounded-lg border border-border bg-secondary/20 p-3"
-                      >
-                        <div className="mb-2 flex items-center justify-between">
-                          <span className="text-xs font-medium text-muted-foreground">
-                            Ciudad #{index + 1}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removeCoverageCity(city.id)}
-                            className="text-destructive transition-colors hover:text-destructive/80"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
+                  <textarea
+                    value={bulkCoverageText}
+                    onChange={(e) => setBulkCoverageText(e.target.value)}
+                    rows={14}
+                    className="w-full resize-y rounded-lg border border-border bg-secondary/50 px-3 py-2 font-mono text-xs leading-relaxed placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none"
+                    placeholder={`📍 Asunción
+✅ ASU, Asuncion, Capital
 
-                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                          <div>
-                            <label className="text-[10px] text-muted-foreground">
-                              Nombre oficial
-                            </label>
-                            <input
-                              value={city.canonical}
-                              onChange={(e) =>
-                                updateCoverageCity(city.id, "canonical", e.target.value)
-                              }
-                              placeholder="Ciudad del Este"
-                              className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
-                            />
+📍 Ciudad del Este
+✅ CDE, Cdad del Este, Ciudad Este
+
+📍 Fernando de la Mora
+✅ FDM, Fdo de la Mora`}
+                  />
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={processBulkCoverage}
+                      className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                    >
+                      <Zap className="h-3.5 w-3.5" />
+                      Procesar y agregar
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={replaceWithBulkCoverage}
+                      className="flex items-center gap-1.5 rounded-lg border border-border bg-secondary px-3 py-2 text-xs font-medium transition-colors hover:bg-secondary/80"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      Reemplazar lista actual
+                    </button>
+                  </div>
+
+                  <div className="mt-3 rounded-md border border-border/60 bg-background/40 p-2.5 text-[10px] leading-relaxed text-muted-foreground">
+                    <strong className="text-foreground">Formatos aceptados:</strong>
+                    <br />
+                    <span>📍 Ciudad + ✅ alias separados por coma</span>
+                    <br />
+                    <span>Ciudad | alias 1, alias 2</span>
+                    <br />
+                    <span>Ciudad: alias 1, alias 2</span>
+                    <br />
+                    <span>Una ciudad por línea, aunque no tenga alias</span>
+                  </div>
+                </div>
+
+                {coverageCities.length > 0 && (
+                  <div className="rounded-lg border border-border bg-secondary/20 p-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-xs font-medium">
+                        Vista previa de zonas procesadas
+                      </p>
+                      <span className="text-[10px] text-muted-foreground">
+                        Mostrando {Math.min(coverageCities.length, 12)} de{" "}
+                        {coverageCities.length}
+                      </span>
+                    </div>
+
+                    <div className="grid max-h-[340px] grid-cols-1 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
+                      {coverageCities.slice(0, 12).map((city) => (
+                        <div
+                          key={city.id}
+                          className="rounded-md border border-border/70 bg-background/40 p-2"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-xs font-medium text-foreground">
+                                📍 {city.canonical}
+                              </p>
+                              <p className="mt-1 line-clamp-2 text-[10px] text-muted-foreground">
+                                {city.aliases.length
+                                  ? city.aliases.join(", ")
+                                  : "Sin alias"}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => removeCoverageCity(city.id)}
+                              className="shrink-0 text-destructive/70 hover:text-destructive"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
                           </div>
-
-                          <div>
-                            <label className="text-[10px] text-muted-foreground">
-                              Alias separados por coma
-                            </label>
-                            <input
-                              value={city.aliases.join(", ")}
-                              onChange={(e) =>
-                                updateCoverageCity(
-                                  city.id,
-                                  "aliases",
-                                  e.target.value
-                                    .split(",")
-                                    .map((alias) => alias.trim())
-                                    .filter(Boolean)
-                                )
-                              }
-                              placeholder="CDE, Cdad del Este"
-                              className="mt-1 w-full rounded-lg border border-border bg-secondary/50 px-3 py-2 text-sm focus:border-primary/50 focus:outline-none"
-                            />
-                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
+
+                    {coverageCities.length > 12 && (
+                      <p className="mt-2 text-center text-[10px] text-muted-foreground">
+                        Hay {coverageCities.length - 12} zonas adicionales guardadas.
+                      </p>
+                    )}
                   </div>
                 )}
+
+                <p className="text-[10px] text-muted-foreground">
+                  Solo cargá ciudades con contra-entrega. Toda localidad válida que no aparezca aquí será tratada como envío por transportadora con pago anticipado.
+                </p>
               </div>
             )}
           </div>
