@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V101 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V102 - Mega Todo Store / One Store
  * 
+ * V102: después de recibir la ciudad exige cantidad explícita, sin borrar la cantidad cuando luego llega el nombre.
  * V101: exige cantidad explícita salvo pack fijo y valida nombre + apellido reales.
  * V99: respeta dinámicamente si la dirección/ubicación es opcional según el entrenamiento del usuario.
  *
@@ -4739,11 +4740,12 @@ Para continuar, pasame tu nombre completo y número de celular.`;
   }
 
   if (!o.quantity) {
+    const offers = state.productInfo ? productOffersText(state.productInfo) : "";
     return `✅ Tenemos envío GRATIS contra entrega en ${o.city} 🚚
 
 Pagás solamente el producto cuando lo recibís 😊
 
-¿Cuántas unidades querés llevar?`;
+¿Cuántas unidades querés llevar?${offers ? `\n\n${offers}` : ""}`;
   }
 
   return "";
@@ -6311,13 +6313,20 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = orderData.locked_offer.quantity;
     }
 
-    // V101: una promo variable o el precio de 1 unidad NO define cantidad.
-    // Solo un pack fijo real puede completar cantidad automáticamente.
-    if (
-      orderData.locked_offer &&
-      !orderData.locked_offer.fixed_quantity &&
-      !hasExplicitQuantity(texto)
-    ) {
+    // V102: una promo variable o el precio de 1 unidad NO define cantidad.
+    // Se reinicia únicamente cuando el cliente acaba de expresar intención de
+    // compra o acaba de indicar la ciudad. Después de que el cliente elige una
+    // cantidad explícita, mensajes posteriores como su nombre NO deben borrarla.
+    const mustAskQuantityAfterThisMessage =
+      explicitQty <= 0 &&
+      !orderData.locked_offer?.fixed_quantity &&
+      (
+        isGenericBuyReply(texto) ||
+        cityWasCapturedNow ||
+        (isCityStep && Boolean(effectiveDetectedCity))
+      );
+
+    if (mustAskQuantityAfterThisMessage) {
       orderData.quantity = 0;
     }
 
@@ -6336,6 +6345,18 @@ export default async function handler(req: any, res: any) {
         }
         orderData.quantity = explicitQty;
       }
+    }
+
+    // V102: defensa final antes de calcular el estado.
+    // Una ciudad recién recibida debe llevar siempre al paso de cantidad,
+    // salvo que el producto sea un pack fijo real o el mismo mensaje incluya
+    // una cantidad explícita.
+    if (
+      cityWasCapturedNow &&
+      explicitQty <= 0 &&
+      !orderData.locked_offer?.fixed_quantity
+    ) {
+      orderData.quantity = 0;
     }
 
     // V101: saneamiento final del nombre antes de calcular el estado.
