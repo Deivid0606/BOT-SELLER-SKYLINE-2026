@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V103 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V104 - Mega Todo Store / One Store
  * 
+ * V104: respeta ubicación opcional y sincroniza cantidad/promoción antes de confirmar.
  * V103: después de recibir la ciudad muestra promociones y exige cantidad antes del nombre.
  * V102: evita que una cantidad elegida se borre cuando luego llega el nombre.
  * V101: exige cantidad explícita salvo pack fijo y valida nombre + apellido reales.
@@ -4674,6 +4675,15 @@ ${missing.map((item) => `✅ ${item}`).join("\n")}`;
 
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
+
+  // V104: protección final contra una promoción desfasada.
+  if (
+    o.locked_offer &&
+    sanitizeQuantity(o.locked_offer.quantity) !== sanitizeQuantity(o.quantity)
+  ) {
+    o.locked_offer = null;
+    state.total = calculateTotal(o.product, o.quantity, parsed, null);
+  }
   const location = clean(o.address)
     ? [clean(o.city), clean(o.address)].filter(Boolean).join(" — ")
     : `${clean(o.city)} — ubicación pendiente para coordinar con el delivery`;
@@ -4777,6 +4787,16 @@ ${o.locked_offer.quantity} unidades de ${o.product}
 ${bankDataText(parsed)} 📲`;
   }
 
+  const fixedRequiredLines = [
+    !clean(o.customer_name) ? "✅ nombre y apellido" : "",
+    !state.addressOptional && !clean(o.address) ? "✅ dirección exacta o ubicación" : "",
+  ].filter(Boolean);
+
+  const fixedOptionalLocation =
+    state.addressOptional && !clean(o.address)
+      ? "\n\n📍 La ubicación es opcional; podés enviarla después o pasarla directamente al delivery."
+      : "";
+
   return `✅ Perfecto 😊
 
 📦 Promo confirmada:
@@ -4785,10 +4805,9 @@ ${o.locked_offer.quantity} unidades de ${o.product}
 
 📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚${observationBlock(o)}
 
-Ahora solo necesito:
-✅ nombre y apellido
-✅ dirección exacta o ubicación
-📞 Ya tengo tu número de WhatsApp: ${orderData.phone || senderPhoneFallback(fromNumber)}`;
+${fixedRequiredLines.length ? `Ahora solo necesito:
+${fixedRequiredLines.join("\n")}` : "Ya tengo los datos obligatorios para registrar el pedido."}${fixedOptionalLocation}
+📞 Ya tengo tu número de WhatsApp: ${o.phone || senderPhoneFallback("")}`;
 }
 
 function deterministicAfterQuantityMessage(state: ConversationState, parsed: ParsedTraining) {
@@ -4823,6 +4842,16 @@ ${promoLine}
 ${bankDataText(parsed)} 📲`;
   }
 
+  const optionalLocationNote =
+    state.addressOptional && !clean(o.address)
+      ? "\n\n📍 La ubicación es opcional; podés enviarla después o pasarla directamente al delivery."
+      : "";
+
+  const requiredLines = [
+    !clean(o.customer_name) ? "✅ nombre y apellido" : "",
+    !state.addressOptional && !clean(o.address) ? "✅ dirección exacta o ubicación" : "",
+  ].filter(Boolean);
+
   return `🎉 ¡Excelente elección! Queda seleccionado:
 
 📦 ${o.product}
@@ -4830,10 +4859,9 @@ ${bankDataText(parsed)} 📲`;
 ${promoLine}
 📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚
 
-Ahora solo necesito:
-✅ nombre y apellido
-✅ dirección exacta o ubicación
-📞 Ya tengo tu número de WhatsApp: ${orderData.phone || senderPhoneFallback(fromNumber)}`;
+${requiredLines.length ? `Ahora solo necesito:
+${requiredLines.join("\n")}` : "Ya tengo los datos obligatorios para registrar el pedido."}${optionalLocationNote}
+📞 Ya tengo tu número de WhatsApp: ${o.phone || senderPhoneFallback("")}`;
 }
 
 function deterministicWaitingPaymentProofMessage(state: ConversationState, parsed: ParsedTraining) {
@@ -6362,6 +6390,66 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = 0;
     }
 
+    // V104: la cantidad elegida por el cliente es la fuente de verdad.
+    // Una oferta vieja de 1 unidad nunca puede reemplazar una cantidad 2.
+    if (explicitQty > 0) {
+      orderData.quantity = explicitQty;
+
+      if (productInfo) {
+        const exactTemplateOfferRaw = getTemplateOfferForQuantity(
+          templatePricing,
+          productInfo.canonical,
+          explicitQty
+        );
+        const exactTemplateOffer = isPlausibleOfferForProduct(
+          exactTemplateOfferRaw,
+          productInfo
+        )
+          ? exactTemplateOfferRaw
+          : null;
+        const exactCatalogOffer = getCatalogOffer(productInfo, explicitQty);
+
+        orderData.locked_offer =
+          exactTemplateOffer ||
+          exactCatalogOffer ||
+          null;
+      }
+    }
+
+    // Si la cantidad ya estaba guardada de un turno anterior, la oferta debe
+    // coincidir con ella. De lo contrario se descarta y se recalcula.
+    if (
+      orderData.quantity > 0 &&
+      orderData.locked_offer &&
+      sanitizeQuantity(orderData.locked_offer.quantity) !== sanitizeQuantity(orderData.quantity)
+    ) {
+      orderData.locked_offer = null;
+    }
+
+    if (
+      orderData.quantity > 0 &&
+      !orderData.locked_offer &&
+      productInfo
+    ) {
+      const persistedTemplateOfferRaw = getTemplateOfferForQuantity(
+        templatePricing,
+        productInfo.canonical,
+        orderData.quantity
+      );
+      const persistedTemplateOffer = isPlausibleOfferForProduct(
+        persistedTemplateOfferRaw,
+        productInfo
+      )
+        ? persistedTemplateOfferRaw
+        : null;
+      const persistedCatalogOffer = getCatalogOffer(productInfo, orderData.quantity);
+
+      orderData.locked_offer =
+        persistedTemplateOffer ||
+        persistedCatalogOffer ||
+        null;
+    }
+
     // V101: saneamiento final del nombre antes de calcular el estado.
     // Evita confirmar valores como "Y Apellido" recuperados de textos del bot.
     if (orderData.customer_name && isContaminatedCustomerName(orderData.customer_name, parsed)) {
@@ -6461,6 +6549,7 @@ export default async function handler(req: any, res: any) {
             order_id: orderData.order_id || null,
             payment_proof_received: false,
             step: finalState.step,
+            address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
           },
           debug: {
@@ -6594,6 +6683,7 @@ export default async function handler(req: any, res: any) {
             order_id: orderData.order_id || null,
             payment_proof_received: orderData.payment_proof_received || false,
             step: finalState.step,
+            address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
           },
           debug: true
@@ -6638,6 +6728,7 @@ export default async function handler(req: any, res: any) {
             order_id: orderData.order_id || null,
             payment_proof_received: orderData.payment_proof_received || false,
             step: finalState.step,
+            address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
           },
           debug: true
@@ -6670,6 +6761,7 @@ export default async function handler(req: any, res: any) {
             order_data: orderData,
             order_id: orderData.order_id || null,
             step: finalState.step,
+            address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
           },
           debug: true
@@ -6707,6 +6799,7 @@ export default async function handler(req: any, res: any) {
           order_id: orderData.order_id || null,
           payment_proof_received: orderData.payment_proof_received || false,
           step: finalState.step,
+          address_optional: finalState.addressOptional,
           updated_at: new Date().toISOString(),
         },
         debug: true
@@ -6759,6 +6852,7 @@ export default async function handler(req: any, res: any) {
             order_id: orderData.order_id || null,
             payment_proof_received: orderData.payment_proof_received || false,
             step: finalState.step,
+            address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
           },
           debug: true
@@ -6812,6 +6906,7 @@ export default async function handler(req: any, res: any) {
           order_id: orderData.order_id || null,
           payment_proof_received: orderData.payment_proof_received || false,
           step: finalState.step,
+          address_optional: finalState.addressOptional,
           updated_at: new Date().toISOString(),
         },
         debug: true
@@ -6972,7 +7067,9 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       response: isPayOnDeliveryRequest(safeMessage)
         ? "😊 Para indicarte correctamente la forma de pago, decime nuevamente tu ciudad. Si tu zona no tiene contra-entrega, el envío es por transportadora y el pago es anticipado."
         : safeOrder?.city
-          ? "😊 Recibí tu mensaje. Para continuar, enviame solamente el dato que falta del pedido (nombre completo o dirección/ubicación)."
+          ? !clean(safeOrder?.customer_name)
+            ? "😊 Recibí tu mensaje. Para continuar, pasame tu nombre y apellido."
+            : "😊 Recibí tu mensaje. Ya tengo los datos principales del pedido; podés enviar la ubicación después o pasarla directamente al delivery."
           : "😊 Recibí tu mensaje. Indicame primero tu ciudad para confirmar la modalidad de entrega. 📍",
       context: {
         ...safeContext,
