@@ -1,8 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V95 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V96 - Mega Todo Store / One Store
  * 
+ * V96: lee y aplica todos los entrenamientos activos por usuario (reglas, cobertura y banco).
+ *
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
  * Mantiene el fix que evita repetir el copy cuando el cliente
@@ -76,12 +78,38 @@ type BankData = {
   raw?: string;
 };
 
+type TrainingSections = {
+  general: string;
+  coverage: string;
+  banking: string;
+  combined: string;
+  totalItems: number;
+  generalItems: number;
+  coverageItems: number;
+  bankingItems: number;
+};
+
 type ParsedTraining = {
   products: ProductItem[];
   cities: { alias: string; canonical: string; covered: boolean }[];
   catalogUrl: string;
   bankData: BankData | null;
+
+  // Texto completo combinado. Se conserva para compatibilidad del parser.
   raw: string;
+
+  // Entrenamientos separados del usuario actual.
+  // generalTraining se envía a Gemini y puede contener uno o muchos registros.
+  generalTraining: string;
+  coverageTraining: string;
+  bankingTraining: string;
+
+  trainingStats: {
+    totalItems: number;
+    generalItems: number;
+    coverageItems: number;
+    bankingItems: number;
+  };
 };
 
 type OrderData = {
@@ -249,21 +277,109 @@ async function getAllTrainingData(userId: string) {
   return data || [];
 }
 
+function getTrainingBody(item: any): string {
+  return (
+    clean(item?.entrenamiento_completo) ||
+    clean(item?.response) ||
+    ""
+  );
+}
+
+function trainingItemText(item: any): string {
+  const intent = clean(item?.intent || "");
+  const examples = Array.isArray(item?.examples)
+    ? item.examples.map(clean).filter(Boolean).join("\n")
+    : "";
+  const body = getTrainingBody(item);
+
+  return [
+    intent ? `TEMA / CATEGORÍA: ${intent}` : "",
+    examples ? `FRASES DE EJEMPLO:\n${examples}` : "",
+    body ? `ENTRENAMIENTO COMPLETO:\n${body}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+}
+
+function classifyTrainingItem(item: any): "general" | "coverage" | "banking" {
+  const intent = normalize(item?.intent || "");
+  const body = normalize(getTrainingBody(item));
+
+  // Primero datos bancarios para que una frase como "sin cobertura se paga por
+  // transferencia" dentro de las reglas generales no clasifique mal la tarjeta.
+  const bankingByTitle =
+    /\b(informacion bancaria|datos bancarios|datos para transferencia|datos de transferencia|cuenta bancaria)\b/.test(intent);
+  const bankingByStructure =
+    /\b(titular|beneficiario)\b/.test(body) &&
+    /\b(cuenta|nro de cuenta|numero de cuenta|alias)\b/.test(body) &&
+    /\b(banco|entidad)\b/.test(body);
+
+  if (bankingByTitle || bankingByStructure) return "banking";
+
+  const coverageByTitle =
+    /\b(zona|zonas|ciudad|ciudades)\b/.test(intent) &&
+    /\bcobertura\b/.test(intent);
+  const coverageByHeader =
+    /\b(zonas? con cobertura|zonas? de cobertura|lista completa por ciudad)\b/.test(body);
+
+  if (coverageByTitle || coverageByHeader) return "coverage";
+
+  // Todo registro activo que no sea banco ni cobertura se considera una regla
+  // general. Así el usuario puede tener 1, 3, 10 o más entrenamientos separados.
+  return "general";
+}
+
+function buildTrainingSections(items: any[]): TrainingSections {
+  const generalParts: string[] = [];
+  const coverageParts: string[] = [];
+  const bankingParts: string[] = [];
+
+  for (const item of items || []) {
+    const fullText = trainingItemText(item);
+
+    // Las tarjetas que contienen exclusivamente productos pueden no tener texto.
+    // Sus productos se siguen leyendo desde productsFromVisualCatalog().
+    if (!fullText) continue;
+
+    const category = classifyTrainingItem(item);
+    if (category === "banking") bankingParts.push(fullText);
+    else if (category === "coverage") coverageParts.push(fullText);
+    else generalParts.push(fullText);
+  }
+
+  const joinAll = (parts: string[]) =>
+    parts
+      .filter(Boolean)
+      .join("\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+      .trim();
+
+  const general = joinAll(generalParts);
+  const coverage = joinAll(coverageParts);
+  const banking = joinAll(bankingParts);
+
+  // El parser recibe las tres secciones. Gemini recibe generalTraining por
+  // separado para aplicar TODAS las reglas comerciales del usuario.
+  const combined = [general, coverage, banking]
+    .filter(Boolean)
+    .join("\n\n---\n\n")
+    .trim();
+
+  return {
+    general,
+    coverage,
+    banking,
+    combined,
+    totalItems: (items || []).length,
+    generalItems: generalParts.length,
+    coverageItems: coverageParts.length,
+    bankingItems: bankingParts.length,
+  };
+}
+
+// Compatibilidad con cualquier llamada antigua dentro del proyecto.
 function buildTrainingText(items: any[]) {
-  return items
-    .map((i) => {
-      const examples = Array.isArray(i.examples) ? i.examples.join("\n") : "";
-
-      // V94: la fuente principal del entrenamiento es entrenamiento_completo.
-      // response queda únicamente como compatibilidad con registros antiguos.
-      const trainingBody =
-        clean(i.entrenamiento_completo) ||
-        clean(i.response) ||
-        "";
-
-      return `${i.intent || ""}\n${examples}\n${trainingBody}`;
-    })
-    .join("\n\n---\n\n");
+  return buildTrainingSections(items).combined;
 }
 
 function normalizeProductImages(input: any): string[] {
@@ -738,6 +854,15 @@ function parseTraining(training: string): ParsedTraining {
     catalogUrl: parseCatalogUrl(training),
     bankData: parseBankData(training),
     raw: training,
+    generalTraining: "",
+    coverageTraining: "",
+    bankingTraining: "",
+    trainingStats: {
+      totalItems: 0,
+      generalItems: 0,
+      coverageItems: 0,
+      bankingItems: 0,
+    },
   };
 }
 
@@ -3431,8 +3556,16 @@ REGLAS:
 - No repitas el bloque de ✅ PEDIDO CONFIRMADO.
 - Sé breve, cálido y con emojis moderados.
 
-ENTRENAMIENTO:
-${parsed.raw}
+ENTRENAMIENTOS GENERALES DEL USUARIO:
+${parsed.generalTraining || "No hay reglas generales configuradas para este usuario."}
+
+DATOS DE TRANSFERENCIA DEL USUARIO:
+${bankDataText(parsed)}
+
+IMPORTANTE:
+- Aplicá todos los entrenamientos generales activos del usuario, no solamente el primero.
+- El estado técnico del pedido prevalece únicamente para datos calculados y validaciones.
+- El estilo, la conversación, la postventa y las reglas comerciales deben salir de los entrenamientos generales del usuario.
 `.trim();
 }
 
@@ -4586,6 +4719,29 @@ ${state.productInfo.salesCopy}
 DATOS DE TRANSFERENCIA:
 ${bankDataText(parsed)}
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+${parsed.generalTraining || "No hay reglas generales configuradas para este usuario."}
+
+CÓMO USAR LOS ENTRENAMIENTOS DEL USUARIO:
+- Leé y aplicá TODOS los bloques anteriores; el usuario puede tener uno, tres, diez o más entrenamientos activos.
+- No ignores un entrenamiento por aparecer después de otro.
+- Si varios entrenamientos generales se complementan, aplicalos juntos.
+- Si dos reglas comerciales se contradicen, priorizá la regla más específica para la situación actual; si siguen siendo incompatibles, priorizá el entrenamiento cargado más recientemente, porque los registros fueron obtenidos en orden descendente por fecha.
+- Los entrenamientos generales deciden tono, conversación, cierres de venta, objeciones, factura, entrega, postventa y forma de pedir datos.
+- El backend decide únicamente los datos técnicos: producto detectado, cantidad registrada, ciudad, cobertura, total, datos faltantes y si el pedido puede confirmarse.
+- Nunca reemplaces un dato técnico válido por una suposición del entrenamiento.
+- No uses la lista completa de cobertura para redactar: usá el valor de cobertura ya calculado en ESTADO DEL PEDIDO.
+- Usá solamente los datos bancarios estructurados mostrados en DATOS DE TRANSFERENCIA.
+
+ORDEN DE PRIORIDAD:
+1. Datos técnicos ya calculados en ESTADO DEL PEDIDO.
+2. INSTRUCCIÓN OBLIGATORIA sobre el siguiente objetivo técnico.
+3. TODOS los ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO para decidir cómo conversar y vender.
+4. Copy, precios y promociones reales del catálogo o plantilla activa.
+
 REGLAS DURAS:
 - Respondé en español paraguayo/neutro, estilo WhatsApp.
 - Sé vendedor amable, cálido y fluido. Usá emojis comerciales moderados: 😊🔥🚚✅📦💰📍📲.
@@ -5037,8 +5193,31 @@ export default async function handler(req: any, res: any) {
     }
 
     const allTraining = await getAllTrainingData(user_id);
-    const trainingText = buildTrainingText(allTraining);
-    const parsed = parseTraining(trainingText);
+
+    // Lee TODOS los registros activos del usuario, sin asumir que existen solo 3.
+    // Cada registro queda clasificado como reglas generales, cobertura o banco.
+    const trainingSections = buildTrainingSections(allTraining);
+    const parsed = parseTraining(trainingSections.combined);
+
+    parsed.generalTraining = trainingSections.general;
+    parsed.coverageTraining = trainingSections.coverage;
+    parsed.bankingTraining = trainingSections.banking;
+    parsed.trainingStats = {
+      totalItems: trainingSections.totalItems,
+      generalItems: trainingSections.generalItems,
+      coverageItems: trainingSections.coverageItems,
+      bankingItems: trainingSections.bankingItems,
+    };
+
+    console.log("🧠 Entrenamientos activos del usuario:", {
+      user_id,
+      total: parsed.trainingStats.totalItems,
+      generales: parsed.trainingStats.generalItems,
+      cobertura: parsed.trainingStats.coverageItems,
+      bancarios: parsed.trainingStats.bankingItems,
+      ciudadesDetectadas: parsed.cities.length,
+      bancoDetectado: Boolean(parsed.bankData),
+    });
 
     const visualProducts = productsFromVisualCatalog(allTraining);
     parsed.products = mergeProductsByPriority(visualProducts, parsed.products);
