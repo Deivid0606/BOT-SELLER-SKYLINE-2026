@@ -1,8 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V98 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V99 - Mega Todo Store / One Store
  * 
+ * V99: respeta dinámicamente si la dirección/ubicación es opcional según el entrenamiento del usuario.
+ *
  * V98: acepta cantidad + ciudad + nombre en un mismo mensaje y evita respuestas genéricas por errores parciales.
  *
  * V97: corrige consultas de factura, evita guardarlas como observación y protege
@@ -141,6 +143,8 @@ type ConversationState = {
   total: number;
   missing: string[];
   hardInstruction: string;
+  // Se calcula desde el entrenamiento general del usuario.
+  addressOptional: boolean;
 };
 
 function encontrarProductoPorPalabraClave(mensaje: string, products: ProductItem[]): ProductItem | null {
@@ -1305,7 +1309,7 @@ function buildProductEffectivenessResponse(state: ConversationState): string {
     continuation = "¿Cuántas unidades querés llevar? 😊";
   } else if (!clean(state.order.customer_name)) {
     continuation = "Para continuar, pasame tu nombre y apellido. 😊";
-  } else if (!clean(state.order.address)) {
+  } else if (!state.addressOptional && !clean(state.order.address)) {
     continuation = "Ahora solo me falta la calle o dirección exacta para la entrega. 📍";
   }
 
@@ -1347,7 +1351,7 @@ function buildMissingDataContinuation(state: ConversationState): string {
   }
 
   if (!clean(state.order.customer_name)) missing.push("nombre y apellido");
-  if (state.coverage !== false && !clean(state.order.address)) {
+  if (state.coverage !== false && !state.addressOptional && !clean(state.order.address)) {
     missing.push("dirección o ubicación");
   }
 
@@ -1447,7 +1451,7 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
     if (!state.order.city) continuation = "📍 ¿Para qué ciudad sería el envío?";
     else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) continuation = "¿Cuántas unidades querés llevar?";
     else if (!state.order.customer_name) continuation = "Para continuar, pasame tu nombre y apellido.";
-    else if (!state.order.address) continuation = "Ahora pasame la dirección exacta o ubicación.";
+    else if (!state.addressOptional && !state.order.address) continuation = "Ahora pasame la dirección exacta o ubicación.";
     
 
     if (state.coverage === false && state.order.city) {
@@ -1474,7 +1478,7 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
     continuation = "¿Cuántas unidades querés llevar?";
   } else if (!state.order.customer_name) {
     continuation = "Para continuar, pasame tu nombre y apellido.";
-  } else if (state.coverage !== false && !state.order.address) {
+  } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
     continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
   }
 
@@ -3573,7 +3577,7 @@ function buildDeterministicAcknowledgementResponse(text: string, state: Conversa
     continuation = "¿Cuántas unidades querés llevar?";
   } else if (!state.order.customer_name) {
     continuation = "Para completar el pedido, pasame tu nombre y apellido.";
-  } else if (state.coverage !== false && !state.order.address) {
+  } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
     continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
   }
 
@@ -3869,7 +3873,41 @@ function isSameOrderForPaymentProof(oldOrder: OrderData, newOrder: OrderData) {
   return Boolean(sameProduct && sameCity && sameQuantity && (sameOrderId || !clean(newOrder.order_id)));
 }
 
-function nextStep(order: OrderData, coverage: boolean | null) {
+
+function isAddressOptionalByTraining(
+  parsed: ParsedTraining,
+  coverage: boolean | null
+): boolean {
+  // Para transportadora la dirección exacta no forma parte del cierre técnico.
+  if (coverage === false) return true;
+
+  const raw = clean(parsed.generalTraining || "");
+  const n = normalize(raw);
+  if (!n) return false;
+
+  // Una regla explícita de obligatoriedad tiene prioridad cuando no convive
+  // con una regla igualmente explícita de opcionalidad.
+  const explicitlyRequired =
+    /\b(direccion|ubicacion|referencia)\b[\s\S]{0,45}\b(obligatoria|obligatorio|indispensable|requerida|requerido)\b/.test(n) ||
+    /\b(no se puede|no debe|no confirmar)\b[\s\S]{0,55}\b(sin direccion|sin ubicacion|sin referencia)\b/.test(n);
+
+  const explicitlyOptional =
+    /\b(direccion|ubicacion|referencia|domicilio)\b[\s\S]{0,55}\b(opcional|no obligatoria|no obligatorio|puede faltar|no es necesaria|no es necesario)\b/.test(n) ||
+    /\b(opcional|no obligatoria|no obligatorio)\b[\s\S]{0,55}\b(direccion|ubicacion|referencia|domicilio)\b/.test(n) ||
+    /\b(puede|podra|podrá|podes|podés)\b[\s\S]{0,80}\b(pasar|enviar|compartir|dar)\b[\s\S]{0,80}\b(direccion|ubicacion|referencia)\b[\s\S]{0,80}\b(despues|más tarde|mas tarde|al delivery|directamente al delivery)\b/.test(n) ||
+    /\b(direccion|ubicacion|referencia)\b[\s\S]{0,90}\b(despues|más tarde|mas tarde|al delivery|directamente al delivery)\b/.test(n) ||
+    /\b(confirmar|registrar|agendar)\b[\s\S]{0,70}\b(pedido)\b[\s\S]{0,70}\b(sin direccion|sin ubicacion)\b/.test(n);
+
+  if (explicitlyRequired && !explicitlyOptional) return false;
+  return explicitlyOptional;
+}
+
+function addressPendingMessage(state: ConversationState): string {
+  if (!state.addressOptional || clean(state.order.address)) return "";
+  return "📍 Ubicación: pendiente; puede enviarla más tarde o pasarla directamente al delivery.";
+}
+
+function nextStep(order: OrderData, coverage: boolean | null, addressOptional = false) {
   if (!order.product) return "selling";
   if (!order.city) return "collecting_city";
 
@@ -3886,11 +3924,11 @@ function nextStep(order: OrderData, coverage: boolean | null) {
   }
 
   if (!order.customer_name) return "collecting_name";
-  if (!order.address) return "collecting_address";
+  if (!addressOptional && !order.address) return "collecting_address";
   return "confirm_order";
 }
 
-function getMissing(order: OrderData, coverage: boolean | null) {
+function getMissing(order: OrderData, coverage: boolean | null, addressOptional = false) {
   const missing: string[] = [];
   if (!order.product) missing.push("producto");
   if (!order.city) missing.push("ciudad");
@@ -3898,7 +3936,7 @@ function getMissing(order: OrderData, coverage: boolean | null) {
 
   if (order.product && order.city && order.quantity) {
     if (!order.customer_name) missing.push("nombre y apellido");
-    if (coverage !== false && !order.address) missing.push("dirección exacta o ubicación");
+    if (coverage !== false && !addressOptional && !order.address) missing.push("dirección exacta o ubicación");
     if (coverage === false && !order.payment_proof_received) missing.push("comprobante de transferencia");
   }
 
@@ -4125,8 +4163,9 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
   const productInfo = getProductInfo(order.product, parsed);
   const coverage = order.city ? hasCoverage(order.city, parsed) : null;
   const total = order.product && order.quantity ? calculateTotal(order.product, order.quantity, parsed, order.locked_offer) : 0;
-  const missing = getMissing(order, coverage);
-  const step = nextStep(order, coverage);
+  const addressOptional = isAddressOptionalByTraining(parsed, coverage);
+  const missing = getMissing(order, coverage, addressOptional);
+  const step = nextStep(order, coverage, addressOptional);
 
   const state: ConversationState = {
     order,
@@ -4136,6 +4175,7 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
     total,
     missing,
     hardInstruction: "",
+    addressOptional,
   };
 
   state.hardInstruction = buildHardInstruction(state);
@@ -4149,7 +4189,7 @@ function shouldConfirmOrder(state: ConversationState) {
     return false;
   }
 
-  if (state.coverage !== false && !o.address) {
+  if (state.coverage !== false && !state.addressOptional && !o.address) {
     return false;
   }
 
@@ -4175,7 +4215,7 @@ function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState) 
   if (!state.productInfo) return false;
 
   if (state.coverage !== false) {
-    return Boolean(clean(o.address));
+    return state.addressOptional || Boolean(clean(o.address));
   }
 
   return Boolean(o.payment_proof_received);
@@ -4561,7 +4601,7 @@ function buildDeterministicMissingDataSummary(state: ConversationState) {
   const missing: string[] = [];
 
   if (!clean(o.customer_name)) missing.push("nombre y apellido");
-  if (!clean(o.address) || isOnlyPurchaseWithSize(o.address)) missing.push("calle o dirección exacta");
+  if (!state.addressOptional && (!clean(o.address) || isOnlyPurchaseWithSize(o.address))) missing.push("calle o dirección exacta");
 
   // El teléfono nunca se pide: se toma del WhatsApp.
   if (!clean(o.phone)) {
@@ -4578,7 +4618,9 @@ ${missing.map((item) => `✅ ${item}`).join("\n")}`;
 
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
-  const location = [clean(o.city), clean(o.address)].filter(Boolean).join(" — ");
+  const location = clean(o.address)
+    ? [clean(o.city), clean(o.address)].filter(Boolean).join(" — ")
+    : `${clean(o.city)} — ubicación pendiente para coordinar con el delivery`;
 
   if (state.coverage === false) {
     return `✅ PEDIDO CONFIRMADO
@@ -4818,6 +4860,7 @@ ESTADO DEL PEDIDO:
 - Teléfono: ${o.phone || "faltante"}
 - Total calculado: ${state.total ? `${formatGs(state.total)} Gs` : "aún no corresponde"}
 - Faltante: ${state.missing.length ? state.missing.join(", ") : "nada"}
+- Dirección opcional según entrenamiento: ${state.addressOptional ? "sí" : "no"}
 - Promo bloqueada desde plantilla: ${o.locked_offer ? `${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs` : "no"}
 - Observación del cliente: ${observationLines(o).length ? observationLines(o).join(" | ") : "sin observación"}
 
@@ -4916,20 +4959,15 @@ REGLAS DURAS:
 - Si no hay plantilla activa ni promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
 - PROHIBIDO preguntar "¿Está todo correcto?", "¿Confirmamos?", "¿Querés confirmar?" o cualquier reconfirmación.
-- Cuando estén producto, cantidad, ciudad, nombre, dirección y teléfono, el backend guarda la venta y responde directamente con el formato fijo ✅ PEDIDO CONFIRMADO.
+- Cuando estén producto, cantidad, ciudad, nombre y teléfono, el backend confirma si la dirección es opcional según el entrenamiento.
+- Si Dirección opcional = sí, NO bloquees el cierre ni la presentes como faltante. Informá que puede enviarse más tarde o pasarse directamente al delivery.
+- Si Dirección opcional = no, la dirección/ubicación sí debe completarse antes de confirmar.
+- El backend guarda la venta y responde directamente con el formato fijo ✅ PEDIDO CONFIRMADO.
 - PROHIBIDO redactar un cierre libre. El único cierre válido es el generado por finalConfirmationMessage().
 - Cuando falte algún dato, mostrale un resumen fijo de lo que ya tenés y pedí solamente lo faltante.
 - PROHIBIDO pedir confirmación intermedia. Si ya están todos los datos, confirmá automáticamente.
-- Ejemplo si falta dirección:
-  📦 Producto: ...
-  🔢 Cantidad: ...
-  📍 Ciudad: ...
-  📞 Celular: ...
-  Solo me falta:
-  ✅ calle o dirección exacta
-
 - Frases como "quiero en calce 42", "talle 40" o "número 39" son VARIANTES, nunca direcciones.
-- Guardá el talle/calce en observación y seguí pidiendo una dirección exacta real.
+- Guardá el talle/calce en observación. Pedí dirección solamente cuando Dirección opcional = no.
 - Nunca uses una frase publicitaria como "Usalas con" como nombre de producto.
 
 - En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
@@ -4974,7 +5012,7 @@ function buildPriceOnlyResponse(
     continuation = "¿Cuántas unidades querés llevar? 😊";
   } else if (!state.order.customer_name) {
     continuation = "Para continuar, pasame tu nombre y apellido. 😊";
-  } else if (state.coverage !== false && !state.order.address) {
+  } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
     continuation = "Ahora pasame la dirección exacta o ubicación para la entrega. 😊";
   } else if (!state.order.phone) {
     continuation = "Por último, pasame un número de celular para coordinar la entrega. 😊";
@@ -6121,7 +6159,11 @@ export default async function handler(req: any, res: any) {
           ...(context || {}),
           order_data: oldOrder,
           order_id: oldOrder.order_id || null,
-          step: nextStep(oldOrder, oldOrder.city ? hasCoverage(oldOrder.city, parsed) : null),
+          step: nextStep(
+            oldOrder,
+            oldOrder.city ? hasCoverage(oldOrder.city, parsed) : null,
+            isAddressOptionalByTraining(parsed, oldOrder.city ? hasCoverage(oldOrder.city, parsed) : null)
+          ),
           updated_at: new Date().toISOString(),
         },
         debug: { delivery_timing_question_without_state_reset: true },
