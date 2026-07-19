@@ -1,8 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V97 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V98 - Mega Todo Store / One Store
  * 
+ * V98: acepta cantidad + ciudad + nombre en un mismo mensaje y evita respuestas genéricas por errores parciales.
+ *
  * V97: corrige consultas de factura, evita guardarlas como observación y protege
  * cobertura/envío para no confundir el precio del producto con el costo del delivery.
  *
@@ -2295,11 +2297,35 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
 
   const raw = clean(text);
   if (!raw) return "";
+
+  // V98: extrae primero un nombre declarado explícitamente aunque el mismo
+  // mensaje también contenga cantidad y ciudad. Ejemplo:
+  // “quiero uno para Capiatá, mi nombre es David Alcaraz”.
+  const explicitNameInMixedMessage = raw.match(
+    /\b(?:mi nombre es|me llamo|nombre)\s*[:,-]?\s*([a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,4})(?=\s*(?:[,.;]|$))/i
+  )?.[1];
+
+  if (explicitNameInMixedMessage) {
+    const candidate = clean(explicitNameInMixedMessage);
+    const words = candidate.split(/\s+/).filter(Boolean);
+    const candidateNorm = normalize(candidate);
+    const forbiddenExplicitName =
+      words.length < 2 ||
+      words.length > 5 ||
+      /\d/.test(candidate) ||
+      /\b(calle|avenida|avda|barrio|ciudad|delivery|envio|precio|producto|unidad|unidades)\b/.test(candidateNorm) ||
+      (parsed ? isContaminatedCustomerName(candidate, parsed) : false);
+
+    if (!forbiddenExplicitName) return toTitleCase(candidate);
+  }
+
   if (isPoliteClosingOrAcknowledgement(raw)) return "";
   if (isPaymentInformationQuestion(raw)) return "";
   if (isQuestionLikeMessage(raw)) return "";
   if (/^(?:si|sii|siii|sip|asi es|correcto|exacto)\b/.test(normalize(raw))) return "";
   if (/\b(?:ustedes de donde|de donde traen|de donde viene|cuentan con delivery|tienen delivery|hay delivery)\b/.test(normalize(raw))) return "";
+  // La cantidad solo bloquea nombres implícitos. Los explícitos ya fueron
+  // extraídos arriba de forma segura.
   if (extractQuantity(raw) > 0) return "";
   if (looksLikeAddressSupplement(raw)) return "";
   if (isIdentityDocumentText(raw)) return "";
@@ -6038,32 +6064,55 @@ export default async function handler(req: any, res: any) {
       effectiveDetectedCity = historyRecoveredCity;
     }
 
-    const detectedName = extractName(
-      texto,
-      effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
-      phone,
-      parsed
-    );
+    // V98: cada extractor está aislado. Un dato difícil de interpretar no debe
+    // derribar todo el turno ni devolver “No pude procesar...”.
+    let detectedName = "";
+    try {
+      detectedName = extractName(
+        texto,
+        effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
+        phone,
+        parsed
+      );
+    } catch (error) {
+      console.error("⚠️ extractName falló; se continúa sin nombre:", error);
+    }
 
-    const historyRecoveredName =
-      !oldOrder.customer_name
-        ? recoverRecentValidNameFromHistory(
-            history,
-            effectiveDetectedCity || oldOrder.city || "",
-            phone || oldOrder.phone || "",
-            parsed
-          )
-        : "";
+    let historyRecoveredName = "";
+    try {
+      historyRecoveredName =
+        !oldOrder.customer_name
+          ? recoverRecentValidNameFromHistory(
+              history,
+              effectiveDetectedCity || oldOrder.city || "",
+              phone || oldOrder.phone || "",
+              parsed
+            )
+          : "";
+    } catch (error) {
+      console.error("⚠️ recoverRecentValidNameFromHistory falló:", error);
+    }
 
     const name = detectedName || historyRecoveredName;
 
-    const address = extractAddress(
-      texto,
-      effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
-      phone,
-      name
-    );
-    const observationPatch = extractOrderObservation(texto);
+    let address = "";
+    try {
+      address = extractAddress(
+        texto,
+        effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
+        phone,
+        name
+      );
+    } catch (error) {
+      console.error("⚠️ extractAddress falló; se continúa sin dirección:", error);
+    }
+
+    let observationPatch: Partial<OrderData> = {};
+    try {
+      observationPatch = extractOrderObservation(texto);
+    } catch (error) {
+      console.error("⚠️ extractOrderObservation falló:", error);
+    }
 
     if (isDeliveryTimingQuestion(texto) && oldOrder.product) {
       return res.json({
@@ -6631,14 +6680,19 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       parts: [{ text: userPayload }],
     });
 
-    let aiResponse = await callGemini({
-      apiKey,
-      model,
-      system,
-      contents,
-      temperature: iaConfig.temperature ?? 0.55,
-      maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
-    });
+    let aiResponse = "";
+    try {
+      aiResponse = await callGemini({
+        apiKey,
+        model,
+        system,
+        contents,
+        temperature: iaConfig.temperature ?? 0.55,
+        maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
+      });
+    } catch (error) {
+      console.error("⚠️ Gemini falló; se usa respuesta determinística:", error);
+    }
 
     if (!aiResponse || aiResponse === "__GEMINI_QUOTA_EXCEEDED__") {
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
@@ -6746,7 +6800,9 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     return res.status(200).json({
       response: isPayOnDeliveryRequest(safeMessage)
         ? "😊 Para indicarte correctamente la forma de pago, decime nuevamente tu ciudad. Si tu zona no tiene contra-entrega, el envío es por transportadora y el pago es anticipado."
-        : "😊 No pude procesar ese dato correctamente. Volvé a enviarlo, por favor.",
+        : safeOrder?.city
+          ? "😊 Recibí tu mensaje. Para continuar, enviame solamente el dato que falta del pedido (nombre completo o dirección/ubicación)."
+          : "😊 Recibí tu mensaje. Indicame primero tu ciudad para confirmar la modalidad de entrega. 📍",
       context: {
         ...safeContext,
         order_data: safeOrder,
