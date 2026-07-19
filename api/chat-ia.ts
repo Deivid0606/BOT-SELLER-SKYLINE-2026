@@ -1,9 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V102 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V103 - Mega Todo Store / One Store
  * 
- * V102: después de recibir la ciudad exige cantidad explícita, sin borrar la cantidad cuando luego llega el nombre.
+ * V103: después de recibir la ciudad muestra promociones y exige cantidad antes del nombre.
+ * V102: evita que una cantidad elegida se borre cuando luego llega el nombre.
  * V101: exige cantidad explícita salvo pack fijo y valida nombre + apellido reales.
  * V99: respeta dinámicamente si la dirección/ubicación es opcional según el entrenamiento del usuario.
  *
@@ -4745,7 +4746,10 @@ Para continuar, pasame tu nombre completo y número de celular.`;
 
 Pagás solamente el producto cuando lo recibís 😊
 
-¿Cuántas unidades querés llevar?${offers ? `\n\n${offers}` : ""}`;
+${offers ? `🔥 Promociones disponibles:
+${offers}
+
+` : ""}¿Cuántas unidades querés llevar?`;
   }
 
   return "";
@@ -6313,11 +6317,12 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = orderData.locked_offer.quantity;
     }
 
-    // V102: una promo variable o el precio de 1 unidad NO define cantidad.
-    // Se reinicia únicamente cuando el cliente acaba de expresar intención de
-    // compra o acaba de indicar la ciudad. Después de que el cliente elige una
-    // cantidad explícita, mensajes posteriores como su nombre NO deben borrarla.
-    const mustAskQuantityAfterThisMessage =
+    // V103: una promoción variable no define cantidad.
+    // Reiniciamos la cantidad únicamente cuando:
+    // - el cliente recién expresa intención de compra, o
+    // - acaba de enviar/confirmar la ciudad,
+    // siempre que el mismo mensaje no contenga una cantidad explícita.
+    const mustCollectQuantityNow =
       explicitQty <= 0 &&
       !orderData.locked_offer?.fixed_quantity &&
       (
@@ -6326,7 +6331,7 @@ export default async function handler(req: any, res: any) {
         (isCityStep && Boolean(effectiveDetectedCity))
       );
 
-    if (mustAskQuantityAfterThisMessage) {
+    if (mustCollectQuantityNow) {
       orderData.quantity = 0;
     }
 
@@ -6347,10 +6352,8 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // V102: defensa final antes de calcular el estado.
-    // Una ciudad recién recibida debe llevar siempre al paso de cantidad,
-    // salvo que el producto sea un pack fijo real o el mismo mensaje incluya
-    // una cantidad explícita.
+    // V103: defensa final. Si la ciudad se acaba de capturar y el cliente
+    // no indicó cantidad en ese mismo mensaje, el siguiente paso debe ser cantidad.
     if (
       cityWasCapturedNow &&
       explicitQty <= 0 &&
@@ -6614,6 +6617,13 @@ export default async function handler(req: any, res: any) {
       cityWasCapturedNow &&
       !orderData.locked_offer?.fixed_quantity
     ) {
+      // V103: la ciudad recién recibida siempre debe llevar a promociones + cantidad.
+      if (explicitQty <= 0) {
+        orderData.quantity = 0;
+        finalState.order.quantity = 0;
+        finalState.step = "collecting_quantity";
+        finalState.missing = Array.from(new Set(["cantidad", ...(finalState.missing || []).filter((x) => x !== "cantidad")]));
+      }
       const cityCoverageResponse = deterministicAfterCityCoverageMessage(finalState);
       if (cityCoverageResponse) {
         return res.json({
