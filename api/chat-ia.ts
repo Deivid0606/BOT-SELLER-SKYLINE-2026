@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V99 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V101 - Mega Todo Store / One Store
  * 
+ * V101: exige cantidad explícita salvo pack fijo y valida nombre + apellido reales.
  * V99: respeta dinámicamente si la dirección/ubicación es opcional según el entrenamiento del usuario.
  *
  * V100: evita heredar productos/cantidades de chats viejos y vuelve a pedir cantidad en cada venta nueva.
@@ -2266,6 +2267,15 @@ function isContaminatedCustomerName(value: string, parsed: ParsedTraining): bool
   const n = normalize(raw);
   if (!n) return true;
 
+  // V101: para cerrar un pedido se requiere nombre y apellido reales.
+  // Nunca aceptar textos de interfaz o frases tomadas del propio bot.
+  const nameWords = raw.split(/\s+/).map(clean).filter(Boolean);
+  if (nameWords.length < 2 || nameWords.length > 5) return true;
+  if (/\d/.test(raw)) return true;
+  if (/\b(nombre|apellido|nombre y apellido|tu nombre|cliente|usuario|contacto|y apellido)\b/.test(n)) return true;
+  if (/^(?:y\s+)?apellido$/.test(n)) return true;
+  if (/\b(quiero|me interesa|pedido|producto|cantidad|unidad|unidades|precio|delivery|envio|factura|direccion|ubicacion)\b/.test(n)) return true;
+
   if (isLocationDeclarationInsteadOfName(raw, parsed)) return true;
 
   if (/^(?:soy|soi|vivo|resido|estoy|somos)\s+(?:de|en)\b/.test(n)) return true;
@@ -2784,6 +2794,7 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
     "quiero", "cuando", "dia", "llega", "llego", "pedido", "cancelar",
     "no", "raqueta", "nebulizador", "que", "estado", "seguimiento",
     "ya fue", "que dia llega mi pedido", "no raqueta",
+    "y apellido", "nombre y apellido", "apellido", "tu nombre", "cliente", "usuario", "contacto",
   ];
 
   const isInvalidName =
@@ -3167,8 +3178,13 @@ function getHistoryText(item: any): string {
 }
 
 function isIncomingHistoryItem(item: any): boolean {
+  // V101: jamás recuperar nombre, ciudad o datos desde mensajes del bot.
+  const role = normalize(item?.role || item?.sender_role || item?.author || "");
+  if (role === "assistant" || role === "model" || role === "bot" || role === "system") return false;
+  if (role === "user" || role === "customer" || role === "cliente") return true;
+
   const direction = normalize(item?.direction || item?.message_type || item?.type || "");
-  if (!direction) return true;
+  if (!direction) return false;
 
   return (
     direction === "in" ||
@@ -4190,6 +4206,16 @@ function shouldConfirmOrder(state: ConversationState) {
   const o = state.order;
 
   if (!o.product || !o.city || !o.quantity || !o.customer_name) {
+    return false;
+  }
+
+  const confirmationName = normalize(o.customer_name);
+  const confirmationWords = clean(o.customer_name).split(/\s+/).filter(Boolean);
+  if (
+    confirmationWords.length < 2 ||
+    /\d/.test(o.customer_name) ||
+    /\b(nombre|apellido|cliente|usuario|contacto|y apellido)\b/.test(confirmationName)
+  ) {
     return false;
   }
 
@@ -6245,6 +6271,12 @@ export default async function handler(req: any, res: any) {
       product
     );
 
+    // V101: "quiero", "me interesa", "sí", "dale" expresan intención,
+    // nunca cantidad. La cantidad anterior tampoco se reutiliza para una venta nueva.
+    if (isGenericBuyReply(texto) && explicitQty <= 0 && !orderData.locked_offer?.fixed_quantity) {
+      orderData.quantity = 0;
+    }
+
     if (!orderData.city && oldOrder.city && qty > 0) {
       orderData.city = oldOrder.city;
     }
@@ -6279,15 +6311,14 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = orderData.locked_offer.quantity;
     }
 
+    // V101: una promo variable o el precio de 1 unidad NO define cantidad.
+    // Solo un pack fijo real puede completar cantidad automáticamente.
     if (
       orderData.locked_offer &&
       !orderData.locked_offer.fixed_quantity &&
-      orderData.quantity === 0 &&
-      !hasExplicitQuantity(texto) &&
-      context?.force_offer_quantity === true &&
-      !freshOrder
+      !hasExplicitQuantity(texto)
     ) {
-      orderData.quantity = orderData.locked_offer.quantity;
+      orderData.quantity = 0;
     }
 
     if (orderData.locked_offer && explicitQty > 0 && explicitQty !== orderData.locked_offer.quantity) {
@@ -6305,6 +6336,12 @@ export default async function handler(req: any, res: any) {
         }
         orderData.quantity = explicitQty;
       }
+    }
+
+    // V101: saneamiento final del nombre antes de calcular el estado.
+    // Evita confirmar valores como "Y Apellido" recuperados de textos del bot.
+    if (orderData.customer_name && isContaminatedCustomerName(orderData.customer_name, parsed)) {
+      orderData.customer_name = "";
     }
 
     const proofReceived = hasPaymentProof(context, texto, media_url, media_type || mime_type);
