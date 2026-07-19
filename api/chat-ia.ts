@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V106 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V107 - Mega Todo Store / One Store
  * 
+ * V107: verifica titular, monto y estado del comprobante antes de confirmar pagos anticipados.
  * V106: conserva el precio total del pack fijo y evita multiplicarlo por la cantidad.
  * V105: detecta ofertas únicas de varias unidades como pack fijo y no pregunta cantidad.
  * V104: respeta ubicación opcional y sincroniza cantidad/promoción antes de confirmar.
@@ -139,6 +140,12 @@ type OrderData = {
   phone: string;
   locked_offer?: OfferItem | null;
   payment_proof_received?: boolean;
+  payment_proof_verified?: boolean;
+  payment_holder_name?: string;
+  payment_amount?: number;
+  payment_operation_number?: string;
+  payment_status_text?: string;
+  payment_verification_error?: string;
   observation?: string;
   preferred_delivery_date?: string;
   preferred_delivery_time?: string;
@@ -210,6 +217,12 @@ function emptyOrder(orderId?: string): OrderData {
     phone: "",
     locked_offer: null,
     payment_proof_received: false,
+    payment_proof_verified: false,
+    payment_holder_name: "",
+    payment_amount: 0,
+    payment_operation_number: "",
+    payment_status_text: "",
+    payment_verification_error: "",
     observation: "",
     preferred_delivery_date: "",
     preferred_delivery_time: "",
@@ -2824,6 +2837,12 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
     address: clean(old?.address || ""),
     locked_offer: old?.locked_offer || null,
     payment_proof_received: !!old?.payment_proof_received,
+    payment_proof_verified: !!old?.payment_proof_verified,
+    payment_holder_name: clean(old?.payment_holder_name || ""),
+    payment_amount: Number(old?.payment_amount || 0),
+    payment_operation_number: clean(old?.payment_operation_number || ""),
+    payment_status_text: clean(old?.payment_status_text || ""),
+    payment_verification_error: clean(old?.payment_verification_error || ""),
     observation: clean(old?.observation || old?.observacion || ""),
     preferred_delivery_date: clean(old?.preferred_delivery_date || ""),
     preferred_delivery_time: clean(old?.preferred_delivery_time || ""),
@@ -2851,6 +2870,12 @@ function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
       : old.address || "",
     locked_offer: ext.locked_offer !== undefined ? ext.locked_offer : old.locked_offer || null,
     payment_proof_received: ext.payment_proof_received !== undefined ? !!ext.payment_proof_received : !!old.payment_proof_received,
+    payment_proof_verified: ext.payment_proof_verified !== undefined ? !!ext.payment_proof_verified : !!old.payment_proof_verified,
+    payment_holder_name: clean(ext.payment_holder_name || old.payment_holder_name || ""),
+    payment_amount: Number(ext.payment_amount || old.payment_amount || 0),
+    payment_operation_number: clean(ext.payment_operation_number || old.payment_operation_number || ""),
+    payment_status_text: clean(ext.payment_status_text || old.payment_status_text || ""),
+    payment_verification_error: clean(ext.payment_verification_error || old.payment_verification_error || ""),
     ...mergeOrderObservation(old, ext || {}),
   };
 }
@@ -3945,6 +3970,15 @@ function isSameOrderForPaymentProof(oldOrder: OrderData, newOrder: OrderData) {
   return Boolean(sameProduct && sameCity && sameQuantity && (sameOrderId || !clean(newOrder.order_id)));
 }
 
+function preserveVerifiedPaymentForSameOrder(oldOrder: OrderData, newOrder: OrderData) {
+  return Boolean(
+    oldOrder?.payment_proof_verified &&
+    isSameOrderForPaymentProof(oldOrder, newOrder) &&
+    Number(oldOrder.payment_amount || 0) > 0 &&
+    clean(oldOrder.payment_holder_name)
+  );
+}
+
 
 function isAddressOptionalByTraining(
   parsed: ParsedTraining,
@@ -3991,7 +4025,7 @@ function nextStep(order: OrderData, coverage: boolean | null, addressOptional = 
 
   if (coverage === false) {
     if (!order.customer_name) return "collecting_name";
-    if (!order.payment_proof_received) return "waiting_payment_proof";
+    if (!order.payment_proof_verified) return "waiting_payment_proof";
     return "confirm_order";
   }
 
@@ -4009,7 +4043,7 @@ function getMissing(order: OrderData, coverage: boolean | null, addressOptional 
   if (order.product && order.city && order.quantity) {
     if (!order.customer_name) missing.push("nombre y apellido");
     if (coverage !== false && !addressOptional && !order.address) missing.push("dirección exacta o ubicación");
-    if (coverage === false && !order.payment_proof_received) missing.push("comprobante de transferencia");
+    if (coverage === false && !order.payment_proof_verified) missing.push("comprobante de transferencia verificado");
   }
 
   return missing;
@@ -4275,7 +4309,7 @@ function shouldConfirmOrder(state: ConversationState) {
     return false;
   }
 
-  if (state.coverage === false && !o.payment_proof_received) {
+  if (state.coverage === false && !o.payment_proof_verified) {
     return false;
   }
 
@@ -4300,7 +4334,7 @@ function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState) 
     return state.addressOptional || Boolean(clean(o.address));
   }
 
-  return Boolean(o.payment_proof_received);
+  return Boolean(o.payment_proof_verified);
 }
 
 function minutesSince(lastActivity?: string) {
@@ -4611,6 +4645,161 @@ async function callGemini({
   );
 }
 
+
+type PaymentProofAnalysis = {
+  readable: boolean;
+  successful: boolean;
+  holder_name: string;
+  amount: number;
+  operation_number: string;
+  status_text: string;
+  error: string;
+};
+
+function parseJsonObjectFromModel(text: string): any {
+  const raw = clean(text)
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(raw);
+  } catch {}
+
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(raw.slice(start, end + 1));
+    } catch {}
+  }
+
+  return null;
+}
+
+function normalizePaymentProofAnalysis(value: any): PaymentProofAnalysis {
+  const amount = Number(String(value?.amount ?? value?.monto ?? 0).replace(/[^\d]/g, "") || 0);
+  const holder = clean(value?.holder_name || value?.titular || value?.payer_name || "");
+  const operation = clean(value?.operation_number || value?.numero_operacion || value?.operation || "");
+  const status = clean(value?.status_text || value?.estado || "");
+  const successValue = value?.successful ?? value?.exitosa ?? value?.success;
+  const readableValue = value?.readable ?? value?.legible;
+
+  return {
+    readable: readableValue === true || normalize(readableValue) === "true",
+    successful:
+      successValue === true ||
+      normalize(successValue) === "true" ||
+      /\b(exitosa|exitoso|aprobada|aprobado|completada|completado|realizada|realizado)\b/.test(normalize(status)),
+    holder_name: holder,
+    amount: Number.isFinite(amount) ? amount : 0,
+    operation_number: operation,
+    status_text: status,
+    error: clean(value?.error || value?.motivo || ""),
+  };
+}
+
+async function analyzePaymentProofWithGemini({
+  apiKey,
+  model,
+  mediaBase64,
+  mime,
+  expectedAmount,
+}: {
+  apiKey: string;
+  model: string;
+  mediaBase64: string;
+  mime: string;
+  expectedAmount: number;
+}): Promise<PaymentProofAnalysis> {
+  const fallback: PaymentProofAnalysis = {
+    readable: false,
+    successful: false,
+    holder_name: "",
+    amount: 0,
+    operation_number: "",
+    status_text: "",
+    error: "No se pudo analizar el comprobante.",
+  };
+
+  const response = await callGemini({
+    apiKey,
+    model,
+    system: `Analizás comprobantes bancarios enviados por clientes.
+Extraé solamente datos visibles. No inventes información.
+Respondé exclusivamente JSON válido, sin markdown:
+{
+  "readable": boolean,
+  "successful": boolean,
+  "holder_name": string,
+  "amount": number,
+  "operation_number": string,
+  "status_text": string,
+  "error": string
+}
+holder_name debe ser el titular o remitente de la cuenta debitada, no el beneficiario.
+amount debe ser el monto total transferido, como entero sin puntos.
+successful solo puede ser true cuando aparece claramente exitosa, aprobada, completada o equivalente.
+readable solo puede ser true si se leen claramente titular y monto.
+El total esperado es ${expectedAmount} Gs, pero no alteres el monto leído.`,
+    contents: [{
+      role: "user",
+      parts: [
+        { inlineData: { mimeType: mime, data: mediaBase64 } },
+        { text: "Extraé y verificá los datos visibles de este comprobante." },
+      ],
+    }],
+    temperature: 0,
+    maxTokens: 700,
+  });
+
+  if (!response || response === "__GEMINI_QUOTA_EXCEEDED__") {
+    return {
+      ...fallback,
+      error: response === "__GEMINI_QUOTA_EXCEEDED__"
+        ? "No se pudo verificar porque el analizador está sin cuota."
+        : fallback.error,
+    };
+  }
+
+  const parsed = parseJsonObjectFromModel(response);
+  return parsed ? normalizePaymentProofAnalysis(parsed) : fallback;
+}
+
+function paymentProofVerificationMessage(order: OrderData, expectedAmount: number): string {
+  if (!order.payment_proof_received) return "";
+
+  if (order.payment_proof_verified) {
+    return `✅ Comprobante verificado
+
+👤 Titular detectado: ${order.payment_holder_name}
+💰 Monto detectado: ${formatGs(order.payment_amount || 0)} Gs${order.payment_operation_number ? `
+🔢 Operación: ${order.payment_operation_number}` : ""}
+
+El pago cubre el total del pedido de ${formatGs(expectedAmount)} Gs.`;
+  }
+
+  const details = [
+    order.payment_holder_name ? `👤 Titular detectado: ${order.payment_holder_name}` : "",
+    order.payment_amount ? `💰 Monto detectado: ${formatGs(order.payment_amount)} Gs` : "",
+    order.payment_status_text ? `🏦 Estado detectado: ${order.payment_status_text}` : "",
+  ].filter(Boolean);
+
+  return `⚠️ Recibí el comprobante, pero todavía no puedo confirmar el pedido.
+
+${details.length ? `${details.join("\n")}
+
+` : ""}${order.payment_verification_error || "No pude verificar claramente titular, monto y estado de la transferencia."}
+
+Por favor enviame una imagen o PDF más claro donde se vea:
+✅ transferencia exitosa
+✅ monto
+✅ titular de la cuenta debitada
+✅ número de operación`;
+}
+
+
 async function transcribeAudioWithGemini({
   apiKey,
   model,
@@ -4760,7 +4949,10 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
 📞 Contacto: ${o.phone}${observationBlock(o)}
 
 🚚 Envío por transportadora
-💳 Pago anticipado confirmado
+💳 Pago anticipado verificado
+👤 Titular de la transferencia: ${o.payment_holder_name}
+💰 Monto verificado: ${formatGs(o.payment_amount || 0)} Gs${o.payment_operation_number ? `
+🔢 Operación: ${o.payment_operation_number}` : ""}
 
 Una vez despachado, te enviaremos el comprobante correspondiente. 📦
 
@@ -4929,6 +5121,10 @@ function deterministicWaitingPaymentProofMessage(state: ConversationState, parse
   if (state.coverage !== false) return "";
   if (state.step !== "waiting_payment_proof") return "";
   if (!o.product || !o.city || !o.quantity || !o.customer_name || !o.phone) return "";
+
+  if (o.payment_proof_received && !o.payment_proof_verified) {
+    return paymentProofVerificationMessage(o, state.total);
+  }
 
   return `✅ Perfecto, ya tengo tus datos 😊
 
@@ -5118,7 +5314,7 @@ REGLAS DURAS:
 - Guardá el talle/calce en observación. Pedí dirección solamente cuando Dirección opcional = no.
 - Nunca uses una frase publicitaria como "Usalas con" como nombre de producto.
 
-- En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
+- En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_verified sea true. Una imagen recibida no equivale a pago verificado.
 `.trim();
 }
 
@@ -6524,12 +6720,100 @@ export default async function handler(req: any, res: any) {
     }
 
     const proofReceived = hasPaymentProof(context, texto, media_url, media_type || mime_type);
-    if (proofReceived) {
+    const currentCoverageForProof = orderData.city ? hasCoverage(orderData.city, parsed) : null;
+    const expectedPaymentAmount =
+      orderData.product && orderData.quantity
+        ? calculateTotal(orderData.product, orderData.quantity, parsed, orderData.locked_offer)
+        : 0;
+
+    if (proofReceived && currentCoverageForProof === false) {
       orderData.payment_proof_received = true;
+      orderData.payment_proof_verified = false;
+      orderData.payment_holder_name = "";
+      orderData.payment_amount = 0;
+      orderData.payment_operation_number = "";
+      orderData.payment_status_text = "";
+      orderData.payment_verification_error = "";
+
+      const fetchedProof = await fetchMediaAsBase64(clean(media_url));
+
+      if (!fetchedProof) {
+        orderData.payment_verification_error = "No pude descargar o leer el archivo enviado.";
+      } else if (!expectedPaymentAmount) {
+        orderData.payment_verification_error =
+          "Todavía no se pudo calcular el total del pedido para comparar el comprobante.";
+      } else {
+        const proofAnalysis = await analyzePaymentProofWithGemini({
+          apiKey,
+          model,
+          mediaBase64: fetchedProof.data,
+          mime: clean(mime_type) || fetchedProof.mime || "image/jpeg",
+          expectedAmount: expectedPaymentAmount,
+        });
+
+        orderData.payment_holder_name = proofAnalysis.holder_name;
+        orderData.payment_amount = proofAnalysis.amount;
+        orderData.payment_operation_number = proofAnalysis.operation_number;
+        orderData.payment_status_text = proofAnalysis.status_text;
+
+        const hasHolder = clean(proofAnalysis.holder_name).split(/\s+/).filter(Boolean).length >= 2;
+        const amountCoversOrder = proofAnalysis.amount >= expectedPaymentAmount;
+
+        orderData.payment_proof_verified = Boolean(
+          proofAnalysis.readable &&
+          proofAnalysis.successful &&
+          hasHolder &&
+          proofAnalysis.amount > 0 &&
+          amountCoversOrder
+        );
+
+        if (!orderData.payment_proof_verified) {
+          const reasons: string[] = [];
+          if (!proofAnalysis.readable) reasons.push("el comprobante no se ve con suficiente claridad");
+          if (!proofAnalysis.successful) reasons.push("no aparece claramente como transferencia exitosa");
+          if (!hasHolder) reasons.push("no se pudo detectar el titular de la cuenta debitada");
+          if (!proofAnalysis.amount) reasons.push("no se pudo detectar el monto");
+          else if (!amountCoversOrder) {
+            reasons.push(
+              `el monto detectado (${formatGs(proofAnalysis.amount)} Gs) es menor al total del pedido (${formatGs(expectedPaymentAmount)} Gs)`
+            );
+          }
+
+          orderData.payment_verification_error =
+            reasons.length
+              ? `No se pudo verificar porque ${reasons.join(", ")}.`
+              : (proofAnalysis.error || "No se pudieron verificar todos los datos obligatorios.");
+        } else {
+          orderData.payment_note = mergeUniqueText(
+            orderData.payment_note,
+            `Pago anticipado verificado. Titular: ${orderData.payment_holder_name}. Monto: ${formatGs(orderData.payment_amount)} Gs.${orderData.payment_operation_number ? ` Operación: ${orderData.payment_operation_number}.` : ""}`
+          );
+        }
+      }
+    } else if (preserveVerifiedPaymentForSameOrder(oldOrder, orderData)) {
+      orderData.payment_proof_received = true;
+      orderData.payment_proof_verified = true;
+      orderData.payment_holder_name = clean(oldOrder.payment_holder_name);
+      orderData.payment_amount = Number(oldOrder.payment_amount || 0);
+      orderData.payment_operation_number = clean(oldOrder.payment_operation_number);
+      orderData.payment_status_text = clean(oldOrder.payment_status_text);
+      orderData.payment_verification_error = "";
     } else if (isSameOrderForPaymentProof(oldOrder, orderData)) {
       orderData.payment_proof_received = true;
+      orderData.payment_proof_verified = false;
+      orderData.payment_holder_name = clean(oldOrder.payment_holder_name);
+      orderData.payment_amount = Number(oldOrder.payment_amount || 0);
+      orderData.payment_operation_number = clean(oldOrder.payment_operation_number);
+      orderData.payment_status_text = clean(oldOrder.payment_status_text);
+      orderData.payment_verification_error = clean(oldOrder.payment_verification_error);
     } else {
       orderData.payment_proof_received = false;
+      orderData.payment_proof_verified = false;
+      orderData.payment_holder_name = "";
+      orderData.payment_amount = 0;
+      orderData.payment_operation_number = "";
+      orderData.payment_status_text = "";
+      orderData.payment_verification_error = "";
     }
 
     if (orderData.locked_offer && orderData.locked_offer.total < 10000) {
@@ -6691,6 +6975,10 @@ export default async function handler(req: any, res: any) {
           order_data: orderData,
           order_id: orderData.order_id || null,
           payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
           step: "pedido_confirmado",
           updated_at: new Date().toISOString(),
         },
@@ -6761,6 +7049,10 @@ export default async function handler(req: any, res: any) {
             order_data: orderData,
             order_id: orderData.order_id || null,
             payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
             step: finalState.step,
             address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
@@ -6806,6 +7098,10 @@ export default async function handler(req: any, res: any) {
             order_data: orderData,
             order_id: orderData.order_id || null,
             payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
             step: finalState.step,
             address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
@@ -6877,6 +7173,10 @@ export default async function handler(req: any, res: any) {
           order_data: orderData,
           order_id: orderData.order_id || null,
           payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
           step: finalState.step,
           address_optional: finalState.addressOptional,
           updated_at: new Date().toISOString(),
@@ -6930,6 +7230,10 @@ export default async function handler(req: any, res: any) {
             order_data: orderData,
             order_id: orderData.order_id || null,
             payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
             step: finalState.step,
             address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
@@ -6984,6 +7288,10 @@ export default async function handler(req: any, res: any) {
           order_data: orderData,
           order_id: orderData.order_id || null,
           payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
           step: finalState.step,
           address_optional: finalState.addressOptional,
           updated_at: new Date().toISOString(),
