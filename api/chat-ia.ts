@@ -5,6 +5,10 @@ import { createClient } from "@supabase/supabase-js";
  * 
  * V99: respeta dinámicamente si la dirección/ubicación es opcional según el entrenamiento del usuario.
  *
+ * V100: evita heredar productos/cantidades de chats viejos y vuelve a pedir cantidad en cada venta nueva.
+ *
+ * V99: permite dirección opcional según el entrenamiento de cada usuario.
+ *
  * V98: acepta cantidad + ciudad + nombre en un mismo mensaje y evita respuestas genéricas por errores parciales.
  *
  * V97: corrige consultas de factura, evita guardarlas como observación y protege
@@ -4221,17 +4225,41 @@ function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState) 
   return Boolean(o.payment_proof_received);
 }
 
+function minutesSince(lastActivity?: string) {
+  const last = new Date(lastActivity || "");
+  if (!Number.isFinite(last.getTime())) return Number.POSITIVE_INFINITY;
+  return Math.max(0, (Date.now() - last.getTime()) / (1000 * 60));
+}
+
 function isOrderStale(order: OrderData, lastActivity: string) {
-  const hasProduct = !!order?.product;
-  const hasCity = !!order?.city;
-  const hasQuantity = order?.quantity > 0;
-  const hasCustomerData = !!(order?.customer_name || order?.address || order?.phone);
+  const hasAnyOrderData = Boolean(
+    clean(order?.product) ||
+    clean(order?.city) ||
+    sanitizeQuantity(order?.quantity) > 0 ||
+    clean(order?.customer_name) ||
+    clean(order?.address)
+  );
 
-  const now = new Date();
-  const last = new Date(lastActivity);
-  const diffMinutes = (now.getTime() - last.getTime()) / (1000 * 60);
+  if (!hasAnyOrderData) return false;
 
-  return hasProduct && hasCity && hasQuantity && !hasCustomerData && diffMinutes > 10;
+  // V100: un pedido incompleto no puede quedar pegado indefinidamente.
+  // Después de 45 minutos sin actividad se considera una nueva sesión.
+  return minutesSince(lastActivity) > 45;
+}
+
+function looksLikeNewChatSession(text: string, context: any, history: any[]) {
+  const n = normalize(text);
+  const ageMinutes = minutesSince(context?.updated_at);
+  const historyIsEmpty = !Array.isArray(history) || history.length === 0;
+  const greeting = /^(hola+|holi|buenas|buen dia|buen día|buenas tardes|buenas noches|saludos|consulta)$/.test(n);
+
+  // Si el frontend abrió un chat sin historial, no reutilizamos un pedido viejo.
+  if (historyIsEmpty && ageMinutes > 5) return true;
+
+  // Un saludo después de una pausa considerable se toma como conversación nueva.
+  if (greeting && ageMinutes > 20) return true;
+
+  return ageMinutes > 45;
 }
 
 async function safeUpsertOrder(
@@ -5563,6 +5591,18 @@ export default async function handler(req: any, res: any) {
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
     if (!oldOrder.phone) oldOrder.phone = senderPhoneFallback(fromNumber);
 
+    // V100: un chat nuevo o una sesión vencida jamás hereda producto,
+    // cantidad, ciudad ni datos de un chat anterior.
+    const resetBecauseNewChat =
+      context?.step !== "pedido_confirmado" &&
+      looksLikeNewChatSession(texto, context, history) &&
+      Boolean(oldOrder.product || oldOrder.city || oldOrder.quantity || oldOrder.customer_name || oldOrder.address);
+
+    if (resetBecauseNewChat) {
+      oldOrder = emptyOrder(makeOrderId(fromNumber));
+      oldOrder.phone = senderPhoneFallback(fromNumber);
+    }
+
     let forceFreshOrderFromConfirmedTemplate = false;
 
     if (context?.step === "pedido_confirmado") {
@@ -5753,7 +5793,7 @@ export default async function handler(req: any, res: any) {
     const lockedProductInitial = getLockedProductFromContext(context, oldOrder, history, parsed);
     const promoResponse = isRespondingToPromotion(texto, history);
 
-    let freshOrder = shouldStartFreshOrder({
+    let freshOrder = resetBecauseNewChat || shouldStartFreshOrder({
       texto,
       context,
       oldOrder,
@@ -5793,6 +5833,11 @@ export default async function handler(req: any, res: any) {
 
     if (freshOrder) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
+      oldOrder.phone = senderPhoneFallback(fromNumber);
+      // Toda venta nueva debe volver a definir la cantidad.
+      // La única excepción es un pack fijo real detectado más adelante.
+      oldOrder.quantity = 0;
+      oldOrder.locked_offer = null;
     }
 
     const currentTemplateLockedOfferRaw = templatePricing?.product
@@ -5832,6 +5877,20 @@ export default async function handler(req: any, res: any) {
     }
 
     let product = detectProduct(texto, parsed, productToUse);
+
+    // V100: una intención explícita de compra inicia una venta nueva aunque sea
+    // el mismo producto de un chat anterior. La cantidad debe preguntarse otra vez,
+    // salvo que la plantilla actual sea un pack fijo.
+    const explicitNewSaleNow = Boolean(
+      productFromMessageInitial &&
+      hasExplicitProductInterestPhrase(texto)
+    );
+
+    if (explicitNewSaleNow && !currentTemplateLockedOffer?.fixed_quantity) {
+      oldOrder.quantity = 0;
+      oldOrder.locked_offer = null;
+      lockedOfferByContext = null;
+    }
 
     // V65: nunca permitir que títulos comerciales reemplacen el producto.
     // Se prioriza el producto canónico previamente válido o el detectado en el mensaje.
@@ -6225,7 +6284,8 @@ export default async function handler(req: any, res: any) {
       !orderData.locked_offer.fixed_quantity &&
       orderData.quantity === 0 &&
       !hasExplicitQuantity(texto) &&
-      context?.force_offer_quantity === true
+      context?.force_offer_quantity === true &&
+      !freshOrder
     ) {
       orderData.quantity = orderData.locked_offer.quantity;
     }
@@ -6811,6 +6871,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       debug: true
         ? {
             freshOrder,
+            reset_because_new_chat: resetBecauseNewChat,
             parsed_products: parsed.products.length,
             parsed_cities: parsed.cities.length,
             product: orderData.product,
