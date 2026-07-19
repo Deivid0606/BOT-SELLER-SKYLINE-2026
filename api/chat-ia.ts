@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V105 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V106 - Mega Todo Store / One Store
  * 
+ * V106: conserva el precio total del pack fijo y evita multiplicarlo por la cantidad.
  * V105: detecta ofertas únicas de varias unidades como pack fijo y no pregunta cantidad.
  * V104: respeta ubicación opcional y sincroniza cantidad/promoción antes de confirmar.
  * V103: después de recibir la ciudad muestra promociones y exige cantidad antes del nombre.
@@ -2860,6 +2861,7 @@ function calculateTotal(productName: string, quantity: number, parsed: ParsedTra
 
   const q = sanitizeQuantity(quantity);
 
+  // V106: una oferta bloqueada representa el total completo de la promoción.
   if (
     lockedOffer &&
     normalize(lockedOffer.product) === normalize(p.canonical) &&
@@ -2870,6 +2872,16 @@ function calculateTotal(productName: string, quantity: number, parsed: ParsedTra
     return lockedOffer.total;
   }
 
+  // V106: en un pack fijo, price1 guarda el precio TOTAL del pack, no el
+  // precio por unidad. Ej.: 2 unidades por 99.000 => total 99.000.
+  if (
+    p.fixedPackQuantity &&
+    sanitizeQuantity(p.fixedPackQuantity) === q &&
+    p.price1 > 0
+  ) {
+    return p.price1;
+  }
+
   if (q === 2 && p.price2) return p.price2;
   if (q === 3 && p.price3) return p.price3;
 
@@ -2878,6 +2890,23 @@ function calculateTotal(productName: string, quantity: number, parsed: ParsedTra
 
 function getCatalogOffer(product: ProductItem, quantity: number): OfferItem | null {
   const q = sanitizeQuantity(quantity);
+
+  // V106: si coincide con un pack fijo, devolver el precio TOTAL del pack.
+  if (
+    product.fixedPackQuantity &&
+    sanitizeQuantity(product.fixedPackQuantity) === q &&
+    product.price1 > 0
+  ) {
+    return {
+      product: product.canonical,
+      quantity: q,
+      total: product.price1,
+      label: `${q} unidades por ${formatGs(product.price1)} Gs`,
+      source: "catalog",
+      fixed_quantity: true,
+    };
+  }
+
   if (q === 2 && product.price2) {
     return { product: product.canonical, quantity: 2, total: product.price2, source: "catalog" };
   }
@@ -4696,14 +4725,25 @@ ${missing.map((item) => `✅ ${item}`).join("\n")}`;
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
 
-  // V104: protección final contra una promoción desfasada.
+  // V106: protección final contra promociones desfasadas y packs fijos.
   if (
     o.locked_offer &&
     sanitizeQuantity(o.locked_offer.quantity) !== sanitizeQuantity(o.quantity)
   ) {
     o.locked_offer = null;
-    state.total = calculateTotal(o.product, o.quantity, parsed, null);
   }
+
+  const confirmationProduct = getProductInfo(o.product, parsed);
+  if (!o.locked_offer && confirmationProduct) {
+    const confirmationOffer = getCatalogOffer(confirmationProduct, o.quantity);
+    if (confirmationOffer) {
+      o.locked_offer = confirmationOffer;
+    }
+  }
+
+  // Siempre recalcular con la oferta correcta. Para packs fijos, el total es el
+  // precio completo del pack y nunca price1 × quantity.
+  state.total = calculateTotal(o.product, o.quantity, parsed, o.locked_offer);
   const location = clean(o.address)
     ? [clean(o.city), clean(o.address)].filter(Boolean).join(" — ")
     : `${clean(o.city)} — ubicación pendiente para coordinar con el delivery`;
@@ -6428,9 +6468,16 @@ export default async function handler(req: any, res: any) {
           ? exactTemplateOfferRaw
           : null;
         const exactCatalogOffer = getCatalogOffer(productInfo, explicitQty);
+        const exactFixedCatalogOffer = getCatalogFixedPackOffer(productInfo);
 
         orderData.locked_offer =
           exactTemplateOffer ||
+          (
+            exactFixedCatalogOffer &&
+            sanitizeQuantity(exactFixedCatalogOffer.quantity) === sanitizeQuantity(explicitQty)
+              ? exactFixedCatalogOffer
+              : null
+          ) ||
           exactCatalogOffer ||
           null;
       }
@@ -6499,6 +6546,18 @@ export default async function handler(req: any, res: any) {
     // Un número explícito del cliente siempre tiene prioridad.
     if (!orderData.phone) {
       orderData.phone = senderPhoneFallback(fromNumber);
+    }
+
+    // V106: restaurar siempre la oferta del pack fijo antes de calcular el estado.
+    const productBeforeState = getProductInfo(orderData.product, parsed);
+    if (
+      productBeforeState?.fixedPackQuantity &&
+      sanitizeQuantity(orderData.quantity) === sanitizeQuantity(productBeforeState.fixedPackQuantity)
+    ) {
+      const fixedBeforeState = getCatalogFixedPackOffer(productBeforeState);
+      if (fixedBeforeState) {
+        orderData.locked_offer = fixedBeforeState;
+      }
     }
 
     const state = buildState(orderData, parsed);
