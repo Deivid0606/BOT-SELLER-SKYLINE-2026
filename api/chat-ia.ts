@@ -1,8 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V96 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V97 - Mega Todo Store / One Store
  * 
+ * V97: corrige consultas de factura, evita guardarlas como observación y protege
+ * cobertura/envío para no confundir el precio del producto con el costo del delivery.
+ *
  * V96: lee y aplica todos los entrenamientos activos por usuario (reglas, cobertura y banco).
  *
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
@@ -1330,9 +1333,79 @@ function isAmbiguousProductRejection(text: string, currentProduct: string): bool
   return /\b(no estoy interesad[oa]|ya no quiero|no me interesa|no quiero)\b/.test(n);
 }
 
+function buildMissingDataContinuation(state: ConversationState): string {
+  const missing: string[] = [];
+
+  if (!clean(state.order.city)) {
+    return "📍 ¿Para qué ciudad sería el envío?";
+  }
+
+  if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) {
+    return "¿Cuántas unidades querés llevar?";
+  }
+
+  if (!clean(state.order.customer_name)) missing.push("nombre y apellido");
+  if (state.coverage !== false && !clean(state.order.address)) {
+    missing.push("dirección o ubicación");
+  }
+
+  if (!missing.length) return "";
+  if (missing.length === 1) return `Para completar el pedido me falta tu ${missing[0]}.`;
+
+  return `Para completar el pedido también me faltan:\n${missing.map((item) => `✅ ${item}`).join("\n")}`;
+}
+
+function buildInvoiceQuestionResponse(state: ConversationState): string {
+  const continuation = buildMissingDataContinuation(state);
+
+  return `✅ Sí, contamos con factura legal 😊
+
+Podés enviarme tu RUC y razón social o tu número de cédula para agregarla al pedido.${continuation ? `\n\n${continuation}` : ""}`;
+}
+
+function sanitizeCoverageAndShippingResponse(
+  response: string,
+  state: ConversationState
+): string {
+  const raw = clean(response);
+  if (!raw) return raw;
+
+  const n = normalize(raw);
+  const totalDigits = String(state.total || "").replace(/\D/g, "");
+
+  if (state.coverage === true && state.order.city) {
+    const saysPaidShipping =
+      /\b(envio|delivery|entrega|flete)\b[\s\S]{0,45}\b(costo|cuesta|sale|vale|pagar)\b/.test(n) ||
+      /\b(costo|cuesta|sale|vale)\b[\s\S]{0,45}\b(envio|delivery|entrega|flete)\b/.test(n);
+
+    const usesOrderTotalAsShipping =
+      totalDigits.length >= 4 &&
+      n.includes(totalDigits) &&
+      /\b(envio|delivery|entrega|flete)\b/.test(n);
+
+    if (saysPaidShipping || usesOrderTotalAsShipping) {
+      const continuation = buildMissingDataContinuation(state);
+      return `✅ Tenemos envío GRATIS contra entrega en ${state.order.city} 🚚
+
+Pagás solamente el producto cuando lo recibís 😊${continuation ? `\n\n${continuation}` : ""}`;
+    }
+  }
+
+  if (state.coverage === false && /\b(envio gratis|delivery gratis|contra entrega|pagas al recibir|pagás al recibir)\b/.test(n)) {
+    const continuation = buildMissingDataContinuation(state);
+    return `📦 Para ${state.order.city || "tu ciudad"} el envío se realiza por transportadora y el pago del producto es anticipado.${continuation ? `\n\n${continuation}` : ""}`;
+  }
+
+  return raw;
+}
+
 function buildDeterministicBusinessQuestionResponse(text: string, state: ConversationState) {
   const n = normalize(text);
   if (!n) return "";
+
+  if (isInvoiceQuestion(text)) {
+    return buildInvoiceQuestionResponse(state);
+  }
 
   if (isAmbiguousProductRejection(text, state.order.product || "")) {
     return `Entiendo 😊 Solo para confirmar: ¿ya no querés continuar con ${state.order.product}?`;
@@ -1909,6 +1982,24 @@ function isDeliveryTimingMessage(text: string): boolean {
     isTemporalDeliveryExpression(raw) ||
     /\b(hoy|manana|mañana|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(n) ||
     /\b(hasta|desde|antes|despues|después|a las|hora|horario)\b[\s\S]{0,30}\b\d{1,2}(?::\d{2})?\s*(?:hs|hrs|am|pm)?\b/.test(n)
+  );
+}
+
+function isInvoiceQuestion(text: string): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw || !n) return false;
+
+  const mentionsInvoice =
+    /\b(factura|factura legal|facturar|facturacion|facturación|credito fiscal|crédito fiscal)\b/.test(n);
+
+  if (!mentionsInvoice) return false;
+
+  // Una pregunta o consulta general sobre factura NO es un dato fiscal.
+  return (
+    /[?¿]/.test(raw) ||
+    /\b(tienen|tenes|tenés|dan|emiten|hacen|incluye|con|hay|pueden|se puede|quiero|necesito)\b[\s\S]{0,35}\bfactura\b/.test(n) ||
+    /\bfactura\b[\s\S]{0,35}\b(tienen|dan|emiten|legal|incluye|hay|pueden|se puede)\b/.test(n)
   );
 }
 
@@ -2593,8 +2684,15 @@ function extractOrderObservation(text: string): Partial<OrderData> {
   // Las preguntas informativas de pago se responden, pero no son observaciones.
   const paymentInfoQuestion = isPaymentInformationQuestion(raw);
 
-  // V59: toda solicitud o dato de facturación se conserva en una sola Observación.
-  if (isInvoiceOrTaxDataMessage(raw) || isStandaloneTaxOrIdentityData(raw)) {
+  // V97: una PREGUNTA sobre factura se responde, pero no se guarda como observación.
+  // Solo se conservan datos fiscales reales enviados por el cliente.
+  const invoiceQuestion = isInvoiceQuestion(raw);
+  const hasExplicitFiscalData =
+    isStandaloneTaxOrIdentityData(raw) ||
+    (/\b(ruc|razon social|razón social|cedula|cédula|ci)\b/.test(n) && /\d{5,}/.test(raw)) ||
+    /^(?:razon social|razón social|nombre para factura)\s*[:#-]\s*.+$/i.test(raw);
+
+  if (!invoiceQuestion && hasExplicitFiscalData) {
     obs.observation = mergeUniqueText(obs.observation, raw);
   }
 
@@ -4519,7 +4617,9 @@ Para continuar, pasame tu nombre completo y número de celular.`;
   }
 
   if (!o.quantity) {
-    return `✅ Tenemos cobertura en ${o.city} 😊
+    return `✅ Tenemos envío GRATIS contra entrega en ${o.city} 🚚
+
+Pagás solamente el producto cuando lo recibís 😊
 
 ¿Cuántas unidades querés llevar?`;
   }
@@ -6371,7 +6471,11 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const deterministicObservationResponse = deterministicObservationAckMessage(finalState, parsed, observationPatch);
+    const deterministicObservationResponse =
+      !isQuestionLikeMessage(texto)
+        ? deterministicObservationAckMessage(finalState, parsed, observationPatch)
+        : "";
+
     if (!confirm && deterministicObservationResponse) {
       return res.json({
         response: deterministicObservationResponse,
@@ -6549,6 +6653,9 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     if (deterministicAcknowledgementResponse) {
       aiResponse = deterministicAcknowledgementResponse;
     }
+
+    // V97: protege cobertura y evita presentar el total del producto como costo del envío.
+    aiResponse = sanitizeCoverageAndShippingResponse(aiResponse, finalState);
 
     let followUpResponse = "";
 
