@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V104 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V105 - Mega Todo Store / One Store
  * 
+ * V105: detecta ofertas únicas de varias unidades como pack fijo y no pregunta cantidad.
  * V104: respeta ubicación opcional y sincroniza cantidad/promoción antes de confirmar.
  * V103: después de recibir la ciudad muestra promociones y exige cantidad antes del nombre.
  * V102: evita que una cantidad elegida se borre cuando luego llega el nombre.
@@ -533,10 +534,9 @@ function productsFromVisualCatalog(items: any[]): ProductItem[] {
 
       const { offers, fixedQuantity } = parseRawOffers(copy, canonical);
       const sortedOffers = offers.slice().sort((a, b) => a.quantity - b.quantity);
-      const price1 =
-        sortedOffers.find((o) => o.quantity === 1)?.total ||
-        sortedOffers[0]?.total ||
-        0;
+      const price1 = fixedQuantity
+        ? (sortedOffers.find((o) => o.fixed_quantity)?.total || sortedOffers[0]?.total || 0)
+        : (sortedOffers.find((o) => o.quantity === 1)?.total || sortedOffers[0]?.total || 0);
       const price2 = fixedQuantity ? undefined : sortedOffers.find((o) => o.quantity === 2)?.total;
       const price3 = fixedQuantity ? undefined : sortedOffers.find((o) => o.quantity === 3)?.total;
       const fixedPackQuantity = fixedQuantity
@@ -1048,7 +1048,7 @@ function createMultiCart(products: ProductItem[]): MultiCartItem[] {
 function productOffersText(product: ProductItem): string {
   const offers: string[] = [];
   if (product.fixedPackQuantity && product.price1) {
-    offers.push(`🔥 ${product.fixedPackQuantity} unidades: ${formatGs(product.price1)} Gs`);
+    offers.push(`🔥 ${product.fixedPackQuantity} unidad${product.fixedPackQuantity > 1 ? "es" : ""}: ${formatGs(product.price1)} Gs`);
   } else {
     if (product.price1) offers.push(`🔥 1 unidad: ${formatGs(product.price1)} Gs`);
     if (product.price2) offers.push(`🔥 2 unidades: ${formatGs(product.price2)} Gs`);
@@ -3066,7 +3066,27 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
     }
   }
 
-  return { offers, fixedQuantity };
+  // V105: si el copy contiene una sola oferta real y esa oferta es de
+  // más de una unidad, se trata como un pack fijo aunque no diga literalmente
+  // “solo pack”. Ejemplo: “2 unidades por 99.000 Gs”.
+  const uniqueByQuantity = new Map<number, OfferItem>();
+  for (const offer of offers) {
+    const previous = uniqueByQuantity.get(offer.quantity);
+    if (!previous || offer.fixed_quantity) uniqueByQuantity.set(offer.quantity, offer);
+  }
+
+  const uniqueOffers = Array.from(uniqueByQuantity.values());
+  const inferredSinglePack =
+    uniqueOffers.length === 1 &&
+    uniqueOffers[0].quantity > 1;
+
+  const finalFixedQuantity = fixedQuantity || inferredSinglePack;
+  const finalOffers = uniqueOffers.map((offer) => ({
+    ...offer,
+    fixed_quantity: finalFixedQuantity ? true : !!offer.fixed_quantity,
+  }));
+
+  return { offers: finalOffers, fixedQuantity: finalFixedQuantity };
 }
 
 function detectTemplatePricingFromText(text: string, parsed: ParsedTraining, strict = false): TemplatePricing | null {
