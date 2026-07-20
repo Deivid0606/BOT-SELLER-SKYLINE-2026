@@ -1,8 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V108 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V110 - Mega Todo Store / One Store
  * 
+ * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
+ * V109: impide usar ciudades como nombre del cliente.
  * V108: valida destinatario bancario, usa el pagador como cliente y admite PDF sin texto de estado.
  * V107: verifica titular, monto y estado del comprobante antes de confirmar pagos anticipados.
  * V106: conserva el precio total del pack fijo y evita multiplicarlo por la cantidad.
@@ -154,6 +156,8 @@ type OrderData = {
   payment_recipient_bank?: string;
   payment_recipient_matched?: boolean;
   payment_proof_mime?: string;
+  payment_manual_review_required?: boolean;
+  payment_manual_review_reason?: string;
   observation?: string;
   preferred_delivery_date?: string;
   preferred_delivery_time?: string;
@@ -238,6 +242,8 @@ function emptyOrder(orderId?: string): OrderData {
     payment_recipient_bank: "",
     payment_recipient_matched: false,
     payment_proof_mime: "",
+    payment_manual_review_required: false,
+    payment_manual_review_reason: "",
     observation: "",
     preferred_delivery_date: "",
     preferred_delivery_time: "",
@@ -2341,6 +2347,43 @@ function isContaminatedCustomerName(value: string, parsed: ParsedTraining): bool
   });
 }
 
+
+function isInvalidCustomerNameForOrder(
+  value: string,
+  city: string,
+  parsed: ParsedTraining
+): boolean {
+  const raw = clean(value);
+  const n = normalize(raw);
+  const cityNorm = normalize(city);
+
+  if (!raw || isContaminatedCustomerName(raw, parsed)) return true;
+
+  if (
+    cityNorm &&
+    (
+      n === cityNorm ||
+      n === `soy de ${cityNorm}` ||
+      n === `vivo en ${cityNorm}` ||
+      n === `estoy en ${cityNorm}`
+    )
+  ) {
+    return true;
+  }
+
+  return parsed.cities.some((item) => {
+    const aliases = [item.alias, item.canonical].map(normalize).filter(Boolean);
+    return aliases.some((alias) => n === alias);
+  });
+}
+
+function isPendingTransferStatus(value: string): boolean {
+  const n = normalize(value);
+  if (!n) return false;
+
+  return /\b(pendiente|en proceso|procesando|solicitamos el envio|solicitado el envio|acreditacion dependera|pendiente de acreditacion|por acreditar|en revision|esperando acreditacion|transferencia enviada)\b/.test(n);
+}
+
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const normalizedRawNameInput = normalize(text);
   if (/\b(hice mi pedido|ya hice mi pedido|mi pedido|pedido confirmado|pedido realizado)\b/.test(normalizedRawNameInput)) return "";
@@ -2865,6 +2908,8 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
     payment_recipient_bank: clean(old?.payment_recipient_bank || ""),
     payment_recipient_matched: !!old?.payment_recipient_matched,
     payment_proof_mime: clean(old?.payment_proof_mime || ""),
+    payment_manual_review_required: !!old?.payment_manual_review_required,
+    payment_manual_review_reason: clean(old?.payment_manual_review_reason || ""),
     observation: clean(old?.observation || old?.observacion || ""),
     preferred_delivery_date: clean(old?.preferred_delivery_date || ""),
     preferred_delivery_time: clean(old?.preferred_delivery_time || ""),
@@ -2908,6 +2953,13 @@ function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
         ? !!ext.payment_recipient_matched
         : !!old.payment_recipient_matched,
     payment_proof_mime: clean(ext.payment_proof_mime || old.payment_proof_mime || ""),
+    payment_manual_review_required:
+      ext.payment_manual_review_required !== undefined
+        ? !!ext.payment_manual_review_required
+        : !!old.payment_manual_review_required,
+    payment_manual_review_reason: clean(
+      ext.payment_manual_review_reason || old.payment_manual_review_reason || ""
+    ),
     ...mergeOrderObservation(old, ext || {}),
   };
 }
@@ -4328,11 +4380,13 @@ function shouldConfirmOrder(state: ConversationState) {
   }
 
   const confirmationName = normalize(o.customer_name);
+  const confirmationCity = normalize(o.city);
   const confirmationWords = clean(o.customer_name).split(/\s+/).filter(Boolean);
   if (
     confirmationWords.length < 2 ||
     /\d/.test(o.customer_name) ||
-    /\b(nombre|apellido|cliente|usuario|contacto|y apellido)\b/.test(confirmationName)
+    /\b(nombre|apellido|cliente|usuario|contacto|y apellido)\b/.test(confirmationName) ||
+    (confirmationCity && confirmationName === confirmationCity)
   ) {
     return false;
   }
@@ -4897,14 +4951,18 @@ function paymentProofVerificationMessage(order: OrderData, expectedAmount: numbe
   if (!order.payment_proof_received) return "";
 
   if (order.payment_proof_verified) {
-    return `✅ Comprobante verificado
+    return `${
+      order.payment_manual_review_required
+        ? "✅ Comprobante recibido\n⏳ Acreditación pendiente de verificación manual"
+        : "✅ Comprobante verificado"
+    }
 
 👤 Pagador detectado: ${order.payment_holder_name}
 💰 Monto detectado: ${formatGs(order.payment_amount || 0)} Gs
 🏦 Destinatario verificado: ${order.payment_recipient_name || "cuenta bancaria configurada"}${order.payment_operation_number ? `
 🔢 Operación: ${order.payment_operation_number}` : ""}
 
-El pago cubre el total del pedido de ${formatGs(expectedAmount)} Gs.`;
+El monto cubre el total del pedido de ${formatGs(expectedAmount)} Gs.`;
   }
 
   const details = [
@@ -5078,10 +5136,12 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
 📞 Contacto: ${o.phone}${observationBlock(o)}
 
 🚚 Envío por transportadora
-💳 Pago anticipado verificado
+${o.payment_manual_review_required
+  ? "💳 Comprobante recibido\n⏳ Acreditación pendiente de verificación manual"
+  : "💳 Pago anticipado verificado"}
 👤 Pagador: ${o.payment_holder_name}
 🏦 Destinatario verificado: ${o.payment_recipient_name || parsed.bankData?.titular || "cuenta configurada"}
-💰 Monto verificado: ${formatGs(o.payment_amount || 0)} Gs${o.payment_operation_number ? `
+💰 Monto recibido: ${formatGs(o.payment_amount || 0)} Gs${o.payment_operation_number ? `
 🔢 Operación: ${o.payment_operation_number}` : ""}
 
 Una vez despachado, te enviaremos el comprobante correspondiente. 📦
@@ -5447,7 +5507,7 @@ REGLAS DURAS:
 - Guardá el talle/calce en observación. Pedí dirección solamente cuando Dirección opcional = no.
 - Nunca uses una frase publicitaria como "Usalas con" como nombre de producto.
 
-- En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_verified sea true. El destinatario debe coincidir con los datos bancarios. Para PDF no se exige frase explícita de estado; para imagen sí. Si falta el nombre del cliente, usar el titular de la cuenta debitada.
+- En ciudad sin contra-entrega, confirmar cuando payment_proof_verified sea true. Si figura pendiente pero destinatario y monto son válidos, confirmar y marcar payment_manual_review_required=true. No pedir otro comprobante. Una ciudad nunca puede ser nombre del cliente.
 `.trim();
 }
 
@@ -6846,9 +6906,11 @@ export default async function handler(req: any, res: any) {
         null;
     }
 
-    // V101: saneamiento final del nombre antes de calcular el estado.
-    // Evita confirmar valores como "Y Apellido" recuperados de textos del bot.
-    if (orderData.customer_name && isContaminatedCustomerName(orderData.customer_name, parsed)) {
+    // V110: ninguna ciudad puede quedar guardada como nombre del cliente.
+    if (
+      orderData.customer_name &&
+      isInvalidCustomerNameForOrder(orderData.customer_name, orderData.city, parsed)
+    ) {
       orderData.customer_name = "";
     }
 
@@ -6874,6 +6936,8 @@ export default async function handler(req: any, res: any) {
       orderData.payment_recipient_bank = "";
       orderData.payment_recipient_matched = false;
       orderData.payment_proof_mime = "";
+      orderData.payment_manual_review_required = false;
+      orderData.payment_manual_review_reason = "";
 
       const fetchedProof = await fetchMediaAsBase64(clean(media_url));
 
@@ -6919,23 +6983,52 @@ export default async function handler(req: any, res: any) {
           proofAnalysis,
           parsed.bankData
         );
-        const statusIsAcceptable = isPdfProof || proofAnalysis.successful;
+        const transferIsPending =
+          !isPdfProof &&
+          isPendingTransferStatus(proofAnalysis.status_text);
 
-        orderData.payment_recipient_matched = recipientMatches;
-        orderData.payment_proof_verified = Boolean(
+        const statusIsFinal =
+          isPdfProof ||
+          proofAnalysis.successful;
+
+        const basePaymentDataValid = Boolean(
           proofAnalysis.readable &&
-          statusIsAcceptable &&
           hasPayerName &&
           proofAnalysis.amount > 0 &&
           amountCoversOrder &&
           recipientMatches
         );
 
-        // V108: si el cliente todavía no dio su nombre, usar el titular pagador.
+        orderData.payment_manual_review_required = Boolean(
+          basePaymentDataValid &&
+          transferIsPending
+        );
+
+        orderData.payment_manual_review_reason =
+          orderData.payment_manual_review_required
+            ? "Transferencia pendiente de acreditación. Verificar manualmente."
+            : "";
+
+        orderData.payment_recipient_matched = recipientMatches;
+        orderData.payment_proof_verified = Boolean(
+          basePaymentDataValid &&
+          (
+            statusIsFinal ||
+            orderData.payment_manual_review_required
+          )
+        );
+
         if (
           orderData.payment_proof_verified &&
-          !clean(orderData.customer_name) &&
-          hasPayerName
+          hasPayerName &&
+          (
+            !clean(orderData.customer_name) ||
+            isInvalidCustomerNameForOrder(
+              orderData.customer_name,
+              orderData.city,
+              parsed
+            )
+          )
         ) {
           orderData.customer_name = toTitleCase(proofAnalysis.holder_name);
         }
@@ -6951,7 +7044,11 @@ export default async function handler(req: any, res: any) {
             );
           }
 
-          if (!statusIsAcceptable) {
+          if (
+            !isPdfProof &&
+            !proofAnalysis.successful &&
+            !transferIsPending
+          ) {
             reasons.push("la imagen no muestra claramente una transferencia exitosa o aprobada");
           }
 
@@ -6985,7 +7082,11 @@ export default async function handler(req: any, res: any) {
 
           orderData.payment_note = mergeUniqueText(
             orderData.payment_note,
-            `Pago anticipado verificado. Pagador: ${orderData.payment_holder_name}. Destinatario: ${recipientLabel}. Monto: ${formatGs(orderData.payment_amount)} Gs.${overpayment > 0 ? ` Diferencia a favor: ${formatGs(overpayment)} Gs.` : ""}${orderData.payment_operation_number ? ` Operación: ${orderData.payment_operation_number}.` : ""}`
+            `${
+              orderData.payment_manual_review_required
+                ? "Pago anticipado recibido. Requiere verificación manual."
+                : "Pago anticipado verificado."
+            } Pagador: ${orderData.payment_holder_name}. Destinatario: ${recipientLabel}. Monto: ${formatGs(orderData.payment_amount)} Gs.${overpayment > 0 ? ` Diferencia a favor: ${formatGs(overpayment)} Gs.` : ""}${orderData.payment_operation_number ? ` Operación: ${orderData.payment_operation_number}.` : ""}`
           );
         }
       }
@@ -7004,8 +7105,20 @@ export default async function handler(req: any, res: any) {
       orderData.payment_recipient_bank = clean(oldOrder.payment_recipient_bank);
       orderData.payment_recipient_matched = !!oldOrder.payment_recipient_matched;
       orderData.payment_proof_mime = clean(oldOrder.payment_proof_mime);
+      orderData.payment_manual_review_required = !!oldOrder.payment_manual_review_required;
+      orderData.payment_manual_review_reason = clean(oldOrder.payment_manual_review_reason);
 
-      if (!clean(orderData.customer_name) && clean(orderData.payment_holder_name)) {
+      if (
+        clean(orderData.payment_holder_name) &&
+        (
+          !clean(orderData.customer_name) ||
+          isInvalidCustomerNameForOrder(
+            orderData.customer_name,
+            orderData.city,
+            parsed
+          )
+        )
+      ) {
         orderData.customer_name = toTitleCase(orderData.payment_holder_name);
       }
     } else if (isSameOrderForPaymentProof(oldOrder, orderData)) {
@@ -7023,6 +7136,8 @@ export default async function handler(req: any, res: any) {
       orderData.payment_recipient_bank = clean(oldOrder.payment_recipient_bank);
       orderData.payment_recipient_matched = !!oldOrder.payment_recipient_matched;
       orderData.payment_proof_mime = clean(oldOrder.payment_proof_mime);
+      orderData.payment_manual_review_required = !!oldOrder.payment_manual_review_required;
+      orderData.payment_manual_review_reason = clean(oldOrder.payment_manual_review_reason);
     } else {
       orderData.payment_proof_received = false;
       orderData.payment_proof_verified = false;
@@ -7038,6 +7153,19 @@ export default async function handler(req: any, res: any) {
       orderData.payment_recipient_bank = "";
       orderData.payment_recipient_matched = false;
       orderData.payment_proof_mime = "";
+      orderData.payment_manual_review_required = false;
+      orderData.payment_manual_review_reason = "";
+    }
+
+    // V110: defensa final antes de confirmar.
+    if (
+      orderData.customer_name &&
+      isInvalidCustomerNameForOrder(orderData.customer_name, orderData.city, parsed)
+    ) {
+      orderData.customer_name =
+        orderData.payment_proof_verified && clean(orderData.payment_holder_name)
+          ? toTitleCase(orderData.payment_holder_name)
+          : "";
     }
 
     if (orderData.locked_offer && orderData.locked_offer.total < 10000) {
@@ -7210,6 +7338,8 @@ export default async function handler(req: any, res: any) {
             payment_recipient_bank: orderData.payment_recipient_bank || null,
             payment_recipient_matched: orderData.payment_recipient_matched || false,
             payment_proof_mime: orderData.payment_proof_mime || null,
+            payment_manual_review_required: orderData.payment_manual_review_required || false,
+            payment_manual_review_reason: orderData.payment_manual_review_reason || null,
           step: "pedido_confirmado",
           updated_at: new Date().toISOString(),
         },
@@ -7291,6 +7421,8 @@ export default async function handler(req: any, res: any) {
             payment_recipient_bank: orderData.payment_recipient_bank || null,
             payment_recipient_matched: orderData.payment_recipient_matched || false,
             payment_proof_mime: orderData.payment_proof_mime || null,
+            payment_manual_review_required: orderData.payment_manual_review_required || false,
+            payment_manual_review_reason: orderData.payment_manual_review_reason || null,
             step: finalState.step,
             address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
@@ -7347,6 +7479,8 @@ export default async function handler(req: any, res: any) {
             payment_recipient_bank: orderData.payment_recipient_bank || null,
             payment_recipient_matched: orderData.payment_recipient_matched || false,
             payment_proof_mime: orderData.payment_proof_mime || null,
+            payment_manual_review_required: orderData.payment_manual_review_required || false,
+            payment_manual_review_reason: orderData.payment_manual_review_reason || null,
             step: finalState.step,
             address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
@@ -7429,6 +7563,8 @@ export default async function handler(req: any, res: any) {
             payment_recipient_bank: orderData.payment_recipient_bank || null,
             payment_recipient_matched: orderData.payment_recipient_matched || false,
             payment_proof_mime: orderData.payment_proof_mime || null,
+            payment_manual_review_required: orderData.payment_manual_review_required || false,
+            payment_manual_review_reason: orderData.payment_manual_review_reason || null,
           step: finalState.step,
           address_optional: finalState.addressOptional,
           updated_at: new Date().toISOString(),
@@ -7493,6 +7629,8 @@ export default async function handler(req: any, res: any) {
             payment_recipient_bank: orderData.payment_recipient_bank || null,
             payment_recipient_matched: orderData.payment_recipient_matched || false,
             payment_proof_mime: orderData.payment_proof_mime || null,
+            payment_manual_review_required: orderData.payment_manual_review_required || false,
+            payment_manual_review_reason: orderData.payment_manual_review_reason || null,
             step: finalState.step,
             address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
@@ -7558,6 +7696,8 @@ export default async function handler(req: any, res: any) {
             payment_recipient_bank: orderData.payment_recipient_bank || null,
             payment_recipient_matched: orderData.payment_recipient_matched || false,
             payment_proof_mime: orderData.payment_proof_mime || null,
+            payment_manual_review_required: orderData.payment_manual_review_required || false,
+            payment_manual_review_reason: orderData.payment_manual_review_reason || null,
           step: finalState.step,
           address_optional: finalState.addressOptional,
           updated_at: new Date().toISOString(),
