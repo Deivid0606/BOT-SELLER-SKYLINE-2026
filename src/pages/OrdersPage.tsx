@@ -914,7 +914,7 @@ export default function OrdersPage() {
             <p className="text-sm">No hay pedidos que coincidan con los filtros</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-5">
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 2xl:grid-cols-3">
             {filteredOrders.map((order) => (
               <OrderCard
                 key={order.id}
@@ -971,8 +971,10 @@ export default function OrdersPage() {
                           <img
                             src={m.media_url}
                             alt="Archivo enviado en el chat"
-                            className="mb-2 max-h-64 w-full rounded-lg object-contain"
-                            loading="lazy"
+                            className="mb-2 max-h-72 w-full cursor-zoom-in rounded-xl border border-white/10 bg-black/20 object-contain shadow-lg [image-rendering:auto]"
+                            loading="eager"
+                            decoding="async"
+                            onClick={() => m.media_url && window.open(m.media_url, "_blank")}
                           />
                         )}
                         {m.body ? (
@@ -1022,12 +1024,94 @@ export default function OrdersPage() {
       </Dialog>
 
       <Dialog open={!!proofOrder} onOpenChange={(open) => !open && setProofOrder(null)}>
-        <DialogContent className="z-[110] max-h-[94vh] w-[calc(100vw-24px)] max-w-3xl overflow-hidden border-white/10 bg-[#0d0818] p-0 text-white shadow-2xl">
-          <DialogHeader className="border-b border-white/10 p-4"><DialogTitle className="flex items-center gap-2"><ReceiptText className="h-4 w-4 text-amber-400" />Comprobante de pago</DialogTitle><DialogDescription className="text-zinc-400">{proofOrder?.customer_name || "Cliente"} · {formatCurrency(proofOrder?.total_amount)} Gs</DialogDescription></DialogHeader>
-          <div className="max-h-[72vh] overflow-auto bg-black/30 p-4">
-            {proofLoading ? <div className="flex h-72 items-center justify-center text-zinc-400"><RefreshCw className="mr-2 h-5 w-5 animate-spin" />Buscando comprobante...</div> : proofUrl ? (/\.pdf(?:\?|$)/i.test(proofUrl) ? <iframe src={proofUrl} title="Comprobante" className="h-[68vh] w-full rounded-xl border border-white/10 bg-white" /> : <img src={proofUrl} alt="Comprobante de pago" className="mx-auto max-h-[68vh] max-w-full rounded-xl border border-white/10 object-contain shadow-2xl" />) : <div className="flex h-72 flex-col items-center justify-center text-center text-zinc-500"><ReceiptText className="mb-3 h-10 w-10 opacity-40" /><p>No se encontró un comprobante guardado.</p></div>}
+        <DialogContent className="z-[110] max-h-[96vh] w-[calc(100vw-20px)] max-w-4xl overflow-hidden rounded-2xl border border-white/10 bg-[#0b1019] p-0 text-white shadow-[0_30px_100px_rgba(0,0,0,0.65)]">
+          <DialogHeader className="border-b border-white/10 bg-gradient-to-r from-emerald-500/[0.08] to-transparent px-5 py-4">
+            <DialogTitle className="flex items-center gap-2.5 text-base font-bold text-white">
+              <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-emerald-400/20 bg-emerald-500/10">
+                <ReceiptText className="h-4.5 w-4.5 text-emerald-400" />
+              </span>
+              Comprobante de pago
+            </DialogTitle>
+            <DialogDescription className="pl-[46px] text-xs text-zinc-400">
+              {proofOrder?.customer_name || "Cliente"} · {formatCurrency(proofOrder?.total_amount)} Gs
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="max-h-[74vh] overflow-auto bg-[#070b11] p-3 sm:p-5">
+            {proofLoading ? (
+              <div className="flex h-[58vh] items-center justify-center rounded-2xl border border-white/5 bg-white/[0.02] text-zinc-400">
+                <RefreshCw className="mr-2 h-5 w-5 animate-spin text-emerald-400" />
+                Buscando comprobante...
+              </div>
+            ) : proofUrl ? (
+              /\.pdf(?:\?|$)/i.test(proofUrl) ? (
+                <iframe
+                  src={proofUrl}
+                  title="Comprobante"
+                  className="h-[70vh] min-h-[520px] w-full rounded-2xl border border-white/10 bg-white shadow-2xl"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => window.open(proofUrl, "_blank")}
+                  className="group relative mx-auto block w-full overflow-hidden rounded-2xl border border-white/10 bg-black/40 p-2 shadow-2xl focus:outline-none focus:ring-2 focus:ring-emerald-400/50"
+                  title="Abrir imagen en tamaño original"
+                >
+                  <img
+                    src={proofUrl}
+                    alt="Comprobante de pago"
+                    className="mx-auto max-h-[70vh] w-auto max-w-full rounded-xl object-contain [image-rendering:auto]"
+                    loading="eager"
+                    decoding="async"
+                  />
+                  <span className="pointer-events-none absolute bottom-4 right-4 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-black/70 px-3 py-1.5 text-[11px] font-semibold text-white opacity-0 backdrop-blur transition group-hover:opacity-100">
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    Ver tamaño original
+                  </span>
+                </button>
+              )
+            ) : (
+              <div className="flex h-[52vh] flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/[0.02] text-center text-zinc-500">
+                <ReceiptText className="mb-3 h-11 w-11 opacity-40" />
+                <p className="font-medium text-zinc-400">No se encontró un comprobante guardado.</p>
+                <p className="mt-1 text-xs text-zinc-600">
+                  Se buscó en el pedido y en los archivos recibidos por chat.
+                </p>
+              </div>
+            )}
           </div>
-          {proofOrder && <div className="space-y-2 border-t border-white/10 p-4">{getPaymentSummary(proofOrder) && <p className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2.5 text-xs text-emerald-200">{getPaymentSummary(proofOrder)}</p>}<div className="flex justify-end gap-2">{proofUrl && <Button size="sm" variant="outline" onClick={() => window.open(proofUrl, "_blank")} className="border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10"><ExternalLink className="mr-1 h-3.5 w-3.5" />Abrir original</Button>}<Button size="sm" variant="ghost" onClick={() => setProofOrder(null)} className="text-zinc-400 hover:bg-white/10 hover:text-white">Cerrar</Button></div></div>}
+
+          {proofOrder && (
+            <div className="space-y-3 border-t border-white/10 bg-[#0d131d] p-4">
+              {getPaymentSummary(proofOrder) && (
+                <p className="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.07] px-3.5 py-3 text-xs font-medium text-emerald-200">
+                  {getPaymentSummary(proofOrder)}
+                </p>
+              )}
+
+              <div className="flex flex-wrap justify-end gap-2">
+                {proofUrl && (
+                  <Button
+                    size="sm"
+                    onClick={() => window.open(proofUrl, "_blank")}
+                    className="h-9 rounded-xl border border-emerald-400/25 bg-gradient-to-r from-emerald-600 to-teal-600 px-4 text-xs font-bold text-white shadow-lg shadow-emerald-950/30 hover:from-emerald-500 hover:to-teal-500"
+                  >
+                    <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+                    Abrir original
+                  </Button>
+                )}
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setProofOrder(null)}
+                  className="h-9 rounded-xl border-white/10 bg-white/5 px-4 text-xs font-semibold text-zinc-300 hover:bg-white/10 hover:text-white"
+                >
+                  Cerrar
+                </Button>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
@@ -1064,331 +1148,279 @@ function OrderCard({
   const totalItems =
     items.reduce((sum, item) => sum + Number(item.quantity || 1), 0) ||
     Number(order.quantity || 1);
-
   const prepaid = isPrepaidOrder(order);
-  const hasProof =
-    Boolean(clean(order.comprobante_url)) ||
-    Boolean(order.payment_proof_received) ||
-    Boolean(order.payment_proof_verified);
-
   const paymentSummary = getPaymentSummary(order);
   const productName = getPrimaryProductName(order);
   const street = clean(order.address) || "Ubicación pendiente";
   const city = clean(order.city) || "Sin ciudad";
   const client = clean(order.customer_name) || "Sin nombre";
   const amount = formatCurrency(order.total_amount);
-  const shortId = String(order.id || "").slice(-12).toUpperCase();
+
+  const Field = ({
+    label,
+    value,
+    icon: FieldIcon,
+    full = false,
+    tone = "default",
+  }: {
+    label: string;
+    value: React.ReactNode;
+    icon?: any;
+    full?: boolean;
+    tone?: "default" | "amber" | "emerald";
+  }) => {
+    const toneClasses =
+      tone === "amber"
+        ? "border-amber-400/15 bg-amber-400/[0.045]"
+        : tone === "emerald"
+          ? "border-emerald-400/15 bg-emerald-400/[0.045]"
+          : "border-slate-700/70 bg-slate-900/45";
+
+    return (
+      <div
+        className={`rounded-xl border px-3.5 py-3 ${toneClasses} ${
+          full ? "sm:col-span-2" : ""
+        }`}
+      >
+        <div className="mb-1.5 flex items-center gap-1.5">
+          {FieldIcon && <FieldIcon className="h-3.5 w-3.5 text-slate-500" />}
+          <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+            {label}
+          </span>
+        </div>
+        <div className="min-w-0 text-[13px] font-medium leading-5 text-slate-100">
+          {value}
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <Card className="group relative overflow-hidden rounded-[28px] border border-slate-800 bg-[#0c131f] shadow-[0_22px_70px_rgba(0,0,0,0.34)] transition-all duration-300 hover:border-slate-700">
+    <Card className="group relative overflow-hidden rounded-[18px] border border-slate-700/70 bg-[#111722] shadow-[0_14px_40px_rgba(0,0,0,0.28)] transition-all duration-300 hover:-translate-y-0.5 hover:border-slate-600 hover:shadow-[0_18px_55px_rgba(0,0,0,0.38)]">
       <div
-        className="absolute inset-x-0 top-0 h-[2px] opacity-80"
+        className="absolute inset-x-0 top-0 h-[3px]"
         style={{ background: cfg.color }}
       />
 
-      <CardContent className="p-5 sm:p-6 lg:p-7">
-        {/* CABECERA */}
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex h-8 items-center gap-2 rounded-full border border-slate-800 bg-[#111a28] px-3 font-mono text-[11px] font-semibold text-slate-400">
-              <span className="text-slate-600">#</span>
-              {shortId || "SIN-ID"}
+      <CardContent className="p-0">
+        {/* CABECERA EJECUTIVA */}
+        <div className="flex items-start justify-between gap-4 border-b border-slate-800 px-5 pb-4 pt-5">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-[11px] font-medium text-slate-500">
+              <Clock className="h-3.5 w-3.5" />
+              <span>{formatDateShort(order.created_at)}</span>
             </div>
+            <p className="mt-1 truncate font-mono text-[11px] text-slate-600">
+              {chatNumber || "Sin número"}
+            </p>
+          </div>
 
+          <div className="flex items-center gap-2">
             <Badge
-              className={`h-8 gap-1.5 rounded-full border px-3 text-[11px] font-semibold ${cfg.chip}`}
+              className={`h-7 gap-1.5 rounded-full border px-2.5 text-[11px] font-semibold ${cfg.chip}`}
             >
               <Icon className="h-3.5 w-3.5" />
               {cfg.label}
             </Badge>
-
-            {prepaid && (
-              <Badge className="h-8 gap-1.5 rounded-full border border-amber-400/20 bg-amber-400/10 px-3 text-[11px] font-semibold text-amber-300">
-                <ReceiptText className="h-3.5 w-3.5" />
-                Pago anticipado
-              </Badge>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2 text-[11px] text-slate-500">
-            <Clock className="h-3.5 w-3.5" />
-            {formatDateShort(order.created_at)}
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={onPreview}
+              title="Ver conversación"
+              className="h-8 w-8 rounded-lg border border-slate-700 bg-slate-900/60 text-slate-400 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
+            >
+              <Eye className="h-4 w-4" />
+            </Button>
           </div>
         </div>
 
-        {/* CUERPO PRINCIPAL, inspirado en la referencia */}
-        <div className="grid gap-5 xl:grid-cols-[0.92fr_1.08fr]">
-          {/* COLUMNA IZQUIERDA */}
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-slate-800 bg-[#09111c] p-5">
-              <p className="text-[10px] font-bold uppercase tracking-[0.17em] text-slate-500">
+        {/* MONTO PRINCIPAL */}
+        <div className="border-b border-slate-800 bg-[#0d131d] px-5 py-4">
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
                 Monto total
               </p>
-              <div className="mt-1 flex flex-wrap items-end gap-2">
-                <span className="text-[36px] font-extrabold leading-none tracking-[-0.05em] text-white sm:text-[42px]">
+              <div className="mt-1 flex items-baseline gap-1.5">
+                <span className="text-[30px] font-bold tracking-[-0.04em] text-white">
                   {amount}
                 </span>
-                <span className="pb-1 text-sm font-semibold text-slate-500">Gs</span>
-              </div>
-
-              <div className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-slate-800 bg-slate-900/70 px-2.5 py-1 text-[11px] font-medium text-slate-400">
-                <Package className="h-3 w-3" />
-                {totalItems} {totalItems === 1 ? "unidad" : "unidades"}
+                <span className="text-sm font-semibold text-slate-500">Gs</span>
               </div>
             </div>
-
-            <div className="rounded-2xl border border-slate-800 bg-[#101824] p-4">
-              <div className="flex items-start gap-3">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-blue-400/10 bg-blue-500/10">
-                  <ShoppingCart className="h-5 w-5 text-blue-400" />
-                </div>
-
-                <div className="min-w-0 flex-1">
-                  <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
-                    Producto
-                  </p>
-
-                  {items.length > 1 ? (
-                    <div className="mt-2 space-y-2">
-                      {items.slice(0, 5).map((item, index) => (
-                        <div
-                          key={`${item.product}-${index}`}
-                          className="flex items-start justify-between gap-3"
-                        >
-                          <span className="text-sm font-semibold leading-5 text-slate-100">
-                            {item.product || "Producto"}
-                          </span>
-                          <span className="shrink-0 rounded-md bg-slate-900 px-2 py-0.5 text-[11px] font-semibold text-slate-400">
-                            x{item.quantity || 1}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="mt-1.5 flex items-start justify-between gap-3">
-                      <p className="text-sm font-semibold leading-5 text-slate-100">
-                        {productName}
-                      </p>
-                      <span className="shrink-0 rounded-md bg-slate-900 px-2 py-0.5 text-[11px] font-semibold text-slate-400">
-                        x{totalItems}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
+            <div className="rounded-xl border border-slate-700 bg-slate-800/55 px-3 py-2 text-right">
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">
+                Unidades
+              </p>
+              <p className="mt-0.5 text-lg font-bold text-slate-100">{totalItems}</p>
             </div>
-          </div>
-
-          {/* COLUMNA DERECHA */}
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-slate-800 bg-[#09111c] p-5">
-              <div className="mb-4 flex items-center gap-2 border-b border-slate-800 pb-3">
-                <User className="h-3.5 w-3.5 text-blue-400" />
-                <p className="text-[10px] font-bold uppercase tracking-[0.17em] text-blue-400/80">
-                  Datos del cliente
-                </p>
-              </div>
-
-              <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-                <div>
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-600">
-                    Cliente
-                  </p>
-                  <p className="mt-0.5 text-sm font-semibold text-slate-100">{client}</p>
-                </div>
-
-                <div>
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-600">
-                    Ciudad
-                  </p>
-                  <p className="mt-0.5 text-sm font-semibold text-slate-100">{city}</p>
-                </div>
-
-                <div className="sm:col-span-2">
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-600">
-                    Dirección
-                  </p>
-                  <p className="mt-0.5 text-sm font-semibold leading-5 text-slate-100">
-                    {street}
-                  </p>
-                </div>
-
-                <div className="sm:col-span-2">
-                  <p className="text-[9px] font-bold uppercase tracking-wider text-slate-600">
-                    Referencia / contacto
-                  </p>
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-100">
-                    <span>{chatNumber || "Sin número"}</span>
-                    <button
-                      type="button"
-                      onClick={onChat}
-                      className="inline-flex items-center gap-1 text-xs font-medium text-slate-400 transition hover:text-white"
-                    >
-                      <MessageSquare className="h-3.5 w-3.5" />
-                      Abrir chat
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div
-              className={`rounded-2xl border px-4 py-3 ${
-                observation
-                  ? "border-amber-400/15 bg-amber-400/[0.045]"
-                  : "border-slate-800 bg-[#09111c]"
-              }`}
-            >
-              <div className="flex items-start gap-2">
-                <MessageSquare
-                  className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
-                    observation ? "text-amber-400" : "text-slate-600"
-                  }`}
-                />
-                <p
-                  className={`text-xs leading-5 ${
-                    observation ? "text-amber-100/85" : "text-slate-500"
-                  }`}
-                >
-                  {observation || "Sin observaciones adicionales"}
-                </p>
-              </div>
-            </div>
-
-            {(prepaid || hasProof) && (
-              <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.055] p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <ReceiptText className="h-4 w-4 text-emerald-400" />
-                      <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-400">
-                        Comprobante de pago
-                      </p>
-                    </div>
-                    <p className="mt-1.5 text-xs leading-5 text-emerald-100/75">
-                      {paymentSummary ||
-                        (hasProof
-                          ? "El cliente envió un comprobante."
-                          : "Pedido registrado con pago anticipado.")}
-                    </p>
-                  </div>
-
-                  <Button
-                    size="sm"
-                    onClick={onProof}
-                    className="h-9 shrink-0 border border-emerald-400/25 bg-emerald-500/15 px-4 text-xs font-bold text-emerald-200 hover:bg-emerald-500/25"
-                  >
-                    <Eye className="mr-1.5 h-3.5 w-3.5" />
-                    Ver comprobante
-                  </Button>
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
-        <Separator className="my-5 bg-slate-800" />
+        {/* FICHA DEL PEDIDO */}
+        <div className="space-y-3 px-5 py-5">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field
+              label="Producto"
+              icon={ShoppingCart}
+              full
+              value={
+                items.length > 1 ? (
+                  <div className="space-y-1.5">
+                    {items.slice(0, 4).map((item, index) => (
+                      <div
+                        key={`${item.product}-${index}`}
+                        className="flex items-center justify-between gap-3"
+                      >
+                        <span className="truncate">{item.product || "Producto"}</span>
+                        <span className="shrink-0 rounded-md bg-slate-800 px-2 py-0.5 text-[11px] font-semibold text-slate-300">
+                          x{item.quantity || 1}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="truncate font-semibold">{productName}</span>
+                    <span className="shrink-0 rounded-md bg-slate-800 px-2 py-0.5 text-[11px] font-semibold text-slate-300">
+                      x{totalItems}
+                    </span>
+                  </div>
+                )
+              }
+            />
 
-        {/* BARRA DE ACCIONES */}
-        <div className="flex flex-wrap items-center gap-2">
-          {status !== "entregado" && (
-            <Button
-              size="sm"
-              onClick={() => onStatus("entregado")}
-              className="h-9 rounded-full bg-emerald-600 px-4 text-xs font-semibold text-white hover:bg-emerald-500"
-            >
-              <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
-              Entregado
-            </Button>
+            <Field label="Cliente" icon={User} value={client} />
+            <Field label="Ciudad" icon={Building2} value={city} />
+            <Field label="Calle / ubicación" icon={MapPin} full value={street} />
+
+            <Field
+              label="Observación"
+              icon={MessageSquare}
+              full
+              tone={observation ? "amber" : "default"}
+              value={
+                observation ? (
+                  <span className="text-amber-100/90">{observation}</span>
+                ) : (
+                  <span className="font-normal text-slate-600">
+                    Sin observaciones adicionales
+                  </span>
+                )
+              }
+            />
+          </div>
+
+          {prepaid && (
+            <div className="rounded-xl border border-emerald-400/15 bg-emerald-400/[0.045] p-3.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <ReceiptText className="h-3.5 w-3.5 text-emerald-400" />
+                    <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-400">
+                      Pago anticipado
+                    </span>
+                  </div>
+                  <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-emerald-100/75">
+                    {paymentSummary || "Comprobante asociado al pedido"}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={onProof}
+                  className="h-9 shrink-0 rounded-xl border border-emerald-400/25 bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 text-xs font-bold text-white shadow-lg shadow-emerald-950/30 transition hover:-translate-y-0.5 hover:from-emerald-500 hover:to-teal-500 hover:shadow-emerald-900/40"
+                >
+                  <Eye className="mr-1.5 h-3.5 w-3.5" />
+                  Ver comprobante
+                </Button>
+              </div>
+            </div>
           )}
 
-          {status !== "cancelado" && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => onStatus("cancelado")}
-              className="h-9 rounded-full border-slate-700 bg-transparent px-4 text-xs font-semibold text-slate-400 hover:border-rose-500/30 hover:bg-rose-500/10 hover:text-rose-300"
-            >
-              <XCircle className="mr-1.5 h-3.5 w-3.5" />
-              Cancelar
-            </Button>
-          )}
+          <Separator className="bg-slate-800" />
 
-          {status !== "cargado" && status !== "entregado" && (
+          {/* ACCIONES PRINCIPALES */}
+          <div className="grid grid-cols-2 gap-2">
+            {status !== "entregado" && (
+              <Button
+                size="sm"
+                onClick={() => onStatus("entregado")}
+                className="h-10 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 text-xs font-bold text-white shadow-lg shadow-emerald-950/25 transition hover:-translate-y-0.5 hover:from-emerald-500 hover:to-green-500"
+              >
+                <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
+                Entregado
+              </Button>
+            )}
+
+            {status !== "cancelado" && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onStatus("cancelado")}
+                className="h-10 rounded-xl border-rose-500/25 bg-rose-500/[0.08] text-xs font-bold text-rose-300 shadow-sm transition hover:-translate-y-0.5 hover:bg-rose-500/15 hover:text-rose-200"
+              >
+                <XCircle className="mr-1.5 h-3.5 w-3.5" />
+                Cancelar
+              </Button>
+            )}
+
+            {status !== "cargado" && status !== "entregado" && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onStatus("cargado")}
+                className="h-10 rounded-xl border-blue-500/25 bg-blue-500/[0.08] text-xs font-bold text-blue-300 shadow-sm transition hover:-translate-y-0.5 hover:bg-blue-500/15 hover:text-blue-200"
+              >
+                <Package className="mr-1.5 h-3.5 w-3.5" />
+                Cargar
+              </Button>
+            )}
+
+            {status !== "droppx" && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onStatus("droppx")}
+                className="h-10 rounded-xl border-violet-500/25 bg-gradient-to-r from-violet-600/20 to-indigo-600/20 text-xs font-bold text-violet-200 shadow-sm transition hover:-translate-y-0.5 hover:from-violet-600/30 hover:to-indigo-600/30"
+              >
+                <Truck className="mr-1.5 h-3.5 w-3.5" />
+                Droppx
+              </Button>
+            )}
+          </div>
+
+          {/* ACCIONES SECUNDARIAS */}
+          <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => onStatus("cargado")}
-              className="h-9 rounded-full px-4 text-xs font-medium text-slate-400 hover:bg-white/5 hover:text-white"
+              onClick={onEcommerce}
+              className="h-10 rounded-xl border border-slate-700 bg-slate-900/70 text-xs font-semibold text-slate-300 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
             >
-              <Package className="mr-1.5 h-3.5 w-3.5" />
-              Cargar
+              <ShoppingCart className="mr-1.5 h-3.5 w-3.5" />
+              Ecommerce
             </Button>
-          )}
 
-          {status !== "droppx" && (
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => onStatus("droppx")}
-              className="h-9 rounded-full bg-blue-500/15 px-4 text-xs font-semibold text-blue-300 hover:bg-blue-500/25 hover:text-blue-200"
+              onClick={onChat}
+              className="h-10 rounded-xl border border-slate-700 bg-slate-900/70 text-xs font-semibold text-slate-300 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
             >
-              <Truck className="mr-1.5 h-3.5 w-3.5" />
-              Droppx
+              <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+              Chat
             </Button>
-          )}
 
-          {(prepaid || hasProof) && (
             <Button
-              size="sm"
+              size="icon"
               variant="ghost"
-              onClick={onProof}
-              className="h-9 rounded-full bg-amber-500/10 px-4 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 hover:text-amber-200"
+              onClick={onDelete}
+              title="Eliminar pedido"
+              className="h-10 w-10 rounded-xl border border-rose-500/20 bg-rose-500/[0.06] text-rose-400 shadow-sm transition hover:-translate-y-0.5 hover:bg-rose-500/12 hover:text-rose-300"
             >
-              <ReceiptText className="mr-1.5 h-3.5 w-3.5" />
-              Comprobante
+              <Trash2 className="h-3.5 w-3.5" />
             </Button>
-          )}
-
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onEcommerce}
-            className="h-9 rounded-full px-4 text-xs font-medium text-slate-400 hover:bg-white/5 hover:text-white"
-          >
-            <ShoppingCart className="mr-1.5 h-3.5 w-3.5" />
-            Ecommerce
-          </Button>
-
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onChat}
-            className="h-9 rounded-full px-4 text-xs font-medium text-slate-400 hover:bg-white/5 hover:text-white"
-          >
-            <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
-            Chat
-          </Button>
-
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onPreview}
-            className="h-9 rounded-full px-4 text-xs font-medium text-slate-400 hover:bg-white/5 hover:text-white"
-          >
-            <Eye className="mr-1.5 h-3.5 w-3.5" />
-            Vista previa
-          </Button>
-
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={onDelete}
-            title="Eliminar pedido"
-            className="ml-auto h-9 w-9 rounded-full text-rose-400 hover:bg-rose-500/10 hover:text-rose-300"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
+          </div>
         </div>
       </CardContent>
     </Card>
