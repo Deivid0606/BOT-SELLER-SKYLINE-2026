@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V107 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V108 - Mega Todo Store / One Store
  * 
+ * V108: valida destinatario bancario, usa el pagador como cliente y admite PDF sin texto de estado.
  * V107: verifica titular, monto y estado del comprobante antes de confirmar pagos anticipados.
  * V106: conserva el precio total del pack fijo y evita multiplicarlo por la cantidad.
  * V105: detecta ofertas únicas de varias unidades como pack fijo y no pregunta cantidad.
@@ -146,6 +147,13 @@ type OrderData = {
   payment_operation_number?: string;
   payment_status_text?: string;
   payment_verification_error?: string;
+  payment_recipient_name?: string;
+  payment_recipient_document?: string;
+  payment_recipient_account?: string;
+  payment_recipient_alias?: string;
+  payment_recipient_bank?: string;
+  payment_recipient_matched?: boolean;
+  payment_proof_mime?: string;
   observation?: string;
   preferred_delivery_date?: string;
   preferred_delivery_time?: string;
@@ -223,6 +231,13 @@ function emptyOrder(orderId?: string): OrderData {
     payment_operation_number: "",
     payment_status_text: "",
     payment_verification_error: "",
+    payment_recipient_name: "",
+    payment_recipient_document: "",
+    payment_recipient_account: "",
+    payment_recipient_alias: "",
+    payment_recipient_bank: "",
+    payment_recipient_matched: false,
+    payment_proof_mime: "",
     observation: "",
     preferred_delivery_date: "",
     preferred_delivery_time: "",
@@ -2843,6 +2858,13 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
     payment_operation_number: clean(old?.payment_operation_number || ""),
     payment_status_text: clean(old?.payment_status_text || ""),
     payment_verification_error: clean(old?.payment_verification_error || ""),
+    payment_recipient_name: clean(old?.payment_recipient_name || ""),
+    payment_recipient_document: clean(old?.payment_recipient_document || ""),
+    payment_recipient_account: clean(old?.payment_recipient_account || ""),
+    payment_recipient_alias: clean(old?.payment_recipient_alias || ""),
+    payment_recipient_bank: clean(old?.payment_recipient_bank || ""),
+    payment_recipient_matched: !!old?.payment_recipient_matched,
+    payment_proof_mime: clean(old?.payment_proof_mime || ""),
     observation: clean(old?.observation || old?.observacion || ""),
     preferred_delivery_date: clean(old?.preferred_delivery_date || ""),
     preferred_delivery_time: clean(old?.preferred_delivery_time || ""),
@@ -2876,6 +2898,16 @@ function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
     payment_operation_number: clean(ext.payment_operation_number || old.payment_operation_number || ""),
     payment_status_text: clean(ext.payment_status_text || old.payment_status_text || ""),
     payment_verification_error: clean(ext.payment_verification_error || old.payment_verification_error || ""),
+    payment_recipient_name: clean(ext.payment_recipient_name || old.payment_recipient_name || ""),
+    payment_recipient_document: clean(ext.payment_recipient_document || old.payment_recipient_document || ""),
+    payment_recipient_account: clean(ext.payment_recipient_account || old.payment_recipient_account || ""),
+    payment_recipient_alias: clean(ext.payment_recipient_alias || old.payment_recipient_alias || ""),
+    payment_recipient_bank: clean(ext.payment_recipient_bank || old.payment_recipient_bank || ""),
+    payment_recipient_matched:
+      ext.payment_recipient_matched !== undefined
+        ? !!ext.payment_recipient_matched
+        : !!old.payment_recipient_matched,
+    payment_proof_mime: clean(ext.payment_proof_mime || old.payment_proof_mime || ""),
     ...mergeOrderObservation(old, ext || {}),
   };
 }
@@ -4653,6 +4685,11 @@ type PaymentProofAnalysis = {
   amount: number;
   operation_number: string;
   status_text: string;
+  recipient_name: string;
+  recipient_document: string;
+  recipient_account: string;
+  recipient_alias: string;
+  recipient_bank: string;
   error: string;
 };
 
@@ -4696,8 +4733,63 @@ function normalizePaymentProofAnalysis(value: any): PaymentProofAnalysis {
     amount: Number.isFinite(amount) ? amount : 0,
     operation_number: operation,
     status_text: status,
+    recipient_name: clean(value?.recipient_name || value?.beneficiary_name || value?.beneficiario || value?.destinatario || ""),
+    recipient_document: clean(value?.recipient_document || value?.beneficiary_document || value?.documento_beneficiario || ""),
+    recipient_account: clean(value?.recipient_account || value?.credited_account || value?.cuenta_acreditada || ""),
+    recipient_alias: clean(value?.recipient_alias || value?.beneficiary_alias || value?.alias_destino || ""),
+    recipient_bank: clean(value?.recipient_bank || value?.beneficiary_bank || value?.entidad_destino || value?.banco_destino || ""),
     error: clean(value?.error || value?.motivo || ""),
   };
+}
+
+function onlyComparableDigits(value: any) {
+  return clean(value).replace(/\D/g, "");
+}
+
+function normalizedBankText(value: any) {
+  return normalize(value).replace(/\b(sa|s a|banco|bank|entidad)\b/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function namesMatch(a: any, b: any) {
+  const left = normalize(a).split(/\s+/).filter((word) => word.length >= 2);
+  const right = normalize(b).split(/\s+/).filter((word) => word.length >= 2);
+  if (!left.length || !right.length) return false;
+
+  const leftSet = new Set(left);
+  const common = right.filter((word) => leftSet.has(word)).length;
+  return common >= Math.min(2, Math.min(left.length, right.length));
+}
+
+function paymentRecipientMatchesBankData(analysis: PaymentProofAnalysis, bankData: BankData | null) {
+  if (!bankData) return false;
+
+  const expectedDocument = onlyComparableDigits(bankData.ci);
+  const expectedAccount = onlyComparableDigits(bankData.cuenta);
+  const expectedAlias = onlyComparableDigits(bankData.alias);
+  const actualDocument = onlyComparableDigits(analysis.recipient_document);
+  const actualAccount = onlyComparableDigits(analysis.recipient_account);
+  const actualAlias = onlyComparableDigits(analysis.recipient_alias);
+
+  const nameMatch = Boolean(bankData.titular && analysis.recipient_name && namesMatch(bankData.titular, analysis.recipient_name));
+  const documentMatch = Boolean(expectedDocument && actualDocument && expectedDocument === actualDocument);
+  const accountMatch = Boolean(expectedAccount && actualAccount && expectedAccount === actualAccount);
+  const aliasMatch = Boolean(expectedAlias && actualAlias && expectedAlias === actualAlias);
+
+  const expectedBank = normalizedBankText(bankData.entidad || bankData.banco || "");
+  const actualBank = normalizedBankText(analysis.recipient_bank);
+  const bankMatch = Boolean(
+    expectedBank &&
+    actualBank &&
+    (expectedBank.includes(actualBank) || actualBank.includes(expectedBank))
+  );
+
+  // Coincidencia fuerte por identificador exacto, o nombre + banco.
+  return Boolean(
+    documentMatch ||
+    accountMatch ||
+    aliasMatch ||
+    (nameMatch && (bankMatch || !expectedBank))
+  );
 }
 
 async function analyzePaymentProofWithGemini({
@@ -4706,12 +4798,14 @@ async function analyzePaymentProofWithGemini({
   mediaBase64,
   mime,
   expectedAmount,
+  bankData,
 }: {
   apiKey: string;
   model: string;
   mediaBase64: string;
   mime: string;
   expectedAmount: number;
+  bankData: BankData | null;
 }): Promise<PaymentProofAnalysis> {
   const fallback: PaymentProofAnalysis = {
     readable: false,
@@ -4720,8 +4814,21 @@ async function analyzePaymentProofWithGemini({
     amount: 0,
     operation_number: "",
     status_text: "",
+    recipient_name: "",
+    recipient_document: "",
+    recipient_account: "",
+    recipient_alias: "",
+    recipient_bank: "",
     error: "No se pudo analizar el comprobante.",
   };
+
+  const expectedRecipient = [
+    bankData?.titular ? `Titular esperado: ${bankData.titular}` : "",
+    bankData?.ci ? `CI esperada: ${bankData.ci}` : "",
+    bankData?.entidad || bankData?.banco ? `Entidad esperada: ${bankData?.entidad || bankData?.banco}` : "",
+    bankData?.cuenta ? `Cuenta esperada: ${bankData.cuenta}` : "",
+    bankData?.alias ? `Alias esperado: ${bankData.alias}` : "",
+  ].filter(Boolean).join("\n");
 
   const response = await callGemini({
     apiKey,
@@ -4736,22 +4843,41 @@ Respondé exclusivamente JSON válido, sin markdown:
   "amount": number,
   "operation_number": string,
   "status_text": string,
+  "recipient_name": string,
+  "recipient_document": string,
+  "recipient_account": string,
+  "recipient_alias": string,
+  "recipient_bank": string,
   "error": string
 }
-holder_name debe ser el titular o remitente de la cuenta debitada, no el beneficiario.
-amount debe ser el monto total transferido, como entero sin puntos.
-successful solo puede ser true cuando aparece claramente exitosa, aprobada, completada o equivalente.
-readable solo puede ser true si se leen claramente titular y monto.
-El total esperado es ${expectedAmount} Gs, pero no alteres el monto leído.`,
+
+Definiciones:
+- holder_name: titular o remitente de la cuenta DEBITADA; es quien hizo el pago.
+- recipient_name: beneficiario o destinatario de la transferencia.
+- recipient_document: documento/CI del beneficiario.
+- recipient_account: cuenta ACREDITADA o cuenta destino.
+- recipient_alias: alias del destinatario.
+- recipient_bank: banco o entidad receptora.
+- amount: monto total transferido como entero, sin puntos.
+- successful: true solo si una imagen/captura muestra claramente operación exitosa, aprobada, completada o equivalente.
+- En un PDF bancario, successful puede ser false si el documento no trae una frase explícita; igual extraé todos los demás datos.
+- readable: true si se leen claramente pagador, monto y al menos un dato del destinatario.
+- No confundas al pagador con el beneficiario.
+
+Datos bancarios esperados del vendedor:
+${expectedRecipient || "No configurados"}
+
+Total esperado del pedido: ${expectedAmount} Gs.
+No alteres los valores leídos para hacerlos coincidir.`,
     contents: [{
       role: "user",
       parts: [
         { inlineData: { mimeType: mime, data: mediaBase64 } },
-        { text: "Extraé y verificá los datos visibles de este comprobante." },
+        { text: "Extraé los datos del pagador, destinatario, monto, estado y operación." },
       ],
     }],
     temperature: 0,
-    maxTokens: 700,
+    maxTokens: 1000,
   });
 
   if (!response || response === "__GEMINI_QUOTA_EXCEEDED__") {
@@ -4773,30 +4899,33 @@ function paymentProofVerificationMessage(order: OrderData, expectedAmount: numbe
   if (order.payment_proof_verified) {
     return `✅ Comprobante verificado
 
-👤 Titular detectado: ${order.payment_holder_name}
-💰 Monto detectado: ${formatGs(order.payment_amount || 0)} Gs${order.payment_operation_number ? `
+👤 Pagador detectado: ${order.payment_holder_name}
+💰 Monto detectado: ${formatGs(order.payment_amount || 0)} Gs
+🏦 Destinatario verificado: ${order.payment_recipient_name || "cuenta bancaria configurada"}${order.payment_operation_number ? `
 🔢 Operación: ${order.payment_operation_number}` : ""}
 
 El pago cubre el total del pedido de ${formatGs(expectedAmount)} Gs.`;
   }
 
   const details = [
-    order.payment_holder_name ? `👤 Titular detectado: ${order.payment_holder_name}` : "",
+    order.payment_holder_name ? `👤 Pagador detectado: ${order.payment_holder_name}` : "",
     order.payment_amount ? `💰 Monto detectado: ${formatGs(order.payment_amount)} Gs` : "",
-    order.payment_status_text ? `🏦 Estado detectado: ${order.payment_status_text}` : "",
+    order.payment_recipient_name ? `🏦 Destinatario detectado: ${order.payment_recipient_name}` : "",
+    order.payment_status_text ? `📄 Estado detectado: ${order.payment_status_text}` : "",
   ].filter(Boolean);
 
   return `⚠️ Recibí el comprobante, pero todavía no puedo confirmar el pedido.
 
 ${details.length ? `${details.join("\n")}
 
-` : ""}${order.payment_verification_error || "No pude verificar claramente titular, monto y estado de la transferencia."}
+` : ""}${order.payment_verification_error || "No pude verificar correctamente el destinatario y el monto."}
 
-Por favor enviame una imagen o PDF más claro donde se vea:
-✅ transferencia exitosa
+Por favor enviame una imagen o PDF donde se vea:
 ✅ monto
 ✅ titular de la cuenta debitada
-✅ número de operación`;
+✅ beneficiario o destinatario
+✅ cuenta acreditada, CI o alias
+✅ número de operación, cuando esté disponible`;
 }
 
 
@@ -4950,7 +5079,8 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
 
 🚚 Envío por transportadora
 💳 Pago anticipado verificado
-👤 Titular de la transferencia: ${o.payment_holder_name}
+👤 Pagador: ${o.payment_holder_name}
+🏦 Destinatario verificado: ${o.payment_recipient_name || parsed.bankData?.titular || "cuenta configurada"}
 💰 Monto verificado: ${formatGs(o.payment_amount || 0)} Gs${o.payment_operation_number ? `
 🔢 Operación: ${o.payment_operation_number}` : ""}
 
@@ -4999,7 +5129,9 @@ function deterministicAfterCityCoverageMessage(state: ConversationState) {
 😊 Igual podemos enviarte por transportadora 🚚
 💳 Para este destino el pago es anticipado.
 
-Para continuar, pasame tu nombre completo y número de celular.`;
+Para continuar, realizá la transferencia y enviame el comprobante.
+
+Si todavía no me pasaste tu nombre, puedo tomarlo del titular de la cuenta debitada que aparezca en el comprobante.`;
   }
 
   if (!o.quantity) {
@@ -5032,9 +5164,10 @@ ${o.locked_offer.quantity} unidades de ${o.product}
 
 📍 ${o.city} no cuenta con contra-entrega, pero hacemos envío por transportadora 🚚
 
-💵 Para avanzar, realizá la transferencia y enviame el comprobante junto con:
-✅ nombre completo
-📞 Ya tengo tu número de WhatsApp
+💵 Para avanzar, realizá la transferencia y enviame el comprobante.
+
+📞 Ya tengo tu número de WhatsApp.
+👤 Si todavía no me pasaste tu nombre, lo tomaré del titular de la cuenta debitada que figure en el comprobante.
 
 ${bankDataText(parsed)} 📲`;
   }
@@ -5120,7 +5253,7 @@ function deterministicWaitingPaymentProofMessage(state: ConversationState, parse
   const o = state.order;
   if (state.coverage !== false) return "";
   if (state.step !== "waiting_payment_proof") return "";
-  if (!o.product || !o.city || !o.quantity || !o.customer_name || !o.phone) return "";
+  if (!o.product || !o.city || !o.quantity || !o.phone) return "";
 
   if (o.payment_proof_received && !o.payment_proof_verified) {
     return paymentProofVerificationMessage(o, state.total);
@@ -5132,7 +5265,7 @@ function deterministicWaitingPaymentProofMessage(state: ConversationState, parse
 🔢 Cantidad: ${o.quantity}
 💰 Total: ${formatGs(state.total)} Gs
 📍 Ciudad: ${o.city}
-👤 Cliente: ${o.customer_name}
+👤 Cliente: ${o.customer_name || "se tomará del titular pagador"}
 📞 Celular: ${o.phone}${observationBlock(o)}
 
 🚚 Para tu zona hacemos envío por transportadora con pago anticipado.
@@ -5141,7 +5274,7 @@ function deterministicWaitingPaymentProofMessage(state: ConversationState, parse
 
 ${bankDataText(parsed)} 📲
 
-Cuando me pases el comprobante, dejamos tu pedido confirmado 😊`;
+Cuando me pases el comprobante, validaré el destinatario y el monto. Si todo coincide, el pedido se confirma automáticamente 😊`;
 }
 
 function deterministicObservationAckMessage(state: ConversationState, parsed: ParsedTraining, observationPatch?: Partial<OrderData> | null) {
@@ -5314,7 +5447,7 @@ REGLAS DURAS:
 - Guardá el talle/calce en observación. Pedí dirección solamente cuando Dirección opcional = no.
 - Nunca uses una frase publicitaria como "Usalas con" como nombre de producto.
 
-- En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_verified sea true. Una imagen recibida no equivale a pago verificado.
+- En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_verified sea true. El destinatario debe coincidir con los datos bancarios. Para PDF no se exige frase explícita de estado; para imagen sí. Si falta el nombre del cliente, usar el titular de la cuenta debitada.
 `.trim();
 }
 
@@ -6734,6 +6867,13 @@ export default async function handler(req: any, res: any) {
       orderData.payment_operation_number = "";
       orderData.payment_status_text = "";
       orderData.payment_verification_error = "";
+      orderData.payment_recipient_name = "";
+      orderData.payment_recipient_document = "";
+      orderData.payment_recipient_account = "";
+      orderData.payment_recipient_alias = "";
+      orderData.payment_recipient_bank = "";
+      orderData.payment_recipient_matched = false;
+      orderData.payment_proof_mime = "";
 
       const fetchedProof = await fetchMediaAsBase64(clean(media_url));
 
@@ -6742,40 +6882,93 @@ export default async function handler(req: any, res: any) {
       } else if (!expectedPaymentAmount) {
         orderData.payment_verification_error =
           "Todavía no se pudo calcular el total del pedido para comparar el comprobante.";
+      } else if (!parsed.bankData) {
+        orderData.payment_verification_error =
+          "No hay datos bancarios configurados para validar el destinatario del pago.";
       } else {
+        const resolvedProofMime =
+          clean(mime_type) ||
+          clean(fetchedProof.mime) ||
+          (/\.pdf(?:\?|$)/i.test(clean(media_url)) ? "application/pdf" : "image/jpeg");
+        const isPdfProof = resolvedProofMime.toLowerCase().includes("pdf");
+
         const proofAnalysis = await analyzePaymentProofWithGemini({
           apiKey,
           model,
           mediaBase64: fetchedProof.data,
-          mime: clean(mime_type) || fetchedProof.mime || "image/jpeg",
+          mime: resolvedProofMime,
           expectedAmount: expectedPaymentAmount,
+          bankData: parsed.bankData,
         });
 
+        orderData.payment_proof_mime = resolvedProofMime;
         orderData.payment_holder_name = proofAnalysis.holder_name;
         orderData.payment_amount = proofAnalysis.amount;
         orderData.payment_operation_number = proofAnalysis.operation_number;
         orderData.payment_status_text = proofAnalysis.status_text;
+        orderData.payment_recipient_name = proofAnalysis.recipient_name;
+        orderData.payment_recipient_document = proofAnalysis.recipient_document;
+        orderData.payment_recipient_account = proofAnalysis.recipient_account;
+        orderData.payment_recipient_alias = proofAnalysis.recipient_alias;
+        orderData.payment_recipient_bank = proofAnalysis.recipient_bank;
 
-        const hasHolder = clean(proofAnalysis.holder_name).split(/\s+/).filter(Boolean).length >= 2;
+        const hasPayerName =
+          clean(proofAnalysis.holder_name).split(/\s+/).filter(Boolean).length >= 2;
         const amountCoversOrder = proofAnalysis.amount >= expectedPaymentAmount;
+        const recipientMatches = paymentRecipientMatchesBankData(
+          proofAnalysis,
+          parsed.bankData
+        );
+        const statusIsAcceptable = isPdfProof || proofAnalysis.successful;
 
+        orderData.payment_recipient_matched = recipientMatches;
         orderData.payment_proof_verified = Boolean(
           proofAnalysis.readable &&
-          proofAnalysis.successful &&
-          hasHolder &&
+          statusIsAcceptable &&
+          hasPayerName &&
           proofAnalysis.amount > 0 &&
-          amountCoversOrder
+          amountCoversOrder &&
+          recipientMatches
         );
+
+        // V108: si el cliente todavía no dio su nombre, usar el titular pagador.
+        if (
+          orderData.payment_proof_verified &&
+          !clean(orderData.customer_name) &&
+          hasPayerName
+        ) {
+          orderData.customer_name = toTitleCase(proofAnalysis.holder_name);
+        }
 
         if (!orderData.payment_proof_verified) {
           const reasons: string[] = [];
-          if (!proofAnalysis.readable) reasons.push("el comprobante no se ve con suficiente claridad");
-          if (!proofAnalysis.successful) reasons.push("no aparece claramente como transferencia exitosa");
-          if (!hasHolder) reasons.push("no se pudo detectar el titular de la cuenta debitada");
-          if (!proofAnalysis.amount) reasons.push("no se pudo detectar el monto");
-          else if (!amountCoversOrder) {
+
+          if (!proofAnalysis.readable) {
             reasons.push(
-              `el monto detectado (${formatGs(proofAnalysis.amount)} Gs) es menor al total del pedido (${formatGs(expectedPaymentAmount)} Gs)`
+              isPdfProof
+                ? "no se pudieron leer claramente los datos obligatorios del PDF"
+                : "el comprobante no se ve con suficiente claridad"
+            );
+          }
+
+          if (!statusIsAcceptable) {
+            reasons.push("la imagen no muestra claramente una transferencia exitosa o aprobada");
+          }
+
+          if (!hasPayerName) {
+            reasons.push("no se pudo detectar el titular de la cuenta debitada");
+          }
+
+          if (!recipientMatches) {
+            reasons.push("el destinatario no coincide con los datos bancarios configurados");
+          }
+
+          if (!proofAnalysis.amount) {
+            reasons.push("no se pudo detectar el monto");
+          } else if (!amountCoversOrder) {
+            const difference = expectedPaymentAmount - proofAnalysis.amount;
+            reasons.push(
+              `el monto detectado (${formatGs(proofAnalysis.amount)} Gs) es menor al total del pedido (${formatGs(expectedPaymentAmount)} Gs). Falta completar ${formatGs(difference)} Gs`
             );
           }
 
@@ -6784,9 +6977,15 @@ export default async function handler(req: any, res: any) {
               ? `No se pudo verificar porque ${reasons.join(", ")}.`
               : (proofAnalysis.error || "No se pudieron verificar todos los datos obligatorios.");
         } else {
+          const overpayment = Math.max(0, proofAnalysis.amount - expectedPaymentAmount);
+          const recipientLabel =
+            proofAnalysis.recipient_name ||
+            parsed.bankData.titular ||
+            "destinatario configurado";
+
           orderData.payment_note = mergeUniqueText(
             orderData.payment_note,
-            `Pago anticipado verificado. Titular: ${orderData.payment_holder_name}. Monto: ${formatGs(orderData.payment_amount)} Gs.${orderData.payment_operation_number ? ` Operación: ${orderData.payment_operation_number}.` : ""}`
+            `Pago anticipado verificado. Pagador: ${orderData.payment_holder_name}. Destinatario: ${recipientLabel}. Monto: ${formatGs(orderData.payment_amount)} Gs.${overpayment > 0 ? ` Diferencia a favor: ${formatGs(overpayment)} Gs.` : ""}${orderData.payment_operation_number ? ` Operación: ${orderData.payment_operation_number}.` : ""}`
           );
         }
       }
@@ -6798,6 +6997,17 @@ export default async function handler(req: any, res: any) {
       orderData.payment_operation_number = clean(oldOrder.payment_operation_number);
       orderData.payment_status_text = clean(oldOrder.payment_status_text);
       orderData.payment_verification_error = "";
+      orderData.payment_recipient_name = clean(oldOrder.payment_recipient_name);
+      orderData.payment_recipient_document = clean(oldOrder.payment_recipient_document);
+      orderData.payment_recipient_account = clean(oldOrder.payment_recipient_account);
+      orderData.payment_recipient_alias = clean(oldOrder.payment_recipient_alias);
+      orderData.payment_recipient_bank = clean(oldOrder.payment_recipient_bank);
+      orderData.payment_recipient_matched = !!oldOrder.payment_recipient_matched;
+      orderData.payment_proof_mime = clean(oldOrder.payment_proof_mime);
+
+      if (!clean(orderData.customer_name) && clean(orderData.payment_holder_name)) {
+        orderData.customer_name = toTitleCase(orderData.payment_holder_name);
+      }
     } else if (isSameOrderForPaymentProof(oldOrder, orderData)) {
       orderData.payment_proof_received = true;
       orderData.payment_proof_verified = false;
@@ -6806,6 +7016,13 @@ export default async function handler(req: any, res: any) {
       orderData.payment_operation_number = clean(oldOrder.payment_operation_number);
       orderData.payment_status_text = clean(oldOrder.payment_status_text);
       orderData.payment_verification_error = clean(oldOrder.payment_verification_error);
+      orderData.payment_recipient_name = clean(oldOrder.payment_recipient_name);
+      orderData.payment_recipient_document = clean(oldOrder.payment_recipient_document);
+      orderData.payment_recipient_account = clean(oldOrder.payment_recipient_account);
+      orderData.payment_recipient_alias = clean(oldOrder.payment_recipient_alias);
+      orderData.payment_recipient_bank = clean(oldOrder.payment_recipient_bank);
+      orderData.payment_recipient_matched = !!oldOrder.payment_recipient_matched;
+      orderData.payment_proof_mime = clean(oldOrder.payment_proof_mime);
     } else {
       orderData.payment_proof_received = false;
       orderData.payment_proof_verified = false;
@@ -6814,6 +7031,13 @@ export default async function handler(req: any, res: any) {
       orderData.payment_operation_number = "";
       orderData.payment_status_text = "";
       orderData.payment_verification_error = "";
+      orderData.payment_recipient_name = "";
+      orderData.payment_recipient_document = "";
+      orderData.payment_recipient_account = "";
+      orderData.payment_recipient_alias = "";
+      orderData.payment_recipient_bank = "";
+      orderData.payment_recipient_matched = false;
+      orderData.payment_proof_mime = "";
     }
 
     if (orderData.locked_offer && orderData.locked_offer.total < 10000) {
@@ -6886,7 +7110,7 @@ export default async function handler(req: any, res: any) {
       confirm = false;
     }
 
-    if (finalState.coverage === false && !orderData.payment_proof_received) {
+    if (finalState.coverage === false && !orderData.payment_proof_verified) {
       directConfirm = false;
       confirm = false;
     }
@@ -6979,6 +7203,13 @@ export default async function handler(req: any, res: any) {
             payment_holder_name: orderData.payment_holder_name || null,
             payment_amount: orderData.payment_amount || 0,
             payment_operation_number: orderData.payment_operation_number || null,
+            payment_recipient_name: orderData.payment_recipient_name || null,
+            payment_recipient_document: orderData.payment_recipient_document || null,
+            payment_recipient_account: orderData.payment_recipient_account || null,
+            payment_recipient_alias: orderData.payment_recipient_alias || null,
+            payment_recipient_bank: orderData.payment_recipient_bank || null,
+            payment_recipient_matched: orderData.payment_recipient_matched || false,
+            payment_proof_mime: orderData.payment_proof_mime || null,
           step: "pedido_confirmado",
           updated_at: new Date().toISOString(),
         },
@@ -7053,6 +7284,13 @@ export default async function handler(req: any, res: any) {
             payment_holder_name: orderData.payment_holder_name || null,
             payment_amount: orderData.payment_amount || 0,
             payment_operation_number: orderData.payment_operation_number || null,
+            payment_recipient_name: orderData.payment_recipient_name || null,
+            payment_recipient_document: orderData.payment_recipient_document || null,
+            payment_recipient_account: orderData.payment_recipient_account || null,
+            payment_recipient_alias: orderData.payment_recipient_alias || null,
+            payment_recipient_bank: orderData.payment_recipient_bank || null,
+            payment_recipient_matched: orderData.payment_recipient_matched || false,
+            payment_proof_mime: orderData.payment_proof_mime || null,
             step: finalState.step,
             address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
@@ -7102,6 +7340,13 @@ export default async function handler(req: any, res: any) {
             payment_holder_name: orderData.payment_holder_name || null,
             payment_amount: orderData.payment_amount || 0,
             payment_operation_number: orderData.payment_operation_number || null,
+            payment_recipient_name: orderData.payment_recipient_name || null,
+            payment_recipient_document: orderData.payment_recipient_document || null,
+            payment_recipient_account: orderData.payment_recipient_account || null,
+            payment_recipient_alias: orderData.payment_recipient_alias || null,
+            payment_recipient_bank: orderData.payment_recipient_bank || null,
+            payment_recipient_matched: orderData.payment_recipient_matched || false,
+            payment_proof_mime: orderData.payment_proof_mime || null,
             step: finalState.step,
             address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
@@ -7177,6 +7422,13 @@ export default async function handler(req: any, res: any) {
             payment_holder_name: orderData.payment_holder_name || null,
             payment_amount: orderData.payment_amount || 0,
             payment_operation_number: orderData.payment_operation_number || null,
+            payment_recipient_name: orderData.payment_recipient_name || null,
+            payment_recipient_document: orderData.payment_recipient_document || null,
+            payment_recipient_account: orderData.payment_recipient_account || null,
+            payment_recipient_alias: orderData.payment_recipient_alias || null,
+            payment_recipient_bank: orderData.payment_recipient_bank || null,
+            payment_recipient_matched: orderData.payment_recipient_matched || false,
+            payment_proof_mime: orderData.payment_proof_mime || null,
           step: finalState.step,
           address_optional: finalState.addressOptional,
           updated_at: new Date().toISOString(),
@@ -7234,6 +7486,13 @@ export default async function handler(req: any, res: any) {
             payment_holder_name: orderData.payment_holder_name || null,
             payment_amount: orderData.payment_amount || 0,
             payment_operation_number: orderData.payment_operation_number || null,
+            payment_recipient_name: orderData.payment_recipient_name || null,
+            payment_recipient_document: orderData.payment_recipient_document || null,
+            payment_recipient_account: orderData.payment_recipient_account || null,
+            payment_recipient_alias: orderData.payment_recipient_alias || null,
+            payment_recipient_bank: orderData.payment_recipient_bank || null,
+            payment_recipient_matched: orderData.payment_recipient_matched || false,
+            payment_proof_mime: orderData.payment_proof_mime || null,
             step: finalState.step,
             address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
@@ -7292,6 +7551,13 @@ export default async function handler(req: any, res: any) {
             payment_holder_name: orderData.payment_holder_name || null,
             payment_amount: orderData.payment_amount || 0,
             payment_operation_number: orderData.payment_operation_number || null,
+            payment_recipient_name: orderData.payment_recipient_name || null,
+            payment_recipient_document: orderData.payment_recipient_document || null,
+            payment_recipient_account: orderData.payment_recipient_account || null,
+            payment_recipient_alias: orderData.payment_recipient_alias || null,
+            payment_recipient_bank: orderData.payment_recipient_bank || null,
+            payment_recipient_matched: orderData.payment_recipient_matched || false,
+            payment_proof_mime: orderData.payment_proof_mime || null,
           step: finalState.step,
           address_optional: finalState.addressOptional,
           updated_at: new Date().toISOString(),
