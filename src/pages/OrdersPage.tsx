@@ -1,7 +1,7 @@
-// ORDERS PAGE — DASHBOARD OSCURO CORPORATIVO (v4)
-// Mejoras V4: dashboard comercial, productos/unidades vendidos, cargados,
-// comprobantes recuperables desde orders o inbox_messages,
-// observaciones/factura destacadas y tarjetas premium.
+// ORDERS PAGE — DASHBOARD EJECUTIVO PROFESIONAL (v5)
+// Mejoras V5: tarjetas ejecutivas con jerarquía visual profesional,
+// campos PRODUCTO, CLIENTE, CIUDAD, CALLE, OBSERVACIÓN y MONTO,
+// tipografía más limpia, fondo corporativo y acciones compactas.
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
@@ -48,6 +48,7 @@ import {
   FileCheck2,
   TrendingUp,
   ClipboardList,
+  Building2,
 } from "lucide-react";
 
 import {
@@ -705,16 +706,16 @@ export default function OrdersPage() {
      ============================================================ */
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#0a0612] via-[#0d0818] to-[#0a0612] text-white">
-      <div className="mx-auto max-w-[1600px] space-y-6 p-6">
+    <div className="min-h-screen bg-[#090d14] text-white [font-family:Inter,ui-sans-serif,system-ui,sans-serif]">
+      <div className="mx-auto max-w-[1680px] space-y-6 px-5 py-6 lg:px-8">
         {/* HEADER */}
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-3xl font-bold tracking-tight text-transparent">
+            <h1 className="text-3xl font-bold tracking-[-0.03em] text-slate-50">
               Panel de Pedidos
             </h1>
             <p className="mt-1 text-sm text-zinc-400">
-              Gestión operativa de pedidos, pagos y despacho
+              Control ejecutivo de ventas, clientes, pagos y despacho
             </p>
           </div>
           <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-400">
@@ -913,7 +914,7 @@ export default function OrdersPage() {
             <p className="text-sm">No hay pedidos que coincidan con los filtros</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2 2xl:grid-cols-3">
             {filteredOrders.map((order) => (
               <OrderCard
                 key={order.id}
@@ -1061,190 +1062,283 @@ function OrderCard({
   const observation = getOrderObservation(order);
   const chatNumber = order.from_number || order.phone || "";
   const totalItems =
-    items.reduce((s, i) => s + Number(i.quantity || 1), 0) || order.quantity || 1;
+    items.reduce((sum, item) => sum + Number(item.quantity || 1), 0) ||
+    Number(order.quantity || 1);
   const prepaid = isPrepaidOrder(order);
   const paymentSummary = getPaymentSummary(order);
+  const productName = getPrimaryProductName(order);
+  const street = clean(order.address) || "Ubicación pendiente";
+  const city = clean(order.city) || "Sin ciudad";
+  const client = clean(order.customer_name) || "Sin nombre";
+  const amount = formatCurrency(order.total_amount);
+
+  const Field = ({
+    label,
+    value,
+    icon: FieldIcon,
+    full = false,
+    tone = "default",
+  }: {
+    label: string;
+    value: React.ReactNode;
+    icon?: any;
+    full?: boolean;
+    tone?: "default" | "amber" | "emerald";
+  }) => {
+    const toneClasses =
+      tone === "amber"
+        ? "border-amber-400/15 bg-amber-400/[0.045]"
+        : tone === "emerald"
+          ? "border-emerald-400/15 bg-emerald-400/[0.045]"
+          : "border-slate-700/70 bg-slate-900/45";
+
+    return (
+      <div
+        className={`rounded-xl border px-3.5 py-3 ${toneClasses} ${
+          full ? "sm:col-span-2" : ""
+        }`}
+      >
+        <div className="mb-1.5 flex items-center gap-1.5">
+          {FieldIcon && <FieldIcon className="h-3.5 w-3.5 text-slate-500" />}
+          <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+            {label}
+          </span>
+        </div>
+        <div className="min-w-0 text-[13px] font-medium leading-5 text-slate-100">
+          {value}
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <Card
-      className={`group relative overflow-hidden rounded-2xl border-white/10 bg-gradient-to-br from-[#171321] via-[#12101a] to-[#0d0b13] shadow-lg shadow-black/20 ring-1 transition-all duration-300 hover:-translate-y-0.5 hover:border-white/20 hover:shadow-2xl hover:shadow-black/50 ${cfg.ring}`}
-    >
-      {/* Barra superior de color según estado */}
-      <div className="h-1 w-full" style={{ background: cfg.color }} />
+    <Card className="group relative overflow-hidden rounded-[18px] border border-slate-700/70 bg-[#111722] shadow-[0_14px_40px_rgba(0,0,0,0.28)] transition-all duration-300 hover:-translate-y-0.5 hover:border-slate-600 hover:shadow-[0_18px_55px_rgba(0,0,0,0.38)]">
+      <div
+        className="absolute inset-x-0 top-0 h-[3px]"
+        style={{ background: cfg.color }}
+      />
 
-      <CardContent className="space-y-4 p-5">
-        {/* HEADER: fecha + estado + ojito */}
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5 text-xs text-zinc-400">
-              <Clock className="h-3 w-3" />
+      <CardContent className="p-0">
+        {/* CABECERA EJECUTIVA */}
+        <div className="flex items-start justify-between gap-4 border-b border-slate-800 px-5 pb-4 pt-5">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-[11px] font-medium text-slate-500">
+              <Clock className="h-3.5 w-3.5" />
               <span>{formatDateShort(order.created_at)}</span>
             </div>
-            <p className="mt-0.5 truncate text-xs text-zinc-500">
-              Desde <span className="font-mono text-zinc-300">{chatNumber || "—"}</span>
+            <p className="mt-1 truncate font-mono text-[11px] text-slate-600">
+              {chatNumber || "Sin número"}
             </p>
           </div>
-          <div className="flex items-center gap-1">
-            <Badge className={`gap-1 border ${cfg.chip}`}>
-              <Icon className="h-3 w-3" /> {cfg.label}
+
+          <div className="flex items-center gap-2">
+            <Badge
+              className={`h-7 gap-1.5 rounded-full border px-2.5 text-[11px] font-semibold ${cfg.chip}`}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {cfg.label}
             </Badge>
             <Button
               size="icon"
               variant="ghost"
               onClick={onPreview}
-              title="Vista previa del chat"
-              className="h-8 w-8 rounded-full text-zinc-400 hover:bg-white/10 hover:text-white"
+              title="Ver conversación"
+              className="h-8 w-8 rounded-lg border border-slate-700 bg-slate-900/60 text-slate-400 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
             >
               <Eye className="h-4 w-4" />
             </Button>
           </div>
         </div>
 
-        {/* PRECIO destacado bajo la fecha */}
-        <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-black/40 to-black/20 p-4 shadow-inner">
-          <div className="flex items-baseline justify-between">
-            <span className="text-[11px] uppercase tracking-wider text-zinc-500">Total</span>
-            <span className="text-[11px] text-zinc-500">
-              {totalItems} {totalItems === 1 ? "unidad" : "unidades"}
-            </span>
+        {/* MONTO PRINCIPAL */}
+        <div className="border-b border-slate-800 bg-[#0d131d] px-5 py-4">
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+                Monto total
+              </p>
+              <div className="mt-1 flex items-baseline gap-1.5">
+                <span className="text-[30px] font-bold tracking-[-0.04em] text-white">
+                  {amount}
+                </span>
+                <span className="text-sm font-semibold text-slate-500">Gs</span>
+              </div>
+            </div>
+            <div className="rounded-xl border border-slate-700 bg-slate-800/55 px-3 py-2 text-right">
+              <p className="text-[10px] uppercase tracking-wider text-slate-500">
+                Unidades
+              </p>
+              <p className="mt-0.5 text-lg font-bold text-slate-100">{totalItems}</p>
+            </div>
           </div>
-          <p className="mt-0.5 text-2xl font-bold tracking-tight text-white">
-            {formatCurrency(order.total_amount)}{" "}
-            <span className="text-sm font-medium text-zinc-500">Gs</span>
-          </p>
         </div>
 
-        {prepaid && (
-          <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.07] px-3 py-2">
-            <div className="min-w-0"><p className="flex items-center gap-1.5 text-xs font-semibold text-amber-300"><ReceiptText className="h-3.5 w-3.5" />Pago anticipado</p><p className="mt-0.5 truncate text-[11px] text-amber-100/60">{paymentSummary || "Comprobante asociado al pedido"}</p></div>
-            <Button size="sm" variant="outline" onClick={onProof} className="shrink-0 border-amber-500/30 bg-amber-500/10 text-xs text-amber-200 hover:bg-amber-500/20 hover:text-amber-100"><Eye className="mr-1 h-3.5 w-3.5" />Ver</Button>
-          </div>
-        )}
+        {/* FICHA DEL PEDIDO */}
+        <div className="space-y-3 px-5 py-5">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field
+              label="Producto"
+              icon={ShoppingCart}
+              full
+              value={
+                items.length > 1 ? (
+                  <div className="space-y-1.5">
+                    {items.slice(0, 4).map((item, index) => (
+                      <div
+                        key={`${item.product}-${index}`}
+                        className="flex items-center justify-between gap-3"
+                      >
+                        <span className="truncate">{item.product || "Producto"}</span>
+                        <span className="shrink-0 rounded-md bg-slate-800 px-2 py-0.5 text-[11px] font-semibold text-slate-300">
+                          x{item.quantity || 1}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="truncate font-semibold">{productName}</span>
+                    <span className="shrink-0 rounded-md bg-slate-800 px-2 py-0.5 text-[11px] font-semibold text-slate-300">
+                      x{totalItems}
+                    </span>
+                  </div>
+                )
+              }
+            />
 
-        {/* QUÉ COMPRÓ */}
-        <div>
-          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-500">
-            <ShoppingCart className="h-3 w-3" /> Qué compró
-          </div>
-          {items.length > 0 ? (
-            <ul className="space-y-1.5">
-              {items.slice(0, 3).map((it, i) => (
-                <li
-                  key={i}
-                  className="flex items-start justify-between gap-2 rounded-lg bg-white/[0.03] px-2.5 py-1.5"
-                >
-                  <span className="text-sm text-white">{it.product || "Producto"}</span>
-                  <span className="shrink-0 rounded-md bg-white/10 px-1.5 py-0.5 text-[11px] text-zinc-300">
-                    x{it.quantity || 1}
+            <Field label="Cliente" icon={User} value={client} />
+            <Field label="Ciudad" icon={Building2} value={city} />
+            <Field label="Calle / ubicación" icon={MapPin} full value={street} />
+
+            <Field
+              label="Observación"
+              icon={MessageSquare}
+              full
+              tone={observation ? "amber" : "default"}
+              value={
+                observation ? (
+                  <span className="text-amber-100/90">{observation}</span>
+                ) : (
+                  <span className="font-normal text-slate-600">
+                    Sin observaciones adicionales
                   </span>
-                </li>
-              ))}
-              {items.length > 3 && (
-                <li className="text-[11px] text-zinc-500">+{items.length - 3} más</li>
-              )}
-            </ul>
-          ) : (
-            <p className="text-sm text-zinc-400">{getPrimaryProductName(order)}</p>
-          )}
-        </div>
-
-        {/* CLIENTE + CIUDAD */}
-        <div className="grid grid-cols-1 gap-2 text-sm">
-          <div className="flex items-center gap-2 text-zinc-300">
-            <User className="h-3.5 w-3.5 text-zinc-500" />
-            <span className="truncate">{order.customer_name || "Sin nombre"}</span>
+                )
+              }
+            />
           </div>
-          {order.city && (
-            <div className="flex items-center gap-2 text-zinc-400">
-              <MapPin className="h-3.5 w-3.5 text-zinc-500" />
-              <span className="truncate">
-                {order.city}
-                {order.address ? ` · ${order.address}` : ""}
-              </span>
+
+          {prepaid && (
+            <div className="rounded-xl border border-emerald-400/15 bg-emerald-400/[0.045] p-3.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <ReceiptText className="h-3.5 w-3.5 text-emerald-400" />
+                    <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-400">
+                      Pago anticipado
+                    </span>
+                  </div>
+                  <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-emerald-100/75">
+                    {paymentSummary || "Comprobante asociado al pedido"}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onProof}
+                  className="h-8 shrink-0 border-emerald-500/25 bg-emerald-500/10 px-3 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 hover:text-emerald-200"
+                >
+                  <ReceiptText className="mr-1.5 h-3.5 w-3.5" />
+                  Comprobante
+                </Button>
+              </div>
             </div>
           )}
-        </div>
 
-        {/* OBSERVACIÓN / FACTURA */}
-        <div className={`rounded-xl border p-3 ${observation ? "border-amber-500/20 bg-amber-500/[0.06]" : "border-white/5 bg-white/[0.02]"}`}>
-          <div className={`mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider ${observation ? "text-amber-300" : "text-zinc-500"}`}><MessageSquare className="h-3 w-3" />Observación / factura</div>
-          <p className={`text-xs leading-relaxed ${observation ? "text-amber-100/90" : "text-zinc-600"}`}>{observation || "Sin observaciones adicionales"}</p>
-        </div>
+          <Separator className="bg-slate-800" />
 
-        <Separator className="bg-white/10" />
+          {/* ACCIONES PRINCIPALES */}
+          <div className="grid grid-cols-2 gap-2">
+            {status !== "entregado" && (
+              <Button
+                size="sm"
+                onClick={() => onStatus("entregado")}
+                className="h-9 bg-emerald-600 text-xs font-semibold text-white hover:bg-emerald-500"
+              >
+                <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
+                Entregado
+              </Button>
+            )}
 
-        {/* ACCIONES DE ESTADO */}
-        <div className="grid grid-cols-2 gap-2">
-          {status !== "entregado" && (
+            {status !== "cancelado" && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onStatus("cancelado")}
+                className="h-9 border-rose-500/25 bg-rose-500/[0.07] text-xs font-semibold text-rose-300 hover:bg-rose-500/15 hover:text-rose-200"
+              >
+                <XCircle className="mr-1.5 h-3.5 w-3.5" />
+                Cancelar
+              </Button>
+            )}
+
+            {status !== "cargado" && status !== "entregado" && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onStatus("cargado")}
+                className="h-9 border-blue-500/25 bg-blue-500/[0.07] text-xs font-semibold text-blue-300 hover:bg-blue-500/15 hover:text-blue-200"
+              >
+                <Package className="mr-1.5 h-3.5 w-3.5" />
+                Cargar
+              </Button>
+            )}
+
+            {status !== "droppx" && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => onStatus("droppx")}
+                className="h-9 border-violet-500/25 bg-violet-500/[0.07] text-xs font-semibold text-violet-300 hover:bg-violet-500/15 hover:text-violet-200"
+              >
+                <Truck className="mr-1.5 h-3.5 w-3.5" />
+                Droppx
+              </Button>
+            )}
+          </div>
+
+          {/* ACCIONES SECUNDARIAS */}
+          <div className="grid grid-cols-[1fr_1fr_auto] gap-2">
             <Button
               size="sm"
-              onClick={() => onStatus("entregado")}
-              className="bg-green-600 text-white hover:bg-green-500"
+              variant="ghost"
+              onClick={onEcommerce}
+              className="h-9 border border-slate-700 bg-slate-900/60 text-xs font-medium text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
             >
-              <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> Entregado
+              <ShoppingCart className="mr-1.5 h-3.5 w-3.5" />
+              Ecommerce
             </Button>
-          )}
-          {status !== "cancelado" && (
+
             <Button
               size="sm"
-              variant="outline"
-              onClick={() => onStatus("cancelado")}
-              className="border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:text-red-200"
+              variant="ghost"
+              onClick={onChat}
+              className="h-9 border border-slate-700 bg-slate-900/60 text-xs font-medium text-slate-300 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
             >
-              <XCircle className="mr-1 h-3.5 w-3.5" /> Cancelar
+              <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+              Chat
             </Button>
-          )}
-          {status !== "cargado" && status !== "entregado" && (
+
             <Button
-              size="sm"
-              variant="outline"
-              onClick={() => onStatus("cargado")}
-              className="border-blue-500/30 bg-blue-500/10 text-blue-300 hover:bg-blue-500/20 hover:text-blue-200"
+              size="icon"
+              variant="ghost"
+              onClick={onDelete}
+              title="Eliminar pedido"
+              className="h-9 w-9 border border-rose-500/20 bg-rose-500/[0.05] text-rose-400 hover:bg-rose-500/10 hover:text-rose-300"
             >
-              <Package className="mr-1 h-3.5 w-3.5" /> Cargar
+              <Trash2 className="h-3.5 w-3.5" />
             </Button>
-          )}
-          {status !== "droppx" && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => onStatus("droppx")}
-              className="border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 hover:text-purple-200"
-            >
-              <Truck className="mr-1 h-3.5 w-3.5" /> Droppx
-            </Button>
-          )}
+          </div>
         </div>
-
-        {/* ACCIONES SECUNDARIAS */}
-        <div className="flex gap-2">
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onEcommerce}
-            className="flex-1 border border-white/10 bg-white/5 text-xs text-zinc-300 hover:bg-white/10 hover:text-white"
-          >
-            <ShoppingCart className="mr-1 h-3.5 w-3.5" /> Ecommerce
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onChat}
-            className="flex-1 border border-white/10 bg-white/5 text-xs text-zinc-300 hover:bg-white/10 hover:text-white"
-          >
-            <MessageSquare className="mr-1 h-3.5 w-3.5" /> Chat
-          </Button>
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={onDelete}
-            className="h-8 w-8 border border-red-500/20 bg-red-500/5 text-red-400 hover:bg-red-500/10"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </Button>
-        </div>
-
-
       </CardContent>
     </Card>
   );
