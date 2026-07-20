@@ -1,7 +1,7 @@
-// ORDERS PAGE — DASHBOARD OSCURO CORPORATIVO (v3)
-// Mejoras: vista previa real desde inbox_messages, tarjeta rediseñada
-// (fecha/hora + precio + qué compró + observación destacada),
-// y botones para marcar Entregado / Cancelado.
+// ORDERS PAGE — DASHBOARD OSCURO CORPORATIVO (v4)
+// Mejoras V4: dashboard comercial, productos/unidades vendidos, cargados,
+// comprobantes recuperables desde orders o inbox_messages,
+// observaciones/factura destacadas y tarjetas premium.
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
@@ -43,6 +43,11 @@ import {
   Eye,
   ExternalLink,
   PieChart as PieChartIcon,
+  Boxes,
+  Banknote,
+  FileCheck2,
+  TrendingUp,
+  ClipboardList,
 } from "lucide-react";
 
 import {
@@ -89,6 +94,11 @@ type Order = {
   preferred_delivery_date?: string | null;
   preferred_delivery_time?: string | null;
   payment_note?: string | null;
+  payment_proof_received?: boolean | null;
+  payment_proof_verified?: boolean | null;
+  payment_holder_name?: string | null;
+  payment_amount?: number | string | null;
+  payment_operation_number?: string | null;
 };
 
 type ChatMessage = {
@@ -297,6 +307,46 @@ function getOrderObservation(order: Order): string {
   return unique.join(" | ");
 }
 
+function isPrepaidOrder(order: Order) {
+  const paymentText = clean(`${order.metodo_pago || ""} ${order.payment_note || ""} ${order.observation || ""} ${order.observacion || ""}`).toLowerCase();
+  return Boolean(order.comprobante_url) || Boolean(order.payment_proof_received) || Boolean(order.payment_proof_verified) || /\b(anticipado|transferencia|transportadora|comprobante|pago previo)\b/.test(paymentText);
+}
+
+function getPaymentSummary(order: Order) {
+  return [
+    order.payment_proof_verified ? "Pago verificado" : "",
+    order.payment_holder_name ? `Titular: ${order.payment_holder_name}` : "",
+    order.payment_amount ? `Monto: ${formatCurrency(order.payment_amount)} Gs` : "",
+    order.payment_operation_number ? `Operación: ${order.payment_operation_number}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function totalUnitsFromOrders(orders: Order[]) {
+  return orders.reduce((sum, order) => {
+    if (normalizeStatus(order.status) === "cancelado") return sum;
+    const items = getResolvedOrderItems(order);
+    return sum + (items.reduce((s, item) => s + Number(item.quantity || 1), 0) || Number(order.quantity || 0));
+  }, 0);
+}
+
+function productRankingFromOrders(orders: Order[]) {
+  const ranking = new Map<string, { product: string; units: number; orders: number }>();
+  for (const order of orders) {
+    if (normalizeStatus(order.status) === "cancelado") continue;
+    const items = getResolvedOrderItems(order);
+    const resolved = items.length ? items : [{ product: getPrimaryProductName(order), quantity: Number(order.quantity || 1) }];
+    for (const item of resolved) {
+      const product = clean(item.product) || "Producto sin identificar";
+      const key = product.toLowerCase();
+      const previous = ranking.get(key) || { product, units: 0, orders: 0 };
+      previous.units += Number(item.quantity || 1);
+      previous.orders += 1;
+      ranking.set(key, previous);
+    }
+  }
+  return Array.from(ranking.values()).sort((a,b)=>b.units-a.units || b.orders-a.orders).slice(0,5);
+}
+
 function formatPhoneNumber(phone: string | null): string {
   if (!phone) return "";
   let c = phone.replace(/[^0-9]/g, "");
@@ -398,6 +448,9 @@ export default function OrdersPage() {
   const [previewOrder, setPreviewOrder] = useState<Order | null>(null);
   const [previewMessages, setPreviewMessages] = useState<ChatMessage[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [proofOrder, setProofOrder] = useState<Order | null>(null);
+  const [proofUrl, setProofUrl] = useState("");
+  const [proofLoading, setProofLoading] = useState(false);
 
   useEffect(() => {
     getCurrentUser().then((u) => u && setUserId(u.id));
@@ -518,6 +571,43 @@ export default function OrdersPage() {
     }
   }
 
+  async function openPaymentProof(order: Order) {
+    setProofOrder(order);
+    setProofUrl("");
+    setProofLoading(true);
+    try {
+      if (clean(order.comprobante_url)) {
+        setProofUrl(clean(order.comprobante_url));
+        return;
+      }
+      if (!userId) throw new Error("No se pudo identificar al usuario actual.");
+      const variants = getPhoneVariants(order.from_number || order.phone);
+      if (!variants.length) throw new Error("El pedido no tiene un número válido.");
+      const { data, error } = await supabase
+        .from("inbox_messages")
+        .select("id, sender_id, from_number, message, message_type, media_url_text, created_at")
+        .eq("user_id", userId)
+        .in("sender_id", variants)
+        .not("media_url_text", "is", null)
+        .order("created_at", { ascending: false })
+        .limit(50);
+      if (error) throw error;
+      const candidate = (data || []).find((row: any) => {
+        const type = clean(row.message_type).toLowerCase();
+        const body = clean(row.message).toLowerCase();
+        const url = clean(row.media_url_text);
+        return !type.startsWith("out_") && url && (/\\b(comprobante|transferencia|pago|deposito|depósito)\\b/.test(body) || /image|document|pdf/.test(type) || /\\.(png|jpe?g|webp|pdf)(?:\\?|$)/i.test(url));
+      });
+      if (!candidate?.media_url_text) throw new Error("No encontré un comprobante guardado en el pedido ni en el chat.");
+      setProofUrl(clean(candidate.media_url_text));
+    } catch (error: any) {
+      console.error("Error buscando comprobante:", error);
+      toast.error(error?.message || "No se pudo abrir el comprobante");
+    } finally {
+      setProofLoading(false);
+    }
+  }
+
   function openEcommerce(order: Order) {
     const realChatNumber = order.from_number || order.phone || "";
     const params = new URLSearchParams({
@@ -559,10 +649,14 @@ export default function OrdersPage() {
       entregados: periodOrders.filter((o) => normalizeStatus(o.status) === "entregado").length,
       cancelados: periodOrders.filter((o) => normalizeStatus(o.status) === "cancelado").length,
       droppx: periodOrders.filter((o) => normalizeStatus(o.status) === "droppx").length,
-      ingresos: periodOrders.reduce((s, o) => s + parseCurrencyValue(o.total_amount), 0),
+      ingresos: periodOrders.filter((o) => normalizeStatus(o.status) !== "cancelado").reduce((s, o) => s + parseCurrencyValue(o.total_amount), 0),
+      unidadesVendidas: totalUnitsFromOrders(periodOrders),
+      pagosAnticipados: periodOrders.filter(isPrepaidOrder).length,
     }),
     [periodOrders]
   );
+
+  const productRanking = useMemo(() => productRankingFromOrders(periodOrders), [periodOrders]);
 
   const filterCounts = {
     total: periodOrders.length,
@@ -629,33 +723,30 @@ export default function OrdersPage() {
           </div>
         </div>
 
-        {/* MÉTRICAS */}
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-          <MetricCard
-            title="Total del período"
-            value={stats.total}
-            subtitle={`${stats.confirmados} confirmados`}
-            accent="from-violet-500 to-purple-500"
-          />
-          <MetricCard
-            title="Ingresos"
-            value={`${formatCurrency(stats.ingresos)} Gs`}
-            subtitle="Suma del período"
-            accent="from-emerald-500 to-teal-500"
-          />
-          <MetricCard
-            title="Entregados"
-            value={stats.entregados}
-            subtitle={`${stats.total ? Math.round((stats.entregados / stats.total) * 100) : 0}% del total`}
-            accent="from-green-500 to-emerald-500"
-          />
-          <MetricCard
-            title="Cancelados"
-            value={stats.cancelados}
-            subtitle={`${stats.total ? Math.round((stats.cancelados / stats.total) * 100) : 0}% del total`}
-            accent="from-red-500 to-rose-500"
-          />
+        {/* DASHBOARD COMERCIAL */}
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
+          <MetricCard title="Pedidos" value={stats.total} subtitle={`${stats.confirmados} confirmados`} accent="from-violet-500 to-purple-500" icon={ClipboardList} />
+          <MetricCard title="Unidades vendidas" value={stats.unidadesVendidas} subtitle="Sin cancelados" accent="from-cyan-500 to-blue-500" icon={Boxes} />
+          <MetricCard title="Cargados" value={stats.cargados} subtitle="Listos para despacho" accent="from-blue-500 to-indigo-500" icon={Package} />
+          <MetricCard title="Entregados" value={stats.entregados} subtitle={`${stats.total ? Math.round((stats.entregados / stats.total) * 100) : 0}% del período`} accent="from-green-500 to-emerald-500" icon={PackageCheck} />
+          <MetricCard title="Ingresos" value={`${formatCurrency(stats.ingresos)} Gs`} subtitle="Sin cancelados" accent="from-emerald-500 to-teal-500" icon={Banknote} />
+          <MetricCard title="Pagos anticipados" value={stats.pagosAnticipados} subtitle="Con comprobante" accent="from-amber-500 to-orange-500" icon={FileCheck2} />
         </div>
+
+        {productRanking.length > 0 && (
+          <Card className="overflow-hidden border-white/10 bg-gradient-to-br from-white/[0.05] to-white/[0.02] shadow-xl shadow-black/20">
+            <CardHeader className="border-b border-white/5 pb-3"><CardTitle className="flex items-center gap-2 text-base text-white"><TrendingUp className="h-4 w-4 text-cyan-400" />Productos más vendidos</CardTitle></CardHeader>
+            <CardContent className="p-4"><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              {productRanking.map((item, index) => (
+                <div key={item.product} className="rounded-xl border border-white/10 bg-black/20 p-3 transition hover:border-cyan-400/30 hover:bg-white/[0.05]">
+                  <div className="flex items-start justify-between gap-2"><span className="rounded-lg bg-cyan-500/10 px-2 py-1 text-xs font-bold text-cyan-300">#{index + 1}</span><span className="text-lg font-bold text-white">{item.units}</span></div>
+                  <p className="mt-3 line-clamp-2 text-sm font-medium text-zinc-100">{item.product}</p>
+                  <p className="mt-1 text-[11px] text-zinc-500">{item.orders} {item.orders === 1 ? "pedido" : "pedidos"} · {item.units} unidades</p>
+                </div>
+              ))}
+            </div></CardContent>
+          </Card>
+        )}
 
         {/* GRÁFICO */}
         {pieData.length > 0 && (
@@ -830,6 +921,7 @@ export default function OrdersPage() {
                 onPreview={() => openPreview(order)}
                 onChat={() => openChat(order.from_number || order.phone)}
                 onEcommerce={() => openEcommerce(order)}
+                onProof={() => openPaymentProof(order)}
                 onDelete={() => deleteOrder(order.id)}
                 onStatus={(s) => updateStatus(order, s)}
               />
@@ -927,6 +1019,16 @@ export default function OrdersPage() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={!!proofOrder} onOpenChange={(open) => !open && setProofOrder(null)}>
+        <DialogContent className="z-[110] max-h-[94vh] w-[calc(100vw-24px)] max-w-3xl overflow-hidden border-white/10 bg-[#0d0818] p-0 text-white shadow-2xl">
+          <DialogHeader className="border-b border-white/10 p-4"><DialogTitle className="flex items-center gap-2"><ReceiptText className="h-4 w-4 text-amber-400" />Comprobante de pago</DialogTitle><DialogDescription className="text-zinc-400">{proofOrder?.customer_name || "Cliente"} · {formatCurrency(proofOrder?.total_amount)} Gs</DialogDescription></DialogHeader>
+          <div className="max-h-[72vh] overflow-auto bg-black/30 p-4">
+            {proofLoading ? <div className="flex h-72 items-center justify-center text-zinc-400"><RefreshCw className="mr-2 h-5 w-5 animate-spin" />Buscando comprobante...</div> : proofUrl ? (/\.pdf(?:\?|$)/i.test(proofUrl) ? <iframe src={proofUrl} title="Comprobante" className="h-[68vh] w-full rounded-xl border border-white/10 bg-white" /> : <img src={proofUrl} alt="Comprobante de pago" className="mx-auto max-h-[68vh] max-w-full rounded-xl border border-white/10 object-contain shadow-2xl" />) : <div className="flex h-72 flex-col items-center justify-center text-center text-zinc-500"><ReceiptText className="mb-3 h-10 w-10 opacity-40" /><p>No se encontró un comprobante guardado.</p></div>}
+          </div>
+          {proofOrder && <div className="space-y-2 border-t border-white/10 p-4">{getPaymentSummary(proofOrder) && <p className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2.5 text-xs text-emerald-200">{getPaymentSummary(proofOrder)}</p>}<div className="flex justify-end gap-2">{proofUrl && <Button size="sm" variant="outline" onClick={() => window.open(proofUrl, "_blank")} className="border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10"><ExternalLink className="mr-1 h-3.5 w-3.5" />Abrir original</Button>}<Button size="sm" variant="ghost" onClick={() => setProofOrder(null)} className="text-zinc-400 hover:bg-white/10 hover:text-white">Cerrar</Button></div></div>}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -940,6 +1042,7 @@ function OrderCard({
   onPreview,
   onChat,
   onEcommerce,
+  onProof,
   onDelete,
   onStatus,
 }: {
@@ -947,6 +1050,7 @@ function OrderCard({
   onPreview: () => void;
   onChat: () => void;
   onEcommerce: () => void;
+  onProof: () => void;
   onDelete: () => void;
   onStatus: (status: string) => void;
 }) {
@@ -958,15 +1062,17 @@ function OrderCard({
   const chatNumber = order.from_number || order.phone || "";
   const totalItems =
     items.reduce((s, i) => s + Number(i.quantity || 1), 0) || order.quantity || 1;
+  const prepaid = isPrepaidOrder(order);
+  const paymentSummary = getPaymentSummary(order);
 
   return (
     <Card
-      className={`group relative overflow-hidden border-white/10 bg-gradient-to-b from-white/[0.04] to-white/[0.02] backdrop-blur ring-1 transition-all hover:border-white/20 hover:shadow-2xl hover:shadow-black/40 ${cfg.ring}`}
+      className={`group relative overflow-hidden rounded-2xl border-white/10 bg-gradient-to-br from-[#171321] via-[#12101a] to-[#0d0b13] shadow-lg shadow-black/20 ring-1 transition-all duration-300 hover:-translate-y-0.5 hover:border-white/20 hover:shadow-2xl hover:shadow-black/50 ${cfg.ring}`}
     >
       {/* Barra superior de color según estado */}
       <div className="h-1 w-full" style={{ background: cfg.color }} />
 
-      <CardContent className="space-y-4 p-4">
+      <CardContent className="space-y-4 p-5">
         {/* HEADER: fecha + estado + ojito */}
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
@@ -995,7 +1101,7 @@ function OrderCard({
         </div>
 
         {/* PRECIO destacado bajo la fecha */}
-        <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+        <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-black/40 to-black/20 p-4 shadow-inner">
           <div className="flex items-baseline justify-between">
             <span className="text-[11px] uppercase tracking-wider text-zinc-500">Total</span>
             <span className="text-[11px] text-zinc-500">
@@ -1007,6 +1113,13 @@ function OrderCard({
             <span className="text-sm font-medium text-zinc-500">Gs</span>
           </p>
         </div>
+
+        {prepaid && (
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.07] px-3 py-2">
+            <div className="min-w-0"><p className="flex items-center gap-1.5 text-xs font-semibold text-amber-300"><ReceiptText className="h-3.5 w-3.5" />Pago anticipado</p><p className="mt-0.5 truncate text-[11px] text-amber-100/60">{paymentSummary || "Comprobante asociado al pedido"}</p></div>
+            <Button size="sm" variant="outline" onClick={onProof} className="shrink-0 border-amber-500/30 bg-amber-500/10 text-xs text-amber-200 hover:bg-amber-500/20 hover:text-amber-100"><Eye className="mr-1 h-3.5 w-3.5" />Ver</Button>
+          </div>
+        )}
 
         {/* QUÉ COMPRÓ */}
         <div>
@@ -1052,15 +1165,11 @@ function OrderCard({
           )}
         </div>
 
-        {/* OBSERVACIÓN destacada */}
-        {observation && (
-          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5">
-            <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-amber-300">
-              <MessageSquare className="h-3 w-3" /> Observación
-            </div>
-            <p className="text-xs leading-relaxed text-amber-100/90">{observation}</p>
-          </div>
-        )}
+        {/* OBSERVACIÓN / FACTURA */}
+        <div className={`rounded-xl border p-3 ${observation ? "border-amber-500/20 bg-amber-500/[0.06]" : "border-white/5 bg-white/[0.02]"}`}>
+          <div className={`mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider ${observation ? "text-amber-300" : "text-zinc-500"}`}><MessageSquare className="h-3 w-3" />Observación / factura</div>
+          <p className={`text-xs leading-relaxed ${observation ? "text-amber-100/90" : "text-zinc-600"}`}>{observation || "Sin observaciones adicionales"}</p>
+        </div>
 
         <Separator className="bg-white/10" />
 
@@ -1135,16 +1244,7 @@ function OrderCard({
           </Button>
         </div>
 
-        {order.comprobante_url && (
-          <a
-            href={order.comprobante_url}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center justify-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-zinc-300 hover:bg-white/10"
-          >
-            <ReceiptText className="h-3.5 w-3.5" /> Ver comprobante
-          </a>
-        )}
+
       </CardContent>
     </Card>
   );
@@ -1154,25 +1254,11 @@ function OrderCard({
    METRIC CARD
    ============================================================ */
 
-function MetricCard({
-  title,
-  value,
-  subtitle,
-  accent,
-}: {
-  title: string;
-  value: string | number;
-  subtitle: string;
-  accent: string;
-}) {
+function MetricCard({ title, value, subtitle, accent, icon: Icon }: { title: string; value: string | number; subtitle: string; accent: string; icon?: any; }) {
   return (
-    <Card className="relative overflow-hidden border-white/10 bg-white/[0.03] backdrop-blur">
+    <Card className="group relative overflow-hidden rounded-2xl border-white/10 bg-gradient-to-br from-white/[0.06] to-white/[0.02] shadow-lg shadow-black/20 transition hover:-translate-y-0.5 hover:border-white/20">
       <div className={`absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r ${accent}`} />
-      <CardContent className="p-4">
-        <p className="text-xs uppercase tracking-wider text-zinc-500">{title}</p>
-        <p className="mt-2 text-2xl font-bold text-white">{value}</p>
-        <p className="mt-1 text-[11px] text-zinc-500">{subtitle}</p>
-      </CardContent>
+      <CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><p className="text-[11px] uppercase tracking-wider text-zinc-500">{title}</p><p className="mt-2 text-2xl font-bold tracking-tight text-white">{value}</p></div>{Icon && <div className={`rounded-xl bg-gradient-to-br ${accent} p-2 text-white shadow-lg opacity-90`}><Icon className="h-4 w-4" /></div>}</div><p className="mt-2 text-[11px] text-zinc-500">{subtitle}</p></CardContent>
     </Card>
   );
 }
