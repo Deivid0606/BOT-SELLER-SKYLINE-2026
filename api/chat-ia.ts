@@ -1,9 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V111 - Mega Todo Store / One Store
- * 
- * V111: normaliza ciudad + departamento/país, protege cobertura y bloquea frases de pago como nombre.
+ * CHAT IA VENDEDOR AUTÓNOMO V112 - Mega Todo Store / One Store
+ * \n * V112: cobertura 100% dinámica y aislada desde el entrenamiento de zonas; corrige Ypané y variantes.\n * V111: normaliza ciudad + departamento/país, protege cobertura y bloquea frases de pago como nombre.
  * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
  * V109: impide usar ciudades como nombre del cliente.
  * V108: valida destinatario bancario, usa el pagador como cliente y admite PDF sin texto de estado.
@@ -831,30 +830,81 @@ function parseTraining(training: string): ParsedTraining {
   const addCity = (alias: string, canonical?: string, covered = true) => {
     const a = clean(alias);
     const c = clean(canonical || alias);
-    if (!a || a.length < 2) return;
+    if (!a || a.length < 2 || !c) return;
+
+    const aliasNorm = normalize(a);
+    const canonicalNorm = normalize(c);
+
+    // Evita capturar encabezados, instrucciones o frases comerciales como ciudades.
+    const forbidden =
+      /\b(zona|zonas|cobertura|envio|delivery|contra entrega|pago|transportadora|lista completa|tema|categoria|entrenamiento completo|instruccion final)\b/;
+
+    if (!aliasNorm || !canonicalNorm) return;
+    if (forbidden.test(aliasNorm) || forbidden.test(canonicalNorm)) return;
+    if (a.length > 80 || c.length > 80) return;
+    if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(a)) return;
+    if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(c)) return;
+
     cities.push({ alias: a, canonical: c, covered });
   };
 
-  const parseCityBlocks = (section: string, defaultCovered: boolean) => {
-    const cityBlocks = clean(section).split(/📍\s*/g).filter(Boolean);
+  const SECTION_STOP =
+    String.raw`(?=\n\s*(?:📍\s*)?(?:ZONAS?\s+(?:CON|SIN|DE)\s+COBERTURA|LISTA\s+COMPLETA\s+POR\s+CIUDAD|TEMA\s*\/\s*CATEGOR[IÍ]A|ENTRENAMIENTO\s+COMPLETO|DATOS\s+(?:BANCARIOS|DE\s+TRANSFERENCIA)|CATALOGO_PRODUCTOS|FIN_CATALOGO_PRODUCTOS|⚙️\s*INSTRUCCI[ÓO]N\s+FINAL|[-━]{3,})|$)`;
 
-    for (const block of cityBlocks) {
-      const lines = block.split("\n").map(clean).filter(Boolean);
-      const canonical = clean(lines[0]);
+  const extractCoverageSection = (
+    source: string,
+    kind: "covered" | "uncovered"
+  ): string => {
+    const header =
+      kind === "covered"
+        ? String.raw`ZONAS?\s+CON\s+COBERTURA(?:\s*\([^\n)]*\))?\s*:?`
+        : String.raw`ZONAS?\s+SIN\s+COBERTURA(?:\s*\([^\n)]*\))?\s*:?`;
+
+    const match = source.match(
+      new RegExp(`${header}\\s*([\\s\\S]*?)${SECTION_STOP}`, "i")
+    );
+
+    return clean(match?.[1] || "");
+  };
+
+  const parseCityBlocks = (section: string, defaultCovered: boolean) => {
+    if (!clean(section)) return;
+
+    // Solo procesa bloques que realmente comienzan con el marcador de una ciudad.
+    const cityBlocks = section
+      .split(/(?=^\s*📍\s*)/gm)
+      .map(clean)
+      .filter((block) => /^📍\s*/.test(block));
+
+    for (const rawBlock of cityBlocks) {
+      const block = clean(rawBlock.replace(/^📍\s*/, ""));
+      const lines = block.split(/\r?\n/g).map(clean).filter(Boolean);
+      const canonical = clean(lines[0]?.replace(/[:;,]+$/, ""));
       if (!canonical || canonical.length < 2) continue;
+
+      const canonicalNorm = normalize(canonical);
+      if (
+        /\b(zona|zonas|cobertura|envio|delivery|contra entrega|lista completa)\b/.test(
+          canonicalNorm
+        )
+      ) {
+        continue;
+      }
 
       const blockNorm = normalize(block);
       const explicitlyNotCovered =
-        /\b(sin cobertura|fuera de cobertura|transportadora|pago anticipado|no contra entrega|sin contra entrega)\b/.test(blockNorm);
-      const covered = explicitlyNotCovered ? false : defaultCovered;
+        /\b(sin cobertura|fuera de cobertura|transportadora|pago anticipado|no contra entrega|sin contra entrega)\b/.test(
+          blockNorm
+        );
 
+      const covered = explicitlyNotCovered ? false : defaultCovered;
       addCity(canonical, canonical, covered);
 
-      const variantsLine = lines.find((line) => /^[✅✔]/.test(line));
-      if (variantsLine) {
+      const variantsLines = lines.filter((line) => /^[✅✔]/.test(line));
+      for (const variantsLine of variantsLines) {
         variantsLine
           .replace(/^[✅✔]\s*/, "")
-          .split(",")
+          .split(/[,;|]/g)
           .map(clean)
           .filter(Boolean)
           .forEach((variant) => addCity(variant, canonical, covered));
@@ -862,43 +912,80 @@ function parseTraining(training: string): ParsedTraining {
     }
   };
 
-  // Lista completa personalizada: cada bloque puede declarar explícitamente
-  // "sin cobertura", "transportadora" o "pago anticipado".
-  const completeCitySection =
-    training.match(/LISTA COMPLETA POR CIUDAD([\s\S]*?)⚙️ INSTRUCCIÓN FINAL/i)?.[1] || "";
-  if (completeCitySection) parseCityBlocks(completeCitySection, true);
-
-  // Secciones explícitas del entrenamiento.
-  const coveredSection =
-    training.match(/ZONAS CON COBERTURA([\s\S]*?)(?:ZONAS SIN COBERTURA|⚙️ INSTRUCCIÓN FINAL|$)/i)?.[1] || "";
-  const uncoveredSection =
-    training.match(/ZONAS SIN COBERTURA([\s\S]*?)(?:⚙️ INSTRUCCIÓN FINAL|$)/i)?.[1] || "";
-
-  parseCityBlocks(coveredSection, true);
-  parseCityBlocks(uncoveredSection, false);
-
   const parseSimpleCityList = (section: string, covered: boolean) => {
-    clean(section)
+    if (!clean(section)) return;
+
+    // Toma listas tipo: "Altos, Aregua, Asunción, Ypané".
+    // Las líneas de variantes que empiezan con ✅/✔ se procesan en parseCityBlocks.
+    const linesWithoutBlocks = section
+      .split(/\r?\n/g)
+      .filter((line) => !/^\s*[✅✔]/.test(line))
+      .filter((line) => !/^\s*📍\s*/.test(line))
+      .join("\n");
+
+    linesWithoutBlocks
       .split(/\r?\n|,/g)
-      .map((line) => clean(line.replace(/^[📍✅✔❌🚚💳\-•]+\s*/, "")))
-      .filter((line) => {
-        const n = normalize(line);
-        if (!line || line.length < 3 || line.length > 80) return false;
-        if (/\b(pago|transportadora|contra entrega|cobertura|envio|envío|delivery|anticipado)\b/.test(n)) return false;
-        return /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(line);
+      .map((value) =>
+        clean(
+          value
+            .replace(/^[✅✔❌🚚💳\-•]+\s*/, "")
+            .replace(/[.:;]+$/, "")
+        )
+      )
+      .filter((value) => {
+        const n = normalize(value);
+        if (!value || value.length < 2 || value.length > 80) return false;
+        if (
+          /\b(pago|transportadora|contra entrega|cobertura|envio|delivery|anticipado|lista completa|sistema|coincidencia|ciudades donde aplica)\b/.test(
+            n
+          )
+        ) {
+          return false;
+        }
+        return /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(value);
       })
       .forEach((city) => addCity(city, city, covered));
   };
 
+  // Compatibilidad con el formato antiguo "LISTA COMPLETA POR CIUDAD".
+  const completeCitySection =
+    training.match(
+      /LISTA\s+COMPLETA\s+POR\s+CIUDAD\s*:?\s*([\s\S]*?)(?=\n\s*(?:⚙️\s*)?INSTRUCCI[ÓO]N\s+FINAL|$)/i
+    )?.[1] || "";
+
+  if (completeCitySection) {
+    parseCityBlocks(completeCitySection, true);
+    parseSimpleCityList(completeCitySection, true);
+  }
+
+  // Las ciudades se obtienen dinámicamente del texto del entrenamiento.
+  // Se admiten encabezados simples y encabezados con aclaraciones entre paréntesis.
+  const coveredSection = extractCoverageSection(training, "covered");
+  const uncoveredSection = extractCoverageSection(training, "uncovered");
+
+  parseCityBlocks(coveredSection, true);
   parseSimpleCityList(coveredSection, true);
+
+  parseCityBlocks(uncoveredSection, false);
   parseSimpleCityList(uncoveredSection, false);
 
-  const cityMap = new Map<string, { alias: string; canonical: string; covered: boolean }>();
-  for (const c of cities) {
-    const key = normalize(c.alias);
+  const cityMap = new Map<
+    string,
+    { alias: string; canonical: string; covered: boolean }
+  >();
+
+  for (const city of cities) {
+    const key = normalize(city.alias);
     if (!key) continue;
+
     const existing = cityMap.get(key);
-    if (!existing || c.covered === false) cityMap.set(key, c);
+
+    // Si una ciudad fue declarada explícitamente en "ZONAS SIN COBERTURA",
+    // esa declaración tiene prioridad. Al aislar el entrenamiento de cobertura,
+    // ya no puede ser contaminada por reglas generales o datos bancarios.
+    if (!existing || city.covered === false) {
+      cityMap.set(key, city);
+    }
   }
 
   return {
@@ -6018,7 +6105,15 @@ export default async function handler(req: any, res: any) {
     // Lee TODOS los registros activos del usuario, sin asumir que existen solo 3.
     // Cada registro queda clasificado como reglas generales, cobertura o banco.
     const trainingSections = buildTrainingSections(allTraining);
+
+    // Productos, catálogo y banco se pueden leer del conjunto combinado.
     const parsed = parseTraining(trainingSections.combined);
+
+    // La cobertura se lee EXCLUSIVAMENTE desde los entrenamientos clasificados
+    // como cobertura. Así, una frase comercial como "sin cobertura se paga..."
+    // dentro de las reglas generales nunca puede marcar una ciudad como no cubierta.
+    const parsedCoverage = parseTraining(trainingSections.coverage);
+    parsed.cities = parsedCoverage.cities;
 
     parsed.generalTraining = trainingSections.general;
     parsed.coverageTraining = trainingSections.coverage;
@@ -6038,6 +6133,10 @@ export default async function handler(req: any, res: any) {
       bancarios: parsed.trainingStats.bankingItems,
       ciudadesDetectadas: parsed.cities.length,
       bancoDetectado: Boolean(parsed.bankData),
+      pruebaCoberturaYpane: hasCoverage("ypane", parsed),
+      coincidenciasYpane: parsed.cities.filter((city) =>
+        normalize(`${city.alias} ${city.canonical}`).includes("ypane")
+      ),
     });
 
     const visualProducts = productsFromVisualCatalog(allTraining);
