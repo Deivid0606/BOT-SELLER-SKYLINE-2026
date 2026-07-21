@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V110 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V111 - Mega Todo Store / One Store
  * 
+ * V111: normaliza ciudad + departamento/país, protege cobertura y bloquea frases de pago como nombre.
  * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
  * V109: impide usar ciudades como nombre del cliente.
  * V108: valida destinatario bancario, usa el pagador como cliente y admite PDF sin texto de estado.
@@ -1528,6 +1529,115 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
   return `Somos de Asunción y hacemos envíos a todo el país. 😊${continuation ? `\n\n${continuation}` : ""}`;
 }
 
+
+const PARAGUAY_LOCATION_SUFFIXES = [
+  "alto parana",
+  "central",
+  "itapua",
+  "caaguazu",
+  "caazapa",
+  "canindeyu",
+  "cordillera",
+  "guaira",
+  "misiones",
+  "neembucu",
+  "paraguari",
+  "presidente hayes",
+  "concepcion",
+  "san pedro",
+  "amambay",
+  "boqueron",
+  "alto paraguay",
+  "paraguay",
+];
+
+function normalizeCityForMatching(value: any): string {
+  let result = normalize(value);
+  if (!result) return "";
+
+  const suffixes = PARAGUAY_LOCATION_SUFFIXES
+    .map(normalize)
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+
+  let changed = true;
+  while (changed && result) {
+    changed = false;
+    for (const suffix of suffixes) {
+      if (result !== suffix && result.endsWith(` ${suffix}`)) {
+        result = result.slice(0, -(suffix.length + 1)).trim();
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  return result;
+}
+
+function configuredCityByFlexibleMatch(
+  value: string,
+  parsed: ParsedTraining
+): { alias: string; canonical: string; covered: boolean } | null {
+  const rawNorm = normalize(value);
+  const flexibleNorm = normalizeCityForMatching(value);
+  if (!rawNorm || !flexibleNorm) return null;
+
+  const candidates = [...(parsed.cities || [])].sort(
+    (a, b) =>
+      Math.max(normalize(b.alias).length, normalize(b.canonical).length) -
+      Math.max(normalize(a.alias).length, normalize(a.canonical).length)
+  );
+
+  return (
+    candidates.find((item) => {
+      const values = [item.alias, item.canonical]
+        .flatMap((cityValue) => [
+          normalize(cityValue),
+          normalizeCityForMatching(cityValue),
+        ])
+        .filter(Boolean);
+
+      return values.some(
+        (candidate) => rawNorm === candidate || flexibleNorm === candidate
+      );
+    }) || null
+  );
+}
+
+function containsConfiguredCity(
+  text: string,
+  parsed: ParsedTraining
+): { alias: string; canonical: string; covered: boolean } | null {
+  const n = normalize(text);
+  if (!n) return null;
+
+  const ordered = [...(parsed.cities || [])].sort(
+    (a, b) =>
+      Math.max(normalize(b.alias).length, normalize(b.canonical).length) -
+      Math.max(normalize(a.alias).length, normalize(a.canonical).length)
+  );
+
+  for (const city of ordered) {
+    const names = Array.from(
+      new Set(
+        [city.alias, city.canonical]
+          .flatMap((value) => [normalize(value), normalizeCityForMatching(value)])
+          .filter(Boolean)
+      )
+    ).sort((a, b) => b.length - a.length);
+
+    for (const name of names) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(n)) {
+        return city;
+      }
+    }
+  }
+
+  return null;
+}
+
 function exactKnownCity(text: string, parsed: ParsedTraining): string {
   const n = normalize(text);
   if (!n) return "";
@@ -1549,12 +1659,7 @@ function exactKnownCity(text: string, parsed: ParsedTraining): string {
   };
   if (hardExact[n]) return hardExact[n];
 
-  const found = parsed.cities.find((c) => {
-    const alias = normalize(c.alias);
-    const canonical = normalize(c.canonical);
-    return n === alias || n === canonical;
-  });
-
+  const found = configuredCityByFlexibleMatch(text, parsed);
   return found?.canonical || "";
 }
 
@@ -1647,24 +1752,24 @@ function isCompleteMultiwordLocality(text: string): boolean {
 
 function canonicalizeStoredCity(value: string, parsed: ParsedTraining): string {
   const raw = clean(value);
-  const n = normalize(raw);
-  if (!raw || !n) return "";
+  if (!raw) return "";
 
-  const ordered = [...(parsed.cities || [])].sort(
-    (a, b) => Math.max(normalize(b.alias).length, normalize(b.canonical).length) - Math.max(normalize(a.alias).length, normalize(a.canonical).length)
-  );
+  const configured =
+    configuredCityByFlexibleMatch(raw, parsed) ||
+    containsConfiguredCity(raw, parsed);
 
-  for (const city of ordered) {
-    const names = Array.from(new Set([city.alias, city.canonical].map(normalize).filter(Boolean)));
-    for (const name of names) {
-      if (n === name) return city.canonical;
-      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      if (new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(n)) return city.canonical;
-    }
-  }
+  if (configured) return configured.canonical;
 
-  // Un valor viejo o contaminado que no existe en el entrenamiento se elimina.
-  return "";
+  const simplified = normalizeCityForMatching(raw);
+  const words = simplified.split(/\s+/).filter(Boolean);
+  const validUnknown =
+    simplified.length >= 3 &&
+    simplified.length <= 70 &&
+    words.length >= 1 &&
+    words.length <= 6 &&
+    /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(raw);
+
+  return validUnknown ? toTitleCase(raw) : "";
 }
 
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
@@ -1680,6 +1785,11 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 
   const explicitKnownCity = extractExplicitKnownCityFromSentence(raw, parsed);
   if (explicitKnownCity) return explicitKnownCity;
+
+  const flexibleConfiguredCity =
+    configuredCityByFlexibleMatch(raw, parsed) ||
+    containsConfiguredCity(raw, parsed);
+  if (flexibleConfiguredCity) return flexibleConfiguredCity.canonical;
 
   // Nunca convertir respuestas comerciales, cantidades, agradecimientos,
   // nombres, preguntas o productos en una ciudad.
@@ -1733,17 +1843,12 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 }
 
 function hasCoverage(city: string, parsed: ParsedTraining) {
-  const c = normalize(city);
-  if (!c) return false;
+  const raw = clean(city);
+  if (!raw) return false;
 
-  // V82: solamente las ciudades cargadas en el entrenamiento tienen
-  // contra-entrega. Toda localidad válida no configurada usa pago anticipado.
-
-  const configured = parsed.cities.find((item) => {
-    const alias = normalize(item.alias);
-    const canonical = normalize(item.canonical);
-    return c === alias || c === canonical;
-  });
+  const configured =
+    configuredCityByFlexibleMatch(raw, parsed) ||
+    containsConfiguredCity(raw, parsed);
 
   return configured ? configured.covered !== false : false;
 }
@@ -2313,6 +2418,8 @@ function isContaminatedCustomerName(value: string, parsed: ParsedTraining): bool
   if (/\b(nombre|apellido|nombre y apellido|tu nombre|cliente|usuario|contacto|y apellido)\b/.test(n)) return true;
   if (/^(?:y\s+)?apellido$/.test(n)) return true;
   if (/\b(quiero|me interesa|pedido|producto|cantidad|unidad|unidades|precio|delivery|envio|factura|direccion|ubicacion)\b/.test(n)) return true;
+  if (/\b(pago|pagar|pagare|abona|abono|efectivo|transferencia|contra entrega|al recibir|al resivir|cuando llegue|cuando me llegue)\b/.test(n)) return true;
+  if (/\b(amigo|amiga|senor|señor|senora|señora|jefe|bro)\b/.test(n) && /\b(pago|recibir|resivir|entrega)\b/.test(n)) return true;
 
   if (isLocationDeclarationInsteadOfName(raw, parsed)) return true;
 
@@ -2390,6 +2497,15 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
 
   const raw = clean(text);
   if (!raw) return "";
+
+  const paymentPhraseNorm = normalize(raw);
+  if (
+    /\b(pago|pagar|pagare|abona|abono)\b[\s\S]{0,55}\b(al recibir|al resivir|cuando llegue|cuando me llegue|contra entrega|en la entrega)\b/.test(paymentPhraseNorm) ||
+    /\b(solo|solamente)\s+pago\b/.test(paymentPhraseNorm) ||
+    /\b(al recibir|al resivir|contra entrega)\b/.test(paymentPhraseNorm)
+  ) {
+    return "";
+  }
 
   // V98: extrae primero un nombre declarado explícitamente aunque el mismo
   // mensaje también contenga cantidad y ciudad. Ejemplo:
@@ -5100,6 +5216,10 @@ ${missing.map((item) => `✅ ${item}`).join("\n")}`;
 
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
+
+  const canonicalCity = canonicalizeStoredCity(o.city, parsed);
+  if (canonicalCity) o.city = canonicalCity;
+  state.coverage = o.city ? hasCoverage(o.city, parsed) : false;
 
   // V106: protección final contra promociones desfasadas y packs fijos.
   if (
