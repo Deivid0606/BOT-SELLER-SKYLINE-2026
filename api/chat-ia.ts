@@ -1,8 +1,31 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V95 - Mega Todo Store / One Store
- * 
+ * CHAT IA VENDEDOR AUTÓNOMO V114 - Mega Todo Store / One Store
+ * \n * V114: lee la cobertura directamente desde cada tarjeta activa, sin depender de la clasificación previa.\n * V113: evita cobertura vacía: conserva ciudades detectadas y agrega fallback seguro si la tarjeta no se clasifica.\n * V112: cobertura 100% dinámica y aislada desde el entrenamiento de zonas; corrige Ypané y variantes.\n * V111: normaliza ciudad + departamento/país, protege cobertura y bloquea frases de pago como nombre.
+ * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
+ * V109: impide usar ciudades como nombre del cliente.
+ * V108: valida destinatario bancario, usa el pagador como cliente y admite PDF sin texto de estado.
+ * V107: verifica titular, monto y estado del comprobante antes de confirmar pagos anticipados.
+ * V106: conserva el precio total del pack fijo y evita multiplicarlo por la cantidad.
+ * V105: detecta ofertas únicas de varias unidades como pack fijo y no pregunta cantidad.
+ * V104: respeta ubicación opcional y sincroniza cantidad/promoción antes de confirmar.
+ * V103: después de recibir la ciudad muestra promociones y exige cantidad antes del nombre.
+ * V102: evita que una cantidad elegida se borre cuando luego llega el nombre.
+ * V101: exige cantidad explícita salvo pack fijo y valida nombre + apellido reales.
+ * V99: respeta dinámicamente si la dirección/ubicación es opcional según el entrenamiento del usuario.
+ *
+ * V100: evita heredar productos/cantidades de chats viejos y vuelve a pedir cantidad en cada venta nueva.
+ *
+ * V99: permite dirección opcional según el entrenamiento de cada usuario.
+ *
+ * V98: acepta cantidad + ciudad + nombre en un mismo mensaje y evita respuestas genéricas por errores parciales.
+ *
+ * V97: corrige consultas de factura, evita guardarlas como observación y protege
+ * cobertura/envío para no confundir el precio del producto con el costo del delivery.
+ *
+ * V96: lee y aplica todos los entrenamientos activos por usuario (reglas, cobertura y banco).
+ *
  * V60 COMPLETA: integra correcciones de precio, cobertura, fechas, direcciones y carrito multiproducto.
  *
  * Mantiene el fix que evita repetir el copy cuando el cliente
@@ -76,12 +99,38 @@ type BankData = {
   raw?: string;
 };
 
+type TrainingSections = {
+  general: string;
+  coverage: string;
+  banking: string;
+  combined: string;
+  totalItems: number;
+  generalItems: number;
+  coverageItems: number;
+  bankingItems: number;
+};
+
 type ParsedTraining = {
   products: ProductItem[];
   cities: { alias: string; canonical: string; covered: boolean }[];
   catalogUrl: string;
   bankData: BankData | null;
+
+  // Texto completo combinado. Se conserva para compatibilidad del parser.
   raw: string;
+
+  // Entrenamientos separados del usuario actual.
+  // generalTraining se envía a Gemini y puede contener uno o muchos registros.
+  generalTraining: string;
+  coverageTraining: string;
+  bankingTraining: string;
+
+  trainingStats: {
+    totalItems: number;
+    generalItems: number;
+    coverageItems: number;
+    bankingItems: number;
+  };
 };
 
 type OrderData = {
@@ -94,6 +143,21 @@ type OrderData = {
   phone: string;
   locked_offer?: OfferItem | null;
   payment_proof_received?: boolean;
+  payment_proof_verified?: boolean;
+  payment_holder_name?: string;
+  payment_amount?: number;
+  payment_operation_number?: string;
+  payment_status_text?: string;
+  payment_verification_error?: string;
+  payment_recipient_name?: string;
+  payment_recipient_document?: string;
+  payment_recipient_account?: string;
+  payment_recipient_alias?: string;
+  payment_recipient_bank?: string;
+  payment_recipient_matched?: boolean;
+  payment_proof_mime?: string;
+  payment_manual_review_required?: boolean;
+  payment_manual_review_reason?: string;
   observation?: string;
   preferred_delivery_date?: string;
   preferred_delivery_time?: string;
@@ -108,6 +172,8 @@ type ConversationState = {
   total: number;
   missing: string[];
   hardInstruction: string;
+  // Se calcula desde el entrenamiento general del usuario.
+  addressOptional: boolean;
 };
 
 function encontrarProductoPorPalabraClave(mensaje: string, products: ProductItem[]): ProductItem | null {
@@ -163,6 +229,21 @@ function emptyOrder(orderId?: string): OrderData {
     phone: "",
     locked_offer: null,
     payment_proof_received: false,
+    payment_proof_verified: false,
+    payment_holder_name: "",
+    payment_amount: 0,
+    payment_operation_number: "",
+    payment_status_text: "",
+    payment_verification_error: "",
+    payment_recipient_name: "",
+    payment_recipient_document: "",
+    payment_recipient_account: "",
+    payment_recipient_alias: "",
+    payment_recipient_bank: "",
+    payment_recipient_matched: false,
+    payment_proof_mime: "",
+    payment_manual_review_required: false,
+    payment_manual_review_reason: "",
     observation: "",
     preferred_delivery_date: "",
     preferred_delivery_time: "",
@@ -249,21 +330,198 @@ async function getAllTrainingData(userId: string) {
   return data || [];
 }
 
+function getTrainingBody(item: any): string {
+  return (
+    clean(item?.entrenamiento_completo) ||
+    clean(item?.response) ||
+    ""
+  );
+}
+
+function trainingItemText(item: any): string {
+  const intent = clean(item?.intent || "");
+  const examples = Array.isArray(item?.examples)
+    ? item.examples.map(clean).filter(Boolean).join("\n")
+    : "";
+  const body = getTrainingBody(item);
+
+  return [
+    intent ? `TEMA / CATEGORÍA: ${intent}` : "",
+    examples ? `FRASES DE EJEMPLO:\n${examples}` : "",
+    body ? `ENTRENAMIENTO COMPLETO:\n${body}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+}
+
+function classifyTrainingItem(item: any): "general" | "coverage" | "banking" {
+  const intent = normalize(item?.intent || "");
+  const body = normalize(getTrainingBody(item));
+
+  // Primero datos bancarios para que una frase como "sin cobertura se paga por
+  // transferencia" dentro de las reglas generales no clasifique mal la tarjeta.
+  const bankingByTitle =
+    /\b(informacion bancaria|datos bancarios|datos para transferencia|datos de transferencia|cuenta bancaria)\b/.test(intent);
+  const bankingByStructure =
+    /\b(titular|beneficiario)\b/.test(body) &&
+    /\b(cuenta|nro de cuenta|numero de cuenta|alias)\b/.test(body) &&
+    /\b(banco|entidad)\b/.test(body);
+
+  if (bankingByTitle || bankingByStructure) return "banking";
+
+  const coverageText = `${intent}\n${body}`;
+
+  const coverageByTitle =
+    /\b(zona|zonas|ciudad|ciudades|localidad|localidades)\b/.test(intent) &&
+    /\b(cobertura|contra entrega|delivery|envio)\b/.test(intent);
+
+  const coverageByHeader =
+    /\b(zonas? con cobertura|zonas? sin cobertura|zonas? de cobertura|lista completa por ciudad|envio gratis contra entrega|contra entrega)\b/.test(
+      coverageText
+    );
+
+  // También reconoce tarjetas cuyo título es genérico pero cuyo contenido
+  // contiene una lista de ciudades marcada con 📍/✅.
+  const coverageByCityStructure =
+    /\b(cobertura|contra entrega|transportadora)\b/.test(coverageText) &&
+    (
+      /📍\s*[a-záéíóúñ]/i.test(getTrainingBody(item)) ||
+      /✅\s*[a-záéíóúñ]/i.test(getTrainingBody(item))
+    );
+
+  if (coverageByTitle || coverageByHeader || coverageByCityStructure) {
+    return "coverage";
+  }
+
+  // Todo registro activo que no sea banco ni cobertura se considera una regla
+  // general. Así el usuario puede tener 1, 3, 10 o más entrenamientos separados.
+  return "general";
+}
+
+function buildTrainingSections(items: any[]): TrainingSections {
+  const generalParts: string[] = [];
+  const coverageParts: string[] = [];
+  const bankingParts: string[] = [];
+
+  for (const item of items || []) {
+    const fullText = trainingItemText(item);
+
+    // Las tarjetas que contienen exclusivamente productos pueden no tener texto.
+    // Sus productos se siguen leyendo desde productsFromVisualCatalog().
+    if (!fullText) continue;
+
+    const category = classifyTrainingItem(item);
+    if (category === "banking") bankingParts.push(fullText);
+    else if (category === "coverage") coverageParts.push(fullText);
+    else generalParts.push(fullText);
+  }
+
+  const joinAll = (parts: string[]) =>
+    parts
+      .filter(Boolean)
+      .join("\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+      .trim();
+
+  const general = joinAll(generalParts);
+  const coverage = joinAll(coverageParts);
+  const banking = joinAll(bankingParts);
+
+  // El parser recibe las tres secciones. Gemini recibe generalTraining por
+  // separado para aplicar TODAS las reglas comerciales del usuario.
+  const combined = [general, coverage, banking]
+    .filter(Boolean)
+    .join("\n\n---\n\n")
+    .trim();
+
+  return {
+    general,
+    coverage,
+    banking,
+    combined,
+    totalItems: (items || []).length,
+    generalItems: generalParts.length,
+    coverageItems: coverageParts.length,
+    bankingItems: bankingParts.length,
+  };
+}
+
+// Compatibilidad con cualquier llamada antigua dentro del proyecto.
 function buildTrainingText(items: any[]) {
-  return items
-    .map((i) => {
-      const examples = Array.isArray(i.examples) ? i.examples.join("\n") : "";
+  return buildTrainingSections(items).combined;
+}
 
-      // V94: la fuente principal del entrenamiento es entrenamiento_completo.
-      // response queda únicamente como compatibilidad con registros antiguos.
-      const trainingBody =
-        clean(i.entrenamiento_completo) ||
-        clean(i.response) ||
-        "";
+function isCoverageTrainingItem(item: any): boolean {
+  const title = normalize(item?.intent || "");
+  const bodyRaw = getTrainingBody(item);
+  const body = normalize(bodyRaw);
+  const combined = `${title}\n${body}`;
 
-      return `${i.intent || ""}\n${examples}\n${trainingBody}`;
-    })
-    .join("\n\n---\n\n");
+  return (
+    (
+      /\b(zona|zonas|ciudad|ciudades|localidad|localidades)\b/.test(title) &&
+      /\b(cobertura|contra entrega|delivery|envio)\b/.test(title)
+    ) ||
+    /\b(zonas? con cobertura|zonas? sin cobertura|zonas? de cobertura|lista completa por ciudad|envio gratis contra entrega)\b/.test(combined) ||
+    (
+      /\b(cobertura|contra entrega|transportadora)\b/.test(combined) &&
+      /(?:📍|✅|✔)\s*[a-záéíóúñ0-9]/i.test(bodyRaw)
+    )
+  );
+}
+
+function parseCoverageDirectlyFromTrainingItems(items: any[]) {
+  const merged = new Map<
+    string,
+    { alias: string; canonical: string; covered: boolean }
+  >();
+
+  const matchedItems: Array<{
+    id: string;
+    intent: string;
+    bodyLength: number;
+    citiesDetected: number;
+  }> = [];
+
+  for (const item of items || []) {
+    if (!item?.is_active || !isCoverageTrainingItem(item)) continue;
+
+    const body = getTrainingBody(item);
+    if (!body) continue;
+
+    // Se agrega el título como contexto, pero las ciudades salen del contenido
+    // real guardado en esta tarjeta de entrenamiento.
+    const itemText = [
+      clean(item?.intent) ? `TEMA / CATEGORÍA: ${clean(item.intent)}` : "",
+      body,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    const parsedItem = parseTraining(itemText);
+
+    matchedItems.push({
+      id: clean(item?.id),
+      intent: clean(item?.intent),
+      bodyLength: body.length,
+      citiesDetected: parsedItem.cities.length,
+    });
+
+    for (const city of parsedItem.cities) {
+      const key = normalize(city.alias);
+      if (!key) continue;
+
+      const existing = merged.get(key);
+      if (!existing || city.covered === false) {
+        merged.set(key, city);
+      }
+    }
+  }
+
+  return {
+    cities: Array.from(merged.values()),
+    matchedItems,
+  };
 }
 
 function normalizeProductImages(input: any): string[] {
@@ -400,10 +658,9 @@ function productsFromVisualCatalog(items: any[]): ProductItem[] {
 
       const { offers, fixedQuantity } = parseRawOffers(copy, canonical);
       const sortedOffers = offers.slice().sort((a, b) => a.quantity - b.quantity);
-      const price1 =
-        sortedOffers.find((o) => o.quantity === 1)?.total ||
-        sortedOffers[0]?.total ||
-        0;
+      const price1 = fixedQuantity
+        ? (sortedOffers.find((o) => o.fixed_quantity)?.total || sortedOffers[0]?.total || 0)
+        : (sortedOffers.find((o) => o.quantity === 1)?.total || sortedOffers[0]?.total || 0);
       const price2 = fixedQuantity ? undefined : sortedOffers.find((o) => o.quantity === 2)?.total;
       const price3 = fixedQuantity ? undefined : sortedOffers.find((o) => o.quantity === 3)?.total;
       const fixedPackQuantity = fixedQuantity
@@ -662,30 +919,81 @@ function parseTraining(training: string): ParsedTraining {
   const addCity = (alias: string, canonical?: string, covered = true) => {
     const a = clean(alias);
     const c = clean(canonical || alias);
-    if (!a || a.length < 2) return;
+    if (!a || a.length < 2 || !c) return;
+
+    const aliasNorm = normalize(a);
+    const canonicalNorm = normalize(c);
+
+    // Evita capturar encabezados, instrucciones o frases comerciales como ciudades.
+    const forbidden =
+      /\b(zona|zonas|cobertura|envio|delivery|contra entrega|pago|transportadora|lista completa|tema|categoria|entrenamiento completo|instruccion final)\b/;
+
+    if (!aliasNorm || !canonicalNorm) return;
+    if (forbidden.test(aliasNorm) || forbidden.test(canonicalNorm)) return;
+    if (a.length > 80 || c.length > 80) return;
+    if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(a)) return;
+    if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(c)) return;
+
     cities.push({ alias: a, canonical: c, covered });
   };
 
-  const parseCityBlocks = (section: string, defaultCovered: boolean) => {
-    const cityBlocks = clean(section).split(/📍\s*/g).filter(Boolean);
+  const SECTION_STOP =
+    String.raw`(?=\n\s*(?:📍\s*)?(?:ZONAS?\s+(?:CON|SIN|DE)\s+COBERTURA|LISTA\s+COMPLETA\s+POR\s+CIUDAD|TEMA\s*\/\s*CATEGOR[IÍ]A|ENTRENAMIENTO\s+COMPLETO|DATOS\s+(?:BANCARIOS|DE\s+TRANSFERENCIA)|CATALOGO_PRODUCTOS|FIN_CATALOGO_PRODUCTOS|⚙️\s*INSTRUCCI[ÓO]N\s+FINAL|[-━]{3,})|$)`;
 
-    for (const block of cityBlocks) {
-      const lines = block.split("\n").map(clean).filter(Boolean);
-      const canonical = clean(lines[0]);
+  const extractCoverageSection = (
+    source: string,
+    kind: "covered" | "uncovered"
+  ): string => {
+    const header =
+      kind === "covered"
+        ? String.raw`ZONAS?\s+CON\s+COBERTURA(?:\s*\([^\n)]*\))?\s*:?`
+        : String.raw`ZONAS?\s+SIN\s+COBERTURA(?:\s*\([^\n)]*\))?\s*:?`;
+
+    const match = source.match(
+      new RegExp(`${header}\\s*([\\s\\S]*?)${SECTION_STOP}`, "i")
+    );
+
+    return clean(match?.[1] || "");
+  };
+
+  const parseCityBlocks = (section: string, defaultCovered: boolean) => {
+    if (!clean(section)) return;
+
+    // Solo procesa bloques que realmente comienzan con el marcador de una ciudad.
+    const cityBlocks = section
+      .split(/(?=^\s*📍\s*)/gm)
+      .map(clean)
+      .filter((block) => /^📍\s*/.test(block));
+
+    for (const rawBlock of cityBlocks) {
+      const block = clean(rawBlock.replace(/^📍\s*/, ""));
+      const lines = block.split(/\r?\n/g).map(clean).filter(Boolean);
+      const canonical = clean(lines[0]?.replace(/[:;,]+$/, ""));
       if (!canonical || canonical.length < 2) continue;
+
+      const canonicalNorm = normalize(canonical);
+      if (
+        /\b(zona|zonas|cobertura|envio|delivery|contra entrega|lista completa)\b/.test(
+          canonicalNorm
+        )
+      ) {
+        continue;
+      }
 
       const blockNorm = normalize(block);
       const explicitlyNotCovered =
-        /\b(sin cobertura|fuera de cobertura|transportadora|pago anticipado|no contra entrega|sin contra entrega)\b/.test(blockNorm);
-      const covered = explicitlyNotCovered ? false : defaultCovered;
+        /\b(sin cobertura|fuera de cobertura|transportadora|pago anticipado|no contra entrega|sin contra entrega)\b/.test(
+          blockNorm
+        );
 
+      const covered = explicitlyNotCovered ? false : defaultCovered;
       addCity(canonical, canonical, covered);
 
-      const variantsLine = lines.find((line) => /^[✅✔]/.test(line));
-      if (variantsLine) {
+      const variantsLines = lines.filter((line) => /^[✅✔]/.test(line));
+      for (const variantsLine of variantsLines) {
         variantsLine
           .replace(/^[✅✔]\s*/, "")
-          .split(",")
+          .split(/[,;|]/g)
           .map(clean)
           .filter(Boolean)
           .forEach((variant) => addCity(variant, canonical, covered));
@@ -693,43 +1001,80 @@ function parseTraining(training: string): ParsedTraining {
     }
   };
 
-  // Lista completa personalizada: cada bloque puede declarar explícitamente
-  // "sin cobertura", "transportadora" o "pago anticipado".
-  const completeCitySection =
-    training.match(/LISTA COMPLETA POR CIUDAD([\s\S]*?)⚙️ INSTRUCCIÓN FINAL/i)?.[1] || "";
-  if (completeCitySection) parseCityBlocks(completeCitySection, true);
-
-  // Secciones explícitas del entrenamiento.
-  const coveredSection =
-    training.match(/ZONAS CON COBERTURA([\s\S]*?)(?:ZONAS SIN COBERTURA|⚙️ INSTRUCCIÓN FINAL|$)/i)?.[1] || "";
-  const uncoveredSection =
-    training.match(/ZONAS SIN COBERTURA([\s\S]*?)(?:⚙️ INSTRUCCIÓN FINAL|$)/i)?.[1] || "";
-
-  parseCityBlocks(coveredSection, true);
-  parseCityBlocks(uncoveredSection, false);
-
   const parseSimpleCityList = (section: string, covered: boolean) => {
-    clean(section)
+    if (!clean(section)) return;
+
+    // Toma listas tipo: "Altos, Aregua, Asunción, Ypané".
+    // Las líneas de variantes que empiezan con ✅/✔ se procesan en parseCityBlocks.
+    const linesWithoutBlocks = section
+      .split(/\r?\n/g)
+      .filter((line) => !/^\s*[✅✔]/.test(line))
+      .filter((line) => !/^\s*📍\s*/.test(line))
+      .join("\n");
+
+    linesWithoutBlocks
       .split(/\r?\n|,/g)
-      .map((line) => clean(line.replace(/^[📍✅✔❌🚚💳\-•]+\s*/, "")))
-      .filter((line) => {
-        const n = normalize(line);
-        if (!line || line.length < 3 || line.length > 80) return false;
-        if (/\b(pago|transportadora|contra entrega|cobertura|envio|envío|delivery|anticipado)\b/.test(n)) return false;
-        return /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(line);
+      .map((value) =>
+        clean(
+          value
+            .replace(/^[✅✔❌🚚💳\-•]+\s*/, "")
+            .replace(/[.:;]+$/, "")
+        )
+      )
+      .filter((value) => {
+        const n = normalize(value);
+        if (!value || value.length < 2 || value.length > 80) return false;
+        if (
+          /\b(pago|transportadora|contra entrega|cobertura|envio|delivery|anticipado|lista completa|sistema|coincidencia|ciudades donde aplica)\b/.test(
+            n
+          )
+        ) {
+          return false;
+        }
+        return /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(value);
       })
       .forEach((city) => addCity(city, city, covered));
   };
 
+  // Compatibilidad con el formato antiguo "LISTA COMPLETA POR CIUDAD".
+  const completeCitySection =
+    training.match(
+      /LISTA\s+COMPLETA\s+POR\s+CIUDAD\s*:?\s*([\s\S]*?)(?=\n\s*(?:⚙️\s*)?INSTRUCCI[ÓO]N\s+FINAL|$)/i
+    )?.[1] || "";
+
+  if (completeCitySection) {
+    parseCityBlocks(completeCitySection, true);
+    parseSimpleCityList(completeCitySection, true);
+  }
+
+  // Las ciudades se obtienen dinámicamente del texto del entrenamiento.
+  // Se admiten encabezados simples y encabezados con aclaraciones entre paréntesis.
+  const coveredSection = extractCoverageSection(training, "covered");
+  const uncoveredSection = extractCoverageSection(training, "uncovered");
+
+  parseCityBlocks(coveredSection, true);
   parseSimpleCityList(coveredSection, true);
+
+  parseCityBlocks(uncoveredSection, false);
   parseSimpleCityList(uncoveredSection, false);
 
-  const cityMap = new Map<string, { alias: string; canonical: string; covered: boolean }>();
-  for (const c of cities) {
-    const key = normalize(c.alias);
+  const cityMap = new Map<
+    string,
+    { alias: string; canonical: string; covered: boolean }
+  >();
+
+  for (const city of cities) {
+    const key = normalize(city.alias);
     if (!key) continue;
+
     const existing = cityMap.get(key);
-    if (!existing || c.covered === false) cityMap.set(key, c);
+
+    // Si una ciudad fue declarada explícitamente en "ZONAS SIN COBERTURA",
+    // esa declaración tiene prioridad. Al aislar el entrenamiento de cobertura,
+    // ya no puede ser contaminada por reglas generales o datos bancarios.
+    if (!existing || city.covered === false) {
+      cityMap.set(key, city);
+    }
   }
 
   return {
@@ -738,6 +1083,15 @@ function parseTraining(training: string): ParsedTraining {
     catalogUrl: parseCatalogUrl(training),
     bankData: parseBankData(training),
     raw: training,
+    generalTraining: "",
+    coverageTraining: "",
+    bankingTraining: "",
+    trainingStats: {
+      totalItems: 0,
+      generalItems: 0,
+      coverageItems: 0,
+      bankingItems: 0,
+    },
   };
 }
 
@@ -906,7 +1260,7 @@ function createMultiCart(products: ProductItem[]): MultiCartItem[] {
 function productOffersText(product: ProductItem): string {
   const offers: string[] = [];
   if (product.fixedPackQuantity && product.price1) {
-    offers.push(`🔥 ${product.fixedPackQuantity} unidades: ${formatGs(product.price1)} Gs`);
+    offers.push(`🔥 ${product.fixedPackQuantity} unidad${product.fixedPackQuantity > 1 ? "es" : ""}: ${formatGs(product.price1)} Gs`);
   } else {
     if (product.price1) offers.push(`🔥 1 unidad: ${formatGs(product.price1)} Gs`);
     if (product.price2) offers.push(`🔥 2 unidades: ${formatGs(product.price2)} Gs`);
@@ -1175,7 +1529,7 @@ function buildProductEffectivenessResponse(state: ConversationState): string {
     continuation = "¿Cuántas unidades querés llevar? 😊";
   } else if (!clean(state.order.customer_name)) {
     continuation = "Para continuar, pasame tu nombre y apellido. 😊";
-  } else if (!clean(state.order.address)) {
+  } else if (!state.addressOptional && !clean(state.order.address)) {
     continuation = "Ahora solo me falta la calle o dirección exacta para la entrega. 📍";
   }
 
@@ -1205,9 +1559,79 @@ function isAmbiguousProductRejection(text: string, currentProduct: string): bool
   return /\b(no estoy interesad[oa]|ya no quiero|no me interesa|no quiero)\b/.test(n);
 }
 
+function buildMissingDataContinuation(state: ConversationState): string {
+  const missing: string[] = [];
+
+  if (!clean(state.order.city)) {
+    return "📍 ¿Para qué ciudad sería el envío?";
+  }
+
+  if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) {
+    return "¿Cuántas unidades querés llevar?";
+  }
+
+  if (!clean(state.order.customer_name)) missing.push("nombre y apellido");
+  if (state.coverage !== false && !state.addressOptional && !clean(state.order.address)) {
+    missing.push("dirección o ubicación");
+  }
+
+  if (!missing.length) return "";
+  if (missing.length === 1) return `Para completar el pedido me falta tu ${missing[0]}.`;
+
+  return `Para completar el pedido también me faltan:\n${missing.map((item) => `✅ ${item}`).join("\n")}`;
+}
+
+function buildInvoiceQuestionResponse(state: ConversationState): string {
+  const continuation = buildMissingDataContinuation(state);
+
+  return `✅ Sí, contamos con factura legal 😊
+
+Podés enviarme tu RUC y razón social o tu número de cédula para agregarla al pedido.${continuation ? `\n\n${continuation}` : ""}`;
+}
+
+function sanitizeCoverageAndShippingResponse(
+  response: string,
+  state: ConversationState
+): string {
+  const raw = clean(response);
+  if (!raw) return raw;
+
+  const n = normalize(raw);
+  const totalDigits = String(state.total || "").replace(/\D/g, "");
+
+  if (state.coverage === true && state.order.city) {
+    const saysPaidShipping =
+      /\b(envio|delivery|entrega|flete)\b[\s\S]{0,45}\b(costo|cuesta|sale|vale|pagar)\b/.test(n) ||
+      /\b(costo|cuesta|sale|vale)\b[\s\S]{0,45}\b(envio|delivery|entrega|flete)\b/.test(n);
+
+    const usesOrderTotalAsShipping =
+      totalDigits.length >= 4 &&
+      n.includes(totalDigits) &&
+      /\b(envio|delivery|entrega|flete)\b/.test(n);
+
+    if (saysPaidShipping || usesOrderTotalAsShipping) {
+      const continuation = buildMissingDataContinuation(state);
+      return `✅ Tenemos envío GRATIS contra entrega en ${state.order.city} 🚚
+
+Pagás solamente el producto cuando lo recibís 😊${continuation ? `\n\n${continuation}` : ""}`;
+    }
+  }
+
+  if (state.coverage === false && /\b(envio gratis|delivery gratis|contra entrega|pagas al recibir|pagás al recibir)\b/.test(n)) {
+    const continuation = buildMissingDataContinuation(state);
+    return `📦 Para ${state.order.city || "tu ciudad"} el envío se realiza por transportadora y el pago del producto es anticipado.${continuation ? `\n\n${continuation}` : ""}`;
+  }
+
+  return raw;
+}
+
 function buildDeterministicBusinessQuestionResponse(text: string, state: ConversationState) {
   const n = normalize(text);
   if (!n) return "";
+
+  if (isInvoiceQuestion(text)) {
+    return buildInvoiceQuestionResponse(state);
+  }
 
   if (isAmbiguousProductRejection(text, state.order.product || "")) {
     return `Entiendo 😊 Solo para confirmar: ¿ya no querés continuar con ${state.order.product}?`;
@@ -1247,7 +1671,7 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
     if (!state.order.city) continuation = "📍 ¿Para qué ciudad sería el envío?";
     else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) continuation = "¿Cuántas unidades querés llevar?";
     else if (!state.order.customer_name) continuation = "Para continuar, pasame tu nombre y apellido.";
-    else if (!state.order.address) continuation = "Ahora pasame la dirección exacta o ubicación.";
+    else if (!state.addressOptional && !state.order.address) continuation = "Ahora pasame la dirección exacta o ubicación.";
     
 
     if (state.coverage === false && state.order.city) {
@@ -1274,11 +1698,120 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
     continuation = "¿Cuántas unidades querés llevar?";
   } else if (!state.order.customer_name) {
     continuation = "Para continuar, pasame tu nombre y apellido.";
-  } else if (state.coverage !== false && !state.order.address) {
+  } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
     continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
   }
 
   return `Somos de Asunción y hacemos envíos a todo el país. 😊${continuation ? `\n\n${continuation}` : ""}`;
+}
+
+
+const PARAGUAY_LOCATION_SUFFIXES = [
+  "alto parana",
+  "central",
+  "itapua",
+  "caaguazu",
+  "caazapa",
+  "canindeyu",
+  "cordillera",
+  "guaira",
+  "misiones",
+  "neembucu",
+  "paraguari",
+  "presidente hayes",
+  "concepcion",
+  "san pedro",
+  "amambay",
+  "boqueron",
+  "alto paraguay",
+  "paraguay",
+];
+
+function normalizeCityForMatching(value: any): string {
+  let result = normalize(value);
+  if (!result) return "";
+
+  const suffixes = PARAGUAY_LOCATION_SUFFIXES
+    .map(normalize)
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+
+  let changed = true;
+  while (changed && result) {
+    changed = false;
+    for (const suffix of suffixes) {
+      if (result !== suffix && result.endsWith(` ${suffix}`)) {
+        result = result.slice(0, -(suffix.length + 1)).trim();
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  return result;
+}
+
+function configuredCityByFlexibleMatch(
+  value: string,
+  parsed: ParsedTraining
+): { alias: string; canonical: string; covered: boolean } | null {
+  const rawNorm = normalize(value);
+  const flexibleNorm = normalizeCityForMatching(value);
+  if (!rawNorm || !flexibleNorm) return null;
+
+  const candidates = [...(parsed.cities || [])].sort(
+    (a, b) =>
+      Math.max(normalize(b.alias).length, normalize(b.canonical).length) -
+      Math.max(normalize(a.alias).length, normalize(a.canonical).length)
+  );
+
+  return (
+    candidates.find((item) => {
+      const values = [item.alias, item.canonical]
+        .flatMap((cityValue) => [
+          normalize(cityValue),
+          normalizeCityForMatching(cityValue),
+        ])
+        .filter(Boolean);
+
+      return values.some(
+        (candidate) => rawNorm === candidate || flexibleNorm === candidate
+      );
+    }) || null
+  );
+}
+
+function containsConfiguredCity(
+  text: string,
+  parsed: ParsedTraining
+): { alias: string; canonical: string; covered: boolean } | null {
+  const n = normalize(text);
+  if (!n) return null;
+
+  const ordered = [...(parsed.cities || [])].sort(
+    (a, b) =>
+      Math.max(normalize(b.alias).length, normalize(b.canonical).length) -
+      Math.max(normalize(a.alias).length, normalize(a.canonical).length)
+  );
+
+  for (const city of ordered) {
+    const names = Array.from(
+      new Set(
+        [city.alias, city.canonical]
+          .flatMap((value) => [normalize(value), normalizeCityForMatching(value)])
+          .filter(Boolean)
+      )
+    ).sort((a, b) => b.length - a.length);
+
+    for (const name of names) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(n)) {
+        return city;
+      }
+    }
+  }
+
+  return null;
 }
 
 function exactKnownCity(text: string, parsed: ParsedTraining): string {
@@ -1302,12 +1835,7 @@ function exactKnownCity(text: string, parsed: ParsedTraining): string {
   };
   if (hardExact[n]) return hardExact[n];
 
-  const found = parsed.cities.find((c) => {
-    const alias = normalize(c.alias);
-    const canonical = normalize(c.canonical);
-    return n === alias || n === canonical;
-  });
-
+  const found = configuredCityByFlexibleMatch(text, parsed);
   return found?.canonical || "";
 }
 
@@ -1400,24 +1928,24 @@ function isCompleteMultiwordLocality(text: string): boolean {
 
 function canonicalizeStoredCity(value: string, parsed: ParsedTraining): string {
   const raw = clean(value);
-  const n = normalize(raw);
-  if (!raw || !n) return "";
+  if (!raw) return "";
 
-  const ordered = [...(parsed.cities || [])].sort(
-    (a, b) => Math.max(normalize(b.alias).length, normalize(b.canonical).length) - Math.max(normalize(a.alias).length, normalize(a.canonical).length)
-  );
+  const configured =
+    configuredCityByFlexibleMatch(raw, parsed) ||
+    containsConfiguredCity(raw, parsed);
 
-  for (const city of ordered) {
-    const names = Array.from(new Set([city.alias, city.canonical].map(normalize).filter(Boolean)));
-    for (const name of names) {
-      if (n === name) return city.canonical;
-      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      if (new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(n)) return city.canonical;
-    }
-  }
+  if (configured) return configured.canonical;
 
-  // Un valor viejo o contaminado que no existe en el entrenamiento se elimina.
-  return "";
+  const simplified = normalizeCityForMatching(raw);
+  const words = simplified.split(/\s+/).filter(Boolean);
+  const validUnknown =
+    simplified.length >= 3 &&
+    simplified.length <= 70 &&
+    words.length >= 1 &&
+    words.length <= 6 &&
+    /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(raw);
+
+  return validUnknown ? toTitleCase(raw) : "";
 }
 
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
@@ -1433,6 +1961,11 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 
   const explicitKnownCity = extractExplicitKnownCityFromSentence(raw, parsed);
   if (explicitKnownCity) return explicitKnownCity;
+
+  const flexibleConfiguredCity =
+    configuredCityByFlexibleMatch(raw, parsed) ||
+    containsConfiguredCity(raw, parsed);
+  if (flexibleConfiguredCity) return flexibleConfiguredCity.canonical;
 
   // Nunca convertir respuestas comerciales, cantidades, agradecimientos,
   // nombres, preguntas o productos en una ciudad.
@@ -1486,17 +2019,12 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 }
 
 function hasCoverage(city: string, parsed: ParsedTraining) {
-  const c = normalize(city);
-  if (!c) return false;
+  const raw = clean(city);
+  if (!raw) return false;
 
-  // V82: solamente las ciudades cargadas en el entrenamiento tienen
-  // contra-entrega. Toda localidad válida no configurada usa pago anticipado.
-
-  const configured = parsed.cities.find((item) => {
-    const alias = normalize(item.alias);
-    const canonical = normalize(item.canonical);
-    return c === alias || c === canonical;
-  });
+  const configured =
+    configuredCityByFlexibleMatch(raw, parsed) ||
+    containsConfiguredCity(raw, parsed);
 
   return configured ? configured.covered !== false : false;
 }
@@ -1787,6 +2315,24 @@ function isDeliveryTimingMessage(text: string): boolean {
   );
 }
 
+function isInvoiceQuestion(text: string): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw || !n) return false;
+
+  const mentionsInvoice =
+    /\b(factura|factura legal|facturar|facturacion|facturación|credito fiscal|crédito fiscal)\b/.test(n);
+
+  if (!mentionsInvoice) return false;
+
+  // Una pregunta o consulta general sobre factura NO es un dato fiscal.
+  return (
+    /[?¿]/.test(raw) ||
+    /\b(tienen|tenes|tenés|dan|emiten|hacen|incluye|con|hay|pueden|se puede|quiero|necesito)\b[\s\S]{0,35}\bfactura\b/.test(n) ||
+    /\bfactura\b[\s\S]{0,35}\b(tienen|dan|emiten|legal|incluye|hay|pueden|se puede)\b/.test(n)
+  );
+}
+
 function isInvoiceOrTaxDataMessage(text: string): boolean {
   const raw = clean(text);
   const n = normalize(raw);
@@ -2040,6 +2586,17 @@ function isContaminatedCustomerName(value: string, parsed: ParsedTraining): bool
   const n = normalize(raw);
   if (!n) return true;
 
+  // V101: para cerrar un pedido se requiere nombre y apellido reales.
+  // Nunca aceptar textos de interfaz o frases tomadas del propio bot.
+  const nameWords = raw.split(/\s+/).map(clean).filter(Boolean);
+  if (nameWords.length < 2 || nameWords.length > 5) return true;
+  if (/\d/.test(raw)) return true;
+  if (/\b(nombre|apellido|nombre y apellido|tu nombre|cliente|usuario|contacto|y apellido)\b/.test(n)) return true;
+  if (/^(?:y\s+)?apellido$/.test(n)) return true;
+  if (/\b(quiero|me interesa|pedido|producto|cantidad|unidad|unidades|precio|delivery|envio|factura|direccion|ubicacion)\b/.test(n)) return true;
+  if (/\b(pago|pagar|pagare|abona|abono|efectivo|transferencia|contra entrega|al recibir|al resivir|cuando llegue|cuando me llegue)\b/.test(n)) return true;
+  if (/\b(amigo|amiga|senor|señor|senora|señora|jefe|bro)\b/.test(n) && /\b(pago|recibir|resivir|entrega)\b/.test(n)) return true;
+
   if (isLocationDeclarationInsteadOfName(raw, parsed)) return true;
 
   if (/^(?:soy|soi|vivo|resido|estoy|somos)\s+(?:de|en)\b/.test(n)) return true;
@@ -2073,17 +2630,87 @@ function isContaminatedCustomerName(value: string, parsed: ParsedTraining): bool
   });
 }
 
+
+function isInvalidCustomerNameForOrder(
+  value: string,
+  city: string,
+  parsed: ParsedTraining
+): boolean {
+  const raw = clean(value);
+  const n = normalize(raw);
+  const cityNorm = normalize(city);
+
+  if (!raw || isContaminatedCustomerName(raw, parsed)) return true;
+
+  if (
+    cityNorm &&
+    (
+      n === cityNorm ||
+      n === `soy de ${cityNorm}` ||
+      n === `vivo en ${cityNorm}` ||
+      n === `estoy en ${cityNorm}`
+    )
+  ) {
+    return true;
+  }
+
+  return parsed.cities.some((item) => {
+    const aliases = [item.alias, item.canonical].map(normalize).filter(Boolean);
+    return aliases.some((alias) => n === alias);
+  });
+}
+
+function isPendingTransferStatus(value: string): boolean {
+  const n = normalize(value);
+  if (!n) return false;
+
+  return /\b(pendiente|en proceso|procesando|solicitamos el envio|solicitado el envio|acreditacion dependera|pendiente de acreditacion|por acreditar|en revision|esperando acreditacion|transferencia enviada)\b/.test(n);
+}
+
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const normalizedRawNameInput = normalize(text);
   if (/\b(hice mi pedido|ya hice mi pedido|mi pedido|pedido confirmado|pedido realizado)\b/.test(normalizedRawNameInput)) return "";
 
   const raw = clean(text);
   if (!raw) return "";
+
+  const paymentPhraseNorm = normalize(raw);
+  if (
+    /\b(pago|pagar|pagare|abona|abono)\b[\s\S]{0,55}\b(al recibir|al resivir|cuando llegue|cuando me llegue|contra entrega|en la entrega)\b/.test(paymentPhraseNorm) ||
+    /\b(solo|solamente)\s+pago\b/.test(paymentPhraseNorm) ||
+    /\b(al recibir|al resivir|contra entrega)\b/.test(paymentPhraseNorm)
+  ) {
+    return "";
+  }
+
+  // V98: extrae primero un nombre declarado explícitamente aunque el mismo
+  // mensaje también contenga cantidad y ciudad. Ejemplo:
+  // “quiero uno para Capiatá, mi nombre es David Alcaraz”.
+  const explicitNameInMixedMessage = raw.match(
+    /\b(?:mi nombre es|me llamo|nombre)\s*[:,-]?\s*([a-zA-ZÁÉÍÓÚáéíóúÑñ]+(?:\s+[a-zA-ZÁÉÍÓÚáéíóúÑñ]+){1,4})(?=\s*(?:[,.;]|$))/i
+  )?.[1];
+
+  if (explicitNameInMixedMessage) {
+    const candidate = clean(explicitNameInMixedMessage);
+    const words = candidate.split(/\s+/).filter(Boolean);
+    const candidateNorm = normalize(candidate);
+    const forbiddenExplicitName =
+      words.length < 2 ||
+      words.length > 5 ||
+      /\d/.test(candidate) ||
+      /\b(calle|avenida|avda|barrio|ciudad|delivery|envio|precio|producto|unidad|unidades)\b/.test(candidateNorm) ||
+      (parsed ? isContaminatedCustomerName(candidate, parsed) : false);
+
+    if (!forbiddenExplicitName) return toTitleCase(candidate);
+  }
+
   if (isPoliteClosingOrAcknowledgement(raw)) return "";
   if (isPaymentInformationQuestion(raw)) return "";
   if (isQuestionLikeMessage(raw)) return "";
   if (/^(?:si|sii|siii|sip|asi es|correcto|exacto)\b/.test(normalize(raw))) return "";
   if (/\b(?:ustedes de donde|de donde traen|de donde viene|cuentan con delivery|tienen delivery|hay delivery)\b/.test(normalize(raw))) return "";
+  // La cantidad solo bloquea nombres implícitos. Los explícitos ya fueron
+  // extraídos arriba de forma segura.
   if (extractQuantity(raw) > 0) return "";
   if (looksLikeAddressSupplement(raw)) return "";
   if (isIdentityDocumentText(raw)) return "";
@@ -2468,8 +3095,15 @@ function extractOrderObservation(text: string): Partial<OrderData> {
   // Las preguntas informativas de pago se responden, pero no son observaciones.
   const paymentInfoQuestion = isPaymentInformationQuestion(raw);
 
-  // V59: toda solicitud o dato de facturación se conserva en una sola Observación.
-  if (isInvoiceOrTaxDataMessage(raw) || isStandaloneTaxOrIdentityData(raw)) {
+  // V97: una PREGUNTA sobre factura se responde, pero no se guarda como observación.
+  // Solo se conservan datos fiscales reales enviados por el cliente.
+  const invoiceQuestion = isInvoiceQuestion(raw);
+  const hasExplicitFiscalData =
+    isStandaloneTaxOrIdentityData(raw) ||
+    (/\b(ruc|razon social|razón social|cedula|cédula|ci)\b/.test(n) && /\d{5,}/.test(raw)) ||
+    /^(?:razon social|razón social|nombre para factura)\s*[:#-]\s*.+$/i.test(raw);
+
+  if (!invoiceQuestion && hasExplicitFiscalData) {
     obs.observation = mergeUniqueText(obs.observation, raw);
   }
 
@@ -2527,6 +3161,7 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
     "quiero", "cuando", "dia", "llega", "llego", "pedido", "cancelar",
     "no", "raqueta", "nebulizador", "que", "estado", "seguimiento",
     "ya fue", "que dia llega mi pedido", "no raqueta",
+    "y apellido", "nombre y apellido", "apellido", "tu nombre", "cliente", "usuario", "contacto",
   ];
 
   const isInvalidName =
@@ -2552,6 +3187,21 @@ function sanitizeOldOrder(old: any, parsed: ParsedTraining): OrderData {
     address: clean(old?.address || ""),
     locked_offer: old?.locked_offer || null,
     payment_proof_received: !!old?.payment_proof_received,
+    payment_proof_verified: !!old?.payment_proof_verified,
+    payment_holder_name: clean(old?.payment_holder_name || ""),
+    payment_amount: Number(old?.payment_amount || 0),
+    payment_operation_number: clean(old?.payment_operation_number || ""),
+    payment_status_text: clean(old?.payment_status_text || ""),
+    payment_verification_error: clean(old?.payment_verification_error || ""),
+    payment_recipient_name: clean(old?.payment_recipient_name || ""),
+    payment_recipient_document: clean(old?.payment_recipient_document || ""),
+    payment_recipient_account: clean(old?.payment_recipient_account || ""),
+    payment_recipient_alias: clean(old?.payment_recipient_alias || ""),
+    payment_recipient_bank: clean(old?.payment_recipient_bank || ""),
+    payment_recipient_matched: !!old?.payment_recipient_matched,
+    payment_proof_mime: clean(old?.payment_proof_mime || ""),
+    payment_manual_review_required: !!old?.payment_manual_review_required,
+    payment_manual_review_reason: clean(old?.payment_manual_review_reason || ""),
     observation: clean(old?.observation || old?.observacion || ""),
     preferred_delivery_date: clean(old?.preferred_delivery_date || ""),
     preferred_delivery_time: clean(old?.preferred_delivery_time || ""),
@@ -2579,6 +3229,29 @@ function mergeOrderData(old: OrderData, ext: any, product: string): OrderData {
       : old.address || "",
     locked_offer: ext.locked_offer !== undefined ? ext.locked_offer : old.locked_offer || null,
     payment_proof_received: ext.payment_proof_received !== undefined ? !!ext.payment_proof_received : !!old.payment_proof_received,
+    payment_proof_verified: ext.payment_proof_verified !== undefined ? !!ext.payment_proof_verified : !!old.payment_proof_verified,
+    payment_holder_name: clean(ext.payment_holder_name || old.payment_holder_name || ""),
+    payment_amount: Number(ext.payment_amount || old.payment_amount || 0),
+    payment_operation_number: clean(ext.payment_operation_number || old.payment_operation_number || ""),
+    payment_status_text: clean(ext.payment_status_text || old.payment_status_text || ""),
+    payment_verification_error: clean(ext.payment_verification_error || old.payment_verification_error || ""),
+    payment_recipient_name: clean(ext.payment_recipient_name || old.payment_recipient_name || ""),
+    payment_recipient_document: clean(ext.payment_recipient_document || old.payment_recipient_document || ""),
+    payment_recipient_account: clean(ext.payment_recipient_account || old.payment_recipient_account || ""),
+    payment_recipient_alias: clean(ext.payment_recipient_alias || old.payment_recipient_alias || ""),
+    payment_recipient_bank: clean(ext.payment_recipient_bank || old.payment_recipient_bank || ""),
+    payment_recipient_matched:
+      ext.payment_recipient_matched !== undefined
+        ? !!ext.payment_recipient_matched
+        : !!old.payment_recipient_matched,
+    payment_proof_mime: clean(ext.payment_proof_mime || old.payment_proof_mime || ""),
+    payment_manual_review_required:
+      ext.payment_manual_review_required !== undefined
+        ? !!ext.payment_manual_review_required
+        : !!old.payment_manual_review_required,
+    payment_manual_review_reason: clean(
+      ext.payment_manual_review_reason || old.payment_manual_review_reason || ""
+    ),
     ...mergeOrderObservation(old, ext || {}),
   };
 }
@@ -2589,6 +3262,7 @@ function calculateTotal(productName: string, quantity: number, parsed: ParsedTra
 
   const q = sanitizeQuantity(quantity);
 
+  // V106: una oferta bloqueada representa el total completo de la promoción.
   if (
     lockedOffer &&
     normalize(lockedOffer.product) === normalize(p.canonical) &&
@@ -2599,6 +3273,16 @@ function calculateTotal(productName: string, quantity: number, parsed: ParsedTra
     return lockedOffer.total;
   }
 
+  // V106: en un pack fijo, price1 guarda el precio TOTAL del pack, no el
+  // precio por unidad. Ej.: 2 unidades por 99.000 => total 99.000.
+  if (
+    p.fixedPackQuantity &&
+    sanitizeQuantity(p.fixedPackQuantity) === q &&
+    p.price1 > 0
+  ) {
+    return p.price1;
+  }
+
   if (q === 2 && p.price2) return p.price2;
   if (q === 3 && p.price3) return p.price3;
 
@@ -2607,6 +3291,23 @@ function calculateTotal(productName: string, quantity: number, parsed: ParsedTra
 
 function getCatalogOffer(product: ProductItem, quantity: number): OfferItem | null {
   const q = sanitizeQuantity(quantity);
+
+  // V106: si coincide con un pack fijo, devolver el precio TOTAL del pack.
+  if (
+    product.fixedPackQuantity &&
+    sanitizeQuantity(product.fixedPackQuantity) === q &&
+    product.price1 > 0
+  ) {
+    return {
+      product: product.canonical,
+      quantity: q,
+      total: product.price1,
+      label: `${q} unidades por ${formatGs(product.price1)} Gs`,
+      source: "catalog",
+      fixed_quantity: true,
+    };
+  }
+
   if (q === 2 && product.price2) {
     return { product: product.canonical, quantity: 2, total: product.price2, source: "catalog" };
   }
@@ -2795,7 +3496,27 @@ function parseRawOffers(raw: string, product: string): { offers: OfferItem[]; fi
     }
   }
 
-  return { offers, fixedQuantity };
+  // V105: si el copy contiene una sola oferta real y esa oferta es de
+  // más de una unidad, se trata como un pack fijo aunque no diga literalmente
+  // “solo pack”. Ejemplo: “2 unidades por 99.000 Gs”.
+  const uniqueByQuantity = new Map<number, OfferItem>();
+  for (const offer of offers) {
+    const previous = uniqueByQuantity.get(offer.quantity);
+    if (!previous || offer.fixed_quantity) uniqueByQuantity.set(offer.quantity, offer);
+  }
+
+  const uniqueOffers = Array.from(uniqueByQuantity.values());
+  const inferredSinglePack =
+    uniqueOffers.length === 1 &&
+    uniqueOffers[0].quantity > 1;
+
+  const finalFixedQuantity = fixedQuantity || inferredSinglePack;
+  const finalOffers = uniqueOffers.map((offer) => ({
+    ...offer,
+    fixed_quantity: finalFixedQuantity ? true : !!offer.fixed_quantity,
+  }));
+
+  return { offers: finalOffers, fixedQuantity: finalFixedQuantity };
 }
 
 function detectTemplatePricingFromText(text: string, parsed: ParsedTraining, strict = false): TemplatePricing | null {
@@ -2910,8 +3631,13 @@ function getHistoryText(item: any): string {
 }
 
 function isIncomingHistoryItem(item: any): boolean {
+  // V101: jamás recuperar nombre, ciudad o datos desde mensajes del bot.
+  const role = normalize(item?.role || item?.sender_role || item?.author || "");
+  if (role === "assistant" || role === "model" || role === "bot" || role === "system") return false;
+  if (role === "user" || role === "customer" || role === "cliente") return true;
+
   const direction = normalize(item?.direction || item?.message_type || item?.type || "");
-  if (!direction) return true;
+  if (!direction) return false;
 
   return (
     direction === "in" ||
@@ -3324,7 +4050,7 @@ function buildDeterministicAcknowledgementResponse(text: string, state: Conversa
     continuation = "¿Cuántas unidades querés llevar?";
   } else if (!state.order.customer_name) {
     continuation = "Para completar el pedido, pasame tu nombre y apellido.";
-  } else if (state.coverage !== false && !state.order.address) {
+  } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
     continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
   }
 
@@ -3431,8 +4157,16 @@ REGLAS:
 - No repitas el bloque de ✅ PEDIDO CONFIRMADO.
 - Sé breve, cálido y con emojis moderados.
 
-ENTRENAMIENTO:
-${parsed.raw}
+ENTRENAMIENTOS GENERALES DEL USUARIO:
+${parsed.generalTraining || "No hay reglas generales configuradas para este usuario."}
+
+DATOS DE TRANSFERENCIA DEL USUARIO:
+${bankDataText(parsed)}
+
+IMPORTANTE:
+- Aplicá todos los entrenamientos generales activos del usuario, no solamente el primero.
+- El estado técnico del pedido prevalece únicamente para datos calculados y validaciones.
+- El estilo, la conversación, la postventa y las reglas comerciales deben salir de los entrenamientos generales del usuario.
 `.trim();
 }
 
@@ -3612,7 +4346,50 @@ function isSameOrderForPaymentProof(oldOrder: OrderData, newOrder: OrderData) {
   return Boolean(sameProduct && sameCity && sameQuantity && (sameOrderId || !clean(newOrder.order_id)));
 }
 
-function nextStep(order: OrderData, coverage: boolean | null) {
+function preserveVerifiedPaymentForSameOrder(oldOrder: OrderData, newOrder: OrderData) {
+  return Boolean(
+    oldOrder?.payment_proof_verified &&
+    isSameOrderForPaymentProof(oldOrder, newOrder) &&
+    Number(oldOrder.payment_amount || 0) > 0 &&
+    clean(oldOrder.payment_holder_name)
+  );
+}
+
+
+function isAddressOptionalByTraining(
+  parsed: ParsedTraining,
+  coverage: boolean | null
+): boolean {
+  // Para transportadora la dirección exacta no forma parte del cierre técnico.
+  if (coverage === false) return true;
+
+  const raw = clean(parsed.generalTraining || "");
+  const n = normalize(raw);
+  if (!n) return false;
+
+  // Una regla explícita de obligatoriedad tiene prioridad cuando no convive
+  // con una regla igualmente explícita de opcionalidad.
+  const explicitlyRequired =
+    /\b(direccion|ubicacion|referencia)\b[\s\S]{0,45}\b(obligatoria|obligatorio|indispensable|requerida|requerido)\b/.test(n) ||
+    /\b(no se puede|no debe|no confirmar)\b[\s\S]{0,55}\b(sin direccion|sin ubicacion|sin referencia)\b/.test(n);
+
+  const explicitlyOptional =
+    /\b(direccion|ubicacion|referencia|domicilio)\b[\s\S]{0,55}\b(opcional|no obligatoria|no obligatorio|puede faltar|no es necesaria|no es necesario)\b/.test(n) ||
+    /\b(opcional|no obligatoria|no obligatorio)\b[\s\S]{0,55}\b(direccion|ubicacion|referencia|domicilio)\b/.test(n) ||
+    /\b(puede|podra|podrá|podes|podés)\b[\s\S]{0,80}\b(pasar|enviar|compartir|dar)\b[\s\S]{0,80}\b(direccion|ubicacion|referencia)\b[\s\S]{0,80}\b(despues|más tarde|mas tarde|al delivery|directamente al delivery)\b/.test(n) ||
+    /\b(direccion|ubicacion|referencia)\b[\s\S]{0,90}\b(despues|más tarde|mas tarde|al delivery|directamente al delivery)\b/.test(n) ||
+    /\b(confirmar|registrar|agendar)\b[\s\S]{0,70}\b(pedido)\b[\s\S]{0,70}\b(sin direccion|sin ubicacion)\b/.test(n);
+
+  if (explicitlyRequired && !explicitlyOptional) return false;
+  return explicitlyOptional;
+}
+
+function addressPendingMessage(state: ConversationState): string {
+  if (!state.addressOptional || clean(state.order.address)) return "";
+  return "📍 Ubicación: pendiente; puede enviarla más tarde o pasarla directamente al delivery.";
+}
+
+function nextStep(order: OrderData, coverage: boolean | null, addressOptional = false) {
   if (!order.product) return "selling";
   if (!order.city) return "collecting_city";
 
@@ -3624,16 +4401,16 @@ function nextStep(order: OrderData, coverage: boolean | null) {
 
   if (coverage === false) {
     if (!order.customer_name) return "collecting_name";
-    if (!order.payment_proof_received) return "waiting_payment_proof";
+    if (!order.payment_proof_verified) return "waiting_payment_proof";
     return "confirm_order";
   }
 
   if (!order.customer_name) return "collecting_name";
-  if (!order.address) return "collecting_address";
+  if (!addressOptional && !order.address) return "collecting_address";
   return "confirm_order";
 }
 
-function getMissing(order: OrderData, coverage: boolean | null) {
+function getMissing(order: OrderData, coverage: boolean | null, addressOptional = false) {
   const missing: string[] = [];
   if (!order.product) missing.push("producto");
   if (!order.city) missing.push("ciudad");
@@ -3641,8 +4418,8 @@ function getMissing(order: OrderData, coverage: boolean | null) {
 
   if (order.product && order.city && order.quantity) {
     if (!order.customer_name) missing.push("nombre y apellido");
-    if (coverage !== false && !order.address) missing.push("dirección exacta o ubicación");
-    if (coverage === false && !order.payment_proof_received) missing.push("comprobante de transferencia");
+    if (coverage !== false && !addressOptional && !order.address) missing.push("dirección exacta o ubicación");
+    if (coverage === false && !order.payment_proof_verified) missing.push("comprobante de transferencia verificado");
   }
 
   return missing;
@@ -3868,8 +4645,9 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
   const productInfo = getProductInfo(order.product, parsed);
   const coverage = order.city ? hasCoverage(order.city, parsed) : null;
   const total = order.product && order.quantity ? calculateTotal(order.product, order.quantity, parsed, order.locked_offer) : 0;
-  const missing = getMissing(order, coverage);
-  const step = nextStep(order, coverage);
+  const addressOptional = isAddressOptionalByTraining(parsed, coverage);
+  const missing = getMissing(order, coverage, addressOptional);
+  const step = nextStep(order, coverage, addressOptional);
 
   const state: ConversationState = {
     order,
@@ -3879,6 +4657,7 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
     total,
     missing,
     hardInstruction: "",
+    addressOptional,
   };
 
   state.hardInstruction = buildHardInstruction(state);
@@ -3892,11 +4671,23 @@ function shouldConfirmOrder(state: ConversationState) {
     return false;
   }
 
-  if (state.coverage !== false && !o.address) {
+  const confirmationName = normalize(o.customer_name);
+  const confirmationCity = normalize(o.city);
+  const confirmationWords = clean(o.customer_name).split(/\s+/).filter(Boolean);
+  if (
+    confirmationWords.length < 2 ||
+    /\d/.test(o.customer_name) ||
+    /\b(nombre|apellido|cliente|usuario|contacto|y apellido)\b/.test(confirmationName) ||
+    (confirmationCity && confirmationName === confirmationCity)
+  ) {
     return false;
   }
 
-  if (state.coverage === false && !o.payment_proof_received) {
+  if (state.coverage !== false && !state.addressOptional && !o.address) {
+    return false;
+  }
+
+  if (state.coverage === false && !o.payment_proof_verified) {
     return false;
   }
 
@@ -3918,23 +4709,47 @@ function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState) 
   if (!state.productInfo) return false;
 
   if (state.coverage !== false) {
-    return Boolean(clean(o.address));
+    return state.addressOptional || Boolean(clean(o.address));
   }
 
-  return Boolean(o.payment_proof_received);
+  return Boolean(o.payment_proof_verified);
+}
+
+function minutesSince(lastActivity?: string) {
+  const last = new Date(lastActivity || "");
+  if (!Number.isFinite(last.getTime())) return Number.POSITIVE_INFINITY;
+  return Math.max(0, (Date.now() - last.getTime()) / (1000 * 60));
 }
 
 function isOrderStale(order: OrderData, lastActivity: string) {
-  const hasProduct = !!order?.product;
-  const hasCity = !!order?.city;
-  const hasQuantity = order?.quantity > 0;
-  const hasCustomerData = !!(order?.customer_name || order?.address || order?.phone);
+  const hasAnyOrderData = Boolean(
+    clean(order?.product) ||
+    clean(order?.city) ||
+    sanitizeQuantity(order?.quantity) > 0 ||
+    clean(order?.customer_name) ||
+    clean(order?.address)
+  );
 
-  const now = new Date();
-  const last = new Date(lastActivity);
-  const diffMinutes = (now.getTime() - last.getTime()) / (1000 * 60);
+  if (!hasAnyOrderData) return false;
 
-  return hasProduct && hasCity && hasQuantity && !hasCustomerData && diffMinutes > 10;
+  // V100: un pedido incompleto no puede quedar pegado indefinidamente.
+  // Después de 45 minutos sin actividad se considera una nueva sesión.
+  return minutesSince(lastActivity) > 45;
+}
+
+function looksLikeNewChatSession(text: string, context: any, history: any[]) {
+  const n = normalize(text);
+  const ageMinutes = minutesSince(context?.updated_at);
+  const historyIsEmpty = !Array.isArray(history) || history.length === 0;
+  const greeting = /^(hola+|holi|buenas|buen dia|buen día|buenas tardes|buenas noches|saludos|consulta)$/.test(n);
+
+  // Si el frontend abrió un chat sin historial, no reutilizamos un pedido viejo.
+  if (historyIsEmpty && ageMinutes > 5) return true;
+
+  // Un saludo después de una pausa considerable se toma como conversación nueva.
+  if (greeting && ageMinutes > 20) return true;
+
+  return ageMinutes > 45;
 }
 
 async function safeUpsertOrder(
@@ -4208,6 +5023,262 @@ async function callGemini({
   );
 }
 
+
+type PaymentProofAnalysis = {
+  readable: boolean;
+  successful: boolean;
+  holder_name: string;
+  amount: number;
+  operation_number: string;
+  status_text: string;
+  recipient_name: string;
+  recipient_document: string;
+  recipient_account: string;
+  recipient_alias: string;
+  recipient_bank: string;
+  error: string;
+};
+
+function parseJsonObjectFromModel(text: string): any {
+  const raw = clean(text)
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(raw);
+  } catch {}
+
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(raw.slice(start, end + 1));
+    } catch {}
+  }
+
+  return null;
+}
+
+function normalizePaymentProofAnalysis(value: any): PaymentProofAnalysis {
+  const amount = Number(String(value?.amount ?? value?.monto ?? 0).replace(/[^\d]/g, "") || 0);
+  const holder = clean(value?.holder_name || value?.titular || value?.payer_name || "");
+  const operation = clean(value?.operation_number || value?.numero_operacion || value?.operation || "");
+  const status = clean(value?.status_text || value?.estado || "");
+  const successValue = value?.successful ?? value?.exitosa ?? value?.success;
+  const readableValue = value?.readable ?? value?.legible;
+
+  return {
+    readable: readableValue === true || normalize(readableValue) === "true",
+    successful:
+      successValue === true ||
+      normalize(successValue) === "true" ||
+      /\b(exitosa|exitoso|aprobada|aprobado|completada|completado|realizada|realizado)\b/.test(normalize(status)),
+    holder_name: holder,
+    amount: Number.isFinite(amount) ? amount : 0,
+    operation_number: operation,
+    status_text: status,
+    recipient_name: clean(value?.recipient_name || value?.beneficiary_name || value?.beneficiario || value?.destinatario || ""),
+    recipient_document: clean(value?.recipient_document || value?.beneficiary_document || value?.documento_beneficiario || ""),
+    recipient_account: clean(value?.recipient_account || value?.credited_account || value?.cuenta_acreditada || ""),
+    recipient_alias: clean(value?.recipient_alias || value?.beneficiary_alias || value?.alias_destino || ""),
+    recipient_bank: clean(value?.recipient_bank || value?.beneficiary_bank || value?.entidad_destino || value?.banco_destino || ""),
+    error: clean(value?.error || value?.motivo || ""),
+  };
+}
+
+function onlyComparableDigits(value: any) {
+  return clean(value).replace(/\D/g, "");
+}
+
+function normalizedBankText(value: any) {
+  return normalize(value).replace(/\b(sa|s a|banco|bank|entidad)\b/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function namesMatch(a: any, b: any) {
+  const left = normalize(a).split(/\s+/).filter((word) => word.length >= 2);
+  const right = normalize(b).split(/\s+/).filter((word) => word.length >= 2);
+  if (!left.length || !right.length) return false;
+
+  const leftSet = new Set(left);
+  const common = right.filter((word) => leftSet.has(word)).length;
+  return common >= Math.min(2, Math.min(left.length, right.length));
+}
+
+function paymentRecipientMatchesBankData(analysis: PaymentProofAnalysis, bankData: BankData | null) {
+  if (!bankData) return false;
+
+  const expectedDocument = onlyComparableDigits(bankData.ci);
+  const expectedAccount = onlyComparableDigits(bankData.cuenta);
+  const expectedAlias = onlyComparableDigits(bankData.alias);
+  const actualDocument = onlyComparableDigits(analysis.recipient_document);
+  const actualAccount = onlyComparableDigits(analysis.recipient_account);
+  const actualAlias = onlyComparableDigits(analysis.recipient_alias);
+
+  const nameMatch = Boolean(bankData.titular && analysis.recipient_name && namesMatch(bankData.titular, analysis.recipient_name));
+  const documentMatch = Boolean(expectedDocument && actualDocument && expectedDocument === actualDocument);
+  const accountMatch = Boolean(expectedAccount && actualAccount && expectedAccount === actualAccount);
+  const aliasMatch = Boolean(expectedAlias && actualAlias && expectedAlias === actualAlias);
+
+  const expectedBank = normalizedBankText(bankData.entidad || bankData.banco || "");
+  const actualBank = normalizedBankText(analysis.recipient_bank);
+  const bankMatch = Boolean(
+    expectedBank &&
+    actualBank &&
+    (expectedBank.includes(actualBank) || actualBank.includes(expectedBank))
+  );
+
+  // Coincidencia fuerte por identificador exacto, o nombre + banco.
+  return Boolean(
+    documentMatch ||
+    accountMatch ||
+    aliasMatch ||
+    (nameMatch && (bankMatch || !expectedBank))
+  );
+}
+
+async function analyzePaymentProofWithGemini({
+  apiKey,
+  model,
+  mediaBase64,
+  mime,
+  expectedAmount,
+  bankData,
+}: {
+  apiKey: string;
+  model: string;
+  mediaBase64: string;
+  mime: string;
+  expectedAmount: number;
+  bankData: BankData | null;
+}): Promise<PaymentProofAnalysis> {
+  const fallback: PaymentProofAnalysis = {
+    readable: false,
+    successful: false,
+    holder_name: "",
+    amount: 0,
+    operation_number: "",
+    status_text: "",
+    recipient_name: "",
+    recipient_document: "",
+    recipient_account: "",
+    recipient_alias: "",
+    recipient_bank: "",
+    error: "No se pudo analizar el comprobante.",
+  };
+
+  const expectedRecipient = [
+    bankData?.titular ? `Titular esperado: ${bankData.titular}` : "",
+    bankData?.ci ? `CI esperada: ${bankData.ci}` : "",
+    bankData?.entidad || bankData?.banco ? `Entidad esperada: ${bankData?.entidad || bankData?.banco}` : "",
+    bankData?.cuenta ? `Cuenta esperada: ${bankData.cuenta}` : "",
+    bankData?.alias ? `Alias esperado: ${bankData.alias}` : "",
+  ].filter(Boolean).join("\n");
+
+  const response = await callGemini({
+    apiKey,
+    model,
+    system: `Analizás comprobantes bancarios enviados por clientes.
+Extraé solamente datos visibles. No inventes información.
+Respondé exclusivamente JSON válido, sin markdown:
+{
+  "readable": boolean,
+  "successful": boolean,
+  "holder_name": string,
+  "amount": number,
+  "operation_number": string,
+  "status_text": string,
+  "recipient_name": string,
+  "recipient_document": string,
+  "recipient_account": string,
+  "recipient_alias": string,
+  "recipient_bank": string,
+  "error": string
+}
+
+Definiciones:
+- holder_name: titular o remitente de la cuenta DEBITADA; es quien hizo el pago.
+- recipient_name: beneficiario o destinatario de la transferencia.
+- recipient_document: documento/CI del beneficiario.
+- recipient_account: cuenta ACREDITADA o cuenta destino.
+- recipient_alias: alias del destinatario.
+- recipient_bank: banco o entidad receptora.
+- amount: monto total transferido como entero, sin puntos.
+- successful: true solo si una imagen/captura muestra claramente operación exitosa, aprobada, completada o equivalente.
+- En un PDF bancario, successful puede ser false si el documento no trae una frase explícita; igual extraé todos los demás datos.
+- readable: true si se leen claramente pagador, monto y al menos un dato del destinatario.
+- No confundas al pagador con el beneficiario.
+
+Datos bancarios esperados del vendedor:
+${expectedRecipient || "No configurados"}
+
+Total esperado del pedido: ${expectedAmount} Gs.
+No alteres los valores leídos para hacerlos coincidir.`,
+    contents: [{
+      role: "user",
+      parts: [
+        { inlineData: { mimeType: mime, data: mediaBase64 } },
+        { text: "Extraé los datos del pagador, destinatario, monto, estado y operación." },
+      ],
+    }],
+    temperature: 0,
+    maxTokens: 1000,
+  });
+
+  if (!response || response === "__GEMINI_QUOTA_EXCEEDED__") {
+    return {
+      ...fallback,
+      error: response === "__GEMINI_QUOTA_EXCEEDED__"
+        ? "No se pudo verificar porque el analizador está sin cuota."
+        : fallback.error,
+    };
+  }
+
+  const parsed = parseJsonObjectFromModel(response);
+  return parsed ? normalizePaymentProofAnalysis(parsed) : fallback;
+}
+
+function paymentProofVerificationMessage(order: OrderData, expectedAmount: number): string {
+  if (!order.payment_proof_received) return "";
+
+  if (order.payment_proof_verified) {
+    return `${
+      order.payment_manual_review_required
+        ? "✅ Comprobante recibido\n⏳ Acreditación pendiente de verificación manual"
+        : "✅ Comprobante verificado"
+    }
+
+👤 Pagador detectado: ${order.payment_holder_name}
+💰 Monto detectado: ${formatGs(order.payment_amount || 0)} Gs
+🏦 Destinatario verificado: ${order.payment_recipient_name || "cuenta bancaria configurada"}${order.payment_operation_number ? `
+🔢 Operación: ${order.payment_operation_number}` : ""}
+
+El monto cubre el total del pedido de ${formatGs(expectedAmount)} Gs.`;
+  }
+
+  const details = [
+    order.payment_holder_name ? `👤 Pagador detectado: ${order.payment_holder_name}` : "",
+    order.payment_amount ? `💰 Monto detectado: ${formatGs(order.payment_amount)} Gs` : "",
+    order.payment_recipient_name ? `🏦 Destinatario detectado: ${order.payment_recipient_name}` : "",
+    order.payment_status_text ? `📄 Estado detectado: ${order.payment_status_text}` : "",
+  ].filter(Boolean);
+
+  return `⚠️ Recibí el comprobante, pero todavía no puedo confirmar el pedido.
+
+${details.length ? `${details.join("\n")}
+
+` : ""}${order.payment_verification_error || "No pude verificar correctamente el destinatario y el monto."}
+
+Por favor enviame una imagen o PDF donde se vea:
+✅ monto
+✅ titular de la cuenta debitada
+✅ beneficiario o destinatario
+✅ cuenta acreditada, CI o alias
+✅ número de operación, cuando esté disponible`;
+}
+
+
 async function transcribeAudioWithGemini({
   apiKey,
   model,
@@ -4304,7 +5375,7 @@ function buildDeterministicMissingDataSummary(state: ConversationState) {
   const missing: string[] = [];
 
   if (!clean(o.customer_name)) missing.push("nombre y apellido");
-  if (!clean(o.address) || isOnlyPurchaseWithSize(o.address)) missing.push("calle o dirección exacta");
+  if (!state.addressOptional && (!clean(o.address) || isOnlyPurchaseWithSize(o.address))) missing.push("calle o dirección exacta");
 
   // El teléfono nunca se pide: se toma del WhatsApp.
   if (!clean(o.phone)) {
@@ -4321,7 +5392,33 @@ ${missing.map((item) => `✅ ${item}`).join("\n")}`;
 
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
-  const location = [clean(o.city), clean(o.address)].filter(Boolean).join(" — ");
+
+  const canonicalCity = canonicalizeStoredCity(o.city, parsed);
+  if (canonicalCity) o.city = canonicalCity;
+  state.coverage = o.city ? hasCoverage(o.city, parsed) : false;
+
+  // V106: protección final contra promociones desfasadas y packs fijos.
+  if (
+    o.locked_offer &&
+    sanitizeQuantity(o.locked_offer.quantity) !== sanitizeQuantity(o.quantity)
+  ) {
+    o.locked_offer = null;
+  }
+
+  const confirmationProduct = getProductInfo(o.product, parsed);
+  if (!o.locked_offer && confirmationProduct) {
+    const confirmationOffer = getCatalogOffer(confirmationProduct, o.quantity);
+    if (confirmationOffer) {
+      o.locked_offer = confirmationOffer;
+    }
+  }
+
+  // Siempre recalcular con la oferta correcta. Para packs fijos, el total es el
+  // precio completo del pack y nunca price1 × quantity.
+  state.total = calculateTotal(o.product, o.quantity, parsed, o.locked_offer);
+  const location = clean(o.address)
+    ? [clean(o.city), clean(o.address)].filter(Boolean).join(" — ")
+    : `${clean(o.city)} — ubicación pendiente para coordinar con el delivery`;
 
   if (state.coverage === false) {
     return `✅ PEDIDO CONFIRMADO
@@ -4335,7 +5432,13 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
 📞 Contacto: ${o.phone}${observationBlock(o)}
 
 🚚 Envío por transportadora
-💳 Pago anticipado confirmado
+${o.payment_manual_review_required
+  ? "💳 Comprobante recibido\n⏳ Acreditación pendiente de verificación manual"
+  : "💳 Pago anticipado verificado"}
+👤 Pagador: ${o.payment_holder_name}
+🏦 Destinatario verificado: ${o.payment_recipient_name || parsed.bankData?.titular || "cuenta configurada"}
+💰 Monto recibido: ${formatGs(o.payment_amount || 0)} Gs${o.payment_operation_number ? `
+🔢 Operación: ${o.payment_operation_number}` : ""}
 
 Una vez despachado, te enviaremos el comprobante correspondiente. 📦
 
@@ -4382,13 +5485,21 @@ function deterministicAfterCityCoverageMessage(state: ConversationState) {
 😊 Igual podemos enviarte por transportadora 🚚
 💳 Para este destino el pago es anticipado.
 
-Para continuar, pasame tu nombre completo y número de celular.`;
+Para continuar, realizá la transferencia y enviame el comprobante.
+
+Si todavía no me pasaste tu nombre, puedo tomarlo del titular de la cuenta debitada que aparezca en el comprobante.`;
   }
 
   if (!o.quantity) {
-    return `✅ Tenemos cobertura en ${o.city} 😊
+    const offers = state.productInfo ? productOffersText(state.productInfo) : "";
+    return `✅ Tenemos envío GRATIS contra entrega en ${o.city} 🚚
 
-¿Cuántas unidades querés llevar?`;
+Pagás solamente el producto cuando lo recibís 😊
+
+${offers ? `🔥 Promociones disponibles:
+${offers}
+
+` : ""}¿Cuántas unidades querés llevar?`;
   }
 
   return "";
@@ -4409,12 +5520,23 @@ ${o.locked_offer.quantity} unidades de ${o.product}
 
 📍 ${o.city} no cuenta con contra-entrega, pero hacemos envío por transportadora 🚚
 
-💵 Para avanzar, realizá la transferencia y enviame el comprobante junto con:
-✅ nombre completo
-📞 Ya tengo tu número de WhatsApp
+💵 Para avanzar, realizá la transferencia y enviame el comprobante.
+
+📞 Ya tengo tu número de WhatsApp.
+👤 Si todavía no me pasaste tu nombre, lo tomaré del titular de la cuenta debitada que figure en el comprobante.
 
 ${bankDataText(parsed)} 📲`;
   }
+
+  const fixedRequiredLines = [
+    !clean(o.customer_name) ? "✅ nombre y apellido" : "",
+    !state.addressOptional && !clean(o.address) ? "✅ dirección exacta o ubicación" : "",
+  ].filter(Boolean);
+
+  const fixedOptionalLocation =
+    state.addressOptional && !clean(o.address)
+      ? "\n\n📍 La ubicación es opcional; podés enviarla después o pasarla directamente al delivery."
+      : "";
 
   return `✅ Perfecto 😊
 
@@ -4424,10 +5546,9 @@ ${o.locked_offer.quantity} unidades de ${o.product}
 
 📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚${observationBlock(o)}
 
-Ahora solo necesito:
-✅ nombre y apellido
-✅ dirección exacta o ubicación
-📞 Ya tengo tu número de WhatsApp: ${orderData.phone || senderPhoneFallback(fromNumber)}`;
+${fixedRequiredLines.length ? `Ahora solo necesito:
+${fixedRequiredLines.join("\n")}` : "Ya tengo los datos obligatorios para registrar el pedido."}${fixedOptionalLocation}
+📞 Ya tengo tu número de WhatsApp: ${o.phone || senderPhoneFallback("")}`;
 }
 
 function deterministicAfterQuantityMessage(state: ConversationState, parsed: ParsedTraining) {
@@ -4462,6 +5583,16 @@ ${promoLine}
 ${bankDataText(parsed)} 📲`;
   }
 
+  const optionalLocationNote =
+    state.addressOptional && !clean(o.address)
+      ? "\n\n📍 La ubicación es opcional; podés enviarla después o pasarla directamente al delivery."
+      : "";
+
+  const requiredLines = [
+    !clean(o.customer_name) ? "✅ nombre y apellido" : "",
+    !state.addressOptional && !clean(o.address) ? "✅ dirección exacta o ubicación" : "",
+  ].filter(Boolean);
+
   return `🎉 ¡Excelente elección! Queda seleccionado:
 
 📦 ${o.product}
@@ -4469,17 +5600,20 @@ ${bankDataText(parsed)} 📲`;
 ${promoLine}
 📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚
 
-Ahora solo necesito:
-✅ nombre y apellido
-✅ dirección exacta o ubicación
-📞 Ya tengo tu número de WhatsApp: ${orderData.phone || senderPhoneFallback(fromNumber)}`;
+${requiredLines.length ? `Ahora solo necesito:
+${requiredLines.join("\n")}` : "Ya tengo los datos obligatorios para registrar el pedido."}${optionalLocationNote}
+📞 Ya tengo tu número de WhatsApp: ${o.phone || senderPhoneFallback("")}`;
 }
 
 function deterministicWaitingPaymentProofMessage(state: ConversationState, parsed: ParsedTraining) {
   const o = state.order;
   if (state.coverage !== false) return "";
   if (state.step !== "waiting_payment_proof") return "";
-  if (!o.product || !o.city || !o.quantity || !o.customer_name || !o.phone) return "";
+  if (!o.product || !o.city || !o.quantity || !o.phone) return "";
+
+  if (o.payment_proof_received && !o.payment_proof_verified) {
+    return paymentProofVerificationMessage(o, state.total);
+  }
 
   return `✅ Perfecto, ya tengo tus datos 😊
 
@@ -4487,7 +5621,7 @@ function deterministicWaitingPaymentProofMessage(state: ConversationState, parse
 🔢 Cantidad: ${o.quantity}
 💰 Total: ${formatGs(state.total)} Gs
 📍 Ciudad: ${o.city}
-👤 Cliente: ${o.customer_name}
+👤 Cliente: ${o.customer_name || "se tomará del titular pagador"}
 📞 Celular: ${o.phone}${observationBlock(o)}
 
 🚚 Para tu zona hacemos envío por transportadora con pago anticipado.
@@ -4496,7 +5630,7 @@ function deterministicWaitingPaymentProofMessage(state: ConversationState, parse
 
 ${bankDataText(parsed)} 📲
 
-Cuando me pases el comprobante, dejamos tu pedido confirmado 😊`;
+Cuando me pases el comprobante, validaré el destinatario y el monto. Si todo coincide, el pedido se confirma automáticamente 😊`;
 }
 
 function deterministicObservationAckMessage(state: ConversationState, parsed: ParsedTraining, observationPatch?: Partial<OrderData> | null) {
@@ -4559,6 +5693,7 @@ ESTADO DEL PEDIDO:
 - Teléfono: ${o.phone || "faltante"}
 - Total calculado: ${state.total ? `${formatGs(state.total)} Gs` : "aún no corresponde"}
 - Faltante: ${state.missing.length ? state.missing.join(", ") : "nada"}
+- Dirección opcional según entrenamiento: ${state.addressOptional ? "sí" : "no"}
 - Promo bloqueada desde plantilla: ${o.locked_offer ? `${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs` : "no"}
 - Observación del cliente: ${observationLines(o).length ? observationLines(o).join(" | ") : "sin observación"}
 
@@ -4585,6 +5720,29 @@ ${state.productInfo.salesCopy}
 }
 DATOS DE TRANSFERENCIA:
 ${bankDataText(parsed)}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+${parsed.generalTraining || "No hay reglas generales configuradas para este usuario."}
+
+CÓMO USAR LOS ENTRENAMIENTOS DEL USUARIO:
+- Leé y aplicá TODOS los bloques anteriores; el usuario puede tener uno, tres, diez o más entrenamientos activos.
+- No ignores un entrenamiento por aparecer después de otro.
+- Si varios entrenamientos generales se complementan, aplicalos juntos.
+- Si dos reglas comerciales se contradicen, priorizá la regla más específica para la situación actual; si siguen siendo incompatibles, priorizá el entrenamiento cargado más recientemente, porque los registros fueron obtenidos en orden descendente por fecha.
+- Los entrenamientos generales deciden tono, conversación, cierres de venta, objeciones, factura, entrega, postventa y forma de pedir datos.
+- El backend decide únicamente los datos técnicos: producto detectado, cantidad registrada, ciudad, cobertura, total, datos faltantes y si el pedido puede confirmarse.
+- Nunca reemplaces un dato técnico válido por una suposición del entrenamiento.
+- No uses la lista completa de cobertura para redactar: usá el valor de cobertura ya calculado en ESTADO DEL PEDIDO.
+- Usá solamente los datos bancarios estructurados mostrados en DATOS DE TRANSFERENCIA.
+
+ORDEN DE PRIORIDAD:
+1. Datos técnicos ya calculados en ESTADO DEL PEDIDO.
+2. INSTRUCCIÓN OBLIGATORIA sobre el siguiente objetivo técnico.
+3. TODOS los ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO para decidir cómo conversar y vender.
+4. Copy, precios y promociones reales del catálogo o plantilla activa.
 
 REGLAS DURAS:
 - Respondé en español paraguayo/neutro, estilo WhatsApp.
@@ -4634,23 +5792,18 @@ REGLAS DURAS:
 - Si no hay plantilla activa ni promo bloqueada, mostrar precios del catálogo.
 - Nunca recalcules diferente al total calculado.
 - PROHIBIDO preguntar "¿Está todo correcto?", "¿Confirmamos?", "¿Querés confirmar?" o cualquier reconfirmación.
-- Cuando estén producto, cantidad, ciudad, nombre, dirección y teléfono, el backend guarda la venta y responde directamente con el formato fijo ✅ PEDIDO CONFIRMADO.
+- Cuando estén producto, cantidad, ciudad, nombre y teléfono, el backend confirma si la dirección es opcional según el entrenamiento.
+- Si Dirección opcional = sí, NO bloquees el cierre ni la presentes como faltante. Informá que puede enviarse más tarde o pasarse directamente al delivery.
+- Si Dirección opcional = no, la dirección/ubicación sí debe completarse antes de confirmar.
+- El backend guarda la venta y responde directamente con el formato fijo ✅ PEDIDO CONFIRMADO.
 - PROHIBIDO redactar un cierre libre. El único cierre válido es el generado por finalConfirmationMessage().
 - Cuando falte algún dato, mostrale un resumen fijo de lo que ya tenés y pedí solamente lo faltante.
 - PROHIBIDO pedir confirmación intermedia. Si ya están todos los datos, confirmá automáticamente.
-- Ejemplo si falta dirección:
-  📦 Producto: ...
-  🔢 Cantidad: ...
-  📍 Ciudad: ...
-  📞 Celular: ...
-  Solo me falta:
-  ✅ calle o dirección exacta
-
 - Frases como "quiero en calce 42", "talle 40" o "número 39" son VARIANTES, nunca direcciones.
-- Guardá el talle/calce en observación y seguí pidiendo una dirección exacta real.
+- Guardá el talle/calce en observación. Pedí dirección solamente cuando Dirección opcional = no.
 - Nunca uses una frase publicitaria como "Usalas con" como nombre de producto.
 
-- En ciudad sin contra-entrega, NO confirmar hasta que payment_proof_received sea true.
+- En ciudad sin contra-entrega, confirmar cuando payment_proof_verified sea true. Si figura pendiente pero destinatario y monto son válidos, confirmar y marcar payment_manual_review_required=true. No pedir otro comprobante. Una ciudad nunca puede ser nombre del cliente.
 `.trim();
 }
 
@@ -4692,7 +5845,7 @@ function buildPriceOnlyResponse(
     continuation = "¿Cuántas unidades querés llevar? 😊";
   } else if (!state.order.customer_name) {
     continuation = "Para continuar, pasame tu nombre y apellido. 😊";
-  } else if (state.coverage !== false && !state.order.address) {
+  } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
     continuation = "Ahora pasame la dirección exacta o ubicación para la entrega. 😊";
   } else if (!state.order.phone) {
     continuation = "Por último, pasame un número de celular para coordinar la entrega. 😊";
@@ -5037,8 +6190,84 @@ export default async function handler(req: any, res: any) {
     }
 
     const allTraining = await getAllTrainingData(user_id);
-    const trainingText = buildTrainingText(allTraining);
-    const parsed = parseTraining(trainingText);
+
+    // Lee TODOS los registros activos del usuario, sin asumir que existen solo 3.
+    // Cada registro queda clasificado como reglas generales, cobertura o banco.
+    const trainingSections = buildTrainingSections(allTraining);
+
+    // Productos, catálogo y banco se mantienen desde el entrenamiento combinado.
+    const parsed = parseTraining(trainingSections.combined);
+    const combinedCities = parsed.cities.slice();
+
+    // V114: cobertura leída directamente desde CADA tarjeta activa.
+    // No depende de que buildTrainingSections la haya clasificado correctamente.
+    const directCoverage = parseCoverageDirectlyFromTrainingItems(allTraining);
+    const parsedCoverage = parseTraining(trainingSections.coverage);
+
+    if (directCoverage.cities.length > 0) {
+      parsed.cities = directCoverage.cities;
+    } else if (parsedCoverage.cities.length > 0) {
+      parsed.cities = parsedCoverage.cities;
+
+      console.warn("⚠️ Se usó la sección agrupada de cobertura como fallback.", {
+        matchedDirectItems: directCoverage.matchedItems,
+        coverageItems: trainingSections.coverageItems,
+        cities: parsedCoverage.cities.length,
+      });
+    } else if (combinedCities.length > 0) {
+      parsed.cities = combinedCities;
+
+      console.warn("⚠️ Se usó la lectura combinada como último fallback de cobertura.", {
+        matchedDirectItems: directCoverage.matchedItems,
+        coverageItems: trainingSections.coverageItems,
+        combinedCities: combinedCities.length,
+      });
+    } else {
+      parsed.cities = [];
+
+      console.error("❌ No se detectó ninguna ciudad en ninguna tarjeta activa.", {
+        totalItems: trainingSections.totalItems,
+        coverageItems: trainingSections.coverageItems,
+        matchedDirectItems: directCoverage.matchedItems,
+        coverageTextLength: trainingSections.coverage.length,
+        combinedTextLength: trainingSections.combined.length,
+      });
+    }
+
+    parsed.generalTraining = trainingSections.general;
+    parsed.coverageTraining = trainingSections.coverage;
+    parsed.bankingTraining = trainingSections.banking;
+    parsed.trainingStats = {
+      totalItems: trainingSections.totalItems,
+      generalItems: trainingSections.generalItems,
+      coverageItems: trainingSections.coverageItems,
+      bankingItems: trainingSections.bankingItems,
+    };
+
+    console.log("🧠 Entrenamientos activos del usuario:", {
+      user_id,
+      total: parsed.trainingStats.totalItems,
+      generales: parsed.trainingStats.generalItems,
+      cobertura: parsed.trainingStats.coverageItems,
+      bancarios: parsed.trainingStats.bankingItems,
+      ciudadesDetectadas: parsed.cities.length,
+      bancoDetectado: Boolean(parsed.bankData),
+      fuenteCobertura:
+        directCoverage.cities.length > 0
+          ? "directTrainingItems"
+          : parsedCoverage.cities.length > 0
+            ? "coverageTrainingFallback"
+            : combinedCities.length > 0
+              ? "combinedFallback"
+              : "sin_ciudades",
+      tarjetasCoberturaDetectadas: directCoverage.matchedItems,
+      pruebaCoberturaAsuncion: hasCoverage("Asunción", parsed),
+      pruebaCoberturaYpane: hasCoverage("ypane", parsed),
+      primerasCiudades: parsed.cities.slice(0, 12),
+      coincidenciasYpane: parsed.cities.filter((city) =>
+        normalize(`${city.alias} ${city.canonical}`).includes("ypane")
+      ),
+    });
 
     const visualProducts = productsFromVisualCatalog(allTraining);
     parsed.products = mergeProductsByPriority(visualProducts, parsed.products);
@@ -5219,6 +6448,18 @@ export default async function handler(req: any, res: any) {
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
     if (!oldOrder.phone) oldOrder.phone = senderPhoneFallback(fromNumber);
+
+    // V100: un chat nuevo o una sesión vencida jamás hereda producto,
+    // cantidad, ciudad ni datos de un chat anterior.
+    const resetBecauseNewChat =
+      context?.step !== "pedido_confirmado" &&
+      looksLikeNewChatSession(texto, context, history) &&
+      Boolean(oldOrder.product || oldOrder.city || oldOrder.quantity || oldOrder.customer_name || oldOrder.address);
+
+    if (resetBecauseNewChat) {
+      oldOrder = emptyOrder(makeOrderId(fromNumber));
+      oldOrder.phone = senderPhoneFallback(fromNumber);
+    }
 
     let forceFreshOrderFromConfirmedTemplate = false;
 
@@ -5410,7 +6651,7 @@ export default async function handler(req: any, res: any) {
     const lockedProductInitial = getLockedProductFromContext(context, oldOrder, history, parsed);
     const promoResponse = isRespondingToPromotion(texto, history);
 
-    let freshOrder = shouldStartFreshOrder({
+    let freshOrder = resetBecauseNewChat || shouldStartFreshOrder({
       texto,
       context,
       oldOrder,
@@ -5450,6 +6691,11 @@ export default async function handler(req: any, res: any) {
 
     if (freshOrder) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
+      oldOrder.phone = senderPhoneFallback(fromNumber);
+      // Toda venta nueva debe volver a definir la cantidad.
+      // La única excepción es un pack fijo real detectado más adelante.
+      oldOrder.quantity = 0;
+      oldOrder.locked_offer = null;
     }
 
     const currentTemplateLockedOfferRaw = templatePricing?.product
@@ -5489,6 +6735,20 @@ export default async function handler(req: any, res: any) {
     }
 
     let product = detectProduct(texto, parsed, productToUse);
+
+    // V100: una intención explícita de compra inicia una venta nueva aunque sea
+    // el mismo producto de un chat anterior. La cantidad debe preguntarse otra vez,
+    // salvo que la plantilla actual sea un pack fijo.
+    const explicitNewSaleNow = Boolean(
+      productFromMessageInitial &&
+      hasExplicitProductInterestPhrase(texto)
+    );
+
+    if (explicitNewSaleNow && !currentTemplateLockedOffer?.fixed_quantity) {
+      oldOrder.quantity = 0;
+      oldOrder.locked_offer = null;
+      lockedOfferByContext = null;
+    }
 
     // V65: nunca permitir que títulos comerciales reemplacen el producto.
     // Se prioriza el producto canónico previamente válido o el detectado en el mensaje.
@@ -5759,32 +7019,55 @@ export default async function handler(req: any, res: any) {
       effectiveDetectedCity = historyRecoveredCity;
     }
 
-    const detectedName = extractName(
-      texto,
-      effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
-      phone,
-      parsed
-    );
+    // V98: cada extractor está aislado. Un dato difícil de interpretar no debe
+    // derribar todo el turno ni devolver “No pude procesar...”.
+    let detectedName = "";
+    try {
+      detectedName = extractName(
+        texto,
+        effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
+        phone,
+        parsed
+      );
+    } catch (error) {
+      console.error("⚠️ extractName falló; se continúa sin nombre:", error);
+    }
 
-    const historyRecoveredName =
-      !oldOrder.customer_name
-        ? recoverRecentValidNameFromHistory(
-            history,
-            effectiveDetectedCity || oldOrder.city || "",
-            phone || oldOrder.phone || "",
-            parsed
-          )
-        : "";
+    let historyRecoveredName = "";
+    try {
+      historyRecoveredName =
+        !oldOrder.customer_name
+          ? recoverRecentValidNameFromHistory(
+              history,
+              effectiveDetectedCity || oldOrder.city || "",
+              phone || oldOrder.phone || "",
+              parsed
+            )
+          : "";
+    } catch (error) {
+      console.error("⚠️ recoverRecentValidNameFromHistory falló:", error);
+    }
 
     const name = detectedName || historyRecoveredName;
 
-    const address = extractAddress(
-      texto,
-      effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
-      phone,
-      name
-    );
-    const observationPatch = extractOrderObservation(texto);
+    let address = "";
+    try {
+      address = extractAddress(
+        texto,
+        effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
+        phone,
+        name
+      );
+    } catch (error) {
+      console.error("⚠️ extractAddress falló; se continúa sin dirección:", error);
+    }
+
+    let observationPatch: Partial<OrderData> = {};
+    try {
+      observationPatch = extractOrderObservation(texto);
+    } catch (error) {
+      console.error("⚠️ extractOrderObservation falló:", error);
+    }
 
     if (isDeliveryTimingQuestion(texto) && oldOrder.product) {
       return res.json({
@@ -5793,7 +7076,11 @@ export default async function handler(req: any, res: any) {
           ...(context || {}),
           order_data: oldOrder,
           order_id: oldOrder.order_id || null,
-          step: nextStep(oldOrder, oldOrder.city ? hasCoverage(oldOrder.city, parsed) : null),
+          step: nextStep(
+            oldOrder,
+            oldOrder.city ? hasCoverage(oldOrder.city, parsed) : null,
+            isAddressOptionalByTraining(parsed, oldOrder.city ? hasCoverage(oldOrder.city, parsed) : null)
+          ),
           updated_at: new Date().toISOString(),
         },
         debug: { delivery_timing_question_without_state_reset: true },
@@ -5815,6 +7102,12 @@ export default async function handler(req: any, res: any) {
       },
       product
     );
+
+    // V101: "quiero", "me interesa", "sí", "dale" expresan intención,
+    // nunca cantidad. La cantidad anterior tampoco se reutiliza para una venta nueva.
+    if (isGenericBuyReply(texto) && explicitQty <= 0 && !orderData.locked_offer?.fixed_quantity) {
+      orderData.quantity = 0;
+    }
 
     if (!orderData.city && oldOrder.city && qty > 0) {
       orderData.city = oldOrder.city;
@@ -5850,14 +7143,22 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = orderData.locked_offer.quantity;
     }
 
-    if (
-      orderData.locked_offer &&
-      !orderData.locked_offer.fixed_quantity &&
-      orderData.quantity === 0 &&
-      !hasExplicitQuantity(texto) &&
-      context?.force_offer_quantity === true
-    ) {
-      orderData.quantity = orderData.locked_offer.quantity;
+    // V103: una promoción variable no define cantidad.
+    // Reiniciamos la cantidad únicamente cuando:
+    // - el cliente recién expresa intención de compra, o
+    // - acaba de enviar/confirmar la ciudad,
+    // siempre que el mismo mensaje no contenga una cantidad explícita.
+    const mustCollectQuantityNow =
+      explicitQty <= 0 &&
+      !orderData.locked_offer?.fixed_quantity &&
+      (
+        isGenericBuyReply(texto) ||
+        cityWasCapturedNow ||
+        (isCityStep && Boolean(effectiveDetectedCity))
+      );
+
+    if (mustCollectQuantityNow) {
+      orderData.quantity = 0;
     }
 
     if (orderData.locked_offer && explicitQty > 0 && explicitQty !== orderData.locked_offer.quantity) {
@@ -5877,13 +7178,343 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    // V103: defensa final. Si la ciudad se acaba de capturar y el cliente
+    // no indicó cantidad en ese mismo mensaje, el siguiente paso debe ser cantidad.
+    if (
+      cityWasCapturedNow &&
+      explicitQty <= 0 &&
+      !orderData.locked_offer?.fixed_quantity
+    ) {
+      orderData.quantity = 0;
+    }
+
+    // V104: la cantidad elegida por el cliente es la fuente de verdad.
+    // Una oferta vieja de 1 unidad nunca puede reemplazar una cantidad 2.
+    if (explicitQty > 0) {
+      orderData.quantity = explicitQty;
+
+      if (productInfo) {
+        const exactTemplateOfferRaw = getTemplateOfferForQuantity(
+          templatePricing,
+          productInfo.canonical,
+          explicitQty
+        );
+        const exactTemplateOffer = isPlausibleOfferForProduct(
+          exactTemplateOfferRaw,
+          productInfo
+        )
+          ? exactTemplateOfferRaw
+          : null;
+        const exactCatalogOffer = getCatalogOffer(productInfo, explicitQty);
+        const exactFixedCatalogOffer = getCatalogFixedPackOffer(productInfo);
+
+        orderData.locked_offer =
+          exactTemplateOffer ||
+          (
+            exactFixedCatalogOffer &&
+            sanitizeQuantity(exactFixedCatalogOffer.quantity) === sanitizeQuantity(explicitQty)
+              ? exactFixedCatalogOffer
+              : null
+          ) ||
+          exactCatalogOffer ||
+          null;
+      }
+    }
+
+    // Si la cantidad ya estaba guardada de un turno anterior, la oferta debe
+    // coincidir con ella. De lo contrario se descarta y se recalcula.
+    if (
+      orderData.quantity > 0 &&
+      orderData.locked_offer &&
+      sanitizeQuantity(orderData.locked_offer.quantity) !== sanitizeQuantity(orderData.quantity)
+    ) {
+      orderData.locked_offer = null;
+    }
+
+    if (
+      orderData.quantity > 0 &&
+      !orderData.locked_offer &&
+      productInfo
+    ) {
+      const persistedTemplateOfferRaw = getTemplateOfferForQuantity(
+        templatePricing,
+        productInfo.canonical,
+        orderData.quantity
+      );
+      const persistedTemplateOffer = isPlausibleOfferForProduct(
+        persistedTemplateOfferRaw,
+        productInfo
+      )
+        ? persistedTemplateOfferRaw
+        : null;
+      const persistedCatalogOffer = getCatalogOffer(productInfo, orderData.quantity);
+
+      orderData.locked_offer =
+        persistedTemplateOffer ||
+        persistedCatalogOffer ||
+        null;
+    }
+
+    // V110: ninguna ciudad puede quedar guardada como nombre del cliente.
+    if (
+      orderData.customer_name &&
+      isInvalidCustomerNameForOrder(orderData.customer_name, orderData.city, parsed)
+    ) {
+      orderData.customer_name = "";
+    }
+
     const proofReceived = hasPaymentProof(context, texto, media_url, media_type || mime_type);
-    if (proofReceived) {
+    const currentCoverageForProof = orderData.city ? hasCoverage(orderData.city, parsed) : null;
+    const expectedPaymentAmount =
+      orderData.product && orderData.quantity
+        ? calculateTotal(orderData.product, orderData.quantity, parsed, orderData.locked_offer)
+        : 0;
+
+    if (proofReceived && currentCoverageForProof === false) {
       orderData.payment_proof_received = true;
+      orderData.payment_proof_verified = false;
+      orderData.payment_holder_name = "";
+      orderData.payment_amount = 0;
+      orderData.payment_operation_number = "";
+      orderData.payment_status_text = "";
+      orderData.payment_verification_error = "";
+      orderData.payment_recipient_name = "";
+      orderData.payment_recipient_document = "";
+      orderData.payment_recipient_account = "";
+      orderData.payment_recipient_alias = "";
+      orderData.payment_recipient_bank = "";
+      orderData.payment_recipient_matched = false;
+      orderData.payment_proof_mime = "";
+      orderData.payment_manual_review_required = false;
+      orderData.payment_manual_review_reason = "";
+
+      const fetchedProof = await fetchMediaAsBase64(clean(media_url));
+
+      if (!fetchedProof) {
+        orderData.payment_verification_error = "No pude descargar o leer el archivo enviado.";
+      } else if (!expectedPaymentAmount) {
+        orderData.payment_verification_error =
+          "Todavía no se pudo calcular el total del pedido para comparar el comprobante.";
+      } else if (!parsed.bankData) {
+        orderData.payment_verification_error =
+          "No hay datos bancarios configurados para validar el destinatario del pago.";
+      } else {
+        const resolvedProofMime =
+          clean(mime_type) ||
+          clean(fetchedProof.mime) ||
+          (/\.pdf(?:\?|$)/i.test(clean(media_url)) ? "application/pdf" : "image/jpeg");
+        const isPdfProof = resolvedProofMime.toLowerCase().includes("pdf");
+
+        const proofAnalysis = await analyzePaymentProofWithGemini({
+          apiKey,
+          model,
+          mediaBase64: fetchedProof.data,
+          mime: resolvedProofMime,
+          expectedAmount: expectedPaymentAmount,
+          bankData: parsed.bankData,
+        });
+
+        orderData.payment_proof_mime = resolvedProofMime;
+        orderData.payment_holder_name = proofAnalysis.holder_name;
+        orderData.payment_amount = proofAnalysis.amount;
+        orderData.payment_operation_number = proofAnalysis.operation_number;
+        orderData.payment_status_text = proofAnalysis.status_text;
+        orderData.payment_recipient_name = proofAnalysis.recipient_name;
+        orderData.payment_recipient_document = proofAnalysis.recipient_document;
+        orderData.payment_recipient_account = proofAnalysis.recipient_account;
+        orderData.payment_recipient_alias = proofAnalysis.recipient_alias;
+        orderData.payment_recipient_bank = proofAnalysis.recipient_bank;
+
+        const hasPayerName =
+          clean(proofAnalysis.holder_name).split(/\s+/).filter(Boolean).length >= 2;
+        const amountCoversOrder = proofAnalysis.amount >= expectedPaymentAmount;
+        const recipientMatches = paymentRecipientMatchesBankData(
+          proofAnalysis,
+          parsed.bankData
+        );
+        const transferIsPending =
+          !isPdfProof &&
+          isPendingTransferStatus(proofAnalysis.status_text);
+
+        const statusIsFinal =
+          isPdfProof ||
+          proofAnalysis.successful;
+
+        const basePaymentDataValid = Boolean(
+          proofAnalysis.readable &&
+          hasPayerName &&
+          proofAnalysis.amount > 0 &&
+          amountCoversOrder &&
+          recipientMatches
+        );
+
+        orderData.payment_manual_review_required = Boolean(
+          basePaymentDataValid &&
+          transferIsPending
+        );
+
+        orderData.payment_manual_review_reason =
+          orderData.payment_manual_review_required
+            ? "Transferencia pendiente de acreditación. Verificar manualmente."
+            : "";
+
+        orderData.payment_recipient_matched = recipientMatches;
+        orderData.payment_proof_verified = Boolean(
+          basePaymentDataValid &&
+          (
+            statusIsFinal ||
+            orderData.payment_manual_review_required
+          )
+        );
+
+        if (
+          orderData.payment_proof_verified &&
+          hasPayerName &&
+          (
+            !clean(orderData.customer_name) ||
+            isInvalidCustomerNameForOrder(
+              orderData.customer_name,
+              orderData.city,
+              parsed
+            )
+          )
+        ) {
+          orderData.customer_name = toTitleCase(proofAnalysis.holder_name);
+        }
+
+        if (!orderData.payment_proof_verified) {
+          const reasons: string[] = [];
+
+          if (!proofAnalysis.readable) {
+            reasons.push(
+              isPdfProof
+                ? "no se pudieron leer claramente los datos obligatorios del PDF"
+                : "el comprobante no se ve con suficiente claridad"
+            );
+          }
+
+          if (
+            !isPdfProof &&
+            !proofAnalysis.successful &&
+            !transferIsPending
+          ) {
+            reasons.push("la imagen no muestra claramente una transferencia exitosa o aprobada");
+          }
+
+          if (!hasPayerName) {
+            reasons.push("no se pudo detectar el titular de la cuenta debitada");
+          }
+
+          if (!recipientMatches) {
+            reasons.push("el destinatario no coincide con los datos bancarios configurados");
+          }
+
+          if (!proofAnalysis.amount) {
+            reasons.push("no se pudo detectar el monto");
+          } else if (!amountCoversOrder) {
+            const difference = expectedPaymentAmount - proofAnalysis.amount;
+            reasons.push(
+              `el monto detectado (${formatGs(proofAnalysis.amount)} Gs) es menor al total del pedido (${formatGs(expectedPaymentAmount)} Gs). Falta completar ${formatGs(difference)} Gs`
+            );
+          }
+
+          orderData.payment_verification_error =
+            reasons.length
+              ? `No se pudo verificar porque ${reasons.join(", ")}.`
+              : (proofAnalysis.error || "No se pudieron verificar todos los datos obligatorios.");
+        } else {
+          const overpayment = Math.max(0, proofAnalysis.amount - expectedPaymentAmount);
+          const recipientLabel =
+            proofAnalysis.recipient_name ||
+            parsed.bankData.titular ||
+            "destinatario configurado";
+
+          orderData.payment_note = mergeUniqueText(
+            orderData.payment_note,
+            `${
+              orderData.payment_manual_review_required
+                ? "Pago anticipado recibido. Requiere verificación manual."
+                : "Pago anticipado verificado."
+            } Pagador: ${orderData.payment_holder_name}. Destinatario: ${recipientLabel}. Monto: ${formatGs(orderData.payment_amount)} Gs.${overpayment > 0 ? ` Diferencia a favor: ${formatGs(overpayment)} Gs.` : ""}${orderData.payment_operation_number ? ` Operación: ${orderData.payment_operation_number}.` : ""}`
+          );
+        }
+      }
+    } else if (preserveVerifiedPaymentForSameOrder(oldOrder, orderData)) {
+      orderData.payment_proof_received = true;
+      orderData.payment_proof_verified = true;
+      orderData.payment_holder_name = clean(oldOrder.payment_holder_name);
+      orderData.payment_amount = Number(oldOrder.payment_amount || 0);
+      orderData.payment_operation_number = clean(oldOrder.payment_operation_number);
+      orderData.payment_status_text = clean(oldOrder.payment_status_text);
+      orderData.payment_verification_error = "";
+      orderData.payment_recipient_name = clean(oldOrder.payment_recipient_name);
+      orderData.payment_recipient_document = clean(oldOrder.payment_recipient_document);
+      orderData.payment_recipient_account = clean(oldOrder.payment_recipient_account);
+      orderData.payment_recipient_alias = clean(oldOrder.payment_recipient_alias);
+      orderData.payment_recipient_bank = clean(oldOrder.payment_recipient_bank);
+      orderData.payment_recipient_matched = !!oldOrder.payment_recipient_matched;
+      orderData.payment_proof_mime = clean(oldOrder.payment_proof_mime);
+      orderData.payment_manual_review_required = !!oldOrder.payment_manual_review_required;
+      orderData.payment_manual_review_reason = clean(oldOrder.payment_manual_review_reason);
+
+      if (
+        clean(orderData.payment_holder_name) &&
+        (
+          !clean(orderData.customer_name) ||
+          isInvalidCustomerNameForOrder(
+            orderData.customer_name,
+            orderData.city,
+            parsed
+          )
+        )
+      ) {
+        orderData.customer_name = toTitleCase(orderData.payment_holder_name);
+      }
     } else if (isSameOrderForPaymentProof(oldOrder, orderData)) {
       orderData.payment_proof_received = true;
+      orderData.payment_proof_verified = false;
+      orderData.payment_holder_name = clean(oldOrder.payment_holder_name);
+      orderData.payment_amount = Number(oldOrder.payment_amount || 0);
+      orderData.payment_operation_number = clean(oldOrder.payment_operation_number);
+      orderData.payment_status_text = clean(oldOrder.payment_status_text);
+      orderData.payment_verification_error = clean(oldOrder.payment_verification_error);
+      orderData.payment_recipient_name = clean(oldOrder.payment_recipient_name);
+      orderData.payment_recipient_document = clean(oldOrder.payment_recipient_document);
+      orderData.payment_recipient_account = clean(oldOrder.payment_recipient_account);
+      orderData.payment_recipient_alias = clean(oldOrder.payment_recipient_alias);
+      orderData.payment_recipient_bank = clean(oldOrder.payment_recipient_bank);
+      orderData.payment_recipient_matched = !!oldOrder.payment_recipient_matched;
+      orderData.payment_proof_mime = clean(oldOrder.payment_proof_mime);
+      orderData.payment_manual_review_required = !!oldOrder.payment_manual_review_required;
+      orderData.payment_manual_review_reason = clean(oldOrder.payment_manual_review_reason);
     } else {
       orderData.payment_proof_received = false;
+      orderData.payment_proof_verified = false;
+      orderData.payment_holder_name = "";
+      orderData.payment_amount = 0;
+      orderData.payment_operation_number = "";
+      orderData.payment_status_text = "";
+      orderData.payment_verification_error = "";
+      orderData.payment_recipient_name = "";
+      orderData.payment_recipient_document = "";
+      orderData.payment_recipient_account = "";
+      orderData.payment_recipient_alias = "";
+      orderData.payment_recipient_bank = "";
+      orderData.payment_recipient_matched = false;
+      orderData.payment_proof_mime = "";
+      orderData.payment_manual_review_required = false;
+      orderData.payment_manual_review_reason = "";
+    }
+
+    // V110: defensa final antes de confirmar.
+    if (
+      orderData.customer_name &&
+      isInvalidCustomerNameForOrder(orderData.customer_name, orderData.city, parsed)
+    ) {
+      orderData.customer_name =
+        orderData.payment_proof_verified && clean(orderData.payment_holder_name)
+          ? toTitleCase(orderData.payment_holder_name)
+          : "";
     }
 
     if (orderData.locked_offer && orderData.locked_offer.total < 10000) {
@@ -5900,6 +7531,18 @@ export default async function handler(req: any, res: any) {
     // Un número explícito del cliente siempre tiene prioridad.
     if (!orderData.phone) {
       orderData.phone = senderPhoneFallback(fromNumber);
+    }
+
+    // V106: restaurar siempre la oferta del pack fijo antes de calcular el estado.
+    const productBeforeState = getProductInfo(orderData.product, parsed);
+    if (
+      productBeforeState?.fixedPackQuantity &&
+      sanitizeQuantity(orderData.quantity) === sanitizeQuantity(productBeforeState.fixedPackQuantity)
+    ) {
+      const fixedBeforeState = getCatalogFixedPackOffer(productBeforeState);
+      if (fixedBeforeState) {
+        orderData.locked_offer = fixedBeforeState;
+      }
     }
 
     const state = buildState(orderData, parsed);
@@ -5944,7 +7587,7 @@ export default async function handler(req: any, res: any) {
       confirm = false;
     }
 
-    if (finalState.coverage === false && !orderData.payment_proof_received) {
+    if (finalState.coverage === false && !orderData.payment_proof_verified) {
       directConfirm = false;
       confirm = false;
     }
@@ -5970,6 +7613,7 @@ export default async function handler(req: any, res: any) {
             order_id: orderData.order_id || null,
             payment_proof_received: false,
             step: finalState.step,
+            address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
           },
           debug: {
@@ -6032,6 +7676,19 @@ export default async function handler(req: any, res: any) {
           order_data: orderData,
           order_id: orderData.order_id || null,
           payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
+            payment_recipient_name: orderData.payment_recipient_name || null,
+            payment_recipient_document: orderData.payment_recipient_document || null,
+            payment_recipient_account: orderData.payment_recipient_account || null,
+            payment_recipient_alias: orderData.payment_recipient_alias || null,
+            payment_recipient_bank: orderData.payment_recipient_bank || null,
+            payment_recipient_matched: orderData.payment_recipient_matched || false,
+            payment_proof_mime: orderData.payment_proof_mime || null,
+            payment_manual_review_required: orderData.payment_manual_review_required || false,
+            payment_manual_review_reason: orderData.payment_manual_review_reason || null,
           step: "pedido_confirmado",
           updated_at: new Date().toISOString(),
         },
@@ -6102,7 +7759,21 @@ export default async function handler(req: any, res: any) {
             order_data: orderData,
             order_id: orderData.order_id || null,
             payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
+            payment_recipient_name: orderData.payment_recipient_name || null,
+            payment_recipient_document: orderData.payment_recipient_document || null,
+            payment_recipient_account: orderData.payment_recipient_account || null,
+            payment_recipient_alias: orderData.payment_recipient_alias || null,
+            payment_recipient_bank: orderData.payment_recipient_bank || null,
+            payment_recipient_matched: orderData.payment_recipient_matched || false,
+            payment_proof_mime: orderData.payment_proof_mime || null,
+            payment_manual_review_required: orderData.payment_manual_review_required || false,
+            payment_manual_review_reason: orderData.payment_manual_review_reason || null,
             step: finalState.step,
+            address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
           },
           debug: true
@@ -6126,6 +7797,13 @@ export default async function handler(req: any, res: any) {
       cityWasCapturedNow &&
       !orderData.locked_offer?.fixed_quantity
     ) {
+      // V103: la ciudad recién recibida siempre debe llevar a promociones + cantidad.
+      if (explicitQty <= 0) {
+        orderData.quantity = 0;
+        finalState.order.quantity = 0;
+        finalState.step = "collecting_quantity";
+        finalState.missing = Array.from(new Set(["cantidad", ...(finalState.missing || []).filter((x) => x !== "cantidad")]));
+      }
       const cityCoverageResponse = deterministicAfterCityCoverageMessage(finalState);
       if (cityCoverageResponse) {
         return res.json({
@@ -6139,7 +7817,21 @@ export default async function handler(req: any, res: any) {
             order_data: orderData,
             order_id: orderData.order_id || null,
             payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
+            payment_recipient_name: orderData.payment_recipient_name || null,
+            payment_recipient_document: orderData.payment_recipient_document || null,
+            payment_recipient_account: orderData.payment_recipient_account || null,
+            payment_recipient_alias: orderData.payment_recipient_alias || null,
+            payment_recipient_bank: orderData.payment_recipient_bank || null,
+            payment_recipient_matched: orderData.payment_recipient_matched || false,
+            payment_proof_mime: orderData.payment_proof_mime || null,
+            payment_manual_review_required: orderData.payment_manual_review_required || false,
+            payment_manual_review_reason: orderData.payment_manual_review_reason || null,
             step: finalState.step,
+            address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
           },
           debug: true
@@ -6172,6 +7864,7 @@ export default async function handler(req: any, res: any) {
             order_data: orderData,
             order_id: orderData.order_id || null,
             step: finalState.step,
+            address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
           },
           debug: true
@@ -6192,7 +7885,11 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const deterministicObservationResponse = deterministicObservationAckMessage(finalState, parsed, observationPatch);
+    const deterministicObservationResponse =
+      !isQuestionLikeMessage(texto)
+        ? deterministicObservationAckMessage(finalState, parsed, observationPatch)
+        : "";
+
     if (!confirm && deterministicObservationResponse) {
       return res.json({
         response: deterministicObservationResponse,
@@ -6204,7 +7901,21 @@ export default async function handler(req: any, res: any) {
           order_data: orderData,
           order_id: orderData.order_id || null,
           payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
+            payment_recipient_name: orderData.payment_recipient_name || null,
+            payment_recipient_document: orderData.payment_recipient_document || null,
+            payment_recipient_account: orderData.payment_recipient_account || null,
+            payment_recipient_alias: orderData.payment_recipient_alias || null,
+            payment_recipient_bank: orderData.payment_recipient_bank || null,
+            payment_recipient_matched: orderData.payment_recipient_matched || false,
+            payment_proof_mime: orderData.payment_proof_mime || null,
+            payment_manual_review_required: orderData.payment_manual_review_required || false,
+            payment_manual_review_reason: orderData.payment_manual_review_reason || null,
           step: finalState.step,
+          address_optional: finalState.addressOptional,
           updated_at: new Date().toISOString(),
         },
         debug: true
@@ -6256,7 +7967,21 @@ export default async function handler(req: any, res: any) {
             order_data: orderData,
             order_id: orderData.order_id || null,
             payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
+            payment_recipient_name: orderData.payment_recipient_name || null,
+            payment_recipient_document: orderData.payment_recipient_document || null,
+            payment_recipient_account: orderData.payment_recipient_account || null,
+            payment_recipient_alias: orderData.payment_recipient_alias || null,
+            payment_recipient_bank: orderData.payment_recipient_bank || null,
+            payment_recipient_matched: orderData.payment_recipient_matched || false,
+            payment_proof_mime: orderData.payment_proof_mime || null,
+            payment_manual_review_required: orderData.payment_manual_review_required || false,
+            payment_manual_review_reason: orderData.payment_manual_review_reason || null,
             step: finalState.step,
+            address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
           },
           debug: true
@@ -6309,7 +8034,21 @@ export default async function handler(req: any, res: any) {
           order_data: orderData,
           order_id: orderData.order_id || null,
           payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
+            payment_recipient_name: orderData.payment_recipient_name || null,
+            payment_recipient_document: orderData.payment_recipient_document || null,
+            payment_recipient_account: orderData.payment_recipient_account || null,
+            payment_recipient_alias: orderData.payment_recipient_alias || null,
+            payment_recipient_bank: orderData.payment_recipient_bank || null,
+            payment_recipient_matched: orderData.payment_recipient_matched || false,
+            payment_proof_mime: orderData.payment_proof_mime || null,
+            payment_manual_review_required: orderData.payment_manual_review_required || false,
+            payment_manual_review_reason: orderData.payment_manual_review_reason || null,
           step: finalState.step,
+          address_optional: finalState.addressOptional,
           updated_at: new Date().toISOString(),
         },
         debug: true
@@ -6348,14 +8087,19 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       parts: [{ text: userPayload }],
     });
 
-    let aiResponse = await callGemini({
-      apiKey,
-      model,
-      system,
-      contents,
-      temperature: iaConfig.temperature ?? 0.55,
-      maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
-    });
+    let aiResponse = "";
+    try {
+      aiResponse = await callGemini({
+        apiKey,
+        model,
+        system,
+        contents,
+        temperature: iaConfig.temperature ?? 0.55,
+        maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
+      });
+    } catch (error) {
+      console.error("⚠️ Gemini falló; se usa respuesta determinística:", error);
+    }
 
     if (!aiResponse || aiResponse === "__GEMINI_QUOTA_EXCEEDED__") {
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
@@ -6370,6 +8114,9 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     if (deterministicAcknowledgementResponse) {
       aiResponse = deterministicAcknowledgementResponse;
     }
+
+    // V97: protege cobertura y evita presentar el total del producto como costo del envío.
+    aiResponse = sanitizeCoverageAndShippingResponse(aiResponse, finalState);
 
     let followUpResponse = "";
 
@@ -6429,6 +8176,7 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       debug: true
         ? {
             freshOrder,
+            reset_because_new_chat: resetBecauseNewChat,
             parsed_products: parsed.products.length,
             parsed_cities: parsed.cities.length,
             product: orderData.product,
@@ -6460,7 +8208,11 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     return res.status(200).json({
       response: isPayOnDeliveryRequest(safeMessage)
         ? "😊 Para indicarte correctamente la forma de pago, decime nuevamente tu ciudad. Si tu zona no tiene contra-entrega, el envío es por transportadora y el pago es anticipado."
-        : "😊 No pude procesar ese dato correctamente. Volvé a enviarlo, por favor.",
+        : safeOrder?.city
+          ? !clean(safeOrder?.customer_name)
+            ? "😊 Recibí tu mensaje. Para continuar, pasame tu nombre y apellido."
+            : "😊 Recibí tu mensaje. Ya tengo los datos principales del pedido; podés enviar la ubicación después o pasarla directamente al delivery."
+          : "😊 Recibí tu mensaje. Indicame primero tu ciudad para confirmar la modalidad de entrega. 📍",
       context: {
         ...safeContext,
         order_data: safeOrder,
