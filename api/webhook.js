@@ -1,4 +1,4 @@
-// api/webhook.js — V95: precio real, contexto por historial y nombre protegido
+// api/webhook.js — V96: pregunta automática de ciudad con variantes amables
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + ✅ V73: imagen, copy y consulta amable de ciudad se envían como mensajes independientes
 // + ✅ V93: CDE normalizado y objeciones de pago sin errores
@@ -33,8 +33,50 @@ const normalize = (t) =>
     .replace(/[\u0300-\u036f]/g, "");
 
 
-const CITY_QUESTION_FRIENDLY =
-  "😊 Para confirmar la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
+const CITY_QUESTIONS_FRIENDLY = [
+  "😊 ¿Para qué ciudad querés que preparemos el envío? 📦📍",
+  "📍 Para verificar la cobertura, ¿me indicás de qué ciudad sos? 😊",
+  "🚚✨ ¿A qué ciudad te gustaría que enviemos tu pedido?",
+  "😊 ¿En qué ciudad recibirías tu pedido? 📍",
+  "📦 Para calcular la modalidad de entrega, ¿de qué ciudad sos? 😊",
+  "¡Con gusto! 😊 ¿Para qué ciudad sería el envío? 🚚",
+  "📍 ¿Me indicás tu ciudad para verificar la entrega? 😊",
+  "😊 ¿A qué ciudad debemos enviar tu pedido? 📦",
+  "🚚 Para continuar con tu pedido, ¿en qué ciudad te encontrás? 📍",
+  "¡Excelente elección! 😍 ¿Para qué ciudad querés el envío? 🚚📍",
+];
+
+const CITY_QUESTION_FRIENDLY = CITY_QUESTIONS_FRIENDLY[0];
+
+// Evita repetir inmediatamente la misma variante a un mismo cliente.
+const lastCityQuestionIndex = new Map();
+
+function buildFriendlyCityQuestion(userId = "", from = "") {
+  const key = `${userId}:${from}`;
+  const previousIndex = Number(lastCityQuestionIndex.get(key) ?? -1);
+
+  let availableIndexes = CITY_QUESTIONS_FRIENDLY
+    .map((_, index) => index)
+    .filter((index) => index !== previousIndex);
+
+  if (availableIndexes.length === 0) {
+    availableIndexes = [0];
+  }
+
+  const selectedIndex =
+    availableIndexes[Math.floor(Math.random() * availableIndexes.length)];
+
+  lastCityQuestionIndex.set(key, selectedIndex);
+
+  // Limpia el registro más adelante para no acumular claves indefinidamente.
+  setTimeout(() => {
+    if (lastCityQuestionIndex.get(key) === selectedIndex) {
+      lastCityQuestionIndex.delete(key);
+    }
+  }, 6 * 60 * 60 * 1000);
+
+  return CITY_QUESTIONS_FRIENDLY[selectedIndex];
+}
 
 const cityQuestionLocks = new Map();
 
@@ -79,7 +121,7 @@ function separarPreguntaCiudad(texto) {
     const mainText = clean(original.replace(pattern, ""));
     return {
       mainText,
-      cityQuestion: CITY_QUESTION_FRIENDLY,
+      cityQuestion: buildFriendlyCityQuestion(),
       separated: true,
     };
   }
@@ -104,7 +146,7 @@ function separarPreguntaCiudad(texto) {
 
     return {
       mainText: incompletePrefix ? "" : mainText,
-      cityQuestion: CITY_QUESTION_FRIENDLY,
+      cityQuestion: buildFriendlyCityQuestion(),
       separated: true,
     };
   }
@@ -726,7 +768,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
       })
     )
   ) {
-    preguntaCiudadSeparada = CITY_QUESTION_FRIENDLY;
+    preguntaCiudadSeparada = buildFriendlyCityQuestion(userId, from);
   }
   
   let firstImage = null;
