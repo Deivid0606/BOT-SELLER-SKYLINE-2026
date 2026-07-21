@@ -1,8 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V112 - Mega Todo Store / One Store
- * \n * V112: cobertura 100% dinámica y aislada desde el entrenamiento de zonas; corrige Ypané y variantes.\n * V111: normaliza ciudad + departamento/país, protege cobertura y bloquea frases de pago como nombre.
+ * CHAT IA VENDEDOR AUTÓNOMO V113 - Mega Todo Store / One Store
+ * \n * V113: evita cobertura vacía: conserva ciudades detectadas y agrega fallback seguro si la tarjeta no se clasifica.\n * V112: cobertura 100% dinámica y aislada desde el entrenamiento de zonas; corrige Ypané y variantes.\n * V111: normaliza ciudad + departamento/país, protege cobertura y bloquea frases de pago como nombre.
  * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
  * V109: impide usar ciudades como nombre del cliente.
  * V108: valida destinatario bancario, usa el pagador como cliente y admite PDF sin texto de estado.
@@ -370,13 +370,29 @@ function classifyTrainingItem(item: any): "general" | "coverage" | "banking" {
 
   if (bankingByTitle || bankingByStructure) return "banking";
 
-  const coverageByTitle =
-    /\b(zona|zonas|ciudad|ciudades)\b/.test(intent) &&
-    /\bcobertura\b/.test(intent);
-  const coverageByHeader =
-    /\b(zonas? con cobertura|zonas? de cobertura|lista completa por ciudad)\b/.test(body);
+  const coverageText = `${intent}\n${body}`;
 
-  if (coverageByTitle || coverageByHeader) return "coverage";
+  const coverageByTitle =
+    /\b(zona|zonas|ciudad|ciudades|localidad|localidades)\b/.test(intent) &&
+    /\b(cobertura|contra entrega|delivery|envio)\b/.test(intent);
+
+  const coverageByHeader =
+    /\b(zonas? con cobertura|zonas? sin cobertura|zonas? de cobertura|lista completa por ciudad|envio gratis contra entrega|contra entrega)\b/.test(
+      coverageText
+    );
+
+  // También reconoce tarjetas cuyo título es genérico pero cuyo contenido
+  // contiene una lista de ciudades marcada con 📍/✅.
+  const coverageByCityStructure =
+    /\b(cobertura|contra entrega|transportadora)\b/.test(coverageText) &&
+    (
+      /📍\s*[a-záéíóúñ]/i.test(getTrainingBody(item)) ||
+      /✅\s*[a-záéíóúñ]/i.test(getTrainingBody(item))
+    );
+
+  if (coverageByTitle || coverageByHeader || coverageByCityStructure) {
+    return "coverage";
+  }
 
   // Todo registro activo que no sea banco ni cobertura se considera una regla
   // general. Así el usuario puede tener 1, 3, 10 o más entrenamientos separados.
@@ -6106,14 +6122,36 @@ export default async function handler(req: any, res: any) {
     // Cada registro queda clasificado como reglas generales, cobertura o banco.
     const trainingSections = buildTrainingSections(allTraining);
 
-    // Productos, catálogo y banco se pueden leer del conjunto combinado.
+    // Productos, catálogo, banco y una primera lectura defensiva de ciudades.
     const parsed = parseTraining(trainingSections.combined);
+    const combinedCities = parsed.cities.slice();
 
-    // La cobertura se lee EXCLUSIVAMENTE desde los entrenamientos clasificados
-    // como cobertura. Así, una frase comercial como "sin cobertura se paga..."
-    // dentro de las reglas generales nunca puede marcar una ciudad como no cubierta.
+    // Fuente principal: entrenamientos clasificados como cobertura.
     const parsedCoverage = parseTraining(trainingSections.coverage);
-    parsed.cities = parsedCoverage.cities;
+
+    if (parsedCoverage.cities.length > 0) {
+      parsed.cities = parsedCoverage.cities;
+    } else if (combinedCities.length > 0) {
+      // Fallback seguro: nunca reemplazar una lista válida por [].
+      // Este era el motivo por el que TODAS las ciudades quedaban sin cobertura:
+      // hasCoverage() devuelve false cuando parsed.cities está vacío.
+      parsed.cities = combinedCities;
+
+      console.warn("⚠️ La sección aislada de cobertura no produjo ciudades; se conserva la lectura combinada.", {
+        coverageItems: trainingSections.coverageItems,
+        coverageTextLength: trainingSections.coverage.length,
+        combinedCities: combinedCities.length,
+      });
+    } else {
+      parsed.cities = [];
+
+      console.error("❌ No se detectó ninguna ciudad en los entrenamientos activos.", {
+        totalItems: trainingSections.totalItems,
+        coverageItems: trainingSections.coverageItems,
+        coverageTextLength: trainingSections.coverage.length,
+        combinedTextLength: trainingSections.combined.length,
+      });
+    }
 
     parsed.generalTraining = trainingSections.general;
     parsed.coverageTraining = trainingSections.coverage;
@@ -6133,7 +6171,15 @@ export default async function handler(req: any, res: any) {
       bancarios: parsed.trainingStats.bankingItems,
       ciudadesDetectadas: parsed.cities.length,
       bancoDetectado: Boolean(parsed.bankData),
+      fuenteCobertura:
+        parsedCoverage.cities.length > 0
+          ? "coverageTraining"
+          : combinedCities.length > 0
+            ? "combinedFallback"
+            : "sin_ciudades",
+      pruebaCoberturaAsuncion: hasCoverage("Asunción", parsed),
       pruebaCoberturaYpane: hasCoverage("ypane", parsed),
+      primerasCiudades: parsed.cities.slice(0, 12),
       coincidenciasYpane: parsed.cities.filter((city) =>
         normalize(`${city.alias} ${city.canonical}`).includes("ypane")
       ),
