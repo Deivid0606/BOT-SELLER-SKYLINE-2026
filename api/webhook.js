@@ -1,4 +1,4 @@
-// api/webhook.js — V96: pregunta automática de ciudad con variantes amables
+// api/webhook.js — V97: pregunta de ciudad por WAHA/QR o Meta con variantes
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + ✅ V73: imagen, copy y consulta amable de ciudad se envían como mensajes independientes
 // + ✅ V93: CDE normalizado y objeciones de pago sin errores
@@ -172,6 +172,82 @@ async function enviarYGuardarTexto(userId, from, text, messageType = "out_text")
 }
 
 /**
+ * Envía texto por el mismo endpoint multicanal usado por las plantillas.
+ * Esto permite que funcione tanto con WAHA/QR como con Meta Cloud API.
+ * Si el endpoint multicanal falla, intenta enviar directamente por Meta.
+ */
+async function enviarTextoMulticanalYGuardar(
+  userId,
+  from,
+  text,
+  messageType = "out_text"
+) {
+  const msg = clean(text);
+  if (!msg) return false;
+
+  const baseUrl =
+    clean(process.env.PUBLIC_APP_URL) ||
+    clean(process.env.NEXT_PUBLIC_APP_URL) ||
+    "https://bot-seller-skyline-2026.vercel.app";
+
+  let sent = false;
+
+  try {
+    const response = await fetch(`${baseUrl}/api/send-whatsapp`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        to: from,
+        userId,
+        user_id: userId,
+        message: msg,
+        media_url: null,
+        media_type: null,
+        buttons: null,
+      }),
+    });
+
+    const responseText = await response.text();
+
+    if (response.ok) {
+      sent = true;
+      console.log("✅ Texto enviado por canal multicanal/WAHA:", msg);
+    } else {
+      console.log(
+        "⚠️ Falló envío multicanal; se intenta Meta:",
+        response.status,
+        responseText
+      );
+    }
+  } catch (error) {
+    console.log(
+      "⚠️ Error en envío multicanal; se intenta Meta:",
+      error?.message || error
+    );
+  }
+
+  if (!sent) {
+    sent = await enviarMensaje(userId, from, msg);
+  }
+
+  if (!sent) {
+    console.error("❌ No se pudo enviar el texto por WAHA ni por Meta:", msg);
+    return false;
+  }
+
+  await saveReceivedMessage({
+    userId,
+    from,
+    message: msg,
+    messageType,
+  });
+
+  return true;
+}
+
+/**
  * Envía la respuesta principal y, cuando corresponde, la pregunta de ciudad
  * en un segundo mensaje independiente.
  */
@@ -189,7 +265,7 @@ async function enviarRespuestaSeparada(userId, from, text, options = {}) {
 
   if (cityQuestion && acquireCityQuestionLock(userId, from)) {
     if (mainText && delayMs > 0) await sleep(delayMs);
-    sentAny = (await enviarYGuardarTexto(userId, from, cityQuestion, "out_text")) || sentAny;
+    sentAny = (await enviarTextoMulticanalYGuardar(userId, from, cityQuestion, "out_text")) || sentAny;
   }
 
   // Si el mensaje era solamente una pregunta de ciudad que no coincidió
@@ -905,7 +981,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
 
     if (preguntaCiudadSeparada && acquireCityQuestionLock(userId, from)) {
       await sleep(900);
-      await enviarYGuardarTexto(userId, from, preguntaCiudadSeparada, "out_text");
+      await enviarTextoMulticanalYGuardar(userId, from, preguntaCiudadSeparada, "out_text");
     }
 
     if (plantilla?.id) {
@@ -949,7 +1025,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
 
   if (preguntaCiudadSeparada && acquireCityQuestionLock(userId, from)) {
     if (mensajeFinal || imagenes.length > 0) await sleep(900);
-    await enviarYGuardarTexto(userId, from, preguntaCiudadSeparada, "out_text");
+    await enviarTextoMulticanalYGuardar(userId, from, preguntaCiudadSeparada, "out_text");
   }
 
   if (video) {
