@@ -1,4 +1,4 @@
-// api/webhook.js — V97: pregunta de ciudad por WAHA/QR o Meta con variantes
+// api/webhook.js — V98: pregunta de ciudad confirmada, variable y sin falsos positivos
 // WhatsApp Cloud API → Triggers → Gemini (texto + imagen + audio)
 // + ✅ V73: imagen, copy y consulta amable de ciudad se envían como mensajes independientes
 // + ✅ V93: CDE normalizado y objeciones de pago sin errores
@@ -38,45 +38,27 @@ const CITY_QUESTIONS_FRIENDLY = [
   "📍 Para verificar la cobertura, ¿me indicás de qué ciudad sos? 😊",
   "🚚✨ ¿A qué ciudad te gustaría que enviemos tu pedido?",
   "😊 ¿En qué ciudad recibirías tu pedido? 📍",
-  "📦 Para calcular la modalidad de entrega, ¿de qué ciudad sos? 😊",
   "¡Con gusto! 😊 ¿Para qué ciudad sería el envío? 🚚",
   "📍 ¿Me indicás tu ciudad para verificar la entrega? 😊",
   "😊 ¿A qué ciudad debemos enviar tu pedido? 📦",
   "🚚 Para continuar con tu pedido, ¿en qué ciudad te encontrás? 📍",
-  "¡Excelente elección! 😍 ¿Para qué ciudad querés el envío? 🚚📍",
 ];
 
-const CITY_QUESTION_FRIENDLY = CITY_QUESTIONS_FRIENDLY[0];
-
-// Evita repetir inmediatamente la misma variante a un mismo cliente.
 const lastCityQuestionIndex = new Map();
 
 function buildFriendlyCityQuestion(userId = "", from = "") {
   const key = `${userId}:${from}`;
-  const previousIndex = Number(lastCityQuestionIndex.get(key) ?? -1);
-
-  let availableIndexes = CITY_QUESTIONS_FRIENDLY
+  const previous = Number(lastCityQuestionIndex.get(key) ?? -1);
+  const choices = CITY_QUESTIONS_FRIENDLY
     .map((_, index) => index)
-    .filter((index) => index !== previousIndex);
+    .filter((index) => index !== previous);
 
-  if (availableIndexes.length === 0) {
-    availableIndexes = [0];
-  }
-
-  const selectedIndex =
-    availableIndexes[Math.floor(Math.random() * availableIndexes.length)];
-
-  lastCityQuestionIndex.set(key, selectedIndex);
-
-  // Limpia el registro más adelante para no acumular claves indefinidamente.
-  setTimeout(() => {
-    if (lastCityQuestionIndex.get(key) === selectedIndex) {
-      lastCityQuestionIndex.delete(key);
-    }
-  }, 6 * 60 * 60 * 1000);
-
-  return CITY_QUESTIONS_FRIENDLY[selectedIndex];
+  const selected = choices[Math.floor(Math.random() * choices.length)] ?? 0;
+  lastCityQuestionIndex.set(key, selected);
+  return CITY_QUESTIONS_FRIENDLY[selected];
 }
+
+const CITY_QUESTION_FRIENDLY = CITY_QUESTIONS_FRIENDLY[0];
 
 const cityQuestionLocks = new Map();
 
@@ -172,60 +154,44 @@ async function enviarYGuardarTexto(userId, from, text, messageType = "out_text")
 }
 
 /**
- * Envía texto por el mismo endpoint multicanal usado por las plantillas.
- * Esto permite que funcione tanto con WAHA/QR como con Meta Cloud API.
- * Si el endpoint multicanal falla, intenta enviar directamente por Meta.
+ * Envía un texto por /api/send-whatsapp y valida el JSON { ok: true }.
+ * Si el endpoint rechaza o falla, prueba directamente por Meta.
+ * Solo guarda el mensaje cuando existe confirmación real de envío.
  */
-async function enviarTextoMulticanalYGuardar(
-  userId,
-  from,
-  text,
-  messageType = "out_text"
-) {
+async function enviarTextoSeguroYGuardar(userId, from, text, messageType = "out_text") {
   const msg = clean(text);
   if (!msg) return false;
 
-  const baseUrl =
-    clean(process.env.PUBLIC_APP_URL) ||
-    clean(process.env.NEXT_PUBLIC_APP_URL) ||
-    "https://bot-seller-skyline-2026.vercel.app";
-
+  const baseUrl = "https://bot-seller-skyline-2026.vercel.app";
   let sent = false;
 
   try {
     const response = await fetch(`${baseUrl}/api/send-whatsapp`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         to: from,
         userId,
         user_id: userId,
         message: msg,
-        media_url: null,
-        media_type: null,
-        buttons: null,
       }),
     });
 
-    const responseText = await response.text();
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {}
 
-    if (response.ok) {
-      sent = true;
-      console.log("✅ Texto enviado por canal multicanal/WAHA:", msg);
-    } else {
-      console.log(
-        "⚠️ Falló envío multicanal; se intenta Meta:",
-        response.status,
-        responseText
-      );
+    sent = response.ok && data?.ok === true;
+
+    if (!sent) {
+      console.error("❌ send-whatsapp no confirmó el texto:", {
+        status: response.status,
+        data,
+      });
     }
   } catch (error) {
-    console.log(
-      "⚠️ Error en envío multicanal; se intenta Meta:",
-      error?.message || error
-    );
+    console.error("❌ Error llamando send-whatsapp:", error);
   }
 
   if (!sent) {
@@ -233,7 +199,7 @@ async function enviarTextoMulticanalYGuardar(
   }
 
   if (!sent) {
-    console.error("❌ No se pudo enviar el texto por WAHA ni por Meta:", msg);
+    console.error("❌ Pregunta de ciudad NO enviada:", msg);
     return false;
   }
 
@@ -244,6 +210,7 @@ async function enviarTextoMulticanalYGuardar(
     messageType,
   });
 
+  console.log("✅ Pregunta de ciudad enviada y guardada:", msg);
   return true;
 }
 
@@ -265,7 +232,7 @@ async function enviarRespuestaSeparada(userId, from, text, options = {}) {
 
   if (cityQuestion && acquireCityQuestionLock(userId, from)) {
     if (mainText && delayMs > 0) await sleep(delayMs);
-    sentAny = (await enviarTextoMulticanalYGuardar(userId, from, cityQuestion, "out_text")) || sentAny;
+    sentAny = (await enviarTextoSeguroYGuardar(userId, from, cityQuestion, "out_text")) || sentAny;
   }
 
   // Si el mensaje era solamente una pregunta de ciudad que no coincidió
@@ -718,25 +685,9 @@ async function debeAgregarPreguntaCiudad({ userId, from, texto, productName, pla
   const city = clean(ctx?.order_data?.city || ctx?.city || "");
   if (city) return false;
 
-  // Evita duplicar la misma pregunta si ya salió hace pocos minutos.
-  try {
-    const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-    const { data } = await supabase
-      .from("inbox_messages")
-      .select("message, created_at")
-      .eq("user_id", userId)
-      .eq("sender_id", from)
-      .gte("created_at", since)
-      .order("created_at", { ascending: false })
-      .limit(15);
-
-    const alreadyAsked = (data || []).some((row) => {
-      const n = normalize(row?.message || "");
-      return /de que ciudad sos|para que ciudad seria el envio|cual es tu ciudad|modalidad de entrega|confirmar la cobertura/.test(n);
-    });
-    if (alreadyAsked) return false;
-  } catch {}
-
+  // La protección contra duplicados inmediatos se realiza con
+  // acquireCityQuestionLock(). No se usa el historial, porque un intento
+  // fallido podía quedar guardado como si realmente hubiera sido enviado.
   return true;
 }
 
@@ -981,7 +932,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
 
     if (preguntaCiudadSeparada && acquireCityQuestionLock(userId, from)) {
       await sleep(900);
-      await enviarTextoMulticanalYGuardar(userId, from, preguntaCiudadSeparada, "out_text");
+      await enviarTextoSeguroYGuardar(userId, from, preguntaCiudadSeparada, "out_text");
     }
 
     if (plantilla?.id) {
@@ -1025,7 +976,7 @@ async function enviarPlantillaCompleta({ userId, from, templateName, fallbackTex
 
   if (preguntaCiudadSeparada && acquireCityQuestionLock(userId, from)) {
     if (mensajeFinal || imagenes.length > 0) await sleep(900);
-    await enviarTextoMulticanalYGuardar(userId, from, preguntaCiudadSeparada, "out_text");
+    await enviarTextoSeguroYGuardar(userId, from, preguntaCiudadSeparada, "out_text");
   }
 
   if (video) {
