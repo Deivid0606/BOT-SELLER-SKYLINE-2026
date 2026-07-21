@@ -1368,7 +1368,7 @@ function isQuestionLikeMessage(text: string) {
     isProductEffectivenessQuestion(raw) ||
     /[?¿]/.test(raw) ||
     /\b(?:pero\s+)?(?:de\s+)?d(?:o|oi|ó)nde\s+son(?:\s+ustedes)?\b/.test(n) ||
-    /\b(donde estan|donde queda|donde se encuentran|quienes son|como funciona|como se usa|como es|que incluye|que trae|cuanto tarda|cuando llega|tienen garantia|hay garantia|es original|hacen envios|hacen envio|tienen delivery|cuentan con delivery|hay delivery|realizan delivery|envian|aceptan transferencia|como pago|formas de pago|puedo pagar|tienen local|tienen tienda|tienen sucursal|de donde traen|de donde viene|de donde es el producto)\b/.test(n) ||
+    /\b(donde estan|donde queda|donde se encuentran|quienes son|como funciona|como se usa|como es|que incluye|que trae|cuanto tarda|cuando llega|tienen garantia|hay garantia|es original|hacen envios|hacen envio|tienen delivery|cuentan con delivery|hay delivery|realizan delivery|envian|aceptan transferencia|como pago|formas de pago|puedo pagar|tienen local|tienen tienda|tienen sucursal|de donde traen|de donde viene|de donde es el producto|hay stock|tienen stock|queda stock|que colores|que color|hay colores|que medidas|que medida|que talles|que talle|se puede cambiar|hacen cambios|tiene devolucion|tienen devolucion|aceptan cuotas|se puede pagar en cuotas|emiten factura|dan factura|tiene manual|viene con manual|es recargable|usa pilas|que material es|de que material es)\b/.test(n) ||
     /^(que|como|cuando|donde|por que|porque|cual|cuales|quien|quienes|cuanto|cuantos|cuanta|cuantas)\b/.test(n) ||
     /\b(?:seria|sería)\s+(?:cuanto|cuánto|cuantos|cuántos)\b/.test(n) ||
     /\b(?:es|seria|sería)\s+por\s+(?:calce|calse|talle|talla|par)\b/.test(n)
@@ -2384,6 +2384,80 @@ function isPendingTransferStatus(value: string): boolean {
   return /\b(pendiente|en proceso|procesando|solicitamos el envio|solicitado el envio|acreditacion dependera|pendiente de acreditacion|por acreditar|en revision|esperando acreditacion|transferencia enviada)\b/.test(n);
 }
 
+
+/**
+ * V111: separa nombre cuando ciudad + dirección + cliente llegan en una sola línea.
+ * Ej.: "AREGUA CABAALLERO CASI RCA DE COLOMBIA MARTA CABALLERO"
+ *      ciudad=Areguá, dirección=Caballero casi Rca. de Colombia,
+ *      cliente=Marta Caballero.
+ */
+function extractTrailingNameFromCompositeLine(
+  text: string,
+  detectedCity: string,
+  phone: string,
+  parsed?: ParsedTraining
+): string {
+  let raw = stripPhoneFromAddress(clean(text), phone);
+  if (!raw || /[?¿]/.test(raw)) return "";
+
+  // Retirar la ciudad detectada, aunque esté al principio de la línea.
+  const cityNames = Array.from(new Set([
+    detectedCity,
+    ...(parsed?.cities || []).flatMap((c) => [c.alias, c.canonical]),
+  ].map(clean).filter(Boolean))).sort((a, b) => b.length - a.length);
+
+  for (const cityName of cityNames) {
+    const escaped = normalize(cityName).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const normalizedRaw = normalize(raw);
+    const match = normalizedRaw.match(new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i"));
+    if (!match || match.index == null) continue;
+
+    // Usamos los tokens normalizados para quitar solo la primera coincidencia.
+    const cityTokens = normalize(cityName).split(/\s+/).filter(Boolean);
+    const rawTokens = raw.split(/\s+/).filter(Boolean);
+    const normalizedTokens = rawTokens.map(normalize);
+    for (let i = 0; i <= normalizedTokens.length - cityTokens.length; i++) {
+      if (cityTokens.every((token, j) => normalizedTokens[i + j] === token)) {
+        rawTokens.splice(i, cityTokens.length);
+        raw = rawTokens.join(" ");
+        break;
+      }
+    }
+    break;
+  }
+
+  raw = clean(raw).replace(/^[,;:\-\s]+|[,;:\-\s]+$/g, "");
+  const n = normalize(raw);
+  const addressCue = /\b(calle|callejon|avenida|avda|ruta|km|barrio|bario|bsrrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|edificio|piso|departamento|porteria|referencia|rca|republica|cai|colombia)\b/;
+  if (!addressCue.test(n)) return "";
+
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  if (tokens.length < 4) return "";
+
+  const forbiddenNameWord = /^(calle|avenida|avda|ruta|km|barrio|bario|bsrrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|edificio|piso|departamento|porteria|referencia|rca|republica|cai|colombia|de|del|la|el)$/i;
+
+  // El nombre suele estar al final. Probamos 2, 3 y 4 palabras, priorizando 2.
+  for (const size of [2, 3, 4]) {
+    if (tokens.length <= size) continue;
+    const candidateTokens = tokens.slice(-size);
+    const candidate = candidateTokens.join(" ");
+    const candidateNorm = normalize(candidate);
+
+    if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(candidate)) continue;
+    if (candidateTokens.some((w) => forbiddenNameWord.test(normalize(w)))) continue;
+    if (/\b(precio|delivery|envio|producto|unidad|gracias|quiero|comprar)\b/.test(candidateNorm)) continue;
+    if (parsed && isContaminatedCustomerName(candidate, parsed)) continue;
+    if (detectedCity && candidateNorm === normalize(detectedCity)) continue;
+
+    const addressPart = tokens.slice(0, -size).join(" ");
+    if (!addressCue.test(normalize(addressPart))) continue;
+
+    return toTitleCase(candidate);
+  }
+
+  return "";
+}
+
 function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
   const normalizedRawNameInput = normalize(text);
   if (/\b(hice mi pedido|ya hice mi pedido|mi pedido|pedido confirmado|pedido realizado)\b/.test(normalizedRawNameInput)) return "";
@@ -2411,6 +2485,15 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
 
     if (!forbiddenExplicitName) return toTitleCase(candidate);
   }
+
+
+  const trailingCompositeName = extractTrailingNameFromCompositeLine(
+    raw,
+    detectedCity,
+    phone,
+    parsed
+  );
+  if (trailingCompositeName) return trailingCompositeName;
 
   if (isPoliteClosingOrAcknowledgement(raw)) return "";
   if (isPaymentInformationQuestion(raw)) return "";
@@ -2640,6 +2723,16 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
       .join("\\s+");
 
     let remainder = raw.replace(new RegExp(`(?:^|\\b)${escapedName}(?:\\b|$)`, "i"), " ");
+
+
+    if (detectedCity) {
+      const escapedCity = detectedCity
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("\\s+");
+      remainder = remainder.replace(new RegExp(`(?:^|\\b)${escapedCity}(?:\\b|$)`, "i"), " ");
+    }
     remainder = stripPhoneFromAddress(remainder, phone)
       .replace(/\s{2,}/g, " ")
       .replace(/^[,;:\-\s]+|[,;:\-\s]+$/g, "")
