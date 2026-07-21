@@ -1,4 +1,4 @@
-// api/send-whatsapp.js - VERSIÓN CORREGIDA CON BOTONES E IMAGEN
+// api/send-whatsapp.js - V2: confirma éxito real y devuelve error si Meta rechaza
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -318,11 +318,18 @@ export default async function handler(req, res) {
         const fallbackText = message + '\n\n📌 RESPONDE CON EL NÚMERO DE TU OPCIÓN:\n\n' +
           buttons.map((b, i) => `${i+1}️⃣ ${String(b.label || b.text || `Opción ${i+1}`).replace(/[^\w\s]/g, '').trim()}`).join('\n') +
           '\n\n📲 Escribí 1, 2 o 3 😊';
-        await metaSendText(config, cleanTo, fallbackText);
+        success = await metaSendText(config, cleanTo, fallbackText);
+      }
+
+      if (!success) {
+        return res.status(502).json({
+          ok: false,
+          error: 'WhatsApp rechazó el mensaje interactivo y su fallback',
+        });
       }
 
       return res.status(200).json({
-        ok: success,
+        ok: true,
         sent: {
           to: cleanTo,
           hasButtons: true,
@@ -338,13 +345,32 @@ export default async function handler(req, res) {
     // ============================================================
     console.log('📤 Enviando mensaje SIN botones');
     
+    let success = false;
+
     if (mediaUrl) {
-      await metaSendMedia(config, cleanTo, mediaUrl, mediaType, message || '');
-      if (message) {
-        await metaSendText(config, cleanTo, message);
-      }
+      // La imagen lleva el copy como caption. No se vuelve a duplicar el texto.
+      success = await metaSendMedia(
+        config,
+        cleanTo,
+        mediaUrl,
+        mediaType,
+        message || ''
+      );
     } else if (message) {
-      await metaSendText(config, cleanTo, message);
+      success = await metaSendText(config, cleanTo, message);
+    }
+
+    if (!success) {
+      console.error('❌ WhatsApp no confirmó el envío sin botones');
+      return res.status(502).json({
+        ok: false,
+        error: 'WhatsApp rechazó el mensaje',
+        sent: {
+          to: cleanTo,
+          hasButtons: false,
+          hasImage: !!mediaUrl,
+        }
+      });
     }
 
     return res.status(200).json({
