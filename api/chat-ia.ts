@@ -6376,7 +6376,8 @@ export default async function handler(req: any, res: any) {
         }
 
         const postConfirmationNorm = normalize(texto);
-        if (/^(hola+|holi|buenas|buen dia|buen día|buenas tardes|buenas noches|saludos)$/.test(postConfirmationNorm)) {
+        // Parche 7: Desactivado saludo fijo en postventa - Todo en manos de Gemini
+        if (false && /^(hola+|holi|buenas|buen dia|buen día|buenas tardes|buenas noches|saludos)$/.test(postConfirmationNorm)) {
           return res.json({
             response: "¡Buenas! 😊 ¿En qué puedo ayudarte?",
             context: { ...(context || {}), step: "pedido_confirmado", updated_at: new Date().toISOString() },
@@ -6384,7 +6385,8 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        if (/\b(quiero|llevo|dame|agregame|agregáme|cambiar|modificar)\b/.test(postConfirmationNorm) && (extractQuantity(texto) > 0 || /\b2\s*x\s*1\b/.test(postConfirmationNorm))) {
+        // Parche 7: Desactivado respuesta fija para "quiero/dame/agregame" en postventa - Todo en manos de Gemini
+        if (false && /\b(quiero|llevo|dame|agregame|agregáme|cambiar|modificar)\b/.test(postConfirmationNorm) && (extractQuantity(texto) > 0 || /\b2\s*x\s*1\b/.test(postConfirmationNorm))) {
           const reopenedOrder = emptyOrder(makeOrderId(fromNumber));
           reopenedOrder.product = oldOrder.product || "";
           reopenedOrder.quantity = extractQuantity(texto) || (/\b2\s*x\s*1\b/.test(postConfirmationNorm) ? 2 : 0);
@@ -6395,7 +6397,8 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        if (isShortAcknowledgement(texto) || isConversationClosing(texto)) {
+        // Parche 7: Desactivado acuse corto fijo en postventa - Todo en manos de Gemini
+        if (false && (isShortAcknowledgement(texto) || isConversationClosing(texto))) {
           return res.json({
             response: oldOrder.customer_name
               ? `¡Con mucho gusto, ${oldOrder.customer_name.split(/\s+/)[0]}! 😊 Tu pedido ya quedó confirmado y agendado. 🚚📦`
@@ -6411,7 +6414,8 @@ export default async function handler(req: any, res: any) {
         if (isPostSaleQuestion(texto)) {
           const deterministicPostSale = deterministicPostSaleResponse(texto, oldOrder, parsed);
 
-          if (deterministicPostSale) {
+          // Parche 7: Desactivado deterministicPostSale fijo - Todo en manos de Gemini
+          if (false && deterministicPostSale) {
             return res.json({
               response: deterministicPostSale,
               context: {
@@ -7532,7 +7536,8 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    if (!confirm && finalState.coverage === false && finalState.step === "waiting_payment_proof") {
+    // Parche 1: Desactivado waiting_payment_proof fijo
+    if (false && !confirm && finalState.coverage === false && finalState.step === "waiting_payment_proof") {
       const waitProofResponse = deterministicWaitingPaymentProofMessage(finalState, parsed);
       if (waitProofResponse) {
         return res.json({
@@ -7566,7 +7571,8 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    if (!confirm && prevStep === "collecting_city" && orderData.city && orderData.locked_offer?.fixed_quantity) {
+    // Parche 2: Desactivado after city fixed offer fijo
+    if (false && !confirm && prevStep === "collecting_city" && orderData.city && orderData.locked_offer?.fixed_quantity) {
       const fixedCityResponse = deterministicAfterCityFixedOfferMessage(finalState, parsed);
       if (fixedCityResponse) {
         return res.json({
@@ -7611,6 +7617,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    // Parche 3: Desactivado after city coverage fijo (solo el return)
     if (
       !confirm &&
       orderData.city &&
@@ -7625,7 +7632,8 @@ export default async function handler(req: any, res: any) {
         finalState.missing = Array.from(new Set(["cantidad", ...(finalState.missing || []).filter((x) => x !== "cantidad")]));
       }
       const cityCoverageResponse = deterministicAfterCityCoverageMessage(finalState);
-      if (cityCoverageResponse) {
+      // Parche 3: Solo desactivamos el return, pero conservamos la lógica de estado (quantity reset)
+      if (false && cityCoverageResponse) {
         return res.json({
           response: cityCoverageResponse,
           context: {
@@ -7670,9 +7678,10 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    // Parche 4: Desactivado after quantity fijo
     if (!confirm && qty > 0 && orderData.city) {
       const deterministicQtyResponse = deterministicAfterQuantityMessage(finalState, parsed);
-      if (deterministicQtyResponse) {
+      if (false && deterministicQtyResponse) {
         return res.json({
           response: deterministicQtyResponse,
           context: {
@@ -7705,12 +7714,13 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    // Parche 5: Desactivado observation ack fijo
     const deterministicObservationResponse =
       !isQuestionLikeMessage(texto)
         ? deterministicObservationAckMessage(finalState, parsed, observationPatch)
         : "";
 
-    if (!confirm && deterministicObservationResponse) {
+    if (false && !confirm && deterministicObservationResponse) {
       return res.json({
         response: deterministicObservationResponse,
         context: {
@@ -7766,10 +7776,9 @@ export default async function handler(req: any, res: any) {
     // ✅ FIX V46: verificar si el copy ya se envió antes en esta conversación
     const copyAlreadySentInConversation = wasCopyAlreadySentInThisConversation(history, finalState.productInfo);
 
-    // Una consulta corta de precio, después de haber mostrado el producto,
-    // se resuelve de forma determinística antes de Gemini y antes de cualquier
-    // lógica capaz de reconstruir el copy completo.
+    // Parche 6: Desactivado respuesta fija de precio ("precio solo")
     if (
+      false &&
       isPriceQuery(texto) &&
       copyAlreadySentInConversation &&
       finalState.productInfo
@@ -7925,13 +7934,14 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
       aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
     }
 
+    // Parche 8: Eliminar pisada de Gemini con respuestas fijas (desactivado con false &&)
     const deterministicBusinessResponse = buildDeterministicBusinessQuestionResponse(texto, finalState);
-    if (deterministicBusinessResponse) {
+    if (false && deterministicBusinessResponse) {
       aiResponse = deterministicBusinessResponse;
     }
 
     const deterministicAcknowledgementResponse = buildDeterministicAcknowledgementResponse(texto, finalState);
-    if (deterministicAcknowledgementResponse) {
+    if (false && deterministicAcknowledgementResponse) {
       aiResponse = deterministicAcknowledgementResponse;
     }
 
