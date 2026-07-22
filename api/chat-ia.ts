@@ -8,6 +8,7 @@ import { createClient } from "@supabase/supabase-js";
  * V118: todas las respuestas normales las redacta Gemini; solo cierre, comprobantes y detección del celular permanecen fijos.
  * V118: evita confundir frases conversacionales como “si no estoy en casa” con una dirección y no repite el cierre al guardar observaciones.
  * V113: preserva cantidades al cambiar/confirmar ciudad, evita guardar 1 unidad por defecto y responde el catálogo en postventa.
+ * V120: devuelve obligatoriamente el resultado visible del análisis del comprobante antes de continuar el flujo.
  * V119: usa el nombre del remitente del comprobante como cliente cuando falta, solo después de validar destinatario, monto y estado.
  * V118: conserva comprobantes aunque cambie el order_id interno, nunca exige dirección para transportadora y fuerza el cierre fijo correcto.
  * V112: detecta ciudades en frases con errores como “Yo estoi en Caacupe”, bloquea nombres y direcciones contaminadas.
@@ -7615,6 +7616,54 @@ export default async function handler(req: any, res: any) {
 
     if (orderData.product) {
       persistedOrderId = await safeUpsertOrder(user_id, fromNumber, orderData, parsed, confirm);
+    }
+
+    // V120: si en este mensaje se recibió un comprobante y el pedido todavía
+    // no puede cerrarse, devolver SIEMPRE el resultado técnico de la validación.
+    // No permitir que Gemini o una rama conversacional silencien si el
+    // destinatario coincide, el monto alcanza o el archivo fue rechazado.
+    if (proofReceived && currentCoverageForProof === false && !confirm) {
+      const proofResponse = paymentProofVerificationMessage(
+        orderData,
+        expectedPaymentAmount
+      );
+
+      return res.json({
+        response: proofResponse,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || null,
+          last_topic: orderData.product || context?.last_topic || null,
+          last_ad_offer: orderData.locked_offer || null,
+          order_data: orderData,
+          order_id: orderData.order_id || null,
+          payment_proof_received: orderData.payment_proof_received || false,
+          payment_proof_verified: orderData.payment_proof_verified || false,
+          payment_holder_name: orderData.payment_holder_name || null,
+          payment_amount: orderData.payment_amount || 0,
+          payment_operation_number: orderData.payment_operation_number || null,
+          payment_recipient_name: orderData.payment_recipient_name || null,
+          payment_recipient_document: orderData.payment_recipient_document || null,
+          payment_recipient_account: orderData.payment_recipient_account || null,
+          payment_recipient_alias: orderData.payment_recipient_alias || null,
+          payment_recipient_bank: orderData.payment_recipient_bank || null,
+          payment_recipient_matched: orderData.payment_recipient_matched || false,
+          payment_proof_mime: orderData.payment_proof_mime || null,
+          payment_manual_review_required: orderData.payment_manual_review_required || false,
+          payment_manual_review_reason: orderData.payment_manual_review_reason || null,
+          step: finalState.step,
+          updated_at: new Date().toISOString(),
+        },
+        debug: {
+          mandatory_payment_proof_response: true,
+          verified: orderData.payment_proof_verified,
+          recipient_matched: orderData.payment_recipient_matched,
+          expected_amount: expectedPaymentAmount,
+          detected_amount: orderData.payment_amount,
+          customer_name_from_payer: orderData.customer_name || null,
+          verification_error: orderData.payment_verification_error || null,
+        },
+      });
     }
 
     if (confirm) {
