@@ -8,6 +8,7 @@ import { createClient } from "@supabase/supabase-js";
  * V118: todas las respuestas normales las redacta Gemini; solo cierre, comprobantes y detección del celular permanecen fijos.
  * V118: evita confundir frases conversacionales como “si no estoy en casa” con una dirección y no repite el cierre al guardar observaciones.
  * V113: preserva cantidades al cambiar/confirmar ciudad, evita guardar 1 unidad por defecto y responde el catálogo en postventa.
+ * V119: usa el nombre del remitente del comprobante como cliente cuando falta, solo después de validar destinatario, monto y estado.
  * V118: conserva comprobantes aunque cambie el order_id interno, nunca exige dirección para transportadora y fuerza el cierre fijo correcto.
  * V112: detecta ciudades en frases con errores como “Yo estoi en Caacupe”, bloquea nombres y direcciones contaminadas.
  * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
@@ -4281,6 +4282,43 @@ function hasPaymentProofText(text: string) {
   return /\b(comprobante|transferi|transferí|transferencia hecha|ya pague|ya pagué|deposito|depósito|pague|pagué|adjunto|envio comprobante|envío comprobante|recibo)\b/.test(n);
 }
 
+function isValidPaymentSenderName(
+  value: any,
+  recipientName: any,
+  bankData: BankData | null,
+  city: string,
+  parsed: ParsedTraining
+) {
+  const name = clean(value);
+  const normalizedName = normalize(name);
+  const words = name.split(/\s+/).filter(Boolean);
+
+  if (!name || words.length < 2 || name.length < 5 || name.length > 100) return false;
+  if (/\d/.test(name)) return false;
+  if (isInvalidCustomerNameForOrder(name, city, parsed)) return false;
+
+  // Nunca tomar como cliente el beneficiario, el banco ni etiquetas del comprobante.
+  const forbiddenValues = [
+    recipientName,
+    bankData?.titular,
+    bankData?.entidad,
+    bankData?.banco,
+    "titular",
+    "beneficiario",
+    "destinatario",
+    "remitente",
+    "cuenta debitada",
+    "cuenta acreditada",
+  ]
+    .map(normalize)
+    .filter(Boolean);
+
+  if (forbiddenValues.some((item) => item === normalizedName)) return false;
+  if (/\b(banco|bank|financiera|cooperativa|beneficiario|destinatario|titular|cuenta|transferencia)\b/.test(normalizedName)) return false;
+
+  return true;
+}
+
 function hasPaymentProof(context: any, text: string, mediaUrl?: string, mediaType?: string) {
   const url = clean(mediaUrl);
   const type = clean(mediaType);
@@ -7260,8 +7298,13 @@ export default async function handler(req: any, res: any) {
         orderData.payment_recipient_alias = proofAnalysis.recipient_alias;
         orderData.payment_recipient_bank = proofAnalysis.recipient_bank;
 
-        const hasPayerName =
-          clean(proofAnalysis.holder_name).split(/\s+/).filter(Boolean).length >= 2;
+        const hasPayerName = isValidPaymentSenderName(
+          proofAnalysis.holder_name,
+          proofAnalysis.recipient_name,
+          parsed.bankData,
+          orderData.city,
+          parsed
+        );
         const amountCoversOrder = proofAnalysis.amount >= expectedPaymentAmount;
         const recipientMatches = paymentRecipientMatchesBankData(
           proofAnalysis,
@@ -7302,8 +7345,14 @@ export default async function handler(req: any, res: any) {
           )
         );
 
+        // Si el cliente todavía no escribió su nombre, usar exclusivamente el
+        // remitente/titular de la cuenta DEBITADA. Esto ocurre solo cuando el
+        // comprobante ya pasó todas las validaciones: destinatario correcto,
+        // monto suficiente y estado final o pendiente admitido para revisión.
         if (
           orderData.payment_proof_verified &&
+          orderData.payment_recipient_matched &&
+          amountCoversOrder &&
           hasPayerName &&
           (
             !clean(orderData.customer_name) ||
@@ -7314,7 +7363,7 @@ export default async function handler(req: any, res: any) {
             )
           )
         ) {
-          orderData.customer_name = toTitleCase(proofAnalysis.holder_name);
+          orderData.customer_name = toTitleCase(clean(proofAnalysis.holder_name));
         }
 
         if (!orderData.payment_proof_verified) {
