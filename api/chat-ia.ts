@@ -5,9 +5,10 @@ import { createClient } from "@supabase/supabase-js";
  * 
  * V116: TODA respuesta visible la redacta Gemini, excepto cierres, comprobantes y detección automática del celular.
  * V114: conserva la cantidad elegida antes de la ciudad y evita usar titulares publicitarios como nombre del producto.
- * V117: todas las respuestas normales las redacta Gemini; solo cierre, comprobantes y detección del celular permanecen fijos.
- * V117: evita confundir frases conversacionales como “si no estoy en casa” con una dirección y no repite el cierre al guardar observaciones.
+ * V118: todas las respuestas normales las redacta Gemini; solo cierre, comprobantes y detección del celular permanecen fijos.
+ * V118: evita confundir frases conversacionales como “si no estoy en casa” con una dirección y no repite el cierre al guardar observaciones.
  * V113: preserva cantidades al cambiar/confirmar ciudad, evita guardar 1 unidad por defecto y responde el catálogo en postventa.
+ * V118: conserva comprobantes aunque cambie el order_id interno, nunca exige dirección para transportadora y fuerza el cierre fijo correcto.
  * V112: detecta ciudades en frases con errores como “Yo estoi en Caacupe”, bloquea nombres y direcciones contaminadas.
  * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
  * V109: impide usar ciudades como nombre del cliente.
@@ -4298,9 +4299,10 @@ function isSameOrderForPaymentProof(oldOrder: OrderData, newOrder: OrderData) {
   const sameProduct = normalize(oldOrder.product) === normalize(newOrder.product);
   const sameCity = normalize(oldOrder.city) === normalize(newOrder.city);
   const sameQuantity = sanitizeQuantity(oldOrder.quantity) === sanitizeQuantity(newOrder.quantity);
-  const sameOrderId = clean(oldOrder.order_id) && clean(oldOrder.order_id) === clean(newOrder.order_id);
-
-  return Boolean(sameProduct && sameCity && sameQuantity && (sameOrderId || !clean(newOrder.order_id)));
+  // El identificador interno puede regenerarse entre mensajes o integraciones.
+  // Para conservar un comprobante, la identidad comercial del pedido es
+  // producto + ciudad + cantidad. El nombre y la dirección pueden llegar después.
+  return Boolean(sameProduct && sameCity && sameQuantity);
 }
 
 function preserveVerifiedPaymentForSameOrder(oldOrder: OrderData, newOrder: OrderData) {
@@ -5380,9 +5382,13 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
   // Siempre recalcular con la oferta correcta. Para packs fijos, el total es el
   // precio completo del pack y nunca price1 × quantity.
   state.total = calculateTotal(o.product, o.quantity, parsed, o.locked_offer);
-  const location = clean(o.address)
+  const deliveryLocation = clean(o.address)
     ? [clean(o.city), clean(o.address)].filter(Boolean).join(" — ")
     : `${clean(o.city)} — ubicación pendiente para coordinar con el delivery`;
+
+  // En encomienda/transportadora la ciudad es el destino suficiente para cerrar.
+  // No mostrar “ubicación pendiente”, porque no se trata de entrega domiciliaria.
+  const transportDestination = clean(o.city);
 
   if (state.coverage === false) {
     return `✅ PEDIDO CONFIRMADO
@@ -5392,7 +5398,7 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
 💰 Total: ${formatGs(state.total)} Gs
 
 👤 Cliente: ${o.customer_name}
-📍 Ubicación: ${location}
+📍 Destino: ${transportDestination}
 📞 Contacto: ${o.phone}${observationBlock(o)}
 
 🚚 Envío por transportadora
@@ -5416,7 +5422,7 @@ Una vez despachado, te enviaremos el comprobante correspondiente. 📦
 💰 Total: ${formatGs(state.total)} Gs
 
 👤 Cliente: ${o.customer_name}
-📍 Ubicación: ${location}
+📍 Ubicación: ${deliveryLocation}
 📞 Contacto: ${o.phone}${observationBlock(o)}
 
 🚚 Envío GRATIS
@@ -5771,6 +5777,8 @@ REGLAS DURAS:
 - Nunca uses una frase publicitaria como "Usalas con" como nombre de producto.
 
 - En ciudad sin contra-entrega, confirmar cuando payment_proof_verified sea true. Si figura pendiente pero destinatario y monto son válidos, confirmar y marcar payment_manual_review_required=true. No pedir otro comprobante. Una ciudad nunca puede ser nombre del cliente.
+- REGLA ABSOLUTA PARA TRANSPORTADORA/ENCOMIENDA: la ciudad es suficiente como destino. Nunca pidas dirección exacta, calle, barrio, ubicación ni referencia. Si el cliente menciona una agencia (por ejemplo NASA), guardala solo como observación o preferencia de transportadora, pero no bloquees el cierre.
+- Cuando ya existen producto, cantidad, ciudad sin contra-entrega, nombre y comprobante verificado, no redactes una confirmación libre: el backend debe emitir inmediatamente el formato fijo de PEDIDO CONFIRMADO.
 `.trim();
 }
 
@@ -6411,7 +6419,7 @@ export default async function handler(req: any, res: any) {
           oldOrder.address = mergeAddressSupplement(oldOrder.address, texto);
           await safeUpsertOrder(user_id, fromNumber, oldOrder, parsed, true);
 
-          // V117: se guarda el dato, pero NO se repite el cierre ni se usa un acuse fijo.
+          // V118: se guarda el dato, pero NO se repite el cierre ni se usa un acuse fijo.
           // La respuesta visible continúa por Gemini más abajo.
         }
 
@@ -6443,7 +6451,7 @@ export default async function handler(req: any, res: any) {
 
           await safeUpsertOrder(user_id, fromNumber, oldOrder, parsed, true);
 
-          // V117: la observación se persiste silenciosamente. Gemini redacta el acuse
+          // V118: la observación se persiste silenciosamente. Gemini redacta el acuse
           // natural y contextual; aquí no existe ninguna respuesta visible fija.
         }
 
