@@ -5,6 +5,8 @@ import { createClient } from "@supabase/supabase-js";
  * 
  * V116: TODA respuesta visible la redacta Gemini, excepto cierres, comprobantes y detección automática del celular.
  * V114: conserva la cantidad elegida antes de la ciudad y evita usar titulares publicitarios como nombre del producto.
+ * V117: todas las respuestas normales las redacta Gemini; solo cierre, comprobantes y detección del celular permanecen fijos.
+ * V117: evita confundir frases conversacionales como “si no estoy en casa” con una dirección y no repite el cierre al guardar observaciones.
  * V113: preserva cantidades al cambiar/confirmar ciudad, evita guardar 1 unidad por defecto y responde el catálogo en postventa.
  * V112: detecta ciudades en frases con errores como “Yo estoi en Caacupe”, bloquea nombres y direcciones contaminadas.
  * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
@@ -2030,14 +2032,30 @@ function toTitleCase(str: string): string {
 
 
 function looksLikeAddressSupplement(text: string): boolean {
-  const n = normalize(text);
-  if (!n) return false;
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!n || isQuestionLikeMessage(raw)) return false;
 
-  return (
-    /\b(calle|avda|avenida|ruta|km|barrio|bario|bsrrio|barrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|edificio|piso|departamento|porteria|portería|referencia)\b/.test(n) ||
+  // Frases conversacionales sobre quién recibe o paga NO son direcciones.
+  if (
+    /\b(si|por si|cuando)\s+(?:yo\s+)?no\s+(?:estoy|este|esté|voy a estar)\s+en\s+casa\b/.test(n) ||
+    /\b(dejar|dejo|dejare|dejaré|dar|doy)\s+(?:la\s+)?(?:plata|dinero|efectivo)\s+a\s+alguien\b/.test(n) ||
+    /\b(alguien|otra persona|familiar|vecino|encargado)\b[\s\S]{0,50}\b(paga|pague|recibe|reciba)\b/.test(n)
+  ) {
+    return false;
+  }
+
+  const strongAddressCue =
+    /\b(calle|avda|avenida|ruta|km|barrio|bario|bsrrio|bo|esquina|numero|nro|manzana|mz|lote|edificio|piso|departamento|porteria|portería|referencia)\b/.test(n) ||
     /^(?:b+a?r+r?i?o|bsrrio|bo)\s+[a-z]/.test(n) ||
-    /\b(entre calles?|al lado de|frente a|cerca de|detras de|detrás de)\b/.test(n)
-  );
+    /\b(entre calles?|al lado de|frente a|cerca de|detras de|detrás de)\b/.test(n);
+
+  // “casa” por sí sola es demasiado ambigua; exige estructura de ubicación.
+  const structuredHomeAddress =
+    /\b(?:mi casa|casa)\s+(?:queda|esta|está|es|sobre|en|frente|al lado|cerca)\b/.test(n) ||
+    /\b(?:frente|lado|esquina|cerca|detras|detrás)\s+(?:de\s+)?(?:la\s+)?casa\b/.test(n);
+
+  return strongAddressCue || structuredHomeAddress;
 }
 
 function mergeAddressSupplement(currentAddress: string, supplement: string): string {
@@ -6391,25 +6409,10 @@ export default async function handler(req: any, res: any) {
         // el nombre del cliente ni iniciar otro pedido.
         if (looksLikeAddressSupplement(texto)) {
           oldOrder.address = mergeAddressSupplement(oldOrder.address, texto);
-
-          const updatedState = buildState(oldOrder, parsed);
           await safeUpsertOrder(user_id, fromNumber, oldOrder, parsed, true);
 
-          return res.json({
-            response: `✅ ¡Perfecto! Agregué este dato a tu dirección: ${clean(texto)}\n\n${finalConfirmationMessage(updatedState, parsed)}`,
-            context: {
-              ...(context || {}),
-              order_data: oldOrder,
-              order_id: oldOrder.order_id || null,
-              step: "pedido_confirmado",
-              updated_at: new Date().toISOString(),
-            },
-            debug: {
-              post_confirmation_address_updated: true,
-              preserved_customer_name: oldOrder.customer_name,
-              updated_address: oldOrder.address,
-            },
-          });
+          // V117: se guarda el dato, pero NO se repite el cierre ni se usa un acuse fijo.
+          // La respuesta visible continúa por Gemini más abajo.
         }
 
         if (false && isDeliveryTimingQuestion(texto)) {
@@ -6440,21 +6443,8 @@ export default async function handler(req: any, res: any) {
 
           await safeUpsertOrder(user_id, fromNumber, oldOrder, parsed, true);
 
-          return res.json({
-            response: `📝 Perfecto, agregué esta observación a tu pedido: ${clean(texto)}\n\nEl delivery tendrá en cuenta la solicitud y te contactará para coordinar. 😊`,
-            context: {
-              ...(context || {}),
-              order_data: oldOrder,
-              order_id: oldOrder.order_id || null,
-              step: "pedido_confirmado",
-              updated_at: new Date().toISOString(),
-            },
-            debug: {
-              post_confirmation_observation_updated: true,
-              preserved_customer_name: oldOrder.customer_name,
-              preserved_address: oldOrder.address,
-            },
-          });
+          // V117: la observación se persiste silenciosamente. Gemini redacta el acuse
+          // natural y contextual; aquí no existe ninguna respuesta visible fija.
         }
 
         const postConfirmationNorm = normalize(texto);
@@ -6569,10 +6559,7 @@ export default async function handler(req: any, res: any) {
         });
 
         return res.json({
-          response: postProcessResponse(
-            dynamicPostSaleResponse ||
-            "No tengo ese dato especificado en el entrenamiento. El equipo encargado lo coordinará contigo por WhatsApp."
-          ),
+          response: postProcessResponse(dynamicPostSaleResponse || ""),
           context: {
             ...(context || {}),
             order_data: oldOrder,
