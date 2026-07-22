@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V110 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V112 - Mega Todo Store / One Store
  * 
+ * V112: detecta ciudades en frases con errores como “Yo estoi en Caacupe”, bloquea nombres y direcciones contaminadas.
  * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
  * V109: impide usar ciudades como nombre del cliente.
  * V108: valida destinatario bancario, usa el pagador como cliente y admite PDF sin texto de estado.
@@ -1681,6 +1682,31 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const explicitKnownCity = extractExplicitKnownCityFromSentence(raw, parsed);
   if (explicitKnownCity) return explicitKnownCity;
 
+  // V112: primero extraer una declaración explícita, incluso con errores
+  // frecuentes: "Yo estoi en Caacupe", "toy en Luque", "stoy en Capiata".
+  const earlyStatement = extractCityStatement(raw);
+  if (earlyStatement) {
+    const earlyKnown = exactKnownCity(earlyStatement, parsed);
+    if (earlyKnown) return earlyKnown;
+
+    const earlyConfigured = extractExplicitKnownCityFromSentence(
+      earlyStatement,
+      parsed
+    );
+    if (earlyConfigured) return earlyConfigured;
+
+    const earlyWords = normalize(earlyStatement).split(/\s+/).filter(Boolean);
+    const validEarlyLocality =
+      earlyWords.length >= 1 &&
+      earlyWords.length <= 6 &&
+      earlyStatement.length >= 3 &&
+      earlyStatement.length <= 70 &&
+      /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(earlyStatement) &&
+      /[a-zA-ZÁÉÍÓÚáéíóúÑñ]/.test(earlyStatement);
+
+    if (validEarlyLocality) return toTitleCase(earlyStatement);
+  }
+
   // Nunca convertir respuestas comerciales, cantidades, agradecimientos,
   // nombres, preguntas o productos en una ciudad.
   if (
@@ -1789,8 +1815,10 @@ function extractCityStatement(text: string): string {
     /\bsoi\s+de\s+(.+)$/i,
     /\bsoy\s+d\s+(.+)$/i,
     /\bvivo\s+en\s+(.+)$/i,
-    /\bestoy\s+en\s+(.+)$/i,
-    /\bya\s+estoy\s+en\s+(.+)$/i,
+    /\b(?:yo\s+)?(?:estoy|estoi|toy|stoy)\s+en\s+(.+)$/i,
+    /\b(?:yo\s+)?me\s+encuentro\s+en\s+(.+)$/i,
+    /\b(?:yo\s+)?(?:vivo|resido)\s+en\s+(.+)$/i,
+    /\bya\s+(?:estoy|estoi|toy|stoy)\s+en\s+(.+)$/i,
     /\bde\s+la\s+ciudad\s+de\s+(.+)$/i,
     /\bciudad\s+de\s+(.+)$/i,
     /\bmi\s+ciudad\s+(?:es|seria|sería)\s+(.+)$/i,
@@ -2360,6 +2388,13 @@ function isInvalidCustomerNameForOrder(
   if (!raw || isContaminatedCustomerName(raw, parsed)) return true;
 
   if (
+    /\b(noo+|nop+|qro|kiero|quiero|voia|voy|poder|solo|solamente|pra|prfavor|porfa|favor|combo|promo|crema|producto|para mi)\b/.test(n) ||
+    /^(yo|no|noo+|nop+|n|qro|kiero|quiero|solo|solamente)\b/.test(n)
+  ) {
+    return true;
+  }
+
+  if (
     cityNorm &&
     (
       n === cityNorm ||
@@ -2464,6 +2499,19 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
 
   const raw = clean(text);
   if (!raw) return "";
+
+  // V112: respuestas conversacionales, rechazos, pedidos y frases abreviadas
+  // nunca son nombres. Evita guardar “Noo Yo”, “Yo qro”, “N voia”, etc.
+  if (
+    /\b(?:noo+|nop+|nono|n\s+vo(?:y|i)a?|no\s+voy|yo\s+qro|yo\s+quiero|qro|kiero|pra\s+m|para\s+mi|porfa|prfavor|favor|combo|promo)\b/.test(
+      normalizedRawNameInput
+    ) ||
+    /^(?:no+|noo+|nop+|n|yo|qro|kiero|quiero|solo|solamente)(?:\s+|$)/.test(
+      normalizedRawNameInput
+    )
+  ) {
+    return "";
+  }
 
   // V98: extrae primero un nombre declarado explícitamente aunque el mismo
   // mensaje también contenga cantidad y ciudad. Ejemplo:
@@ -2608,6 +2656,8 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
     if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ\s]+$/.test(cleaned)) return false;
     if (cleaned.length < 4 || cleaned.length > 60) return false;
     if (/\b(calle|avda|avenida|ruta|km|barrio|bo|casa|frente|esquina|casi|san pedro|santa|bario|pinedo|padres jesuitas|jesuitas)\b/i.test(normLine)) return false;
+    if (/\b(noo+|nop+|qro|kiero|quiero|voia|voy|poder|solo|solamente|pra|prfavor|porfa|favor|combo|promo|crema|producto|para mi)\b/i.test(normLine)) return false;
+    if (/^(yo|no|noo+|nop+|n|qro|kiero|quiero|solo|solamente)\b/i.test(normLine)) return false;
     if (/^(fdo|fdo\.|fndo|av|av\.|avda|rca|gral|mcal)\b/i.test(normLine)) return false;
     if (/\b(?:fdo|fdo\.|fndo)\s+de\b/i.test(normLine)) return false;
     if (questionVerbs.test(normLine)) return false;
@@ -2696,8 +2746,32 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   }
 
   const raw = clean(text);
+  const rawNorm = normalize(raw);
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
   if (/^\d+$/.test(raw)) return "";
+
+  const hasRealAddressCue =
+    /\b(direccion|dirección|dir|ubicacion|ubicación|calle|callejon|callejón|avda|avenida|ruta|km|barrio|bario|bsrrio|bo|casa|frente|lado|esquina|casi|numero|nro|manzana|mz|lote|edificio|piso|departamento|dpto|porteria|portería|referencia|rca|republica|república|colombia)\b/.test(
+      rawNorm
+    ) ||
+    raw.includes("maps.app") ||
+    raw.includes("google.com/maps") ||
+    /-?\d{2}\.\d{3,}\s*,\s*-?\d{2}\.\d{3,}/.test(raw);
+
+  // V112: una consulta, rechazo, cantidad o frase comercial sin señales reales
+  // de ubicación jamás debe agregarse a la dirección.
+  if (
+    !hasRealAddressCue &&
+    (
+      isQuestionLikeMessage(raw) ||
+      isBuyIntent(raw) ||
+      isGenericBuyReply(raw) ||
+      extractQuantity(raw) > 0 ||
+      /\b(precio|farmacia|cuanto|cuánto|qro|kiero|quiero|noo+|nop+|voia|voy|poder|solo|pra\s+m|para\s+mi|porfa|prfavor|combo|promo)\b/.test(rawNorm)
+    )
+  ) {
+    return "";
+  }
   if (isIdentityDocumentText(raw)) return "";
   if (isDeliveryTimingMessage(raw)) return "";
   if (isInvoiceOrTaxDataMessage(raw) || isStandaloneTaxOrIdentityData(raw)) return "";
@@ -4479,6 +4553,8 @@ function shouldConfirmOrder(state: ConversationState) {
     confirmationWords.length < 2 ||
     /\d/.test(o.customer_name) ||
     /\b(nombre|apellido|cliente|usuario|contacto|y apellido)\b/.test(confirmationName) ||
+    /\b(noo+|nop+|qro|kiero|quiero|voia|voy|poder|solo|solamente|pra|prfavor|porfa|favor|combo|promo|crema|producto|para mi)\b/.test(confirmationName) ||
+    /^(yo|no|noo+|nop+|n|qro|kiero|quiero|solo|solamente)\b/.test(confirmationName) ||
     (confirmationCity && confirmationName === confirmationCity)
   ) {
     return false;
