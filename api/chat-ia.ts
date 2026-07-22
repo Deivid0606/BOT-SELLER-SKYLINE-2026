@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V112 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V113 - Mega Todo Store / One Store
  * 
+ * V113: preserva cantidades al cambiar/confirmar ciudad, evita guardar 1 unidad por defecto y responde el catálogo en postventa.
  * V112: detecta ciudades en frases con errores como “Yo estoi en Caacupe”, bloquea nombres y direcciones contaminadas.
  * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
  * V109: impide usar ciudades como nombre del cliente.
@@ -3948,6 +3949,39 @@ function isPostSaleQuestion(text: string) {
   );
 }
 
+function isCatalogRequest(text: string) {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /\b(catalogo|catálogo)\b/.test(n) ||
+    /\b(que|qué|cuales|cuáles)\s+otros\s+productos\s+(?:tienen|tenes|tenés|hay|manejan|venden)\b/.test(n) ||
+    /\b(otros productos|ver productos|mostrar productos|pasame los productos|pásame los productos|lista de productos)\b/.test(n)
+  );
+}
+
+function buildCatalogResponse(parsed: ParsedTraining) {
+  const products = (parsed.products || []).filter((p) => clean(p.canonical || p.product));
+
+  const productLines = products.slice(0, 20).map((product) => {
+    const offers = productOffersText(product);
+    return `📦 *${product.canonical || product.product}*${offers ? `\n${offers}` : ""}`;
+  });
+
+  const catalogLink = clean(parsed.catalogUrl);
+  const header = "😊 ¡Claro! Este es nuestro catálogo disponible:";
+  const body = productLines.length
+    ? productLines.join("\n\n")
+    : "Por el momento no hay productos cargados en el catálogo.";
+  const linkBlock = catalogLink ? `\n\n🔗 Catálogo completo: ${catalogLink}` : "";
+  const closing = products.length > 20
+    ? "\n\nDecime qué producto te interesa y te paso su promoción 😊"
+    : "\n\nDecime cuál te interesa y te ayudo con la compra 😊";
+
+  return `${header}\n\n${body}${linkBlock}${closing}`;
+}
+
+
 function deterministicPostSaleResponse(text: string, order: OrderData, parsed: ParsedTraining) {
   const n = normalize(text);
 
@@ -4647,7 +4681,16 @@ async function safeUpsertOrder(
   }
 
   order.product = canonicalProduct;
-  order.quantity = sanitizeQuantity(order.quantity) || 1;
+  order.quantity = sanitizeQuantity(order.quantity);
+
+  // V113: nunca inventar 1 unidad al persistir. En una confirmación la
+  // cantidad debe existir; en borradores puede guardarse 0 hasta que el
+  // cliente elija una promoción.
+  if (confirm && order.quantity <= 0) {
+    console.error("❌ Confirmación rechazada por cantidad inválida:", order.quantity);
+    return null;
+  }
+
   if (!order.phone) order.phone = senderPhoneFallback(from);
 
   const state = buildState(order, parsed);
@@ -6095,6 +6138,21 @@ export default async function handler(req: any, res: any) {
     attachProductImages(parsed.products, allTraining);
     sanitizeProductPrices(parsed);
 
+    // V113: una solicitud de catálogo es informativa, no abre otro pedido ni
+    // borra el pedido confirmado. Se responde de forma determinística para
+    // evitar que "pasame el catálogo" termine en un mensaje de cierre.
+    if (isCatalogRequest(texto) || (context?.pending_catalog_confirmation && isAffirmative(texto))) {
+      return res.json({
+        response: buildCatalogResponse(parsed),
+        context: {
+          ...(context || {}),
+          pending_catalog_confirmation: false,
+          updated_at: new Date().toISOString(),
+        },
+        debug: { deterministic_catalog_response: true },
+      });
+    }
+
     const productsMentionedNow = detectProductsMentioned(texto, parsed);
     let activeMultiCart = getMultiCartFromContext(context, parsed);
 
@@ -6974,6 +7032,7 @@ export default async function handler(req: any, res: any) {
     // siempre que el mismo mensaje no contenga una cantidad explícita.
     const mustCollectQuantityNow =
       explicitQty <= 0 &&
+      sanitizeQuantity(oldOrder.quantity) <= 0 &&
       !orderData.locked_offer?.fixed_quantity &&
       (
         isGenericBuyReply(texto) ||
@@ -7007,6 +7066,7 @@ export default async function handler(req: any, res: any) {
     if (
       cityWasCapturedNow &&
       explicitQty <= 0 &&
+      sanitizeQuantity(oldOrder.quantity) <= 0 &&
       !orderData.locked_offer?.fixed_quantity
     ) {
       orderData.quantity = 0;
