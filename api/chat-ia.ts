@@ -1,8 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * CHAT IA VENDEDOR AUTÓNOMO V113 - Mega Todo Store / One Store
+ * CHAT IA VENDEDOR AUTÓNOMO V115 - Mega Todo Store / One Store
  * 
+ * V116: TODA respuesta visible la redacta Gemini, excepto cierres, comprobantes y detección automática del celular.
+ * V114: conserva la cantidad elegida antes de la ciudad y evita usar titulares publicitarios como nombre del producto.
  * V113: preserva cantidades al cambiar/confirmar ciudad, evita guardar 1 unidad por defecto y responde el catálogo en postventa.
  * V112: detecta ciudades en frases con errores como “Yo estoi en Caacupe”, bloquea nombres y direcciones contaminadas.
  * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
@@ -738,7 +740,17 @@ function extractProductNameFromCopy(text: string): string {
     const candidate = clean(value).replace(/^[^a-zA-ZÁÉÍÓÚáéíóúÑñ0-9]+/, "").replace(/[.,:;!?]+$/, "");
     if (!candidate || isGenericProductLabel(candidate)) return "";
     const candidateNorm = normalize(candidate);
+
+    // V114: un gancho publicitario o una pregunta no puede convertirse en el
+    // nombre del producto. Ej.: “¿TU CUCHILLO NO CORTA NI MANTECA?” debe
+    // resolverse luego como “Afilador Alemán”, no guardarse como producto.
+    const looksLikeAdvertisingHook =
+      /[?¿]/.test(clean(value)) ||
+      /^(tu|tus|su|sus|el|la)\s+.+\b(no|nunca|todavia|todavía|ya no)\b/.test(candidateNorm) ||
+      /\b(no corta|no funciona|estas cansado|estás cansado|te cuesta|problema|sufris|sufrís|perdes|perdés tiempo)\b/.test(candidateNorm);
+
     if (
+      looksLikeAdvertisingHook ||
       /^(olvidate|olvídate|recupera|recuperá|aprovecha|aprovechá|cocina|cociná|respira|respirá|camina|caminá|deja|dejá)\b/.test(candidateNorm)
     ) {
       return "";
@@ -1275,6 +1287,9 @@ function isProductEffectivenessQuestion(text: string): boolean {
 }
 
 function buildProductEffectivenessResponse(state: ConversationState): string {
+  // V116: deshabilitado. La explicación del producto sale del entrenamiento vía Gemini.
+  return "";
+  /*
   const product =
     clean(state.productInfo?.canonical) ||
     clean(state.order.product) ||
@@ -1359,6 +1374,7 @@ function buildProductEffectivenessResponse(state: ConversationState): string {
   }
 
   return `${explanation}${continuation ? `\n\n${continuation}` : ""}`;
+  */
 }
 
 function isQuestionLikeMessage(text: string) {
@@ -3903,6 +3919,9 @@ function isShortAcknowledgement(text: string) {
 }
 
 function buildDeterministicAcknowledgementResponse(text: string, state: ConversationState) {
+  // V116: deshabilitado. Saludos y acuses los redacta Gemini.
+  return "";
+  /*
   if (!isShortAcknowledgement(text)) return "";
 
   const n = normalize(text);
@@ -3931,6 +3950,7 @@ function buildDeterministicAcknowledgementResponse(text: string, state: Conversa
   }
 
   return `${friendlyLead}${continuation ? `\n\n${continuation}` : ""}`;
+  */
 }
 
 function isConversationClosing(text: string) {
@@ -3983,6 +4003,9 @@ function buildCatalogResponse(parsed: ParsedTraining) {
 
 
 function deterministicPostSaleResponse(text: string, order: OrderData, parsed: ParsedTraining) {
+  // V116: deshabilitado. Postventa visible siempre generada por Gemini.
+  return "";
+  /*
   const n = normalize(text);
 
   const hasFiscalData =
@@ -4040,6 +4063,7 @@ function deterministicPostSaleResponse(text: string, order: OrderData, parsed: P
   }
 
   return "";
+  */
 }
 
 function buildPostSaleSystemPrompt(parsed: ParsedTraining, order: OrderData) {
@@ -4055,16 +4079,22 @@ DATOS DEL PEDIDO CONFIRMADO:
 - Cliente: ${order.customer_name || "no disponible"}
 - Teléfono: ${order.phone || "no disponible"}
 
-REGLAS:
-- Respondé preguntas postventa de forma útil y amable.
-- Si pregunta por factura, respondé según entrenamiento. Si no hay dato específico, decí que podés consultar/solicitar factura con los datos fiscales.
-- Si pregunta cuándo llega, indicá que el pedido quedó agendado para la próxima ronda de envíos y que el delivery confirma al llegar a su zona. No inventes horarios exactos.
-- Si pregunta por pago, recordá que puede pagar en efectivo o transferencia al delivery si tiene contra-entrega.
-- Si quiere cambiar dirección o teléfono, pedile el dato nuevo.
-- Si quiere cancelar, pedí confirmación clara.
+REGLAS OBLIGATORIAS:
+- Respondé usando PRIMERO y de forma estricta los ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO.
+- PROHIBIDO usar respuestas genéricas, plantillas universales o frases prearmadas no respaldadas por el entrenamiento.
+- Para entrega, demora, fecha, horario, pago, factura, garantía, cambios, catálogo y postventa, extraé la respuesta concreta del entrenamiento y del estado real del pedido.
+- Si el entrenamiento indica un plazo (por ejemplo 24 a 48 horas hábiles), respondé exactamente ese plazo.
+- Si el entrenamiento no contiene el dato solicitado, decí de forma breve que no está especificado y que el equipo/delivery lo coordinará; no inventes “próxima ronda”, fechas, horas ni políticas.
+- El número del cliente YA está disponible en DATOS DEL PEDIDO. Nunca vuelvas a pedir teléfono salvo que el cliente diga expresamente que desea cambiarlo.
+- Si quiere cambiar dirección o teléfono, pedile únicamente el dato nuevo correspondiente.
+- Si quiere cancelar, seguí la regla específica del entrenamiento; si no existe, pedí confirmación clara.
 - No crees un pedido nuevo.
 - No repitas el bloque de ✅ PEDIDO CONFIRMADO.
-- Sé breve, cálido y con emojis moderados.
+- ÚNICAS excepciones permitidas como texto fijo del backend: cierre confirmado y procesamiento/validación de comprobantes.
+- La detección del celular es técnica y automática, pero cualquier frase visible sobre el celular también la redactás vos.
+- No copies frases genéricas recurrentes. Variá naturalmente la redacción según el mensaje exacto y el historial.
+- Nunca vuelvas a preguntar un dato que ya figura en DATOS DEL PEDIDO.
+- Sé natural, directo y coherente con el estilo definido por el entrenamiento.
 
 ENTRENAMIENTOS GENERALES DEL USUARIO:
 ${parsed.generalTraining || "No hay reglas generales configuradas para este usuario."}
@@ -5713,6 +5743,9 @@ REGLAS DURAS:
 - Si Dirección opcional = no, la dirección/ubicación sí debe completarse antes de confirmar.
 - El backend guarda la venta y responde directamente con el formato fijo ✅ PEDIDO CONFIRMADO.
 - PROHIBIDO redactar un cierre libre. El único cierre válido es el generado por finalConfirmationMessage().
+- Fuera del cierre confirmado y del flujo técnico de comprobantes, PROHIBIDO responder con textos genéricos fijos: redactá siempre desde los entrenamientos activos y los datos reales del pedido.
+- El teléfono se obtiene automáticamente del número de WhatsApp. Si el estado ya contiene teléfono, nunca lo pidas de nuevo. Solo solicitá uno nuevo si el cliente quiere cambiarlo.
+- En preguntas sobre demora o fecha, usá el plazo exacto del entrenamiento. Si no existe, indicá que no está especificado y que se coordina, sin inventar “próxima ronda” ni una hora.
 - Cuando falte algún dato, mostrale un resumen fijo de lo que ya tenés y pedí solamente lo faltante.
 - PROHIBIDO pedir confirmación intermedia. Si ya están todos los datos, confirmá automáticamente.
 - Frases como "quiero en calce 42", "talle 40" o "número 39" son VARIANTES, nunca direcciones.
@@ -6138,20 +6171,11 @@ export default async function handler(req: any, res: any) {
     attachProductImages(parsed.products, allTraining);
     sanitizeProductPrices(parsed);
 
-    // V113: una solicitud de catálogo es informativa, no abre otro pedido ni
-    // borra el pedido confirmado. Se responde de forma determinística para
-    // evitar que "pasame el catálogo" termine en un mensaje de cierre.
-    if (isCatalogRequest(texto) || (context?.pending_catalog_confirmation && isAffirmative(texto))) {
-      return res.json({
-        response: buildCatalogResponse(parsed),
-        context: {
-          ...(context || {}),
-          pending_catalog_confirmation: false,
-          updated_at: new Date().toISOString(),
-        },
-        debug: { deterministic_catalog_response: true },
-      });
-    }
+    // V116: catálogo es intención informativa. No se responde con texto fijo:
+    // se conserva el pedido y Gemini redacta usando productos, URL y entrenamiento.
+    const catalogRequestedNow =
+      isCatalogRequest(texto) ||
+      Boolean(context?.pending_catalog_confirmation && isAffirmative(texto));
 
     const productsMentionedNow = detectProductsMentioned(texto, parsed);
     let activeMultiCart = getMultiCartFromContext(context, parsed);
@@ -6388,7 +6412,7 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        if (isDeliveryTimingQuestion(texto)) {
+        if (false && isDeliveryTimingQuestion(texto)) {
           return res.json({
             response: buildDeliveryTimingQuestionResponse(texto, oldOrder),
             context: {
@@ -6509,7 +6533,7 @@ export default async function handler(req: any, res: any) {
           });
 
           return res.json({
-            response: postProcessResponse(postSaleResponse || `😊 Tu pedido ya quedó confirmado y agendado. El delivery te confirma al llegar a tu zona. 🚚📦`),
+            response: postProcessResponse(postSaleResponse || ""),
             context: {
               ...(context || {}),
               step: "pedido_confirmado",
@@ -6518,13 +6542,45 @@ export default async function handler(req: any, res: any) {
           });
         }
 
+        // V115: ninguna consulta normal recibe una respuesta genérica fija.
+        // Todo lo que no sea cierre confirmado ni comprobante se redacta con IA
+        // usando los entrenamientos activos y el estado real del pedido.
+        const dynamicPostSaleSystem = buildPostSaleSystemPrompt(parsed, oldOrder);
+        const dynamicPostSaleContents = (history || [])
+          .slice(-10)
+          .filter((h: any) => clean(h?.content))
+          .map((h: any) => ({
+            role: h.role === "assistant" ? "model" : "user",
+            parts: [{ text: clean(h.content) }],
+          }));
+
+        dynamicPostSaleContents.push({
+          role: "user",
+          parts: [{ text: texto }],
+        });
+
+        const dynamicPostSaleResponse = await callGemini({
+          apiKey,
+          model,
+          system: dynamicPostSaleSystem,
+          contents: dynamicPostSaleContents,
+          temperature: iaConfig.temperature ?? 0.35,
+          maxTokens: Math.max(iaConfig.max_tokens ?? 0, 1024),
+        });
+
         return res.json({
-          response: `😊 ¡Perfecto! Tu pedido ya quedó confirmado y agendado. Gracias por elegirnos 💜🚚`,
+          response: postProcessResponse(
+            dynamicPostSaleResponse ||
+            "No tengo ese dato especificado en el entrenamiento. El equipo encargado lo coordinará contigo por WhatsApp."
+          ),
           context: {
             ...(context || {}),
+            order_data: oldOrder,
+            order_id: oldOrder.order_id || null,
             step: "pedido_confirmado",
             updated_at: new Date().toISOString(),
           },
+          debug: { dynamic_post_sale_from_training: true },
         });
       }
     }
@@ -7684,8 +7740,15 @@ export default async function handler(req: any, res: any) {
       cityWasCapturedNow &&
       !orderData.locked_offer?.fixed_quantity
     ) {
-      // V103: la ciudad recién recibida siempre debe llevar a promociones + cantidad.
-      if (explicitQty <= 0) {
+      // V114: la ciudad recién recibida solo lleva a pedir cantidad cuando
+      // todavía no existe una cantidad válida. Si el cliente ya dijo “quiero 2”,
+      // se conserva esa selección y el flujo continúa con nombre/dirección.
+      const quantityAlreadySelected =
+        sanitizeQuantity(orderData.quantity) > 0 ||
+        sanitizeQuantity(oldOrder.quantity) > 0 ||
+        sanitizeQuantity(lockedOffer?.quantity) > 0;
+
+      if (explicitQty <= 0 && !quantityAlreadySelected) {
         orderData.quantity = 0;
         finalState.order.quantity = 0;
         finalState.step = "collecting_quantity";
@@ -7968,7 +8031,11 @@ export default async function handler(req: any, res: any) {
 Mensaje del cliente:
 ${texto || "(mensaje sin texto)"}
 
+INTENCIÓN TÉCNICA DETECTADA:
+- Solicita catálogo: ${catalogRequestedNow ? "sí" : "no"}
+
 Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes ciudad ni datos.
+Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas del backend.
 `.trim();
 
     contents.push({
@@ -7991,7 +8058,20 @@ Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes c
     }
 
     if (!aiResponse || aiResponse === "__GEMINI_QUOTA_EXCEEDED__") {
-      aiResponse = buildFallbackResponse(parsed, finalState, templatePricing);
+      // V116: jamás enviar una respuesta fija que pueda revelar automatización
+      // o provocar loops. El canal debe reintentar la generación con IA.
+      return res.status(503).json({
+        response: "",
+        retryable: true,
+        context: {
+          ...(context || {}),
+          order_data: orderData,
+          order_id: orderData.order_id || null,
+          step: finalState.step,
+          updated_at: new Date().toISOString(),
+        },
+        debug: { ai_response_required: true },
+      });
     }
 
     // Parche 8: Eliminar pisada de Gemini con respuestas fijas (desactivado con false &&)
