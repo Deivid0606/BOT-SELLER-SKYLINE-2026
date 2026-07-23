@@ -623,6 +623,57 @@ function extractMetaReferral(message) {
   };
 }
 
+
+async function getAdCatalogEntry(userId, adId) {
+  const cleanAdId = clean(adId);
+  if (!userId || !cleanAdId) return null;
+  try {
+    const { data, error } = await supabase
+      .from("meta_ads_catalog")
+      .select("ad_id, ad_name, product_name, default_message, is_active")
+      .eq("user_id", userId)
+      .eq("ad_id", cleanAdId)
+      .eq("is_active", true)
+      .maybeSingle();
+    if (error) console.log("⚠️ meta_ads_catalog lookup:", error.message || error);
+    return data || null;
+  } catch (error) {
+    console.log("⚠️ getAdCatalogEntry error:", error.message || error);
+    return null;
+  }
+}
+
+async function getConversationAdAttribution(userId, from) {
+  if (!userId || !from) return null;
+  try {
+    const { data: message, error } = await supabase
+      .from("inbox_messages")
+      .select("ad_id, ctwa_clid, ad_source_url, ad_headline, ad_body, message, created_at")
+      .eq("user_id", userId)
+      .eq("from_number", from)
+      .eq("is_meta_ad", true)
+      .not("ad_id", "is", null)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !message?.ad_id) return null;
+    const catalog = await getAdCatalogEntry(userId, message.ad_id);
+    return {
+      message_origin: "meta_ads",
+      ad_id: message.ad_id,
+      ad_name: catalog?.ad_name || message.ad_headline || null,
+      ad_product: catalog?.product_name || null,
+      ad_initial_message: catalog?.default_message || message.ad_body || message.message || null,
+      ctwa_clid: message.ctwa_clid || null,
+      ad_source_url: message.ad_source_url || null,
+    };
+  } catch (error) {
+    console.log("⚠️ getConversationAdAttribution error:", error.message || error);
+    return null;
+  }
+}
+
 async function saveReceivedMessage({
   userId,
   from,
@@ -1698,6 +1749,8 @@ async function detectarYGuardarPedidoConfirmado({
 
     if (!reciente) {
       const cantidadTotal = itemsNuevos.reduce((s, it) => s + it.qty, 0);
+      const attribution = await getConversationAdAttribution(userId, from);
+
       const insertPayload = {
         user_id: userId,
         from_number: from,
@@ -1712,6 +1765,13 @@ async function detectarYGuardarPedidoConfirmado({
         metodo_pago: "efectivo",
         source_message_id: sourceMessageId || null,
         detected_by_ai: true,
+        message_origin: attribution?.message_origin || "organic",
+        ad_id: attribution?.ad_id || null,
+        ad_name: attribution?.ad_name || null,
+        ad_product: attribution?.ad_product || null,
+        ad_initial_message: attribution?.ad_initial_message || null,
+        ctwa_clid: attribution?.ctwa_clid || null,
+        ad_source_url: attribution?.ad_source_url || null,
         created_at: new Date().toISOString(),
       };
 
@@ -1757,10 +1817,22 @@ async function detectarYGuardarPedidoConfirmado({
     const productoSerializado = serializarCarrito(carrito);
     const cantidadTotal = carrito.reduce((sum, it) => sum + it.qty, 0);
 
+    const attribution = await getConversationAdAttribution(userId, from);
     const updatePayload = {
       product: productoSerializado,
       quantity: cantidadTotal,
       total_amount: totalActual,
+      ...(attribution
+        ? {
+            message_origin: attribution.message_origin,
+            ad_id: attribution.ad_id,
+            ad_name: attribution.ad_name,
+            ad_product: attribution.ad_product,
+            ad_initial_message: attribution.ad_initial_message,
+            ctwa_clid: attribution.ctwa_clid,
+            ad_source_url: attribution.ad_source_url,
+          }
+        : {}),
       updated_at: new Date().toISOString(),
     };
     if (datos.address) updatePayload.address = datos.address;
