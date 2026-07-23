@@ -19,7 +19,8 @@ import {
   Music,
   Video as VideoIcon,
 } from "lucide-react";
-import { format } from "date-fns";
+import { format, subDays, startOfDay, endOfDay } from "date-fns";
+import { formatInTimeZone, fromZonedTime, toZonedTime } from "date-fns-tz";
 import { es } from "date-fns/locale";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
@@ -115,18 +116,30 @@ function getDisplayType(type?: string | null) {
   return type;
 }
 
+const PARAGUAY_TIME_ZONE = "America/Asuncion";
+
 function formatMessageTime(date: Date) {
-  return format(date, "HH:mm");
+  return formatInTimeZone(date, PARAGUAY_TIME_ZONE, "HH:mm");
 }
 
 function formatMessageDate(date: Date) {
-  return format(date, "yyyy-MM-dd");
+  return formatInTimeZone(date, PARAGUAY_TIME_ZONE, "yyyy-MM-dd");
 }
 
+function formatMessageDateLabel(dateKey: string) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const localDate = new Date(year, month - 1, day, 12, 0, 0);
+  return format(localDate, "EEEE, d 'de' MMMM yyyy", { locale: es });
+}
 
-function firstDayOfCurrentMonth() {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), 1);
+function defaultRecentDateFrom() {
+  const paraguayNow = toZonedTime(new Date(), PARAGUAY_TIME_ZONE);
+  return startOfDay(subDays(paraguayNow, 1));
+}
+
+function defaultRecentDateTo() {
+  const paraguayNow = toZonedTime(new Date(), PARAGUAY_TIME_ZONE);
+  return endOfDay(paraguayNow);
 }
 
 function normalizeChatPhone(value?: string | null) {
@@ -174,8 +187,8 @@ export default function InboxPage() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [showEmojis, setShowEmojis] = useState(false);
   const [filterTag, setFilterTag] = useState<string | null>(null);
-  const [filterDateFrom, setFilterDateFrom] = useState<Date | undefined>(() => firstDayOfCurrentMonth());
-  const [filterDateTo, setFilterDateTo] = useState<Date | undefined>(() => new Date());
+  const [filterDateFrom, setFilterDateFrom] = useState<Date | undefined>(() => defaultRecentDateFrom());
+  const [filterDateTo, setFilterDateTo] = useState<Date | undefined>(() => defaultRecentDateTo());
   const [showFilters, setShowFilters] = useState(false);
 
   // Datos
@@ -351,10 +364,10 @@ export default function InboxPage() {
     const startDate = from_date ?? filterDateFrom ?? new Date();
     const endDate = to_date ?? filterDateTo ?? startDate;
 
-    const rangeStart = new Date(startDate);
-    rangeStart.setHours(0, 0, 0, 0);
-    const rangeEnd = new Date(endDate);
-    rangeEnd.setHours(23, 59, 59, 999);
+    const rangeStart = startOfDay(new Date(startDate));
+    const rangeEnd = endOfDay(new Date(endDate));
+    const utcRangeStart = fromZonedTime(rangeStart, PARAGUAY_TIME_ZONE);
+    const utcRangeEnd = fromZonedTime(rangeEnd, PARAGUAY_TIME_ZONE);
 
     const PAGE_SIZE = 1000;
     let allMessages: DbMessage[] = [];
@@ -367,8 +380,8 @@ export default function InboxPage() {
           .from("received_messages")
           .select("*")
           .eq("user_id", user.id)
-          .gte("created_at", rangeStart.toISOString())
-          .lte("created_at", rangeEnd.toISOString())
+          .gte("created_at", utcRangeStart.toISOString())
+          .lte("created_at", utcRangeEnd.toISOString())
           .order("created_at", { ascending: true })
           .range(offset, offset + PAGE_SIZE - 1);
 
@@ -399,9 +412,23 @@ export default function InboxPage() {
     loadMessages(filterDateFrom, filterDateTo);
     const channel = supabase
       .channel("received_messages_realtime_inbox_pro")
-      .on("postgres_changes",
+      .on(
+        "postgres_changes",
         { event: "*", schema: "public", table: "received_messages" },
-        () => { loadMessages(filterDateFrom, filterDateTo); }
+        (payload: any) => {
+          if (payload.eventType === "INSERT" && payload.new) {
+            const incoming = payload.new as DbMessage;
+            if (incoming.user_id !== user.id) return;
+
+            setDbMessages((prev) => {
+              if (prev.some((message) => message.id === incoming.id)) return prev;
+              return [...prev, incoming];
+            });
+            return;
+          }
+
+          loadMessages(filterDateFrom, filterDateTo);
+        }
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
@@ -443,8 +470,8 @@ export default function InboxPage() {
       return {
         number,
         lastMsg: last?.message || "",
-        time: format(lastDate, "HH:mm"),
-        date: format(lastDate, "yyyy-MM-dd"),
+        time: formatMessageTime(lastDate),
+        date: formatMessageDate(lastDate),
         unread: messages.filter((m) => !m.is_processed && !isOutgoingType(m.message_type)).length,
         tag,
       };
@@ -589,12 +616,12 @@ export default function InboxPage() {
   // ============================================================
   const clearFilters = () => {
     setFilterTag(null);
-    setFilterDateFrom(firstDayOfCurrentMonth());
-    setFilterDateTo(new Date());
+    setFilterDateFrom(defaultRecentDateFrom());
+    setFilterDateTo(defaultRecentDateTo());
   };
 
-  const defaultDateFrom = firstDayOfCurrentMonth();
-  const defaultDateTo = new Date();
+  const defaultDateFrom = defaultRecentDateFrom();
+  const defaultDateTo = defaultRecentDateTo();
   const hasCustomDateRange =
     !sameCalendarDay(filterDateFrom, defaultDateFrom) ||
     !sameCalendarDay(filterDateTo, defaultDateTo);
@@ -619,6 +646,14 @@ export default function InboxPage() {
       return;
     }
 
+    const textToSend = messageInput.trim();
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const optimisticCreatedAt = new Date().toISOString();
+
+    let mediaUrl: string | null = null;
+    let mediaType: string | null = null;
+    let buttonsToSend: TemplateButton[] | null = null;
+
     try {
       setSending(true);
 
@@ -632,36 +667,48 @@ export default function InboxPage() {
         console.warn("⚠️ No se pudo leer profiles, se enviará solo con user_id:", profileError);
       }
 
-      const textToSend = messageInput.trim();
-      let mediaUrl: string | null = null;
-      let mediaType: string | null = null;
-      let buttonsToSend: TemplateButton[] | null = null;
-
       if (selectedFile) {
         const fileExt = selectedFile.file.name.split(".").pop();
         const fileName = `${user.id}/${Date.now()}.${fileExt}`;
         const folder = selectedFile.type === "image" ? "images" : selectedFile.type === "video" ? "videos" : "others";
         const filePath = `${folder}/${fileName}`;
 
-        const { error: uploadError } = await supabase.storage.from("templates-media").upload(filePath, selectedFile.file);
+        const { error: uploadError } = await supabase.storage
+          .from("templates-media")
+          .upload(filePath, selectedFile.file);
+
         if (uploadError) throw new Error(`Error subiendo archivo: ${uploadError.message}`);
 
-        const { data: { publicUrl } } = supabase.storage.from("templates-media").getPublicUrl(filePath);
+        const { data: { publicUrl } } = supabase.storage
+          .from("templates-media")
+          .getPublicUrl(filePath);
+
         mediaUrl = publicUrl;
         mediaType = selectedFile.type;
       } else if (selectedTemplateMedia) {
-        mediaUrl = selectedTemplateMedia.url && selectedTemplateMedia.url !== '' 
-          ? selectedTemplateMedia.url 
-          : null;
-        mediaType = selectedTemplateMedia.type || 'text';
+        mediaUrl = selectedTemplateMedia.url || null;
+        mediaType = selectedTemplateMedia.type || "text";
         buttonsToSend = selectedTemplateMedia.buttons || null;
-        
-        console.log('📌 selectedTemplateMedia en handleSendMessage:', {
-          url: mediaUrl,
-          type: mediaType,
-          buttons: buttonsToSend?.length || 0
-        });
       }
+
+      const optimisticMessage: DbMessage = {
+        id: tempId,
+        user_id: user.id,
+        platform: "whatsapp",
+        from_number: selectedNumber,
+        message: textToSend,
+        message_type: mediaUrl && mediaType ? `out_${mediaType}` : "out_text",
+        media_url: mediaUrl,
+        is_processed: true,
+        created_at: optimisticCreatedAt,
+        buttons: buttonsToSend || undefined,
+      };
+
+      // Mostrar inmediatamente en pantalla antes de esperar la API.
+      setDbMessages((prev) => [...prev, optimisticMessage]);
+      setMessageInput("");
+      setSelectedFile(null);
+      setSelectedTemplateMedia(null);
 
       const payload: any = {
         user_id: user.id,
@@ -676,16 +723,7 @@ export default function InboxPage() {
         payload.media_type = mediaType;
       }
 
-      if (buttonsToSend && buttonsToSend.length > 0) {
-        payload.buttons = buttonsToSend;
-      }
-
-      console.log("📤 Enviando mensaje con payload:", {
-        to: payload.to,
-        message: payload.message?.substring(0, 50),
-        buttons: payload.buttons?.length || 0,
-        media: payload.media_url ? 'SÍ' : 'NO',
-      });
+      if (buttonsToSend?.length) payload.buttons = buttonsToSend;
 
       const response = await fetch("/api/send-whatsapp", {
         method: "POST",
@@ -710,29 +748,33 @@ export default function InboxPage() {
         user_id: user.id,
         from_number: selectedNumber,
         message: textToSend,
-        message_type: 'out_text',
+        message_type: mediaUrl && mediaType ? `out_${mediaType}` : "out_text",
+        media_url: mediaUrl,
         is_processed: true,
+        buttons: buttonsToSend?.length ? buttonsToSend : null,
       };
 
-      if (mediaUrl && mediaType) {
-        messageToSave.media_url = mediaUrl;
-        messageToSave.message_type = `out_${mediaType}`;
-      }
+      const { data: savedMessage, error: saveError } = await supabase
+        .from("received_messages")
+        .insert(messageToSave)
+        .select("*")
+        .single();
 
-      if (buttonsToSend && buttonsToSend.length > 0) {
-        messageToSave.buttons = buttonsToSend;
-      }
+      if (saveError) throw new Error(`Mensaje enviado, pero no se pudo guardar: ${saveError.message}`);
 
-      await supabase.from("received_messages").insert(messageToSave);
+      // Sustituye el temporal por la fila real, evitando duplicados.
+      setDbMessages((prev) => {
+        const withoutTempOrDuplicate = prev.filter(
+          (message) => message.id !== tempId && message.id !== savedMessage.id
+        );
+        return [...withoutTempOrDuplicate, savedMessage as DbMessage];
+      });
 
-      setMessageInput("");
-      setSelectedFile(null);
-      setSelectedTemplateMedia(null);
-      await loadMessages();
-
-      toast({ title: "✅ Mensaje enviado", description: "La respuesta se envió correctamente por WhatsApp." });
+      toast({ title: "✅ Mensaje enviado", description: "La respuesta se mostró y envió correctamente." });
     } catch (error: any) {
-      console.error("Error enviando mensaje:", error);
+      // Si falla, quitar el mensaje temporal para no mostrar algo que no salió.
+      setDbMessages((prev) => prev.filter((message) => message.id !== tempId));
+      setMessageInput(textToSend);
       toast({ title: "Error al enviar", description: error?.message || "No se pudo enviar el mensaje.", variant: "destructive" });
     } finally {
       setSending(false);
@@ -1067,7 +1109,7 @@ export default function InboxPage() {
                       {showDateSeparator && (
                         <div className="flex justify-center my-3">
                           <span className="text-[10px] px-3 py-1 rounded-full bg-secondary/50 text-muted-foreground">
-                            {format(new Date(msg.date), "EEEE, d 'de' MMMM yyyy", { locale: es })}
+                            {formatMessageDateLabel(msg.date)}
                           </span>
                         </div>
                       )}
@@ -1272,7 +1314,7 @@ export default function InboxPage() {
                           <CalendarDays className="w-3 h-3" /> Rango de fechas
                         </div>
                         <p className="mb-1.5 text-[10px] text-muted-foreground">
-                          Por defecto: desde el día 1 del mes hasta hoy.
+                          Por defecto: solamente ayer y hoy. Podés elegir cualquier otra fecha.
                         </p>
                         <div className="flex flex-col gap-1.5">
                           <div className="flex items-center gap-1.5">
