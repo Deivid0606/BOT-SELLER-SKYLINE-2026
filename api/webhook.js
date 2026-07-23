@@ -583,6 +583,46 @@ async function isDuplicateMessage(messageId) {
   }
 }
 
+function extractMetaReferral(message) {
+  const referral = message?.referral && typeof message.referral === "object"
+    ? message.referral
+    : null;
+
+  if (!referral) {
+    return {
+      messageOrigin: "organic",
+      isMetaAd: false,
+      ctwaClid: null,
+      adSourceUrl: null,
+      adHeadline: null,
+      adBody: null,
+      adId: null,
+      referralData: null,
+    };
+  }
+
+  const sourceType = clean(referral.source_type).toLowerCase();
+  const isMetaAd = Boolean(
+    referral.ctwa_clid ||
+    referral.source_url ||
+    referral.headline ||
+    referral.body ||
+    referral.source_id ||
+    sourceType === "ad"
+  );
+
+  return {
+    messageOrigin: isMetaAd ? "meta_ads" : "organic",
+    isMetaAd,
+    ctwaClid: clean(referral.ctwa_clid) || null,
+    adSourceUrl: clean(referral.source_url) || null,
+    adHeadline: clean(referral.headline) || null,
+    adBody: clean(referral.body) || null,
+    adId: clean(referral.source_id || referral.ad_id) || null,
+    referralData: referral,
+  };
+}
+
 async function saveReceivedMessage({
   userId,
   from,
@@ -590,6 +630,14 @@ async function saveReceivedMessage({
   messageType,
   mediaUrl = null,
   waMessageId = null,
+  messageOrigin = "organic",
+  isMetaAd = false,
+  ctwaClid = null,
+  adSourceUrl = null,
+  adHeadline = null,
+  adBody = null,
+  adId = null,
+  referralData = null,
 }) {
   try {
     const isOutgoing = (messageType || "").startsWith("out_");
@@ -606,6 +654,14 @@ async function saveReceivedMessage({
       media_url_text: mediaUrl ? (Array.isArray(mediaUrl) ? mediaUrl[0] : mediaUrl) : null,
       is_read: !!isOutgoing,
       is_processed: !!isOutgoing,
+      message_origin: isOutgoing ? "outgoing" : messageOrigin,
+      is_meta_ad: isOutgoing ? false : Boolean(isMetaAd),
+      ctwa_clid: isOutgoing ? null : ctwaClid,
+      ad_source_url: isOutgoing ? null : adSourceUrl,
+      ad_headline: isOutgoing ? null : adHeadline,
+      ad_body: isOutgoing ? null : adBody,
+      ad_id: isOutgoing ? null : adId,
+      referral_data: isOutgoing ? null : referralData,
       ...(waMessageId ? { wa_message_id: waMessageId } : {}),
     };
     const { data, error } = await supabase
@@ -1800,6 +1856,16 @@ async function asociarComprobanteAlPedido({ userId, from, mediaUrl }) {
 export async function procesar(req, message, userId, from) {
   try {
     const tipoMsg = message.type;
+    const referral = extractMetaReferral(message);
+
+    if (referral.isMetaAd) {
+      console.log("📣 Mensaje originado en Meta Ads:", {
+        from,
+        ctwa_clid: referral.ctwaClid,
+        ad_id: referral.adId,
+        headline: referral.adHeadline,
+      });
+    }
 
     let texto = "";
     let mediaUrl = null;
@@ -1827,6 +1893,7 @@ export async function procesar(req, message, userId, from) {
         messageType: "interactive",
         mediaUrl: null,
         waMessageId: message.id || null,
+        ...referral,
       });
       
       const disparado = await evaluarDisparadores({ userId, from, texto });
@@ -1980,6 +2047,7 @@ export async function procesar(req, message, userId, from) {
       messageType,
       mediaUrl,
       waMessageId: message.id || null,
+      ...referral,
     });
 
     if (messageType === "text" || messageType === "location") {
