@@ -20,7 +20,6 @@ import {
   Video as VideoIcon,
 } from "lucide-react";
 import { format, subDays, startOfDay, endOfDay } from "date-fns";
-import { formatInTimeZone, fromZonedTime, toZonedTime } from "date-fns-tz";
 import { es } from "date-fns/locale";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
@@ -118,12 +117,77 @@ function getDisplayType(type?: string | null) {
 
 const PARAGUAY_TIME_ZONE = "America/Asuncion";
 
+function getTimeZoneParts(value: string | Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: PARAGUAY_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(value));
+
+  const result: Record<string, string> = {};
+  for (const part of parts) result[part.type] = part.value;
+
+  return {
+    year: Number(result.year),
+    month: Number(result.month),
+    day: Number(result.day),
+    hour: Number(result.hour),
+    minute: Number(result.minute),
+    second: Number(result.second),
+  };
+}
+
+function paraguayNowAsLocalDate() {
+  const { year, month, day, hour, minute, second } = getTimeZoneParts(new Date());
+  return new Date(year, month - 1, day, hour, minute, second);
+}
+
+function zonedDateTimeToUtc(
+  date: Date,
+  endOfSelectedDay = false,
+) {
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const hour = endOfSelectedDay ? 23 : 0;
+  const minute = endOfSelectedDay ? 59 : 0;
+  const second = endOfSelectedDay ? 59 : 0;
+  const millisecond = endOfSelectedDay ? 999 : 0;
+
+  const requestedAsUtc = Date.UTC(year, month - 1, day, hour, minute, second, millisecond);
+  let guess = new Date(requestedAsUtc);
+
+  // Dos pasadas cubren cambios de horario de verano y offsets históricos.
+  for (let i = 0; i < 2; i += 1) {
+    const parts = getTimeZoneParts(guess);
+    const representedAsUtc = Date.UTC(
+      parts.year,
+      parts.month - 1,
+      parts.day,
+      parts.hour,
+      parts.minute,
+      parts.second,
+      millisecond,
+    );
+    guess = new Date(guess.getTime() + (requestedAsUtc - representedAsUtc));
+  }
+
+  return guess;
+}
+
 function formatMessageTime(date: Date) {
-  return formatInTimeZone(date, PARAGUAY_TIME_ZONE, "HH:mm");
+  const { hour, minute } = getTimeZoneParts(date);
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
 function formatMessageDate(date: Date) {
-  return formatInTimeZone(date, PARAGUAY_TIME_ZONE, "yyyy-MM-dd");
+  const { year, month, day } = getTimeZoneParts(date);
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 function formatMessageDateLabel(dateKey: string) {
@@ -133,13 +197,11 @@ function formatMessageDateLabel(dateKey: string) {
 }
 
 function defaultRecentDateFrom() {
-  const paraguayNow = toZonedTime(new Date(), PARAGUAY_TIME_ZONE);
-  return startOfDay(subDays(paraguayNow, 1));
+  return startOfDay(subDays(paraguayNowAsLocalDate(), 1));
 }
 
 function defaultRecentDateTo() {
-  const paraguayNow = toZonedTime(new Date(), PARAGUAY_TIME_ZONE);
-  return endOfDay(paraguayNow);
+  return endOfDay(paraguayNowAsLocalDate());
 }
 
 function normalizeChatPhone(value?: string | null) {
@@ -364,10 +426,8 @@ export default function InboxPage() {
     const startDate = from_date ?? filterDateFrom ?? new Date();
     const endDate = to_date ?? filterDateTo ?? startDate;
 
-    const rangeStart = startOfDay(new Date(startDate));
-    const rangeEnd = endOfDay(new Date(endDate));
-    const utcRangeStart = fromZonedTime(rangeStart, PARAGUAY_TIME_ZONE);
-    const utcRangeEnd = fromZonedTime(rangeEnd, PARAGUAY_TIME_ZONE);
+    const utcRangeStart = zonedDateTimeToUtc(new Date(startDate), false);
+    const utcRangeEnd = zonedDateTimeToUtc(new Date(endDate), true);
 
     const PAGE_SIZE = 1000;
     let allMessages: DbMessage[] = [];
