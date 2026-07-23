@@ -35,7 +35,6 @@ import {
   eachDayOfInterval,
 } from "date-fns";
 import { es } from "date-fns/locale";
-import { formatInTimeZone, toZonedTime } from "date-fns-tz";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -95,8 +94,39 @@ function isOutgoingMessage(messageType?: string | null) {
   return Boolean(messageType?.startsWith("out_"));
 }
 
+function getTimeZoneParts(value: string | Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: PARAGUAY_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(value));
+
+  const result: Record<string, string> = {};
+  for (const part of parts) result[part.type] = part.value;
+
+  return {
+    year: Number(result.year),
+    month: Number(result.month),
+    day: Number(result.day),
+    hour: Number(result.hour),
+    minute: Number(result.minute),
+    second: Number(result.second),
+  };
+}
+
 function paraguayDateKey(value: string | Date) {
-  return formatInTimeZone(new Date(value), PARAGUAY_TIME_ZONE, "yyyy-MM-dd");
+  const { year, month, day } = getTimeZoneParts(value);
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function paraguayNowAsLocalDate() {
+  const { year, month, day, hour, minute, second } = getTimeZoneParts(new Date());
+  return new Date(year, month - 1, day, hour, minute, second);
 }
 
 export default function DashboardPage() {
@@ -108,7 +138,7 @@ export default function DashboardPage() {
   const [customRange, setCustomRange] = useState<DateRange | undefined>();
 
   const { from, to, label } = useMemo(() => {
-    const now = toZonedTime(new Date(), PARAGUAY_TIME_ZONE);
+    const now = paraguayNowAsLocalDate();
 
     if (rangeKey === "hoy") {
       return { from: startOfDay(now), to: endOfDay(now), label: "Hoy" };
