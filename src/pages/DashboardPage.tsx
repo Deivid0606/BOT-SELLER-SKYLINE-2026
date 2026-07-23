@@ -3,11 +3,13 @@ import { KpiCard } from "@/components/KpiCard";
 import {
   MessageSquare,
   Users,
-  ShoppingCart,
   TrendingUp,
   MapPin,
   Package,
   CalendarIcon,
+  CheckCircle2,
+  XCircle,
+  ClipboardList,
 } from "lucide-react";
 import {
   BarChart,
@@ -19,6 +21,7 @@ import {
   ResponsiveContainer,
   AreaChart,
   Area,
+  Legend,
 } from "recharts";
 import { motion } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
@@ -30,19 +33,22 @@ import {
   startOfMonth,
   endOfMonth,
   eachDayOfInterval,
-  isWithinInterval,
 } from "date-fns";
 import { es } from "date-fns/locale";
+import { formatInTimeZone, toZonedTime } from "date-fns-tz";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import type { DateRange } from "react-day-picker";
 
+const PARAGUAY_TIME_ZONE = "America/Asuncion";
+
 type DbMessage = {
   id: string;
   from_number: string | null;
   message: string | null;
+  message_type: string | null;
   is_processed: boolean | null;
   created_at?: string | null;
 };
@@ -56,10 +62,42 @@ type DbOrder = {
   created_at: string;
 };
 
-// ✅ Estados que cuentan como "venta cerrada"
-const CLOSED_STATUSES = new Set(["cargado", "confirmado", "confirmed", "droppx"]);
-
 type RangeKey = "hoy" | "7d" | "30d" | "mes" | "custom";
+
+const LOADED_STATUSES = new Set([
+  "cargado",
+  "confirmado",
+  "confirmed",
+  "droppx",
+  "procesado",
+  "enviado",
+]);
+
+const CANCELLED_STATUSES = new Set([
+  "cancelado",
+  "cancelada",
+  "cancelled",
+  "rechazado",
+  "rechazada",
+  "anulado",
+  "anulada",
+]);
+
+function normalizeStatus(status?: string | null) {
+  return String(status ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function isOutgoingMessage(messageType?: string | null) {
+  return Boolean(messageType?.startsWith("out_"));
+}
+
+function paraguayDateKey(value: string | Date) {
+  return formatInTimeZone(new Date(value), PARAGUAY_TIME_ZONE, "yyyy-MM-dd");
+}
 
 export default function DashboardPage() {
   const [messages, setMessages] = useState<DbMessage[]>([]);
@@ -69,47 +107,72 @@ export default function DashboardPage() {
   const [rangeKey, setRangeKey] = useState<RangeKey>("hoy");
   const [customRange, setCustomRange] = useState<DateRange | undefined>();
 
-  // Calcular rango de fechas según el botón activo
   const { from, to, label } = useMemo(() => {
-    const now = new Date();
+    const now = toZonedTime(new Date(), PARAGUAY_TIME_ZONE);
+
     if (rangeKey === "hoy") {
       return { from: startOfDay(now), to: endOfDay(now), label: "Hoy" };
     }
+
     if (rangeKey === "7d") {
-      return { from: startOfDay(subDays(now, 6)), to: endOfDay(now), label: "Últimos 7 días" };
+      return {
+        from: startOfDay(subDays(now, 6)),
+        to: endOfDay(now),
+        label: "Últimos 7 días",
+      };
     }
+
     if (rangeKey === "30d") {
-      return { from: startOfDay(subDays(now, 29)), to: endOfDay(now), label: "Últimos 30 días" };
+      return {
+        from: startOfDay(subDays(now, 29)),
+        to: endOfDay(now),
+        label: "Últimos 30 días",
+      };
     }
+
     if (rangeKey === "mes") {
-      return { from: startOfMonth(now), to: endOfMonth(now), label: "Este mes" };
+      return {
+        from: startOfMonth(now),
+        to: endOfMonth(now),
+        label: "Este mes",
+      };
     }
+
     if (customRange?.from) {
       const f = startOfDay(customRange.from);
       const t = endOfDay(customRange.to ?? customRange.from);
       return {
         from: f,
         to: t,
-        label: `${format(f, "dd MMM", { locale: es })} → ${format(t, "dd MMM", { locale: es })}`,
+        label: `${format(f, "dd MMM", { locale: es })} → ${format(t, "dd MMM", {
+          locale: es,
+        })}`,
       };
     }
+
     return { from: startOfDay(now), to: endOfDay(now), label: "Hoy" };
   }, [rangeKey, customRange]);
 
+  const fromKey = format(from, "yyyy-MM-dd");
+  const toKey = format(to, "yyyy-MM-dd");
+
   const loadDashboardData = async () => {
     setLoading(true);
+
     const [messagesRes, ordersRes] = await Promise.all([
       supabase
         .from("received_messages")
-        .select("id, from_number, message, is_processed, created_at")
-        .order("id", { ascending: false }),
+        .select("id, from_number, message, message_type, is_processed, created_at")
+        .order("created_at", { ascending: false }),
       supabase
         .from("orders")
         .select("id, product, city, status, total_amount, created_at")
         .order("created_at", { ascending: false }),
     ]);
+
     if (messagesRes.error) console.error("Error mensajes:", messagesRes.error);
     if (ordersRes.error) console.error("Error órdenes:", ordersRes.error);
+
     setMessages((messagesRes.data || []) as DbMessage[]);
     setOrders((ordersRes.data || []) as DbOrder[]);
     setLoading(false);
@@ -117,7 +180,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     loadDashboardData();
-    const m = supabase
+
+    const messagesChannel = supabase
       .channel("dashboard_messages_realtime")
       .on(
         "postgres_changes",
@@ -125,7 +189,8 @@ export default function DashboardPage() {
         loadDashboardData
       )
       .subscribe();
-    const o = supabase
+
+    const ordersChannel = supabase
       .channel("dashboard_orders_realtime")
       .on(
         "postgres_changes",
@@ -133,92 +198,130 @@ export default function DashboardPage() {
         loadDashboardData
       )
       .subscribe();
+
     return () => {
-      supabase.removeChannel(m);
-      supabase.removeChannel(o);
+      supabase.removeChannel(messagesChannel);
+      supabase.removeChannel(ordersChannel);
     };
   }, []);
 
-  // Pedidos cerrados dentro del rango seleccionado
-  const ordersInRange = useMemo(
+  const allOrdersInRange = useMemo(
     () =>
-      orders.filter((o) => {
-        if (!o.status || !CLOSED_STATUSES.has(o.status)) return false;
-        return isWithinInterval(new Date(o.created_at), { start: from, end: to });
+      orders.filter((order) => {
+        if (!order.created_at) return false;
+        const key = paraguayDateKey(order.created_at);
+        return key >= fromKey && key <= toKey;
       }),
-    [orders, from, to]
+    [orders, fromKey, toKey]
   );
 
-  // Mensajes dentro del rango
-  const messagesInRange = useMemo(
-    () =>
-      messages.filter((m) => {
-        if (!m.created_at) return false;
-        return isWithinInterval(new Date(m.created_at), { start: from, end: to });
-      }),
-    [messages, from, to]
+  const loadedOrders = useMemo(
+    () => allOrdersInRange.filter((order) => LOADED_STATUSES.has(normalizeStatus(order.status))),
+    [allOrdersInRange]
   );
 
-  const totalMessages = messagesInRange.length;
-  const activeChats = useMemo(
+  const cancelledOrders = useMemo(
     () =>
-      new Set(messagesInRange.map((m) => m.from_number).filter((v): v is string => !!v)).size,
-    [messagesInRange]
+      allOrdersInRange.filter((order) => CANCELLED_STATUSES.has(normalizeStatus(order.status))),
+    [allOrdersInRange]
   );
-  const totalSales = ordersInRange.length;
-  const conversionRate = activeChats > 0 ? Math.round((totalSales / activeChats) * 100) : 0;
+
+  const receivedMessagesInRange = useMemo(
+    () =>
+      messages.filter((message) => {
+        if (!message.created_at || !message.from_number) return false;
+        if (isOutgoingMessage(message.message_type)) return false;
+        const key = paraguayDateKey(message.created_at);
+        return key >= fromKey && key <= toKey;
+      }),
+    [messages, fromKey, toKey]
+  );
+
+  // Un “mensaje” del dashboard equivale a un chat recibido único por número.
+  const uniqueReceivedPhones = useMemo(
+    () =>
+      new Set(
+        receivedMessagesInRange
+          .map((message) => message.from_number?.trim())
+          .filter((phone): phone is string => Boolean(phone))
+      ),
+    [receivedMessagesInRange]
+  );
+
+  const totalMessages = uniqueReceivedPhones.size;
+  const activeChats = uniqueReceivedPhones.size;
+  const totalOrders = allOrdersInRange.length;
+  const totalLoaded = loadedOrders.length;
+  const totalCancelled = cancelledOrders.length;
+  const conversionRate = activeChats > 0 ? Math.round((totalLoaded / activeChats) * 100) : 0;
 
   const msgData = useMemo(() => {
     const days = eachDayOfInterval({ start: from, end: to });
-    return days.map((day) => ({
-      day: format(day, days.length <= 7 ? "EEE" : "dd/MM", { locale: es }),
-      msgs: messagesInRange.filter(
-        (m) =>
-          m.created_at &&
-          isWithinInterval(new Date(m.created_at), {
-            start: startOfDay(day),
-            end: endOfDay(day),
-          })
-      ).length,
-    }));
-  }, [messagesInRange, from, to]);
 
-  const salesData = useMemo(() => {
+    return days.map((day) => {
+      const dayKey = format(day, "yyyy-MM-dd");
+      const uniquePhones = new Set(
+        receivedMessagesInRange
+          .filter((message) => message.created_at && paraguayDateKey(message.created_at) === dayKey)
+          .map((message) => message.from_number?.trim())
+          .filter((phone): phone is string => Boolean(phone))
+      );
+
+      return {
+        day: format(day, days.length <= 7 ? "EEE" : "dd/MM", { locale: es }),
+        chats: uniquePhones.size,
+      };
+    });
+  }, [receivedMessagesInRange, from, to]);
+
+  const ordersData = useMemo(() => {
     const days = eachDayOfInterval({ start: from, end: to });
-    return days.map((day) => ({
-      day: format(day, days.length <= 7 ? "EEE" : "dd/MM", { locale: es }),
-      ventas: ordersInRange.filter((o) =>
-        isWithinInterval(new Date(o.created_at), {
-          start: startOfDay(day),
-          end: endOfDay(day),
-        })
-      ).length,
-    }));
-  }, [ordersInRange, from, to]);
+
+    return days.map((day) => {
+      const dayKey = format(day, "yyyy-MM-dd");
+      const dayOrders = allOrdersInRange.filter(
+        (order) => paraguayDateKey(order.created_at) === dayKey
+      );
+
+      return {
+        day: format(day, days.length <= 7 ? "EEE" : "dd/MM", { locale: es }),
+        pedidos: dayOrders.length,
+        cargados: dayOrders.filter((order) => LOADED_STATUSES.has(normalizeStatus(order.status)))
+          .length,
+        cancelados: dayOrders.filter((order) =>
+          CANCELLED_STATUSES.has(normalizeStatus(order.status))
+        ).length,
+      };
+    });
+  }, [allOrdersInRange, from, to]);
 
   const topProducts = useMemo(() => {
-    const c = new Map<string, number>();
-    for (const o of ordersInRange) {
-      const n = o.product?.trim();
-      if (n) c.set(n, (c.get(n) || 0) + 1);
+    const counts = new Map<string, number>();
+
+    for (const order of loadedOrders) {
+      const name = order.product?.trim();
+      if (name) counts.set(name, (counts.get(name) || 0) + 1);
     }
-    return Array.from(c.entries())
+
+    return Array.from(counts.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
-  }, [ordersInRange]);
+  }, [loadedOrders]);
 
   const topCities = useMemo(() => {
-    const c = new Map<string, number>();
-    for (const o of ordersInRange) {
-      const n = o.city?.trim();
-      if (n) c.set(n, (c.get(n) || 0) + 1);
+    const counts = new Map<string, number>();
+
+    for (const order of loadedOrders) {
+      const name = order.city?.trim();
+      if (name) counts.set(name, (counts.get(name) || 0) + 1);
     }
-    return Array.from(c.entries())
+
+    return Array.from(counts.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
-  }, [ordersInRange]);
+  }, [loadedOrders]);
 
   const rangeButtons: { key: RangeKey; label: string }[] = [
     { key: "hoy", label: "Hoy" },
@@ -229,28 +332,28 @@ export default function DashboardPage() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header con título y filtros de fecha */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-purple-400 bg-clip-text text-transparent">
             Dashboard de Ventas
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {label} · {loading ? "Cargando..." : `${totalSales} pedidos cerrados`}
+            {label} · {loading ? "Cargando..." : `${totalOrders} pedidos totales`}
           </p>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {rangeButtons.map((b) => (
+          {rangeButtons.map((button) => (
             <Button
-              key={b.key}
-              variant={rangeKey === b.key ? "default" : "outline"}
+              key={button.key}
+              variant={rangeKey === button.key ? "default" : "outline"}
               size="sm"
-              onClick={() => setRangeKey(b.key)}
+              onClick={() => setRangeKey(button.key)}
             >
-              {b.label}
+              {button.label}
             </Button>
           ))}
+
           <Popover>
             <PopoverTrigger asChild>
               <Button
@@ -270,9 +373,9 @@ export default function DashboardPage() {
               <Calendar
                 mode="range"
                 selected={customRange}
-                onSelect={(r) => {
-                  setCustomRange(r);
-                  if (r?.from) setRangeKey("custom");
+                onSelect={(range) => {
+                  setCustomRange(range);
+                  if (range?.from) setRangeKey("custom");
                 }}
                 numberOfMonths={2}
                 locale={es}
@@ -284,15 +387,15 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard title="Mensajes" value={totalMessages.toString()} icon={MessageSquare} />
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-4">
+        <KpiCard title="Chats recibidos" value={totalMessages.toString()} icon={MessageSquare} />
         <KpiCard title="Chats activos" value={activeChats.toString()} icon={Users} />
-        <KpiCard title="Ventas cerradas" value={totalSales.toString()} icon={ShoppingCart} />
+        <KpiCard title="Pedidos totales" value={totalOrders.toString()} icon={ClipboardList} />
+        <KpiCard title="Pedidos cargados" value={totalLoaded.toString()} icon={CheckCircle2} />
+        <KpiCard title="Pedidos cancelados" value={totalCancelled.toString()} icon={XCircle} />
         <KpiCard title="Tasa conversión" value={`${conversionRate}%`} icon={TrendingUp} />
       </div>
 
-      {/* Gráficos */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -300,7 +403,7 @@ export default function DashboardPage() {
           className="rounded-xl border border-border bg-card p-5"
         >
           <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
-            <span className="w-1 h-4 bg-primary rounded" /> Mensajes por Día
+            <span className="w-1 h-4 bg-primary rounded" /> Chats recibidos por día
           </h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
@@ -313,11 +416,7 @@ export default function DashboardPage() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                 <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                <YAxis
-                  stroke="hsl(var(--muted-foreground))"
-                  fontSize={12}
-                  allowDecimals={false}
-                />
+                <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} allowDecimals={false} />
                 <Tooltip
                   contentStyle={{
                     background: "hsl(var(--card))",
@@ -327,7 +426,8 @@ export default function DashboardPage() {
                 />
                 <Area
                   type="monotone"
-                  dataKey="msgs"
+                  dataKey="chats"
+                  name="Chats"
                   stroke="hsl(var(--primary))"
                   fill="url(#msgGrad)"
                 />
@@ -343,18 +443,14 @@ export default function DashboardPage() {
           className="rounded-xl border border-border bg-card p-5"
         >
           <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
-            <span className="w-1 h-4 bg-purple-500 rounded" /> Ventas por Día (cerradas)
+            <span className="w-1 h-4 bg-purple-500 rounded" /> Pedidos por día
           </h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={salesData}>
+              <BarChart data={ordersData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                 <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={12} />
-                <YAxis
-                  stroke="hsl(var(--muted-foreground))"
-                  fontSize={12}
-                  allowDecimals={false}
-                />
+                <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} allowDecimals={false} />
                 <Tooltip
                   contentStyle={{
                     background: "hsl(var(--card))",
@@ -362,35 +458,37 @@ export default function DashboardPage() {
                     borderRadius: "8px",
                   }}
                 />
-                <Bar dataKey="ventas" fill="hsl(var(--primary))" radius={[6, 6, 0, 0]} />
+                <Legend />
+                <Bar dataKey="pedidos" name="Pedidos" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="cargados" name="Cargados" fill="hsl(var(--success))" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="cancelados" name="Cancelados" fill="hsl(var(--destructive))" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </motion.div>
       </div>
 
-      {/* Top Productos y Ciudades */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="rounded-xl border border-border bg-card p-5">
           <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
-            <Package className="h-4 w-4 text-primary" /> Top Productos
+            <Package className="h-4 w-4 text-primary" /> Top productos cargados
           </h3>
           {topProducts.length === 0 ? (
             <p className="text-sm text-muted-foreground py-8 text-center">
-              No hay pedidos cerrados en este período
+              No hay pedidos cargados en este período
             </p>
           ) : (
             <ul className="space-y-2">
-              {topProducts.map((p, i) => (
+              {topProducts.map((product, index) => (
                 <li
-                  key={p.name}
+                  key={product.name}
                   className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted/50 transition"
                 >
                   <span className="text-xs font-mono text-muted-foreground w-6">
-                    {String(i + 1).padStart(2, "0")}
+                    {String(index + 1).padStart(2, "0")}
                   </span>
-                  <span className="flex-1 text-sm text-foreground truncate">{p.name}</span>
-                  <span className="text-sm font-semibold text-primary">{p.count}</span>
+                  <span className="flex-1 text-sm text-foreground truncate">{product.name}</span>
+                  <span className="text-sm font-semibold text-primary">{product.count}</span>
                 </li>
               ))}
             </ul>
@@ -399,24 +497,24 @@ export default function DashboardPage() {
 
         <div className="rounded-xl border border-border bg-card p-5">
           <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
-            <MapPin className="h-4 w-4 text-purple-400" /> Ventas por Ciudad
+            <MapPin className="h-4 w-4 text-purple-400" /> Pedidos cargados por ciudad
           </h3>
           {topCities.length === 0 ? (
             <p className="text-sm text-muted-foreground py-8 text-center">
-              No hay pedidos cerrados en este período
+              No hay pedidos cargados en este período
             </p>
           ) : (
             <ul className="space-y-2">
-              {topCities.map((c, i) => (
+              {topCities.map((city, index) => (
                 <li
-                  key={c.name}
+                  key={city.name}
                   className="flex items-center gap-3 p-2 rounded-lg hover:bg-muted/50 transition"
                 >
                   <span className="text-xs font-mono text-muted-foreground w-6">
-                    {String(i + 1).padStart(2, "0")}
+                    {String(index + 1).padStart(2, "0")}
                   </span>
-                  <span className="flex-1 text-sm text-foreground truncate">{c.name}</span>
-                  <span className="text-sm font-semibold text-purple-400">{c.count}</span>
+                  <span className="flex-1 text-sm text-foreground truncate">{city.name}</span>
+                  <span className="text-sm font-semibold text-purple-400">{city.count}</span>
                 </li>
               ))}
             </ul>
