@@ -182,7 +182,11 @@ export default function DashboardPage() {
       };
     }
 
-    return { from: startOfDay(now), to: endOfDay(now), label: "Hoy" };
+    return {
+      from: startOfDay(now),
+      to: endOfDay(now),
+      label: "Hoy",
+    };
   }, [rangeKey, customRange]);
 
   const fromKey = format(from, "yyyy-MM-dd");
@@ -228,7 +232,7 @@ export default function DashboardPage() {
       .channel("dashboard_messages_realtime")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "received_messages" },
+        { event: "*", schema: "public", table: "received_messages", filter: `user_id=eq.${user.id}` },
         loadDashboardData
       )
       .subscribe();
@@ -237,7 +241,7 @@ export default function DashboardPage() {
       .channel("dashboard_orders_realtime")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "orders" },
+        { event: "*", schema: "public", table: "orders", filter: `user_id=eq.${user.id}` },
         loadDashboardData
       )
       .subscribe();
@@ -298,14 +302,29 @@ export default function DashboardPage() {
   const totalCancelled = cancelledOrders.length;
   const conversionRate = activeChats > 0 ? Math.round((totalLoaded / activeChats) * 100) : 0;
 
+  const chartRange = useMemo(
+    () => ({
+      start: from,
+      end: to,
+    }),
+    [from, to]
+  );
+
   const msgData = useMemo(() => {
-    const days = eachDayOfInterval({ start: from, end: to });
+    const days = eachDayOfInterval({
+      start: chartRange.start,
+      end: chartRange.end,
+    });
 
     return days.map((day) => {
       const dayKey = format(day, "yyyy-MM-dd");
       const uniquePhones = new Set(
         receivedMessagesInRange
-          .filter((message) => message.created_at && paraguayDateKey(message.created_at) === dayKey)
+          .filter(
+            (message) =>
+              message.created_at &&
+              paraguayDateKey(message.created_at) === dayKey
+          )
           .map((message) => message.from_number?.trim())
           .filter((phone): phone is string => Boolean(phone))
       );
@@ -315,10 +334,13 @@ export default function DashboardPage() {
         chats: uniquePhones.size,
       };
     });
-  }, [receivedMessagesInRange, from, to]);
+  }, [receivedMessagesInRange, chartRange]);
 
   const ordersData = useMemo(() => {
-    const days = eachDayOfInterval({ start: from, end: to });
+    const days = eachDayOfInterval({
+      start: chartRange.start,
+      end: chartRange.end,
+    });
 
     return days.map((day) => {
       const dayKey = format(day, "yyyy-MM-dd");
@@ -329,14 +351,15 @@ export default function DashboardPage() {
       return {
         day: format(day, days.length <= 7 ? "EEE" : "dd/MM", { locale: es }),
         pedidos: dayOrders.length,
-        cargados: dayOrders.filter((order) => LOADED_STATUSES.has(normalizeStatus(order.status)))
-          .length,
+        cargados: dayOrders.filter((order) =>
+          LOADED_STATUSES.has(normalizeStatus(order.status))
+        ).length,
         cancelados: dayOrders.filter((order) =>
           CANCELLED_STATUSES.has(normalizeStatus(order.status))
         ).length,
       };
     });
-  }, [allOrdersInRange, from, to]);
+  }, [allOrdersInRange, chartRange]);
 
   const topProducts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -381,7 +404,7 @@ export default function DashboardPage() {
             Dashboard de Ventas
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {label} · {loading ? "Cargando..." : `${totalOrders} pedidos totales`}
+            {label} · {loading ? "Cargando..." : `${totalOrders} pedidos del período`}
           </p>
         </div>
 
