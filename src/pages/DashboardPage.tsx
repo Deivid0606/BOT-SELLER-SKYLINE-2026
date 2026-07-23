@@ -47,9 +47,12 @@ const PARAGUAY_TIME_ZONE = "America/Asuncion";
 type DbMessage = {
   id: string;
   from_number: string | null;
+  sender_id: string | null;
   message: string | null;
   message_type: string | null;
   is_processed: boolean | null;
+  message_origin: string | null;
+  is_meta_ad: boolean | null;
   created_at?: string | null;
 };
 
@@ -116,7 +119,7 @@ function getTimeZoneParts(value: string | Date) {
     minute: "2-digit",
     second: "2-digit",
     hourCycle: "h23",
-  }).formatToParts(new Date(value));
+  }).formatToParts(parseDatabaseTimestamp(value));
 
   const result: Record<string, string> = {};
   for (const part of parts) result[part.type] = part.value;
@@ -129,6 +132,27 @@ function getTimeZoneParts(value: string | Date) {
     minute: Number(result.minute),
     second: Number(result.second),
   };
+}
+
+function parseDatabaseTimestamp(value: string | Date) {
+  if (value instanceof Date) return value;
+
+  const raw = String(value ?? "").trim();
+  if (!raw) return new Date(NaN);
+
+  // Supabase devuelve timestamp without time zone sin sufijo. En esta tabla
+  // esos valores fueron generados por el servidor y representan UTC.
+  const hasExplicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+  return new Date(hasExplicitZone ? normalized : `${normalized}Z`);
+}
+
+function normalizeChatPhone(value?: string | null) {
+  let digits = String(value ?? "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("595")) digits = digits.slice(3);
+  if (digits.startsWith("0")) digits = digits.slice(1);
+  return digits;
 }
 
 function paraguayDateKey(value: string | Date) {
@@ -215,8 +239,10 @@ export default function DashboardPage() {
 
     const [messagesRes, ordersRes] = await Promise.all([
       supabase
-        .from("received_messages")
-        .select("id, from_number, message, message_type, is_processed, created_at")
+        .from("inbox_messages")
+        .select(
+          "id, from_number, sender_id, message, message_type, is_processed, message_origin, is_meta_ad, created_at"
+        )
         .eq("user_id", user.id)
         .order("created_at", { ascending: false }),
       supabase
@@ -240,10 +266,10 @@ export default function DashboardPage() {
     loadDashboardData();
 
     const messagesChannel = supabase
-      .channel("dashboard_messages_realtime")
+      .channel("dashboard_inbox_messages_realtime")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "received_messages", filter: `user_id=eq.${user.id}` },
+        { event: "*", schema: "public", table: "inbox_messages", filter: `user_id=eq.${user.id}` },
         loadDashboardData
       )
       .subscribe();
@@ -292,7 +318,7 @@ export default function DashboardPage() {
   const receivedMessagesInRange = useMemo(
     () =>
       messages.filter((message) => {
-        if (!message.created_at || !message.from_number) return false;
+        if (!message.created_at || !(message.from_number || message.sender_id)) return false;
         if (isOutgoingMessage(message.message_type)) return false;
         const key = paraguayDateKey(message.created_at);
         return key >= fromKey && key <= toKey;
@@ -300,23 +326,40 @@ export default function DashboardPage() {
     [messages, fromKey, toKey]
   );
 
-  // Un “mensaje” del dashboard equivale a un chat recibido único por número.
+  // Cada teléfono cuenta una sola vez en el período seleccionado.
   const uniqueReceivedPhones = useMemo(
     () =>
       new Set(
         receivedMessagesInRange
-          .map((message) => message.from_number?.trim())
-          .filter((phone): phone is string => Boolean(phone))
+          .map((message) => normalizeChatPhone(message.from_number || message.sender_id))
+          .filter(Boolean)
+      ),
+    [receivedMessagesInRange]
+  );
+
+  // Si un teléfono tuvo al menos un mensaje con referral de anuncio durante
+  // el período, se clasifica como chat de Meta Ads. El resto queda orgánico.
+  const uniqueMetaAdPhones = useMemo(
+    () =>
+      new Set(
+        receivedMessagesInRange
+          .filter(
+            (message) =>
+              message.is_meta_ad === true ||
+              String(message.message_origin || "").toLowerCase() === "meta_ads"
+          )
+          .map((message) => normalizeChatPhone(message.from_number || message.sender_id))
+          .filter(Boolean)
       ),
     [receivedMessagesInRange]
   );
 
   const totalMessages = uniqueReceivedPhones.size;
-  const activeChats = uniqueReceivedPhones.size;
+  const totalMetaAds = uniqueMetaAdPhones.size;
+  const totalOrganic = Math.max(0, totalMessages - totalMetaAds);
   const totalSales = salesInRange.length;
   const totalLoaded = loadedOrders.length;
   const totalCancelled = cancelledOrders.length;
-  const conversionRate = activeChats > 0 ? Math.round((totalSales / activeChats) * 100) : 0;
 
   const chartRange = useMemo(
     () => ({
@@ -341,8 +384,8 @@ export default function DashboardPage() {
               message.created_at &&
               paraguayDateKey(message.created_at) === dayKey
           )
-          .map((message) => message.from_number?.trim())
-          .filter((phone): phone is string => Boolean(phone))
+          .map((message) => normalizeChatPhone(message.from_number || message.sender_id))
+          .filter(Boolean)
       );
 
       return {
@@ -473,11 +516,11 @@ export default function DashboardPage() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-4">
         <KpiCard title="Chats recibidos" value={totalMessages.toString()} icon={MessageSquare} />
-        <KpiCard title="Chats activos" value={activeChats.toString()} icon={Users} />
+        <KpiCard title="Desde Meta Ads" value={totalMetaAds.toString()} icon={Users} />
+        <KpiCard title="Orgánicos" value={totalOrganic.toString()} icon={TrendingUp} />
         <KpiCard title="Ventas" value={totalSales.toString()} icon={ClipboardList} />
         <KpiCard title="Pedidos cargados" value={totalLoaded.toString()} icon={CheckCircle2} />
         <KpiCard title="Pedidos cancelados" value={totalCancelled.toString()} icon={XCircle} />
-        <KpiCard title="Tasa conversión" value={`${conversionRate}%`} icon={TrendingUp} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
