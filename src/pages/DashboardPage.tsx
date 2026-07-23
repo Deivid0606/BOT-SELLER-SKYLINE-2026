@@ -25,6 +25,7 @@ import {
 } from "recharts";
 import { motion } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
+import { useAuth } from "@/contexts/AuthContext";
 import {
   format,
   subDays,
@@ -130,6 +131,7 @@ function paraguayNowAsLocalDate() {
 }
 
 export default function DashboardPage() {
+  const { user } = useAuth();
   const [messages, setMessages] = useState<DbMessage[]>([]);
   const [orders, setOrders] = useState<DbOrder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -187,16 +189,25 @@ export default function DashboardPage() {
   const toKey = format(to, "yyyy-MM-dd");
 
   const loadDashboardData = async () => {
+    if (!user?.id) {
+      setMessages([]);
+      setOrders([]);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
 
     const [messagesRes, ordersRes] = await Promise.all([
       supabase
         .from("received_messages")
         .select("id, from_number, message, message_type, is_processed, created_at")
+        .eq("user_id", user.id)
         .order("created_at", { ascending: false }),
       supabase
         .from("orders")
         .select("id, product, city, status, total_amount, created_at")
+        .eq("user_id", user.id)
         .order("created_at", { ascending: false }),
     ]);
 
@@ -209,6 +220,8 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
+    if (!user?.id) return;
+
     loadDashboardData();
 
     const messagesChannel = supabase
@@ -233,7 +246,7 @@ export default function DashboardPage() {
       supabase.removeChannel(messagesChannel);
       supabase.removeChannel(ordersChannel);
     };
-  }, []);
+  }, [user?.id]);
 
   const allOrdersInRange = useMemo(
     () =>
