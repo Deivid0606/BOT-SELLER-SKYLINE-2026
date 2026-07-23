@@ -64,10 +64,17 @@ type DbMessage = {
   from_number: string | null;
   message: string | null;
   message_type: string | null;
-  media_url: string | null;
+  media_url: string | string[] | null;
   is_processed: boolean | null;
   created_at?: string;
   buttons?: TemplateButton[];
+  message_origin?: string | null;
+  is_meta_ad?: boolean | null;
+  ad_id?: string | null;
+  ctwa_clid?: string | null;
+  ad_source_url?: string | null;
+  ad_headline?: string | null;
+  ad_body?: string | null;
 };
 
 type Chat = {
@@ -101,6 +108,16 @@ type FullTemplate = {
 };
 
 type DbTag = { id: string; name: string; color: string };
+
+type MetaAdCatalogItem = {
+  id?: string;
+  user_id: string;
+  ad_id: string;
+  ad_name: string | null;
+  product_name: string;
+  default_message: string | null;
+  is_active: boolean | null;
+};
 
 // ============================================================
 // FUNCIONES UTILITARIAS
@@ -258,6 +275,15 @@ export default function InboxPage() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [availableTemplates, setAvailableTemplates] = useState<FullTemplate[]>([]);
+  const [metaAdsCatalog, setMetaAdsCatalog] = useState<MetaAdCatalogItem[]>([]);
+  const [showAdRegistry, setShowAdRegistry] = useState(false);
+  const [savingAdRegistry, setSavingAdRegistry] = useState(false);
+  const [adForm, setAdForm] = useState({
+    ad_id: "",
+    ad_name: "",
+    product_name: "",
+    default_message: "",
+  });
   const [selectedFile, setSelectedFile] = useState<{ file: File; preview: string; type: string } | null>(null);
   const [selectedTemplateMedia, setSelectedTemplateMedia] = useState<{ 
     url: string; 
@@ -317,6 +343,20 @@ export default function InboxPage() {
     setConvoTagsMap(cmap);
   };
 
+  const loadMetaAdsCatalog = async () => {
+    if (!user?.id) return;
+    const { data, error } = await supabase
+      .from("meta_ads_catalog")
+      .select("id, user_id, ad_id, ad_name, product_name, default_message, is_active")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
+    if (error) {
+      console.error("Error cargando catálogo de anuncios:", error);
+      return;
+    }
+    setMetaAdsCatalog((data || []) as MetaAdCatalogItem[]);
+  };
+
   useEffect(() => {
     const loadTemplates = async () => {
       if (!user) return;
@@ -336,6 +376,7 @@ export default function InboxPage() {
     loadTemplates();
     loadAllTags();
     loadAssignments();
+    loadMetaAdsCatalog();
   }, [user]);
 
   useEffect(() => {
@@ -437,7 +478,7 @@ export default function InboxPage() {
     try {
       while (keepGoing) {
         const { data, error } = await supabase
-          .from("received_messages")
+          .from("inbox_messages")
           .select("*")
           .eq("user_id", user.id)
           .gte("created_at", utcRangeStart.toISOString())
@@ -471,10 +512,10 @@ export default function InboxPage() {
   useEffect(() => {
     loadMessages(filterDateFrom, filterDateTo);
     const channel = supabase
-      .channel("received_messages_realtime_inbox_pro")
+      .channel("inbox_messages_realtime_inbox_pro")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "received_messages" },
+        { event: "*", schema: "public", table: "inbox_messages" },
         (payload: any) => {
           if (payload.eventType === "INSERT" && payload.new) {
             const incoming = payload.new as DbMessage;
@@ -569,6 +610,82 @@ export default function InboxPage() {
     return filteredChats.find((chat) => chat.number === selectedNumber) || null;
   }, [filteredChats, selectedNumber]);
 
+  const selectedChatAdMessage = useMemo(() => {
+    if (!selectedNumber) return null;
+    return dbMessages
+      .filter(
+        (msg) =>
+          msg.from_number === selectedNumber &&
+          (msg.is_meta_ad === true || msg.message_origin === "meta_ads") &&
+          Boolean(msg.ad_id)
+      )
+      .sort(
+        (a, b) =>
+          new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+      )[0] || null;
+  }, [dbMessages, selectedNumber]);
+
+  const selectedAdCatalog = useMemo(() => {
+    const adId = selectedChatAdMessage?.ad_id;
+    if (!adId) return null;
+    return metaAdsCatalog.find((item) => item.ad_id === adId) || null;
+  }, [selectedChatAdMessage, metaAdsCatalog]);
+
+  const openAdRegistry = () => {
+    const adId = selectedChatAdMessage?.ad_id || "";
+    setAdForm({
+      ad_id: adId,
+      ad_name: selectedAdCatalog?.ad_name || selectedChatAdMessage?.ad_headline || "",
+      product_name: selectedAdCatalog?.product_name || "",
+      default_message:
+        selectedAdCatalog?.default_message ||
+        selectedChatAdMessage?.ad_body ||
+        selectedChatAdMessage?.message ||
+        "",
+    });
+    setShowAdRegistry(true);
+  };
+
+  const saveAdRegistry = async () => {
+    if (!user?.id) return;
+    const adId = adForm.ad_id.trim();
+    const productName = adForm.product_name.trim();
+    if (!adId || !productName) {
+      toast({
+        title: "Datos incompletos",
+        description: "El ID del anuncio y el nombre del producto son obligatorios.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setSavingAdRegistry(true);
+    const { error } = await supabase.from("meta_ads_catalog").upsert(
+      {
+        user_id: user.id,
+        ad_id: adId,
+        ad_name: adForm.ad_name.trim() || null,
+        product_name: productName,
+        default_message: adForm.default_message.trim() || null,
+        is_active: true,
+      },
+      { onConflict: "user_id,ad_id" }
+    );
+    setSavingAdRegistry(false);
+
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      return;
+    }
+
+    await loadMetaAdsCatalog();
+    setShowAdRegistry(false);
+    toast({
+      title: "✅ Anuncio identificado",
+      description: `${adId} quedó vinculado con ${productName}.`,
+    });
+  };
+
   // ============================================================
   // MENSAJES CON BOTONES
   // ============================================================
@@ -584,7 +701,7 @@ export default function InboxPage() {
 
     return sortedMessages.map((msg) => {
       let mediaType = msg.message_type || "";
-      const mediaUrl = msg.media_url;
+      const mediaUrl = Array.isArray(msg.media_url) ? msg.media_url[0] : msg.media_url;
       const msgDate = msg.created_at ? new Date(msg.created_at) : new Date();
 
       if (mediaType.includes("image")) mediaType = "image";
@@ -656,7 +773,7 @@ export default function InboxPage() {
       if (idsToUpdate.length === 0) return;
 
       const { error } = await supabase
-        .from("received_messages")
+        .from("inbox_messages")
         .update({ is_processed: true })
         .in("id", idsToUpdate);
 
@@ -815,7 +932,7 @@ export default function InboxPage() {
       };
 
       const { data: savedMessage, error: saveError } = await supabase
-        .from("received_messages")
+        .from("inbox_messages")
         .insert(messageToSave)
         .select("*")
         .single();
@@ -868,7 +985,7 @@ export default function InboxPage() {
       console.log('📌 phone_number_id encontrado:', config.phone_number_id);
 
       // 2️⃣ Guardar el mensaje del usuario (NO procesado aún)
-      await supabase.from("received_messages").insert({
+      await supabase.from("inbox_messages").insert({
         user_id: user.id,
         from_number: selectedNumber,
         message: text,
@@ -958,7 +1075,7 @@ export default function InboxPage() {
   const handleDeleteChat = async () => {
     if (!selectedNumber) return;
     if (!window.confirm(`¿Eliminar todos los mensajes de ${selectedNumber}?`)) return;
-    const { error } = await supabase.from("received_messages").delete().eq("from_number", selectedNumber);
+    const { error } = await supabase.from("inbox_messages").delete().eq("from_number", selectedNumber);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     toast({ title: "🗑️ Conversación eliminada" });
     await loadMessages();
@@ -968,7 +1085,7 @@ export default function InboxPage() {
   const handleClearChat = async () => {
     if (!selectedNumber) return;
     if (!window.confirm(`¿Limpiar mensajes de ${selectedNumber}?`)) return;
-    const { error } = await supabase.from("received_messages").delete().eq("from_number", selectedNumber);
+    const { error } = await supabase.from("inbox_messages").delete().eq("from_number", selectedNumber);
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     toast({ title: "🧹 Chat limpiado" });
     await loadMessages();
@@ -996,6 +1113,37 @@ export default function InboxPage() {
       .upsert({ phone: selectedNumber, tag, sale_type: saleType }, { onConflict: "phone" });
     if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
     await assignTagToContact(selectedNumber, tag);
+
+    if (selectedChatAdMessage?.ad_id) {
+      const { data: latestOrder } = await supabase
+        .from("orders")
+        .select("id, product")
+        .eq("user_id", user.id)
+        .eq("from_number", selectedNumber)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestOrder?.id) {
+        await supabase
+          .from("orders")
+          .update({
+            message_origin: "meta_ads",
+            ad_id: selectedChatAdMessage.ad_id,
+            ad_name: selectedAdCatalog?.ad_name || selectedChatAdMessage.ad_headline || null,
+            ad_product: selectedAdCatalog?.product_name || null,
+            ad_initial_message:
+              selectedAdCatalog?.default_message ||
+              selectedChatAdMessage.ad_body ||
+              selectedChatAdMessage.message ||
+              null,
+            ctwa_clid: selectedChatAdMessage.ctwa_clid || null,
+            ad_source_url: selectedChatAdMessage.ad_source_url || null,
+          })
+          .eq("id", latestOrder.id);
+      }
+    }
+
     toast({ title: saleType === "normal" ? "✏️ Venta Normal marcada" : "🌐 Venta Web marcada" });
   };
 
@@ -1136,6 +1284,14 @@ export default function InboxPage() {
               <button onClick={() => handleMarkSale("web")} className="text-[11px] px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-all font-medium">
                 🌐 Venta Web
               </button>
+              {selectedChatAdMessage?.ad_id && (
+                <button
+                  onClick={openAdRegistry}
+                  className="text-[11px] px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-all font-medium"
+                >
+                  📣 {selectedAdCatalog ? "Editar anuncio" : "Registrar anuncio"}
+                </button>
+              )}
               <button onClick={handleClearChat} className="text-[11px] px-3 py-1.5 rounded-lg bg-secondary/40 text-foreground border border-border/40 hover:bg-secondary/60 transition-all font-medium">
                 🧹 Limpiar
               </button>
@@ -1156,6 +1312,42 @@ export default function InboxPage() {
 
             {/* MENSAJES */}
             <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-4 space-y-3">
+              {selectedChatAdMessage?.ad_id && (
+                <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 mb-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-blue-400">
+                        <Megaphone className="h-4 w-4" />
+                        <span className="text-xs font-bold uppercase tracking-wide">
+                          {selectedAdCatalog ? "Anuncio identificado" : "Anuncio sin identificar"}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground break-all">
+                        ID: {selectedChatAdMessage.ad_id}
+                      </p>
+                      <p className="mt-1 text-sm font-semibold">
+                        {selectedAdCatalog?.product_name || "Producto pendiente de registrar"}
+                      </p>
+                      {(selectedAdCatalog?.ad_name || selectedChatAdMessage.ad_headline) && (
+                        <p className="mt-1 text-xs">
+                          {selectedAdCatalog?.ad_name || selectedChatAdMessage.ad_headline}
+                        </p>
+                      )}
+                      <p className="mt-2 text-xs text-muted-foreground whitespace-pre-wrap">
+                        {selectedAdCatalog?.default_message ||
+                          selectedChatAdMessage.ad_body ||
+                          selectedChatAdMessage.message}
+                      </p>
+                    </div>
+                    <button
+                      onClick={openAdRegistry}
+                      className="shrink-0 rounded-lg border border-blue-500/30 px-3 py-1.5 text-[11px] font-medium text-blue-400 hover:bg-blue-500/10"
+                    >
+                      {selectedAdCatalog ? "Editar" : "Registrar"}
+                    </button>
+                  </div>
+                </div>
+              )}
               {loading ? (
                 <p className="text-sm text-muted-foreground text-center">Cargando mensajes...</p>
               ) : currentMessages.length === 0 ? (
@@ -1499,6 +1691,79 @@ export default function InboxPage() {
           </div>
         </div>
       </div>
+
+      {showAdRegistry && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-border bg-card p-5 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Identificar anuncio</h2>
+                <p className="text-xs text-muted-foreground">
+                  Esta información será la guía del Inbox y del Dashboard.
+                </p>
+              </div>
+              <button onClick={() => setShowAdRegistry(false)} className="rounded-lg p-2 hover:bg-secondary">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              <label className="block">
+                <span className="text-xs font-medium">ID del anuncio *</span>
+                <input
+                  value={adForm.ad_id}
+                  onChange={(e) => setAdForm((prev) => ({ ...prev, ad_id: e.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                  placeholder="120245554070900750"
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium">Nombre interno del anuncio</span>
+                <input
+                  value={adForm.ad_name}
+                  onChange={(e) => setAdForm((prev) => ({ ...prev, ad_name: e.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                  placeholder="Procesador - Imagen 1"
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium">Nombre del producto *</span>
+                <input
+                  value={adForm.product_name}
+                  onChange={(e) => setAdForm((prev) => ({ ...prev, product_name: e.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                  placeholder="PROCESADOR DE ALIMENTOS"
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium">Pregunta inicial</span>
+                <textarea
+                  value={adForm.default_message}
+                  onChange={(e) => setAdForm((prev) => ({ ...prev, default_message: e.target.value }))}
+                  className="mt-1 min-h-24 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
+                  placeholder="¿Precio del PROCESADOR DE ALIMENTOS porfa?😀"
+                />
+              </label>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setShowAdRegistry(false)}
+                className="rounded-lg border border-border px-4 py-2 text-sm"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={saveAdRegistry}
+                disabled={savingAdRegistry}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+              >
+                {savingAdRegistry ? "Guardando..." : "Guardar identificación"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
