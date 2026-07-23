@@ -53,6 +53,9 @@ type DbMessage = {
   is_processed: boolean | null;
   message_origin: string | null;
   is_meta_ad: boolean | null;
+  ad_id?: string | null;
+  ad_headline?: string | null;
+  ad_body?: string | null;
   created_at?: string | null;
 };
 
@@ -62,7 +65,21 @@ type DbOrder = {
   city: string | null;
   status: string | null;
   total_amount: string | null;
+  from_number?: string | null;
+  message_origin?: string | null;
+  ad_id?: string | null;
+  ad_name?: string | null;
+  ad_product?: string | null;
+  ad_initial_message?: string | null;
   created_at: string;
+};
+
+type MetaAdCatalogItem = {
+  ad_id: string;
+  ad_name: string | null;
+  product_name: string;
+  default_message: string | null;
+  is_active: boolean | null;
 };
 
 type RangeKey = "hoy" | "7d" | "30d" | "mes" | "custom";
@@ -169,6 +186,7 @@ export default function DashboardPage() {
   const { user } = useAuth();
   const [messages, setMessages] = useState<DbMessage[]>([]);
   const [orders, setOrders] = useState<DbOrder[]>([]);
+  const [metaAdsCatalog, setMetaAdsCatalog] = useState<MetaAdCatalogItem[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [rangeKey, setRangeKey] = useState<RangeKey>("hoy");
@@ -237,26 +255,33 @@ export default function DashboardPage() {
 
     setLoading(true);
 
-    const [messagesRes, ordersRes] = await Promise.all([
+    const [messagesRes, ordersRes, catalogRes] = await Promise.all([
       supabase
         .from("inbox_messages")
         .select(
-          "id, from_number, sender_id, message, message_type, is_processed, message_origin, is_meta_ad, created_at"
+          "id, from_number, sender_id, message, message_type, is_processed, message_origin, is_meta_ad, ad_id, ad_headline, ad_body, created_at"
         )
         .eq("user_id", user.id)
         .order("created_at", { ascending: false }),
       supabase
         .from("orders")
-        .select("id, product, city, status, total_amount, created_at")
+        .select("id, product, city, status, total_amount, from_number, message_origin, ad_id, ad_name, ad_product, ad_initial_message, created_at")
         .eq("user_id", user.id)
         .order("created_at", { ascending: false }),
+      supabase
+        .from("meta_ads_catalog")
+        .select("ad_id, ad_name, product_name, default_message, is_active")
+        .eq("user_id", user.id)
+        .eq("is_active", true),
     ]);
 
     if (messagesRes.error) console.error("Error mensajes:", messagesRes.error);
     if (ordersRes.error) console.error("Error órdenes:", ordersRes.error);
+    if (catalogRes.error) console.error("Error catálogo anuncios:", catalogRes.error);
 
     setMessages((messagesRes.data || []) as DbMessage[]);
     setOrders((ordersRes.data || []) as DbOrder[]);
+    setMetaAdsCatalog((catalogRes.data || []) as MetaAdCatalogItem[]);
     setLoading(false);
   };
 
@@ -422,6 +447,94 @@ export default function DashboardPage() {
     });
   }, [allOrdersInRange, chartRange]);
 
+  const adPerformance = useMemo(() => {
+    const catalogMap = new Map(metaAdsCatalog.map((item) => [item.ad_id, item]));
+    const phoneToAd = new Map<string, string>();
+
+    const sortedIncoming = [...messages]
+      .filter((message) => !isOutgoingMessage(message.message_type))
+      .sort(
+        (a, b) =>
+          parseDatabaseTimestamp(a.created_at || "").getTime() -
+          parseDatabaseTimestamp(b.created_at || "").getTime()
+      );
+
+    for (const message of sortedIncoming) {
+      const phone = normalizeChatPhone(message.from_number || message.sender_id);
+      if (!phone || !message.ad_id) continue;
+      if (!phoneToAd.has(phone)) phoneToAd.set(phone, message.ad_id);
+    }
+
+    const rows = new Map<
+      string,
+      {
+        adId: string;
+        adName: string;
+        product: string;
+        initialMessage: string;
+        chatPhones: Set<string>;
+        messages: number;
+        sales: number;
+        revenue: number;
+      }
+    >();
+
+    const ensure = (adId: string) => {
+      if (!rows.has(adId)) {
+        const catalog = catalogMap.get(adId);
+        rows.set(adId, {
+          adId,
+          adName: catalog?.ad_name || "Anuncio sin nombre",
+          product: catalog?.product_name || "Sin identificar",
+          initialMessage: catalog?.default_message || "",
+          chatPhones: new Set<string>(),
+          messages: 0,
+          sales: 0,
+          revenue: 0,
+        });
+      }
+      return rows.get(adId)!;
+    };
+
+    for (const message of receivedMessagesInRange) {
+      const phone = normalizeChatPhone(message.from_number || message.sender_id);
+      const adId = message.ad_id || (phone ? phoneToAd.get(phone) : undefined);
+      if (!adId) continue;
+      const row = ensure(adId);
+      if (phone) row.chatPhones.add(phone);
+      row.messages += 1;
+      if (!row.initialMessage) row.initialMessage = message.ad_body || message.message || "";
+      if (row.adName === "Anuncio sin nombre" && message.ad_headline) row.adName = message.ad_headline;
+    }
+
+    for (const order of salesInRange) {
+      const phone = normalizeChatPhone(order.from_number);
+      const adId = order.ad_id || (phone ? phoneToAd.get(phone) : undefined);
+      if (!adId) continue;
+      const row = ensure(adId);
+      row.sales += 1;
+      const numericAmount = Number(String(order.total_amount || "").replace(/\D/g, ""));
+      if (Number.isFinite(numericAmount)) row.revenue += numericAmount;
+      if (order.ad_name) row.adName = order.ad_name;
+      if (order.ad_product) row.product = order.ad_product;
+      if (order.ad_initial_message && !row.initialMessage) row.initialMessage = order.ad_initial_message;
+    }
+
+    return Array.from(rows.values())
+      .map((row) => ({
+        adId: row.adId,
+        adName: row.adName,
+        product: row.product,
+        initialMessage: row.initialMessage,
+        chats: row.chatPhones.size,
+        messages: row.messages,
+        sales: row.sales,
+        conversion: row.chatPhones.size > 0 ? (row.sales / row.chatPhones.size) * 100 : 0,
+        revenue: row.revenue,
+      }))
+      .sort((a, b) => b.sales - a.sales || b.chats - a.chats);
+  }, [messages, receivedMessagesInRange, salesInRange, metaAdsCatalog]);
+
   const topProducts = useMemo(() => {
     const counts = new Map<string, number>();
 
@@ -521,6 +634,62 @@ export default function DashboardPage() {
         <KpiCard title="Ventas" value={totalSales.toString()} icon={ClipboardList} />
         <KpiCard title="Pedidos cargados" value={totalLoaded.toString()} icon={CheckCircle2} />
         <KpiCard title="Pedidos cancelados" value={totalCancelled.toString()} icon={XCircle} />
+      </div>
+
+      <div className="rounded-xl border border-border bg-card overflow-hidden">
+        <div className="p-5 border-b border-border">
+          <h3 className="font-semibold flex items-center gap-2">
+            <Users className="h-4 w-4" /> Rendimiento por anuncio
+          </h3>
+          <p className="text-xs text-muted-foreground mt-1">
+            Chats únicos, mensajes entrantes y ventas atribuidas por ID de anuncio.
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-secondary/30 text-muted-foreground">
+              <tr>
+                <th className="px-4 py-3 text-left">ID / anuncio</th>
+                <th className="px-4 py-3 text-left">Producto</th>
+                <th className="px-4 py-3 text-right">Chats</th>
+                <th className="px-4 py-3 text-right">Mensajes</th>
+                <th className="px-4 py-3 text-right">Ventas</th>
+                <th className="px-4 py-3 text-right">Conversión</th>
+                <th className="px-4 py-3 text-right">Facturación</th>
+              </tr>
+            </thead>
+            <tbody>
+              {adPerformance.map((row) => (
+                <tr key={row.adId} className="border-t border-border/60">
+                  <td className="px-4 py-3 min-w-64">
+                    <p className="font-medium">{row.adName}</p>
+                    <p className="text-[11px] text-muted-foreground break-all">{row.adId}</p>
+                    {row.initialMessage && (
+                      <p className="mt-1 max-w-sm truncate text-[11px] text-muted-foreground" title={row.initialMessage}>
+                        {row.initialMessage}
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 font-medium">{row.product}</td>
+                  <td className="px-4 py-3 text-right">{row.chats}</td>
+                  <td className="px-4 py-3 text-right">{row.messages}</td>
+                  <td className="px-4 py-3 text-right font-semibold">{row.sales}</td>
+                  <td className="px-4 py-3 text-right">{row.conversion.toFixed(1)}%</td>
+                  <td className="px-4 py-3 text-right">
+                    {new Intl.NumberFormat("es-PY").format(row.revenue)} Gs.
+                  </td>
+                </tr>
+              ))}
+              {!loading && adPerformance.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
+                    Todavía no hay anuncios identificados con actividad en este período.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
