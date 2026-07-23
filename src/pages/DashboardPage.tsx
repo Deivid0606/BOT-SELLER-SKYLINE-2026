@@ -64,13 +64,24 @@ type DbOrder = {
 
 type RangeKey = "hoy" | "7d" | "30d" | "mes" | "custom";
 
-const LOADED_STATUSES = new Set([
-  "cargado",
+const SALE_STATUSES = new Set([
   "confirmado",
   "confirmed",
-  "droppx",
+  "cargado",
   "procesado",
   "enviado",
+  "droppx",
+  "entregado",
+  "delivered",
+]);
+
+const LOADED_STATUSES = new Set([
+  "cargado",
+  "procesado",
+  "enviado",
+  "droppx",
+  "entregado",
+  "delivered",
 ]);
 
 const CANCELLED_STATUSES = new Set([
@@ -262,6 +273,11 @@ export default function DashboardPage() {
     [orders, fromKey, toKey]
   );
 
+  const salesInRange = useMemo(
+    () => allOrdersInRange.filter((order) => SALE_STATUSES.has(normalizeStatus(order.status))),
+    [allOrdersInRange]
+  );
+
   const loadedOrders = useMemo(
     () => allOrdersInRange.filter((order) => LOADED_STATUSES.has(normalizeStatus(order.status))),
     [allOrdersInRange]
@@ -297,10 +313,10 @@ export default function DashboardPage() {
 
   const totalMessages = uniqueReceivedPhones.size;
   const activeChats = uniqueReceivedPhones.size;
-  const totalOrders = allOrdersInRange.length;
+  const totalSales = salesInRange.length;
   const totalLoaded = loadedOrders.length;
   const totalCancelled = cancelledOrders.length;
-  const conversionRate = activeChats > 0 ? Math.round((totalLoaded / activeChats) * 100) : 0;
+  const conversionRate = activeChats > 0 ? Math.round((totalSales / activeChats) * 100) : 0;
 
   const chartRange = useMemo(
     () => ({
@@ -350,7 +366,9 @@ export default function DashboardPage() {
 
       return {
         day: format(day, days.length <= 7 ? "EEE" : "dd/MM", { locale: es }),
-        pedidos: dayOrders.length,
+        ventas: dayOrders.filter((order) =>
+          SALE_STATUSES.has(normalizeStatus(order.status))
+        ).length,
         cargados: dayOrders.filter((order) =>
           LOADED_STATUSES.has(normalizeStatus(order.status))
         ).length,
@@ -404,7 +422,7 @@ export default function DashboardPage() {
             Dashboard de Ventas
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            {label} · {loading ? "Cargando..." : `${totalOrders} pedidos del período`}
+            {label} · {loading ? "Cargando..." : `${totalSales} ventas`}
           </p>
         </div>
 
@@ -456,7 +474,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6 gap-4">
         <KpiCard title="Chats recibidos" value={totalMessages.toString()} icon={MessageSquare} />
         <KpiCard title="Chats activos" value={activeChats.toString()} icon={Users} />
-        <KpiCard title="Pedidos totales" value={totalOrders.toString()} icon={ClipboardList} />
+        <KpiCard title="Ventas" value={totalSales.toString()} icon={ClipboardList} />
         <KpiCard title="Pedidos cargados" value={totalLoaded.toString()} icon={CheckCircle2} />
         <KpiCard title="Pedidos cancelados" value={totalCancelled.toString()} icon={XCircle} />
         <KpiCard title="Tasa conversión" value={`${conversionRate}%`} icon={TrendingUp} />
@@ -509,7 +527,7 @@ export default function DashboardPage() {
           className="rounded-xl border border-border bg-card p-5"
         >
           <h3 className="text-sm font-semibold text-foreground mb-4 flex items-center gap-2">
-            <span className="w-1 h-4 bg-purple-500 rounded" /> Pedidos por día
+            <span className="w-1 h-4 bg-purple-500 rounded" /> Ventas por día
           </h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
@@ -525,7 +543,7 @@ export default function DashboardPage() {
                   }}
                 />
                 <Legend />
-                <Bar dataKey="pedidos" name="Pedidos" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="ventas" name="Ventas" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="cargados" name="Cargados" fill="hsl(var(--success))" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="cancelados" name="Cancelados" fill="hsl(var(--destructive))" radius={[4, 4, 0, 0]} />
               </BarChart>
