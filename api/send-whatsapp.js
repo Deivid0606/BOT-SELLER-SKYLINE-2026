@@ -16,6 +16,39 @@ async function getConfig(userId) {
   return data;
 }
 
+
+async function saveOutgoingMessage({ userId, to, message, mediaUrl = null, mediaType = null }) {
+  const payload = {
+    user_id: userId,
+    source: 'whatsapp',
+    platform: 'whatsapp',
+    sender_id: to,
+    sender_name: to,
+    from_number: to,
+    message: message || (mediaUrl ? `[${mediaType || 'media'}]` : ''),
+    message_type: mediaUrl && mediaType ? `out_${mediaType}` : 'out_text',
+    media_url: mediaUrl ? [mediaUrl] : null,
+    media_url_text: mediaUrl || null,
+    is_read: true,
+    is_processed: true,
+    message_origin: 'outgoing',
+    is_meta_ad: false,
+  };
+
+  const { data, error } = await supabase
+    .from('inbox_messages')
+    .insert(payload)
+    .select('*')
+    .single();
+
+  if (error) {
+    console.error('⚠️ Mensaje enviado, pero no se pudo guardar:', error);
+    return { savedMessage: null, saveError: error.message || String(error) };
+  }
+
+  return { savedMessage: data, saveError: null };
+}
+
 // ============================================================
 // 📤 Enviar multimedia (helper)
 // ============================================================
@@ -328,6 +361,14 @@ export default async function handler(req, res) {
         });
       }
 
+      const persisted = await saveOutgoingMessage({
+        userId,
+        to: cleanTo,
+        message,
+        mediaUrl: imageUrl,
+        mediaType: imageUrl ? 'image' : null,
+      });
+
       return res.status(200).json({
         ok: true,
         sent: {
@@ -336,7 +377,9 @@ export default async function handler(req, res) {
           buttonsCount: buttons.length,
           hasImage: !!imageUrl,
           type: imageUrl ? 'interactive_with_image' : 'interactive',
-        }
+        },
+        saved_message: persisted.savedMessage,
+        save_warning: persisted.saveError,
       });
     }
 
@@ -373,13 +416,23 @@ export default async function handler(req, res) {
       });
     }
 
+    const persisted = await saveOutgoingMessage({
+      userId,
+      to: cleanTo,
+      message,
+      mediaUrl,
+      mediaType: mediaUrl ? mediaType : null,
+    });
+
     return res.status(200).json({
       ok: true,
       sent: {
         to: cleanTo,
         hasButtons: false,
         hasImage: !!mediaUrl,
-      }
+      },
+      saved_message: persisted.savedMessage,
+      save_warning: persisted.saveError,
     });
 
   } catch (err) {
