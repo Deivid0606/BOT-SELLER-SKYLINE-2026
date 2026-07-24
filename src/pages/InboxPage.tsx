@@ -75,6 +75,9 @@ type DbMessage = {
   ad_source_url?: string | null;
   ad_headline?: string | null;
   ad_body?: string | null;
+  ad_media_url?: string | null;
+  ad_media_type?: string | null;
+  ad_thumbnail_url?: string | null;
 };
 
 type Chat = {
@@ -117,6 +120,8 @@ type MetaAdCatalogItem = {
   product_name: string;
   default_message: string | null;
   is_active: boolean | null;
+  media_url?: string | null;
+  media_type?: string | null;
 };
 
 // ============================================================
@@ -232,6 +237,21 @@ function normalizeChatPhone(value?: string | null) {
   return digits;
 }
 
+
+function safeMessageDate(value?: string | null) {
+  if (!value) return new Date();
+  const raw = String(value).trim();
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+  const parsed = new Date(hasZone ? normalized : `${normalized}Z`);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+function firstMediaUrl(value?: string | string[] | null) {
+  if (Array.isArray(value)) return value.find(Boolean) || undefined;
+  return value || undefined;
+}
+
 function sameCalendarDay(a?: Date, b?: Date) {
   if (!a || !b) return false;
   return (
@@ -283,6 +303,8 @@ export default function InboxPage() {
     ad_name: "",
     product_name: "",
     default_message: "",
+    media_url: "",
+    media_type: "image",
   });
   const [selectedFile, setSelectedFile] = useState<{ file: File; preview: string; type: string } | null>(null);
   const [selectedTemplateMedia, setSelectedTemplateMedia] = useState<{ 
@@ -347,7 +369,7 @@ export default function InboxPage() {
     if (!user?.id) return;
     const { data, error } = await supabase
       .from("meta_ads_catalog")
-      .select("id, user_id, ad_id, ad_name, product_name, default_message, is_active")
+      .select("id, user_id, ad_id, ad_name, product_name, default_message, is_active, media_url, media_type")
       .eq("user_id", user.id)
       .order("created_at", { ascending: false });
     if (error) {
@@ -558,12 +580,12 @@ export default function InboxPage() {
 
     return Array.from(grouped.entries()).map(([number, messages]) => {
       const ordered = [...messages].sort((a, b) => {
-        const dateA = new Date(a.created_at || 0).getTime();
-        const dateB = new Date(b.created_at || 0).getTime();
+        const dateA = safeMessageDate(a.created_at).getTime();
+        const dateB = safeMessageDate(b.created_at).getTime();
         return dateB - dateA;
       });
       const last = ordered[0];
-      const lastDate = last?.created_at ? new Date(last.created_at) : new Date();
+      const lastDate = safeMessageDate(last?.created_at);
 
       const ct = contactTagsMap[number];
       const tag = (ct && ct.length > 0) ? ct[0] : convoTagsMap[number];
@@ -615,13 +637,13 @@ export default function InboxPage() {
     return dbMessages
       .filter(
         (msg) =>
-          msg.from_number === selectedNumber &&
+          normalizeChatPhone(msg.from_number) === normalizeChatPhone(selectedNumber) &&
           (msg.is_meta_ad === true || msg.message_origin === "meta_ads") &&
           Boolean(msg.ad_id)
       )
       .sort(
         (a, b) =>
-          new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+          safeMessageDate(a.created_at).getTime() - safeMessageDate(b.created_at).getTime()
       )[0] || null;
   }, [dbMessages, selectedNumber]);
 
@@ -642,6 +664,15 @@ export default function InboxPage() {
         selectedChatAdMessage?.ad_body ||
         selectedChatAdMessage?.message ||
         "",
+      media_url:
+        selectedAdCatalog?.media_url ||
+        selectedChatAdMessage?.ad_media_url ||
+        selectedChatAdMessage?.ad_thumbnail_url ||
+        "",
+      media_type:
+        selectedAdCatalog?.media_type ||
+        selectedChatAdMessage?.ad_media_type ||
+        "image",
     });
     setShowAdRegistry(true);
   };
@@ -667,6 +698,8 @@ export default function InboxPage() {
         ad_name: adForm.ad_name.trim() || null,
         product_name: productName,
         default_message: adForm.default_message.trim() || null,
+        media_url: adForm.media_url.trim() || null,
+        media_type: adForm.media_type || 'image',
         is_active: true,
       },
       { onConflict: "user_id,ad_id" }
@@ -691,18 +724,18 @@ export default function InboxPage() {
   // ============================================================
   const currentMessages = useMemo<Message[]>(() => {
     if (!selectedNumber) return [];
-    const chatMessages = dbMessages.filter((msg) => msg.from_number === selectedNumber);
+    const chatMessages = dbMessages.filter((msg) => normalizeChatPhone(msg.from_number) === normalizeChatPhone(selectedNumber));
 
     const sortedMessages = [...chatMessages].sort((a, b) => {
-      const dateA = new Date(a.created_at || 0).getTime();
-      const dateB = new Date(b.created_at || 0).getTime();
+      const dateA = safeMessageDate(a.created_at).getTime();
+      const dateB = safeMessageDate(b.created_at).getTime();
       return dateA - dateB;
     });
 
     return sortedMessages.map((msg) => {
       let mediaType = msg.message_type || "";
       const mediaUrl = Array.isArray(msg.media_url) ? msg.media_url[0] : msg.media_url;
-      const msgDate = msg.created_at ? new Date(msg.created_at) : new Date();
+      const msgDate = safeMessageDate(msg.created_at);
 
       if (mediaType.includes("image")) mediaType = "image";
       else if (mediaType.includes("video")) mediaType = "video";
@@ -721,7 +754,7 @@ export default function InboxPage() {
         time: formatMessageTime(msgDate),
         date: formatMessageDate(msgDate),
         badge: getDisplayType(msg.message_type),
-        mediaUrl: msg.media_url || undefined,
+        mediaUrl: mediaUrl || undefined,
         mediaType: mediaType || undefined,
         buttons: msg.buttons || undefined,
       };
@@ -767,7 +800,7 @@ export default function InboxPage() {
     const markAsProcessed = async () => {
       if (!selectedNumber) return;
       const idsToUpdate = dbMessages
-        .filter((msg) => msg.from_number === selectedNumber && !msg.is_processed && !isOutgoingType(msg.message_type))
+        .filter((msg) => normalizeChatPhone(msg.from_number) === normalizeChatPhone(selectedNumber) && !msg.is_processed && !isOutgoingType(msg.message_type))
         .map((msg) => msg.id);
 
       if (idsToUpdate.length === 0) return;
@@ -834,16 +867,6 @@ export default function InboxPage() {
     try {
       setSending(true);
 
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("tenant_id, connection_type")
-        .eq("id", user.id)
-        .maybeSingle();
-
-      if (profileError) {
-        console.warn("⚠️ No se pudo leer profiles, se enviará solo con user_id:", profileError);
-      }
-
       if (selectedFile) {
         const fileExt = selectedFile.file.name.split(".").pop();
         const fileName = `${user.id}/${Date.now()}.${fileExt}`;
@@ -889,8 +912,6 @@ export default function InboxPage() {
 
       const payload: any = {
         user_id: user.id,
-        tenant_id: profile?.tenant_id ?? null,
-        connection_type: profile?.connection_type ?? null,
         to: selectedNumber,
         message: textToSend,
       };
@@ -921,33 +942,20 @@ export default function InboxPage() {
         throw new Error(result?.error || "No se pudo enviar el mensaje");
       }
 
-      const messageToSave: any = {
-        user_id: user.id,
-        from_number: selectedNumber,
-        message: textToSend,
-        message_type: mediaUrl && mediaType ? `out_${mediaType}` : "out_text",
-        media_url: mediaUrl,
-        is_processed: true,
-        buttons: buttonsToSend?.length ? buttonsToSend : null,
-      };
-
-      const { data: savedMessage, error: saveError } = await supabase
-        .from("inbox_messages")
-        .insert(messageToSave)
-        .select("*")
-        .single();
-
-      if (saveError) throw new Error(`Mensaje enviado, pero no se pudo guardar: ${saveError.message}`);
-
-      // Sustituye el temporal por la fila real, evitando duplicados.
+      const savedMessage = result?.saved_message as DbMessage | null | undefined;
       setDbMessages((prev) => {
-        const withoutTempOrDuplicate = prev.filter(
-          (message) => message.id !== tempId && message.id !== savedMessage.id
-        );
-        return [...withoutTempOrDuplicate, savedMessage as DbMessage];
+        const withoutTemp = prev.filter((item) => item.id !== tempId);
+        if (!savedMessage) return [...withoutTemp, optimisticMessage];
+        const withoutDuplicate = withoutTemp.filter((item) => item.id !== savedMessage.id);
+        return [...withoutDuplicate, savedMessage];
       });
 
-      toast({ title: "✅ Mensaje enviado", description: "La respuesta se mostró y envió correctamente." });
+      toast({
+        title: "✅ Mensaje enviado",
+        description: result?.save_warning
+          ? "El mensaje llegó al cliente. El historial se sincronizará automáticamente."
+          : "La respuesta se mostró y guardó correctamente.",
+      });
     } catch (error: any) {
       // Si falla, quitar el mensaje temporal para no mostrar algo que no salió.
       setDbMessages((prev) => prev.filter((message) => message.id !== tempId));
@@ -1312,10 +1320,44 @@ export default function InboxPage() {
 
             {/* MENSAJES */}
             <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 py-4 space-y-3">
+              {!selectedNumber && (
+                <div className="flex h-full min-h-[240px] items-center justify-center">
+                  <div className="rounded-xl border border-border/50 bg-card/60 px-6 py-5 text-center">
+                    <p className="text-sm font-medium">Seleccioná una conversación</p>
+                    <p className="mt-1 text-xs text-muted-foreground">Los mensajes aparecerán aquí.</p>
+                  </div>
+                </div>
+              )}
               {selectedChatAdMessage?.ad_id && (
                 <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 mb-4">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
+                      {(() => {
+                        const adMediaUrl =
+                          selectedAdCatalog?.media_url ||
+                          selectedChatAdMessage.ad_media_url ||
+                          selectedChatAdMessage.ad_thumbnail_url;
+                        const adMediaType =
+                          selectedAdCatalog?.media_type ||
+                          selectedChatAdMessage.ad_media_type ||
+                          (adMediaUrl?.match(/\.(mp4|webm|mov)(?:$|\?)/i) ? 'video' : 'image');
+                        if (!adMediaUrl) return null;
+                        return adMediaType === 'video' ? (
+                          <video
+                            src={adMediaUrl}
+                            controls
+                            preload="metadata"
+                            className="mb-3 max-h-72 w-full rounded-lg bg-black object-contain"
+                          />
+                        ) : (
+                          <img
+                            src={adMediaUrl}
+                            alt="Creativo del anuncio"
+                            className="mb-3 max-h-72 w-full rounded-lg bg-black/20 object-contain"
+                            onError={(event) => { event.currentTarget.style.display = 'none'; }}
+                          />
+                        );
+                      })()}
                       <div className="flex items-center gap-2 text-blue-400">
                         <Megaphone className="h-4 w-4" />
                         <span className="text-xs font-bold uppercase tracking-wide">
