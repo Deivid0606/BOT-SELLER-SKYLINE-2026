@@ -1,10 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
  * CHAT IA VENDEDOR AUTÓNOMO V115 - Mega Todo Store / One Store
  * 
  * V121: evita interpretar errores de escritura de "precio" como ciudades; Gemini mantiene toda respuesta normal.
- * V123: confirmaciones numéricas de precio nunca se guardan como dirección ni completan el pedido.
+ * V124: confirmaciones numéricas de precio nunca se guardan como dirección ni completan el pedido.
  * V122: preguntas sobre entrega/horario las responde Gemini desde el entrenamiento, sin mensaje fijo ni loop.
  * V116: TODA respuesta visible la redacta Gemini, excepto cierres, comprobantes y detección automática del celular.
  * V114: conserva la cantidad elegida antes de la ciudad y evita usar titulares publicitarios como nombre del producto.
@@ -12,12 +13,12 @@ import { createClient } from "@supabase/supabase-js";
  * V118: evita confundir frases conversacionales como “si no estoy en casa” con una dirección y no repite el cierre al guardar observaciones.
  * V113: preserva cantidades al cambiar/confirmar ciudad, evita guardar 1 unidad por defecto y responde el catálogo en postventa.
  * V120: devuelve obligatoriamente el resultado visible del análisis del comprobante antes de continuar el flujo.
- * V119: usa el nombre del remitente del comprobante como cliente cuando falta, solo después de validar destinatario, monto y estado.
+ * V119 histórico reemplazado por V125: el pagador completa el nombre solo cuando todavía no existe un nombre válido del cliente.
  * V118: conserva comprobantes aunque cambie el order_id interno, nunca exige dirección para transportadora y fuerza el cierre fijo correcto.
  * V112: detecta ciudades en frases con errores como “Yo estoi en Caacupe”, bloquea nombres y direcciones contaminadas.
  * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
  * V109: impide usar ciudades como nombre del cliente.
- * V108: valida destinatario bancario, usa el pagador como cliente y admite PDF sin texto de estado.
+ * V108 histórico: valida destinatario bancario y admite PDF sin texto de estado; V125 usa el pagador como cliente únicamente si falta un nombre válido.
  * V107: verifica titular, monto y estado del comprobante antes de confirmar pagos anticipados.
  * V106: conserva el precio total del pack fijo y evita multiplicarlo por la cantidad.
  * V105: detecta ofertas únicas de varias unidades como pack fijo y no pregunta cantidad.
@@ -2443,6 +2444,28 @@ function isInvalidCustomerNameForOrder(
   const cityNorm = normalize(city);
 
   if (!raw || isContaminatedCustomerName(raw, parsed)) return true;
+
+  // V124: el nombre del producto o cualquiera de sus alias nunca puede ser
+  // utilizado como nombre del cliente. Ej.: "Afilador de cuchillo".
+  const matchesProductName = parsed.products.some((product) => {
+    const productNames = [
+      product.product,
+      product.canonical,
+      product.palabra_clave,
+      ...(product.aliases || []),
+    ]
+      .flatMap((item) => splitKeywordAliases(clean(item)))
+      .map(normalize)
+      .filter(Boolean);
+
+    return productNames.some((productName) =>
+      n === productName ||
+      n === `el ${productName}` ||
+      n === `la ${productName}`
+    );
+  });
+
+  if (matchesProductName) return true;
 
   if (
     /\b(noo+|nop+|qro|kiero|quiero|voia|voy|poder|solo|solamente|pra|prfavor|porfa|favor|combo|promo|crema|producto|para mi)\b/.test(n) ||
@@ -5520,7 +5543,7 @@ function deterministicAfterCityCoverageMessage(state: ConversationState) {
 
 Para continuar, realizá la transferencia y enviame el comprobante.
 
-Si todavía no me pasaste tu nombre, puedo tomarlo del titular de la cuenta debitada que aparezca en el comprobante.`;
+Si todavía no me pasaste tu nombre completo, enviámelo junto con el comprobante.`;
   }
 
   if (!o.quantity) {
@@ -5556,7 +5579,7 @@ ${o.locked_offer.quantity} unidades de ${o.product}
 💵 Para avanzar, realizá la transferencia y enviame el comprobante.
 
 📞 Ya tengo tu número de WhatsApp.
-👤 Si todavía no me pasaste tu nombre, lo tomaré del titular de la cuenta debitada que figure en el comprobante.
+👤 Si todavía no me pasaste tu nombre completo, enviámelo también para registrar el pedido.
 
 ${bankDataText(parsed)} 📲`;
   }
@@ -5654,7 +5677,7 @@ function deterministicWaitingPaymentProofMessage(state: ConversationState, parse
 🔢 Cantidad: ${o.quantity}
 💰 Total: ${formatGs(state.total)} Gs
 📍 Ciudad: ${o.city}
-👤 Cliente: ${o.customer_name || "se tomará del titular pagador"}
+👤 Cliente: ${o.customer_name || "pendiente"}
 📞 Celular: ${o.phone}${observationBlock(o)}
 
 🚚 Para tu zona hacemos envío por transportadora con pago anticipado.
@@ -5842,7 +5865,8 @@ REGLAS DURAS:
 - Guardá el talle/calce en observación. Pedí dirección solamente cuando Dirección opcional = no.
 - Nunca uses una frase publicitaria como "Usalas con" como nombre de producto.
 
-- En ciudad sin contra-entrega, confirmar cuando payment_proof_verified sea true. Si figura pendiente pero destinatario y monto son válidos, confirmar y marcar payment_manual_review_required=true. No pedir otro comprobante. Una ciudad nunca puede ser nombre del cliente.
+- En ciudad sin contra-entrega, el comprobante verificado NO alcanza por sí solo para confirmar: también debe existir un nombre completo escrito explícitamente por el cliente. El pagador del comprobante se guarda como dato técnico, pero nunca reemplaza automáticamente el nombre del cliente. Si falta el nombre, validá el comprobante y pedí solamente el nombre completo. Una ciudad o un producto nunca pueden ser nombre del cliente.
+- Si el cliente propone una transportadora específica, registrá la preferencia como observación. No prometas que se enviará por esa empresa ni digas que ya fue coordinado, salvo que ENTRENAMIENTO GENERAL indique expresamente que está disponible o autorizada.
 - REGLA ABSOLUTA PARA TRANSPORTADORA/ENCOMIENDA: la ciudad es suficiente como destino. Nunca pidas dirección exacta, calle, barrio, ubicación ni referencia. Si el cliente menciona una agencia (por ejemplo NASA), guardala solo como observación o preferencia de transportadora, pero no bloquees el cierre.
 - Cuando ya existen producto, cantidad, ciudad sin contra-entrega, nombre y comprobante verificado, no redactes una confirmación libre: el backend debe emitir inmediatamente el formato fijo de PEDIDO CONFIRMADO.
 `.trim();
@@ -7377,25 +7401,19 @@ export default async function handler(req: any, res: any) {
           )
         );
 
-        // Si el cliente todavía no escribió su nombre, usar exclusivamente el
-        // remitente/titular de la cuenta DEBITADA. Esto ocurre solo cuando el
-        // comprobante ya pasó todas las validaciones: destinatario correcto,
-        // monto suficiente y estado final o pendiente admitido para revisión.
+        // V125: si todavía no existe un nombre real del cliente, usar el nombre
+        // del remitente/pagador detectado en el comprobante. Nunca reemplazar un
+        // nombre válido que el cliente ya haya escrito explícitamente.
         if (
           orderData.payment_proof_verified &&
-          orderData.payment_recipient_matched &&
-          amountCoversOrder &&
           hasPayerName &&
           (
-            !clean(orderData.customer_name) ||
-            isInvalidCustomerNameForOrder(
-              orderData.customer_name,
-              orderData.city,
-              parsed
-            )
+            !orderData.customer_name ||
+            isInvalidCustomerNameForOrder(orderData.customer_name, orderData.city, parsed) ||
+            isContaminatedCustomerName(orderData.customer_name, parsed)
           )
         ) {
-          orderData.customer_name = toTitleCase(clean(proofAnalysis.holder_name));
+          orderData.customer_name = clean(proofAnalysis.holder_name);
         }
 
         if (!orderData.payment_proof_verified) {
@@ -7473,18 +7491,17 @@ export default async function handler(req: any, res: any) {
       orderData.payment_manual_review_required = !!oldOrder.payment_manual_review_required;
       orderData.payment_manual_review_reason = clean(oldOrder.payment_manual_review_reason);
 
+      // V125: al conservar un comprobante verificado, recuperar también el
+      // nombre del pagador cuando todavía no exista un nombre válido del cliente.
       if (
         clean(orderData.payment_holder_name) &&
         (
-          !clean(orderData.customer_name) ||
-          isInvalidCustomerNameForOrder(
-            orderData.customer_name,
-            orderData.city,
-            parsed
-          )
+          !orderData.customer_name ||
+          isInvalidCustomerNameForOrder(orderData.customer_name, orderData.city, parsed) ||
+          isContaminatedCustomerName(orderData.customer_name, parsed)
         )
       ) {
-        orderData.customer_name = toTitleCase(orderData.payment_holder_name);
+        orderData.customer_name = clean(orderData.payment_holder_name);
       }
     } else if (isSameOrderForPaymentProof(oldOrder, orderData)) {
       orderData.payment_proof_received = true;
@@ -7527,9 +7544,20 @@ export default async function handler(req: any, res: any) {
       orderData.customer_name &&
       isInvalidCustomerNameForOrder(orderData.customer_name, orderData.city, parsed)
     ) {
+      // V125: si el nombre actual es inválido, reemplazarlo por el pagador
+      // verificado cuando esté disponible; de lo contrario, limpiarlo.
+      const verifiedPayerName = clean(orderData.payment_holder_name);
       orderData.customer_name =
-        orderData.payment_proof_verified && clean(orderData.payment_holder_name)
-          ? toTitleCase(orderData.payment_holder_name)
+        orderData.payment_proof_verified &&
+        verifiedPayerName &&
+        isValidPaymentSenderName(
+          verifiedPayerName,
+          orderData.payment_recipient_name,
+          parsed.bankData,
+          orderData.city,
+          parsed
+        )
+          ? verifiedPayerName
           : "";
     }
 
