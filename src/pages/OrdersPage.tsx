@@ -1155,6 +1155,7 @@ function OrderCard({
   const city = clean(order.city) || "Sin ciudad";
   const client = clean(order.customer_name) || "Sin nombre";
   const amount = formatCurrency(order.total_amount);
+  const canShowProof = prepaid || status === "confirmado";
 
   const Field = ({
     label,
@@ -1171,24 +1172,24 @@ function OrderCard({
   }) => {
     const toneClasses =
       tone === "amber"
-        ? "border-amber-400/15 bg-amber-400/[0.045]"
+        ? "border-amber-400/20 bg-amber-400/[0.07]"
         : tone === "emerald"
-          ? "border-emerald-400/15 bg-emerald-400/[0.045]"
-          : "border-slate-700/70 bg-slate-900/45";
+          ? "border-emerald-400/20 bg-emerald-400/[0.07]"
+          : "border-slate-600/70 bg-slate-900/55";
 
     return (
       <div
-        className={`rounded-xl border px-3.5 py-3 ${toneClasses} ${
+        className={`rounded-2xl border px-4 py-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] ${toneClasses} ${
           full ? "sm:col-span-2" : ""
         }`}
       >
-        <div className="mb-1.5 flex items-center gap-1.5">
-          {FieldIcon && <FieldIcon className="h-3.5 w-3.5 text-slate-500" />}
-          <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">
+        <div className="mb-2 flex items-center gap-1.5">
+          {FieldIcon && <FieldIcon className="h-3.5 w-3.5 text-slate-400" />}
+          <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
             {label}
           </span>
         </div>
-        <div className="min-w-0 text-[13px] font-medium leading-5 text-slate-100">
+        <div className="min-w-0 text-[13.5px] font-semibold leading-5 text-slate-50">
           {value}
         </div>
       </div>
@@ -1196,7 +1197,7 @@ function OrderCard({
   };
 
   return (
-    <Card className="group relative overflow-hidden rounded-[18px] border border-slate-700/70 bg-[#111722] shadow-[0_14px_40px_rgba(0,0,0,0.28)] transition-all duration-300 hover:-translate-y-0.5 hover:border-slate-600 hover:shadow-[0_18px_55px_rgba(0,0,0,0.38)]">
+    <Card className="group relative overflow-hidden rounded-[20px] border border-slate-600/80 bg-gradient-to-b from-[#111a28] via-[#0f1724] to-[#0b1220] shadow-[0_20px_60px_rgba(0,0,0,0.42)] transition-all duration-300 hover:-translate-y-0.5 hover:border-slate-500 hover:shadow-[0_24px_75px_rgba(0,0,0,0.5)]">
       <div
         className="absolute inset-x-0 top-0 h-[3px]"
         style={{ background: cfg.color }}
@@ -1204,20 +1205,20 @@ function OrderCard({
 
       <CardContent className="p-0">
         {/* CABECERA EJECUTIVA */}
-        <div className="flex items-start justify-between gap-4 border-b border-slate-800 px-5 pb-4 pt-5">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-700/80 bg-gradient-to-r from-white/[0.03] to-transparent px-5 pb-4 pt-5">
           <div className="min-w-0">
-            <div className="flex items-center gap-2 text-[11px] font-medium text-slate-500">
-              <Clock className="h-3.5 w-3.5" />
+            <div className="inline-flex items-center gap-2 rounded-full border border-slate-700/80 bg-slate-900/70 px-2.5 py-1 text-[11px] font-semibold text-slate-200 shadow-sm">
+              <Clock className="h-3.5 w-3.5 text-cyan-300" />
               <span>{formatDateShort(order.created_at)}</span>
             </div>
-            <p className="mt-1 truncate font-mono text-[11px] text-slate-600">
+            <p className="mt-2 truncate font-mono text-[12px] font-semibold tracking-[0.02em] text-cyan-100/95">
               {chatNumber || "Sin número"}
             </p>
           </div>
 
           <div className="flex items-center gap-2">
             <Badge
-              className={`h-7 gap-1.5 rounded-full border px-2.5 text-[11px] font-semibold ${cfg.chip}`}
+              className={`h-8 gap-1.5 rounded-full border px-3 text-[11px] font-bold shadow-sm ${cfg.chip}`}
             >
               <Icon className="h-3.5 w-3.5" />
               {cfg.label}
@@ -1227,7 +1228,7 @@ function OrderCard({
               variant="ghost"
               onClick={onPreview}
               title="Ver conversación"
-              className="h-8 w-8 rounded-lg border border-slate-700 bg-slate-900/60 text-slate-400 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
+              className="h-9 w-9 rounded-xl border border-slate-600 bg-slate-900/80 text-slate-200 shadow-sm transition hover:border-cyan-400/40 hover:bg-slate-800 hover:text-white"
             >
               <Eye className="h-4 w-4" />
             </Button>
@@ -1235,24 +1236,24 @@ function OrderCard({
         </div>
 
         {/* MONTO PRINCIPAL */}
-        <div className="border-b border-slate-800 bg-[#0d131d] px-5 py-4">
+        <div className="border-b border-slate-700/80 bg-[#0c1420] px-5 py-4">
           <div className="flex items-end justify-between gap-4">
             <div>
-              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">
                 Monto total
               </p>
-              <div className="mt-1 flex items-baseline gap-1.5">
-                <span className="text-[30px] font-bold tracking-[-0.04em] text-white">
+              <div className="mt-1.5 flex items-baseline gap-1.5">
+                <span className="text-[34px] font-extrabold tracking-[-0.04em] text-white">
                   {amount}
                 </span>
-                <span className="text-sm font-semibold text-slate-500">Gs</span>
+                <span className="text-sm font-bold text-cyan-300">Gs</span>
               </div>
             </div>
-            <div className="rounded-xl border border-slate-700 bg-slate-800/55 px-3 py-2 text-right">
-              <p className="text-[10px] uppercase tracking-wider text-slate-500">
+            <div className="rounded-2xl border border-slate-600 bg-slate-800/70 px-3.5 py-2.5 text-right shadow-sm">
+              <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">
                 Unidades
               </p>
-              <p className="mt-0.5 text-lg font-bold text-slate-100">{totalItems}</p>
+              <p className="mt-0.5 text-xl font-extrabold text-slate-50">{totalItems}</p>
             </div>
           </div>
         </div>
@@ -1272,8 +1273,8 @@ function OrderCard({
                         key={`${item.product}-${index}`}
                         className="flex items-center justify-between gap-3"
                       >
-                        <span className="truncate">{item.product || "Producto"}</span>
-                        <span className="shrink-0 rounded-md bg-slate-800 px-2 py-0.5 text-[11px] font-semibold text-slate-300">
+                        <span className="truncate font-semibold text-slate-50">{item.product || "Producto"}</span>
+                        <span className="shrink-0 rounded-lg border border-slate-600 bg-slate-800 px-2.5 py-0.5 text-[11px] font-bold text-slate-200">
                           x{item.quantity || 1}
                         </span>
                       </div>
@@ -1281,8 +1282,8 @@ function OrderCard({
                   </div>
                 ) : (
                   <div className="flex items-center justify-between gap-3">
-                    <span className="truncate font-semibold">{productName}</span>
-                    <span className="shrink-0 rounded-md bg-slate-800 px-2 py-0.5 text-[11px] font-semibold text-slate-300">
+                    <span className="truncate font-semibold text-slate-50">{productName}</span>
+                    <span className="shrink-0 rounded-lg border border-slate-600 bg-slate-800 px-2.5 py-0.5 text-[11px] font-bold text-slate-200">
                       x{totalItems}
                     </span>
                   </div>
@@ -1301,9 +1302,9 @@ function OrderCard({
               tone={observation ? "amber" : "default"}
               value={
                 observation ? (
-                  <span className="text-amber-100/90">{observation}</span>
+                  <span className="text-amber-100/95 font-medium">{observation}</span>
                 ) : (
-                  <span className="font-normal text-slate-600">
+                  <span className="font-medium text-slate-400">
                     Sin observaciones adicionales
                   </span>
                 )
@@ -1311,24 +1312,24 @@ function OrderCard({
             />
           </div>
 
-          {prepaid && (
-            <div className="rounded-xl border border-emerald-400/15 bg-emerald-400/[0.045] p-3.5">
+          {canShowProof && (
+            <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-r from-emerald-500/[0.08] to-teal-500/[0.05] p-3.5 shadow-sm">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <ReceiptText className="h-3.5 w-3.5 text-emerald-400" />
-                    <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-400">
-                      Pago anticipado
+                    <ReceiptText className="h-3.5 w-3.5 text-emerald-300" />
+                    <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-300">
+                      {prepaid ? "Pago anticipado" : "Comprobante / pago"}
                     </span>
                   </div>
-                  <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-emerald-100/75">
-                    {paymentSummary || "Comprobante asociado al pedido"}
+                  <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-emerald-100/90">
+                    {paymentSummary || "Abrí el comprobante para buscar el archivo guardado en el pedido o en el chat."}
                   </p>
                 </div>
                 <Button
                   size="sm"
                   onClick={onProof}
-                  className="h-9 shrink-0 rounded-xl border border-emerald-400/25 bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 text-xs font-bold text-white shadow-lg shadow-emerald-950/30 transition hover:-translate-y-0.5 hover:from-emerald-500 hover:to-teal-500 hover:shadow-emerald-900/40"
+                  className="h-9 shrink-0 rounded-xl border border-emerald-300/25 bg-gradient-to-r from-emerald-600 to-teal-600 px-3.5 text-xs font-bold text-white shadow-lg shadow-emerald-950/30 transition hover:-translate-y-0.5 hover:from-emerald-500 hover:to-teal-500 hover:shadow-emerald-900/40"
                 >
                   <Eye className="mr-1.5 h-3.5 w-3.5" />
                   Ver comprobante
@@ -1337,7 +1338,7 @@ function OrderCard({
             </div>
           )}
 
-          <Separator className="bg-slate-800" />
+          <Separator className="bg-slate-700/70" />
 
           {/* ACCIONES PRINCIPALES */}
           <div className="grid grid-cols-2 gap-2">
@@ -1357,7 +1358,7 @@ function OrderCard({
                 size="sm"
                 variant="outline"
                 onClick={() => onStatus("cancelado")}
-                className="h-10 rounded-xl border-rose-500/25 bg-rose-500/[0.08] text-xs font-bold text-rose-300 shadow-sm transition hover:-translate-y-0.5 hover:bg-rose-500/15 hover:text-rose-200"
+                className="h-10 rounded-xl border-rose-500/30 bg-rose-500/[0.10] text-xs font-bold text-rose-200 shadow-sm transition hover:-translate-y-0.5 hover:bg-rose-500/18 hover:text-rose-100"
               >
                 <XCircle className="mr-1.5 h-3.5 w-3.5" />
                 Cancelar
@@ -1369,7 +1370,7 @@ function OrderCard({
                 size="sm"
                 variant="outline"
                 onClick={() => onStatus("cargado")}
-                className="h-10 rounded-xl border-blue-500/25 bg-blue-500/[0.08] text-xs font-bold text-blue-300 shadow-sm transition hover:-translate-y-0.5 hover:bg-blue-500/15 hover:text-blue-200"
+                className="h-10 rounded-xl border-blue-500/30 bg-blue-500/[0.10] text-xs font-bold text-blue-200 shadow-sm transition hover:-translate-y-0.5 hover:bg-blue-500/18 hover:text-blue-100"
               >
                 <Package className="mr-1.5 h-3.5 w-3.5" />
                 Cargar
@@ -1381,7 +1382,7 @@ function OrderCard({
                 size="sm"
                 variant="outline"
                 onClick={() => onStatus("droppx")}
-                className="h-10 rounded-xl border-violet-500/25 bg-gradient-to-r from-violet-600/20 to-indigo-600/20 text-xs font-bold text-violet-200 shadow-sm transition hover:-translate-y-0.5 hover:from-violet-600/30 hover:to-indigo-600/30"
+                className="h-10 rounded-xl border-violet-500/30 bg-gradient-to-r from-violet-600/25 to-indigo-600/25 text-xs font-bold text-violet-100 shadow-sm transition hover:-translate-y-0.5 hover:from-violet-600/35 hover:to-indigo-600/35"
               >
                 <Truck className="mr-1.5 h-3.5 w-3.5" />
                 Droppx
@@ -1395,7 +1396,7 @@ function OrderCard({
               size="sm"
               variant="ghost"
               onClick={onEcommerce}
-              className="h-10 rounded-xl border border-slate-700 bg-slate-900/70 text-xs font-semibold text-slate-300 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
+              className="h-10 rounded-xl border border-slate-600 bg-slate-900/80 text-xs font-semibold text-slate-200 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-500 hover:bg-slate-800 hover:text-white"
             >
               <ShoppingCart className="mr-1.5 h-3.5 w-3.5" />
               Ecommerce
@@ -1405,7 +1406,7 @@ function OrderCard({
               size="sm"
               variant="ghost"
               onClick={onChat}
-              className="h-10 rounded-xl border border-slate-700 bg-slate-900/70 text-xs font-semibold text-slate-300 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-600 hover:bg-slate-800 hover:text-white"
+              className="h-10 rounded-xl border border-slate-600 bg-slate-900/80 text-xs font-semibold text-slate-200 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-500 hover:bg-slate-800 hover:text-white"
             >
               <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
               Chat
@@ -1416,7 +1417,7 @@ function OrderCard({
               variant="ghost"
               onClick={onDelete}
               title="Eliminar pedido"
-              className="h-10 w-10 rounded-xl border border-rose-500/20 bg-rose-500/[0.06] text-rose-400 shadow-sm transition hover:-translate-y-0.5 hover:bg-rose-500/12 hover:text-rose-300"
+              className="h-10 w-10 rounded-xl border border-rose-500/25 bg-rose-500/[0.08] text-rose-300 shadow-sm transition hover:-translate-y-0.5 hover:bg-rose-500/14 hover:text-rose-200"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </Button>
@@ -1433,9 +1434,9 @@ function OrderCard({
 
 function MetricCard({ title, value, subtitle, accent, icon: Icon }: { title: string; value: string | number; subtitle: string; accent: string; icon?: any; }) {
   return (
-    <Card className="group relative overflow-hidden rounded-2xl border-white/10 bg-gradient-to-br from-white/[0.06] to-white/[0.02] shadow-lg shadow-black/20 transition hover:-translate-y-0.5 hover:border-white/20">
+    <Card className="group relative overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.08] to-white/[0.03] shadow-lg shadow-black/25 transition hover:-translate-y-0.5 hover:border-white/20">
       <div className={`absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r ${accent}`} />
-      <CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><p className="text-[11px] uppercase tracking-wider text-zinc-500">{title}</p><p className="mt-2 text-2xl font-bold tracking-tight text-white">{value}</p></div>{Icon && <div className={`rounded-xl bg-gradient-to-br ${accent} p-2 text-white shadow-lg opacity-90`}><Icon className="h-4 w-4" /></div>}</div><p className="mt-2 text-[11px] text-zinc-500">{subtitle}</p></CardContent>
+      <CardContent className="p-4"><div className="flex items-start justify-between gap-3"><div><p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-300/80">{title}</p><p className="mt-2 text-2xl font-extrabold tracking-tight text-white">{value}</p></div>{Icon && <div className={`rounded-xl bg-gradient-to-br ${accent} p-2 text-white shadow-lg opacity-95`}><Icon className="h-4 w-4" /></div>}</div><p className="mt-2 text-[11px] text-zinc-300/70">{subtitle}</p></CardContent>
     </Card>
   );
 }
