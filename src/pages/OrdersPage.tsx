@@ -1,5 +1,5 @@
-// ORDERS PAGE — DASHBOARD EJECUTIVO PROFESIONAL (v5)
-// Mejoras V5: tarjetas ejecutivas con jerarquía visual profesional,
+// ORDERS PAGE — DASHBOARD EJECUTIVO PROFESIONAL (v7)
+// Mejoras V7: pagos anticipados reales, monto recibido y tarjetas ejecutivas con jerarquía visual profesional,
 // campos PRODUCTO, CLIENTE, CIUDAD, CALLE, OBSERVACIÓN y MONTO,
 // tipografía más limpia, fondo corporativo y acciones compactas.
 
@@ -309,8 +309,40 @@ function getOrderObservation(order: Order): string {
 }
 
 function isPrepaidOrder(order: Order) {
-  const paymentText = clean(`${order.metodo_pago || ""} ${order.payment_note || ""} ${order.observation || ""} ${order.observacion || ""}`).toLowerCase();
-  return Boolean(order.comprobante_url) || Boolean(order.payment_proof_received) || Boolean(order.payment_proof_verified) || /\b(anticipado|transferencia|transportadora|comprobante|pago previo)\b/.test(paymentText);
+  const paymentText = clean(
+    `${order.metodo_pago || ""} ${order.payment_note || ""}`
+  ).toLowerCase();
+
+  // Solo consideramos pago anticipado cuando existe evidencia real del pago
+  // o cuando el método/nota de pago lo indica expresamente.
+  // "Transportadora" por sí sola NO significa que el pedido ya fue pagado.
+  return (
+    Boolean(clean(order.comprobante_url)) ||
+    order.payment_proof_received === true ||
+    order.payment_proof_verified === true ||
+    /\b(pago anticipado|anticipado|transferencia anticipada|comprobante recibido|pago previo)\b/.test(
+      paymentText
+    )
+  );
+}
+
+function getReceivedPrepaidAmount(order: Order): number {
+  if (!isPrepaidOrder(order)) return 0;
+
+  // Priorizamos el monto leído del comprobante. Si no existe, usamos
+  // el total del pedido únicamente cuando el comprobante fue recibido/verificado.
+  const proofAmount = parseCurrencyValue(order.payment_amount);
+  if (proofAmount > 0) return proofAmount;
+
+  if (
+    Boolean(clean(order.comprobante_url)) ||
+    order.payment_proof_received === true ||
+    order.payment_proof_verified === true
+  ) {
+    return parseCurrencyValue(order.total_amount);
+  }
+
+  return 0;
 }
 
 function getPaymentSummary(order: Order) {
@@ -653,6 +685,10 @@ export default function OrdersPage() {
       ingresos: periodOrders.filter((o) => normalizeStatus(o.status) !== "cancelado").reduce((s, o) => s + parseCurrencyValue(o.total_amount), 0),
       unidadesVendidas: totalUnitsFromOrders(periodOrders),
       pagosAnticipados: periodOrders.filter(isPrepaidOrder).length,
+      montoPagosAnticipados: periodOrders.reduce(
+        (sum, order) => sum + getReceivedPrepaidAmount(order),
+        0
+      ),
     }),
     [periodOrders]
   );
@@ -731,7 +767,13 @@ export default function OrdersPage() {
           <MetricCard title="Cargados" value={stats.cargados} subtitle="Listos para despacho" accent="from-blue-500 to-indigo-500" icon={Package} />
           <MetricCard title="Entregados" value={stats.entregados} subtitle={`${stats.total ? Math.round((stats.entregados / stats.total) * 100) : 0}% del período`} accent="from-green-500 to-emerald-500" icon={PackageCheck} />
           <MetricCard title="Ingresos" value={`${formatCurrency(stats.ingresos)} Gs`} subtitle="Sin cancelados" accent="from-emerald-500 to-teal-500" icon={Banknote} />
-          <MetricCard title="Pagos anticipados" value={stats.pagosAnticipados} subtitle="Con comprobante" accent="from-amber-500 to-orange-500" icon={FileCheck2} />
+          <MetricCard
+            title="Pagos anticipados"
+            value={stats.pagosAnticipados}
+            subtitle={`${formatCurrency(stats.montoPagosAnticipados)} Gs recibidos`}
+            accent="from-amber-500 to-orange-500"
+            icon={FileCheck2}
+          />
         </div>
 
         {productRanking.length > 0 && (
@@ -1155,7 +1197,7 @@ function OrderCard({
   const city = clean(order.city) || "Sin ciudad";
   const client = clean(order.customer_name) || "Sin nombre";
   const amount = formatCurrency(order.total_amount);
-  const canShowProof = prepaid || status === "confirmado";
+  const canShowProof = prepaid;
 
   const Field = ({
     label,
@@ -1319,11 +1361,11 @@ function OrderCard({
                   <div className="flex items-center gap-1.5">
                     <ReceiptText className="h-3.5 w-3.5 text-emerald-300" />
                     <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-300">
-                      {prepaid ? "Pago anticipado" : "Comprobante / pago"}
+                      Pago anticipado
                     </span>
                   </div>
                   <p className="mt-1.5 line-clamp-2 text-xs leading-5 text-emerald-100/90">
-                    {paymentSummary || "Abrí el comprobante para buscar el archivo guardado en el pedido o en el chat."}
+                    {paymentSummary || "Comprobante asociado al pedido"}
                   </p>
                 </div>
                 <Button
