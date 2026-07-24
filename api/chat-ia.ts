@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 /**
  * CHAT IA VENDEDOR AUTÓNOMO V115 - Mega Todo Store / One Store
  * 
+ * V121: evita interpretar errores de escritura de "precio" como ciudades; Gemini mantiene toda respuesta normal.
  * V116: TODA respuesta visible la redacta Gemini, excepto cierres, comprobantes y detección automática del celular.
  * V114: conserva la cantidad elegida antes de la ciudad y evita usar titulares publicitarios como nombre del producto.
  * V118: todas las respuestas normales las redacta Gemini; solo cierre, comprobantes y detección del celular permanecen fijos.
@@ -282,11 +283,15 @@ function isPriceQuery(text: string) {
 
   // Preguntas técnicas como "cuánto es el tiempo de cocción" no son precio.
   const technicalQuestion =
-    /\b(tiempo|coccion|cocción|duracion|duración|minutos?|horas?|agua|cantidad de agua|temperatura|medida|capacidad|funciona|usar|uso|modo)\b/.test(m);
+    /\b(tiempo|coccion|duracion|minutos?|horas?|agua|cantidad de agua|temperatura|medida|capacidad|funciona|usar|uso|modo)\b/.test(m);
 
-  const explicitPriceWord = /\b(precio|valor|costo|cuesta|cuestan|sale|vale)\b/.test(m);
+  // V121: reconoce errores frecuentes al escribir "precio" para impedir que
+  // mensajes como "presio" se interpreten como ciudad, nombre o dirección.
+  const explicitPriceWord =
+    /\b(precio|presio|presyo|prezio|preio|prcio|pecio|prescio|precios|presios|valor|costo|cuesta|cuestan|sale|vale)\b/.test(m);
+
   const explicitPricePhrase =
-    /\b(cuanto cuesta|cuanto sale|cuanto vale|cual es el precio|que precio|precio porfa|precio por favor)\b/.test(m);
+    /\b(cuanto cuesta|cuanto sale|cuanto vale|cual es el precio|que precio|precio porfa|precio por favor|presio porfa|presio por favor|prezio porfa|prezio por favor)\b/.test(m);
 
   if (technicalQuestion && !explicitPriceWord && !explicitPricePhrase) return false;
 
@@ -1696,6 +1701,11 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 
   if (!raw) return previous;
 
+  // V121: una consulta de precio, incluso con errores ortográficos comunes,
+  // nunca puede convertirse en ciudad. Esta validación no genera mensajes:
+  // únicamente conserva el estado para que Gemini responda normalmente.
+  if (isPriceQuery(raw)) return previous;
+
   // PRIMERO: una coincidencia exacta del entrenamiento siempre gana,
   // incluso si contiene números, por ejemplo "Campo 9".
   const exactCity = exactKnownCity(raw, parsed);
@@ -1772,7 +1782,7 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   // Bloqueo final de expresiones que tienen forma de texto pero no de localidad.
   if (
     /^(quiero|quiero uno|quiero una|quiero dos|quiero 1|quiero 2|uno|una|dos|tres|cuatro|cinco|2x1|2 x 1)$/i.test(normalizedCandidate) ||
-    /\b(gracias|pedido|precio|producto|promo|promocion|promoción|unidad|unidades|comprar|compro|quiero|necesito|delivery|envio|envío)\b/.test(normalizedCandidate)
+    /\b(gracias|pedido|precio|presio|presyo|prezio|preio|prcio|pecio|prescio|precios|presios|producto|promo|promocion|promoción|unidad|unidades|comprar|compro|quiero|necesito|delivery|envio|envío)\b/.test(normalizedCandidate)
   ) {
     return previous;
   }
