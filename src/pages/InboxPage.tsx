@@ -647,6 +647,20 @@ export default function InboxPage() {
       )[0] || null;
   }, [dbMessages, selectedNumber]);
 
+  const selectedFirstIncomingMessage = useMemo(() => {
+    if (!selectedNumber) return null;
+    return dbMessages
+      .filter(
+        (msg) =>
+          normalizeChatPhone(msg.from_number) === normalizeChatPhone(selectedNumber) &&
+          !isOutgoingType(msg.message_type)
+      )
+      .sort(
+        (a, b) =>
+          safeMessageDate(a.created_at).getTime() - safeMessageDate(b.created_at).getTime()
+      )[0] || null;
+  }, [dbMessages, selectedNumber]);
+
   const selectedAdCatalog = useMemo(() => {
     const adId = selectedChatAdMessage?.ad_id;
     if (!adId) return null;
@@ -663,6 +677,7 @@ export default function InboxPage() {
         selectedAdCatalog?.default_message ||
         selectedChatAdMessage?.ad_body ||
         selectedChatAdMessage?.message ||
+        selectedFirstIncomingMessage?.message ||
         "",
       media_url:
         selectedAdCatalog?.media_url ||
@@ -1292,10 +1307,11 @@ export default function InboxPage() {
               <button onClick={() => handleMarkSale("web")} className="text-[11px] px-3 py-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-all font-medium">
                 🌐 Venta Web
               </button>
-              {selectedChatAdMessage?.ad_id && (
+              {selectedNumber && (
                 <button
                   onClick={openAdRegistry}
                   className="text-[11px] px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-all font-medium"
+                  title={selectedChatAdMessage?.ad_id ? "Editar o completar este anuncio" : "Registrar manualmente el ID del anuncio"}
                 >
                   📣 {selectedAdCatalog ? "Editar anuncio" : "Registrar anuncio"}
                 </button>
