@@ -4,10 +4,8 @@ import { createClient } from "@supabase/supabase-js";
  * CHAT IA VENDEDOR AUTÓNOMO V115 - Mega Todo Store / One Store
  * 
  * V121: evita interpretar errores de escritura de "precio" como ciudades; Gemini mantiene toda respuesta normal.
+ * V123: confirmaciones numéricas de precio nunca se guardan como dirección ni completan el pedido.
  * V122: preguntas sobre entrega/horario las responde Gemini desde el entrenamiento, sin mensaje fijo ni loop.
- * V123: corrige ciudades con zonas, productos dentro de preguntas y consultas sobre origen/dirección sin alterar el pedido.
- * V124: evita convertir “precio”, “uno para probar/provar” y frases de cantidad/uso en ciudades.
- * V125: entrega a Gemini fecha/hora de Paraguay y zona logística para aplicar plazos completos en venta y postventa.
  * V116: TODA respuesta visible la redacta Gemini, excepto cierres, comprobantes y detección automática del celular.
  * V114: conserva la cantidad elegida antes de la ciudad y evita usar titulares publicitarios como nombre del producto.
  * V118: todas las respuestas normales las redacta Gemini; solo cierre, comprobantes y detección del celular permanecen fijos.
@@ -72,151 +70,6 @@ const normalize = (v: any) =>
     .replace(/[^\w\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-
-type ParaguayDateTimeContext = {
-  isoDate: string;
-  dateText: string;
-  timeText: string;
-  weekday: string;
-  hour: number;
-  minute: number;
-  isSunday: boolean;
-  isBeforeCutoff1230: boolean;
-};
-
-function getParaguayDateTimeContext(now = new Date()): ParaguayDateTimeContext {
-  const timeZone = "America/Asuncion";
-
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(now);
-
-  const getPart = (type: string) =>
-    parts.find((part) => part.type === type)?.value || "";
-
-  const year = getPart("year");
-  const month = getPart("month");
-  const day = getPart("day");
-  const hour = Number(getPart("hour") || 0);
-  const minute = Number(getPart("minute") || 0);
-
-  const dateText = new Intl.DateTimeFormat("es-PY", {
-    timeZone,
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  }).format(now);
-
-  const timeText = new Intl.DateTimeFormat("es-PY", {
-    timeZone,
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(now);
-
-  const weekday = new Intl.DateTimeFormat("es-PY", {
-    timeZone,
-    weekday: "long",
-  }).format(now);
-
-  const weekdayNorm = normalize(weekday);
-  const minutesOfDay = hour * 60 + minute;
-
-  return {
-    isoDate: `${year}-${month}-${day}`,
-    dateText,
-    timeText,
-    weekday,
-    hour,
-    minute,
-    isSunday: weekdayNorm === "domingo",
-    isBeforeCutoff1230: minutesOfDay < (12 * 60 + 30),
-  };
-}
-
-function isCentralOperationalCity(city: string): boolean {
-  const n = normalize(city);
-  if (!n) return false;
-
-  // Área operativa tratada con la regla de entrega en el día:
-  // Asunción y municipios del Departamento Central.
-  const centralCities = [
-    "asuncion",
-    "aregúa", "aregua",
-    "capiata",
-    "fernando de la mora",
-    "guarambare",
-    "ita",
-    "itaugua",
-    "jose augusto saldivar",
-    "j a saldivar",
-    "julian augusto saldivar",
-    "lambare",
-    "limpio",
-    "luque",
-    "mariano roque alonso",
-    "nueva italia",
-    "nemby",
-    "ñemby",
-    "san antonio",
-    "san lorenzo",
-    "villa elisa",
-    "villeta",
-    "ypane",
-    "yPane",
-  ].map(normalize);
-
-  return centralCities.some((candidate) =>
-    n === candidate ||
-    n.startsWith(`${candidate} `) ||
-    candidate.startsWith(`${n} `)
-  );
-}
-
-function deliveryTechnicalContext(city: string, coverage: boolean | null) {
-  const py = getParaguayDateTimeContext();
-  const cityKnown = !!clean(city);
-  const central = cityKnown ? isCentralOperationalCity(city) : false;
-
-  let zone = "CIUDAD FALTANTE";
-  if (cityKnown && coverage === false) zone = "FUERA DE COBERTURA / TRANSPORTADORA";
-  else if (cityKnown && central) zone = "ASUNCIÓN O DEPARTAMENTO CENTRAL";
-  else if (cityKnown) zone = "FUERA DE CENTRAL CON COBERTURA";
-
-  let technicalResult = "No se puede calcular un plazo personalizado porque falta la ciudad.";
-  if (cityKnown && coverage === false) {
-    technicalResult =
-      "Corresponde envío por transportadora. No aplicar automáticamente el plazo de delivery de 24 a 48 horas; usar solo el plazo de transportadora indicado en el entrenamiento.";
-  } else if (cityKnown && py.isSunday) {
-    technicalResult = central
-      ? "Hoy es domingo: no se entrega hoy. El pedido queda agendado para salir en ruta el lunes."
-      : "Hoy es domingo: no se entrega hoy. El pedido se procesa desde el lunes y luego aplica el plazo de 24 a 48 horas.";
-  } else if (cityKnown && central && py.isBeforeCutoff1230) {
-    technicalResult =
-      "La ciudad está en el área Central/Asunción y la hora es anterior a las 12:30: corresponde entrega el mismo día, dentro del horario de 9:00 a 18:00.";
-  } else if (cityKnown && central) {
-    technicalResult =
-      "La ciudad está en el área Central/Asunción y la hora es 12:30 o posterior: corresponde agendar la entrega para el día siguiente, dentro del horario de 9:00 a 18:00.";
-  } else if (cityKnown) {
-    technicalResult =
-      "La ciudad está fuera de Central y tiene cobertura: corresponde un plazo de 24 a 48 horas. La regla de las 12:30 no aplica.";
-  }
-
-  return {
-    py,
-    cityKnown,
-    central,
-    zone,
-    technicalResult,
-  };
-}
 
 type ProductItem = {
   product: string;
@@ -442,31 +295,16 @@ function isPriceQuery(text: string) {
   const explicitPricePhrase =
     /\b(cuanto cuesta|cuanto sale|cuanto vale|cual es el precio|que precio|precio porfa|precio por favor|presio porfa|presio por favor|prezio porfa|prezio por favor)\b/.test(m);
 
-  if (technicalQuestion && !explicitPriceWord && !explicitPricePhrase) return false;
+  // V123: también reconoce confirmaciones numéricas del precio aunque el
+  // cliente no escriba la palabra “precio”. Ejemplos:
+  // “Ya 98000 los 4 verdad”, “159.000 por 8, cierto?”, “son 98 mil no?”.
+  const numericPriceConfirmation =
+    /(?:^|\b)(?:\d{1,3}(?:[.\s]\d{3})+|\d{4,7}|\d{2,3}\s*mil)(?:\b|$)/.test(m) &&
+    /\b(verdad|cierto|correcto|asi es|es asi|no|nomás|nomas|por|los|las|unidad|unidades|u|gs|guaranies|guaraníes)\b/.test(m);
 
-  return explicitPriceWord || explicitPricePhrase;
-}
+  if (technicalQuestion && !explicitPriceWord && !explicitPricePhrase && !numericPriceConfirmation) return false;
 
-function isQuantityOrPurposePhrase(text: string): boolean {
-  const n = normalize(text);
-  if (!n) return false;
-
-  // V124: respuestas que eligen cantidad y explican para qué se llevará
-  // el producto. La parte posterior a "para" nunca debe tratarse como ciudad.
-  if (
-    /\b(?:quiero|kiero|qiero|llevo|dame|mandame|reservame|pasame|enviame|seria|sería|prefiero|voy a llevar|me llevo)?\s*(?:un|uno|una|dos|tres|cuatro|cinco|\d{1,3})\s*(?:unidad(?:es)?|crema(?:s)?|producto(?:s)?|pieza(?:s)?)?\s+para\s+(?:probar|provar|usar|regalar|ver|mi|mí|mama|mamá|papa|papá|esposa|esposo|hijo|hija|casa|trabajo)\b/.test(n)
-  ) {
-    return true;
-  }
-
-  if (
-    /^(?:y\s+)?(?:quiero|kiero|qiero|llevo|dame|mandame|reservame|pasame|enviame|seria|sería|prefiero|voy a llevar|me llevo)?\s*(?:un|uno|una|dos|tres|cuatro|cinco|\d{1,3})\s*(?:unidad(?:es)?|crema(?:s)?|producto(?:s)?|pieza(?:s)?)?\s*(?:nomas|nomás|no mas|no más)?(?:\s+para\s+\w+(?:\s+\w+){0,4})?$/.test(n)
-  ) {
-    return true;
-  }
-
-  return /\b(?:probar|provar)\b/.test(n) &&
-    /\b(?:un|uno|una|dos|tres|cuatro|cinco|\d{1,3}|quiero|llevo|dame)\b/.test(n);
+  return explicitPriceWord || explicitPricePhrase || numericPriceConfirmation;
 }
 
 function isBuyIntent(text: string) {
@@ -1207,28 +1045,12 @@ function detectProductsMentioned(text: string, parsed: ParsedTraining): ProductI
       .map(normalize)
       .filter((value) => value.length >= 4 && !isGenericProductWord(value));
 
-    const exactCandidateMatch = Array.from(new Set(candidates)).some((candidate) => {
+    const matches = Array.from(new Set(candidates)).some((candidate) => {
       const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       return new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(msg);
     });
 
-    // V123: también reconoce una palabra distintiva del producto dentro de una
-    // pregunta natural. Ej.: “cuánto sale la crema para el varices”.
-    const messageWords = msg
-      .split(/\s+/)
-      .map(singularizeProductWord)
-      .filter((word) => word.length >= 5 && !isGenericProductWord(word));
-
-    const distinctiveWordMatch = Array.from(new Set(candidates)).some((candidate) => {
-      const candidateWords = candidate
-        .split(/\s+/)
-        .map(singularizeProductWord)
-        .filter((word) => word.length >= 5 && !isGenericProductWord(word));
-
-      return candidateWords.some((word) => messageWords.includes(word));
-    });
-
-    if (!exactCandidateMatch && !distinctiveWordMatch) continue;
+    if (!matches) continue;
 
     const key = normalize(product.canonical || product.product);
     if (!key || seen.has(key)) continue;
@@ -1751,10 +1573,6 @@ function exactKnownCity(text: string, parsed: ParsedTraining): string {
     asuncion: "Asunción",
     asu: "Asunción",
     "fernando de la mora": "Fernando de la Mora",
-    "fernando zona sur": "Fernando de la Mora",
-    "fernando sur": "Fernando de la Mora",
-    "fdo zona sur": "Fernando de la Mora",
-    "fndo zona sur": "Fernando de la Mora",
     "fdo de la mora": "Fernando de la Mora",
     "fndo de la mora": "Fernando de la Mora",
     "san lorenzo": "San Lorenzo",
@@ -1801,26 +1619,10 @@ function isOnlyPurchaseWithSize(text: string): boolean {
   );
 }
 
-function isBusinessOriginOrAddressQuestion(text: string): boolean {
-  const n = normalize(text);
-  if (!n) return false;
-
-  return (
-    /\b(de donde son|de donde sos|donde estan|donde están|donde queda|donde quedan|ubicacion del local|ubicación del local|direccion del local|dirección del local|direccion de ustedes|dirección de ustedes|dame tu direccion|dame su direccion|pasame tu direccion|pásame tu dirección|tienen local|tienen tienda|son de asuncion|son de asunción|no son de asuncion|no son de asunción)\b/.test(n)
-  );
-}
-
 function isClearlyNotCityMessage(text: string): boolean {
   const raw = clean(text);
   const n = normalize(raw);
   if (!n) return true;
-
-  // V123: preguntas sobre el origen, local o dirección del negocio no son ciudad del cliente.
-  if (isBusinessOriginOrAddressQuestion(raw)) return true;
-
-  // V124: cantidades con finalidad, por ejemplo “uno para probar/provar”,
-  // son selección de cantidad y nunca una ciudad.
-  if (isQuantityOrPurposePhrase(raw)) return true;
 
   // Confirmaciones, negaciones y respuestas conversacionales nunca son ciudades.
   if (/^(si|sii|siii|sip|si asi es|sii asi es|siii asi es|asi es|correcto|exacto|esa es|es esa|ok|ok gracias|dale|listo|no|nop|gracias|muchas gracias|mil gracias|perfecto|esta bien|está bien)$/i.test(n)) return true;
@@ -1913,15 +1715,6 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   // únicamente conserva el estado para que Gemini responda normalmente.
   if (isPriceQuery(raw)) return previous;
 
-  // V124: “uno para probar/provar”, “dos para regalar” y expresiones
-  // equivalentes registran cantidad, pero jamás crean o reemplazan la ciudad.
-  if (isQuantityOrPurposePhrase(raw)) return previous;
-
-  // V123: preguntas sobre el negocio y menciones claras de productos tampoco
-  // pueden convertirse en una ciudad del cliente.
-  if (isBusinessOriginOrAddressQuestion(raw)) return previous;
-  if (detectProductsMentioned(raw, parsed).length > 0 && !extractCityStatement(raw)) return previous;
-
   // PRIMERO: una coincidencia exacta del entrenamiento siempre gana,
   // incluso si contiene números, por ejemplo "Campo 9".
   const exactCity = exactKnownCity(raw, parsed);
@@ -1998,7 +1791,7 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   // Bloqueo final de expresiones que tienen forma de texto pero no de localidad.
   if (
     /^(quiero|quiero uno|quiero una|quiero dos|quiero 1|quiero 2|uno|una|dos|tres|cuatro|cinco|2x1|2 x 1)$/i.test(normalizedCandidate) ||
-    /\b(gracias|pedido|precio|presio|presyo|prezio|preio|prcio|pecio|prescio|precios|presios|probar|provar|usar|regalar|producto|promo|promocion|promoción|unidad|unidades|comprar|compro|quiero|necesito|delivery|envio|envío)\b/.test(normalizedCandidate)
+    /\b(gracias|pedido|precio|presio|presyo|prezio|preio|prcio|pecio|prescio|precios|presios|producto|promo|promocion|promoción|unidad|unidades|comprar|compro|quiero|necesito|delivery|envio|envío)\b/.test(normalizedCandidate)
   ) {
     return previous;
   }
@@ -2051,10 +1844,6 @@ function extractCityStatement(text: string): string {
   // Una fecha u horario de entrega nunca debe convertirse en ciudad.
   // Ej.: "quiero para fin de mes", "puede ser para el sábado".
   if (isTemporalDeliveryExpression(norm)) return "";
-
-  // V124: el patrón genérico “para ...” no debe extraer finalidades de compra.
-  // Ej.: “uno para probar”, “dos para regalar”, “una para mi mamá”.
-  if (isQuantityOrPurposePhrase(norm)) return "";
 
   // La validación contra productos se realiza también en detectCity, donde
   // está disponible el catálogo completo. Aquí bloqueamos coordinaciones
@@ -2464,7 +2253,7 @@ function extractExplicitKnownCityFromSentence(text: string, parsed: ParsedTraini
   // Se ejecuta antes de cualquier análisis difuso o de precio.
   const hardKnownCities: Array<[RegExp, string]> = [
     [/\b(asuncion|asu)\b/i, "Asunción"],
-    [/\b(fernando(?: de la mora)?(?: zona sur| sur)?|fdo(?: de la mora| dela mora| zona sur)?|fndo(?: de la mora| dela mora| zona sur)?)\b/i, "Fernando de la Mora"],
+    [/\b(fernando de la mora|fdo de la mora|fndo de la mora|fdo dela mora|fndo dela mora)\b/i, "Fernando de la Mora"],
     [/\bsan lorenzo\b/i, "San Lorenzo"],
     [/\bluque\b/i, "Luque"],
     [/\b(lambare)\b/i, "Lambaré"],
@@ -3015,6 +2804,11 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
 
   const raw = clean(text);
   const rawNorm = normalize(raw);
+
+  // V123: una consulta o confirmación de precio jamás puede ser dirección,
+  // aunque contenga varios números o más de tres palabras.
+  if (isPriceQuery(raw)) return "";
+
   if (/^\d+\s*(unidad|unidades|u|und|unds)?$/i.test(raw)) return "";
   if (/^\d+$/.test(raw)) return "";
 
@@ -3212,10 +3006,11 @@ function isConfirmedDeliveryPreference(text: string): boolean {
   );
 }
 
-function buildDeliveryTimingQuestionResponse(_text: string, _order: OrderData): string {
-  // V125: deshabilitado definitivamente. Las consultas de entrega se redactan
-  // con Gemini usando entrenamiento + fecha/hora real de Paraguay + zona logística.
-  return "";
+function buildDeliveryTimingQuestionResponse(text: string, order: OrderData): string {
+  const n = normalize(text);
+  const requested = /\bmanana|mañana\b/.test(n) ? "mañana" : /\bhoy\b/.test(n) ? "hoy" : "la fecha consultada";
+  const product = clean(order.product) ? ` de ${order.product}` : "";
+  return `🚚 No podemos asegurar una hora exacta porque depende de la ruta del delivery. Tu pedido${product} se coordina según disponibilidad y el delivery te contacta antes de llegar.\n\n¿Querés que anote como preferencia de entrega para ${requested}?`;
 }
 
 function extractOrderObservation(text: string): Partial<OrderData> {
@@ -4317,12 +4112,6 @@ function deterministicPostSaleResponse(text: string, order: OrderData, parsed: P
 }
 
 function buildPostSaleSystemPrompt(parsed: ParsedTraining, order: OrderData) {
-  const deliveryContext = deliveryTechnicalContext(
-    order.city,
-    order.city ? hasCoverage(order.city, parsed) : null
-  );
-  const py = deliveryContext.py;
-
   return `
 Sos vendedor/postventa de Mega Todo Store / One Store por WhatsApp.
 El pedido del cliente YA ESTÁ CONFIRMADO. No vuelvas a confirmar el pedido salvo que te lo pida.
@@ -4335,25 +4124,11 @@ DATOS DEL PEDIDO CONFIRMADO:
 - Cliente: ${order.customer_name || "no disponible"}
 - Teléfono: ${order.phone || "no disponible"}
 
-FECHA, HORA Y ENTREGA — DATOS TÉCNICOS ACTUALES:
-- Zona horaria: America/Asuncion
-- Fecha actual en Paraguay: ${py.dateText}
-- Hora actual en Paraguay: ${py.timeText}
-- Día actual: ${py.weekday}
-- Es domingo: ${py.isSunday ? "sí" : "no"}
-- Antes del corte de las 12:30: ${py.isBeforeCutoff1230 ? "sí" : "no"}
-- Clasificación logística de la ciudad: ${deliveryContext.zone}
-- La ciudad pertenece al área Central/Asunción: ${deliveryContext.central ? "sí" : "no"}
-- Resultado técnico que debe aplicarse: ${deliveryContext.technicalResult}
-
 REGLAS OBLIGATORIAS:
 - Respondé usando PRIMERO y de forma estricta los ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO.
 - PROHIBIDO usar respuestas genéricas, plantillas universales o frases prearmadas no respaldadas por el entrenamiento.
 - Para entrega, demora, fecha, horario, pago, factura, garantía, cambios, catálogo y postventa, extraé la respuesta concreta del entrenamiento y del estado real del pedido.
-- Si el entrenamiento indica un plazo (por ejemplo 24 a 48 horas), respondé exactamente ese plazo y complementalo con el resultado técnico de FECHA, HORA Y ENTREGA.
-- Cuando pregunten cuándo llega, si llega hoy o si entregamos en el día, explicá de forma completa: plazo aplicable, corte de las 12:30 cuando corresponda, horario de 9:00 a 18:00 y regla del domingo.
-- No respondas solamente que depende de la ruta, que se coordina o que el delivery llama si ya existe información suficiente para calcular el plazo.
-- Usá “hoy”, “mañana” o “lunes” únicamente según los datos técnicos actuales de Paraguay mostrados arriba.
+- Si el entrenamiento indica un plazo (por ejemplo 24 a 48 horas hábiles), respondé exactamente ese plazo.
 - Si el entrenamiento no contiene el dato solicitado, decí de forma breve que no está especificado y que el equipo/delivery lo coordinará; no inventes “próxima ronda”, fechas, horas ni políticas.
 - El número del cliente YA está disponible en DATOS DEL PEDIDO. Nunca vuelvas a pedir teléfono salvo que el cliente diga expresamente que desea cambiarlo.
 - Si quiere cambiar dirección o teléfono, pedile únicamente el dato nuevo correspondiente.
@@ -5929,8 +5704,6 @@ function deterministicObservationAckMessage(state: ConversationState, parsed: Pa
 
 function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null, copyAlreadySent = false) {
   const o = state.order;
-  const deliveryContext = deliveryTechnicalContext(o.city, state.coverage);
-  const py = deliveryContext.py;
 
   return `
 Sos la IA vendedora de Mega Todo Store / One Store.
@@ -5956,17 +5729,6 @@ ESTADO DEL PEDIDO:
 - Dirección opcional según entrenamiento: ${state.addressOptional ? "sí" : "no"}
 - Promo bloqueada desde plantilla: ${o.locked_offer ? `${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs` : "no"}
 - Observación del cliente: ${observationLines(o).length ? observationLines(o).join(" | ") : "sin observación"}
-
-FECHA, HORA Y ENTREGA — DATOS TÉCNICOS ACTUALES:
-- Zona horaria: America/Asuncion
-- Fecha actual en Paraguay: ${py.dateText}
-- Hora actual en Paraguay: ${py.timeText}
-- Día actual: ${py.weekday}
-- Es domingo: ${py.isSunday ? "sí" : "no"}
-- Antes del corte de las 12:30: ${py.isBeforeCutoff1230 ? "sí" : "no"}
-- Clasificación logística de la ciudad: ${deliveryContext.zone}
-- La ciudad pertenece al área Central/Asunción: ${deliveryContext.central ? "sí" : "no"}
-- Resultado técnico que debe aplicarse: ${deliveryContext.technicalResult}
 
 FUENTE DE PRODUCTO / CANTIDAD / PRECIO:
 ${catalogForPrompt(parsed, state, templatePricing)}
@@ -6033,14 +5795,7 @@ REGLAS DURAS:
 - Mencioná de 1 a 3 beneficios concretos presentes en ese copy. No uses una respuesta genérica si hay información específica del producto.
 - No inventes resultados, porcentajes, tiempos ni garantías que no estén escritos en el copy.
 - Si el cliente hace una consulta durante la compra: respondé primero la consulta usando SOLO el entrenamiento disponible y después retomá exactamente el siguiente dato faltante del ESTADO DEL PEDIDO.
-- Si pregunta de dónde somos, dónde queda el local o pide la dirección del negocio: respondé únicamente con la información que exista en ENTRENAMIENTO GENERAL. Esa pregunta NO es la ciudad ni la dirección del cliente, NO cambia el pedido y NO habilita mostrar datos bancarios.
-- No muestres titular, CI, banco, cuenta ni alias por una consulta sobre el origen o la dirección del negocio. Mostralos solamente cuando corresponda por el flujo de pago o cuando el cliente los pida explícitamente.
-- Si el cliente escribe solamente “gracias”, “muchas gracias” o una despedida breve, respondé amablemente una sola vez. No repitas en ese mismo turno la misma pregunta pendiente ni reinicies el flujo.
-- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, si entregamos en el día, qué día se entrega o en qué horario: combiná obligatoriamente ENTRENAMIENTO GENERAL con FECHA, HORA Y ENTREGA — DATOS TÉCNICOS ACTUALES.
-- La respuesta debe incluir todo lo aplicable: entrega hoy o mañana, corte de las 12:30, plazo de 24 a 48 horas fuera de Central, horario de 9:00 a 18:00 y regla de domingos.
-- No respondas solo “depende de la ruta”, “se coordina”, “el delivery te llama” o “no aseguramos hora exacta” cuando los datos técnicos permiten explicar el plazo.
-- La comunicación del delivery puede mencionarse como complemento, pero nunca reemplaza el plazo completo.
-- Respetá el RESULTADO TÉCNICO QUE DEBE APLICARSE. No contradigas esa clasificación con una interpretación propia.
+- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: respondé EXCLUSIVAMENTE con la regla de entrega/tiempo/horario que figure en ENTRENAMIENTO GENERAL. No uses frases genéricas ni un mensaje estándar sobre rutas, disponibilidad o que el delivery llama, salvo que eso esté escrito expresamente en el entrenamiento.
 - Una pregunta sobre entrega es solo una consulta: NO la guardes como fecha preferida, NO cambies ciudad, cantidad, nombre ni dirección y NO reinicies el pedido.
 - Después de responder la consulta de entrega, pedí solamente el siguiente dato realmente faltante. Si no falta ningún dato, respondé la consulta sin volver a repetir el cierre del pedido.
 - Si después de responder la consulta todavía falta ciudad, preguntá ciudad. No menciones transportadora, falta de cobertura ni pago anticipado hasta tener una ciudad real.
@@ -6058,8 +5813,6 @@ REGLAS DURAS:
 - Si no hay cobertura y ya hay cantidad, podés mostrar datos de transferencia.
 - Si hay cobertura, indicar envío gratis contra-entrega cuando corresponda.
 - Si el cliente pregunta precio, respondé precio y guiá al siguiente paso.
-- “Precio”, “presio”, “prezio” y variantes nunca son ciudades.
-- Frases como “uno para probar/provar”, “dos para regalar” o “una para mi mamá” indican cantidad y finalidad: registrá la cantidad, no guardes la palabra posterior a “para” como ciudad y luego pedí solamente la ciudad si todavía falta.
 - Si el cliente pide explícitamente los datos bancarios/de transferencia (aunque haya cobertura), dáselos directamente, no repitas "podés pagar efectivo o transferencia al delivery" sin dar el dato pedido.
 - PRIORIDAD DE PRECIOS:
   1) Si hay plantilla activa, usá SOLO producto, cantidad y precio de la plantilla.
@@ -6082,7 +5835,7 @@ REGLAS DURAS:
 - PROHIBIDO redactar un cierre libre. El único cierre válido es el generado por finalConfirmationMessage().
 - Fuera del cierre confirmado y del flujo técnico de comprobantes, PROHIBIDO responder con textos genéricos fijos: redactá siempre desde los entrenamientos activos y los datos reales del pedido.
 - El teléfono se obtiene automáticamente del número de WhatsApp. Si el estado ya contiene teléfono, nunca lo pidas de nuevo. Solo solicitá uno nuevo si el cliente quiere cambiarlo.
-- En preguntas sobre demora o fecha, usá el plazo exacto del entrenamiento junto con la fecha, hora y clasificación logística actuales. Explicá el plazo completo y no lo reduzcas a una frase genérica.
+- En preguntas sobre demora o fecha, usá el plazo exacto del entrenamiento. Si no existe, indicá que no está especificado y que se coordina, sin inventar “próxima ronda” ni una hora.
 - Cuando falte algún dato, mostrale un resumen fijo de lo que ya tenés y pedí solamente lo faltante.
 - PROHIBIDO pedir confirmación intermedia. Si ya están todos los datos, confirmá automáticamente.
 - Frases como "quiero en calce 42", "talle 40" o "número 39" son VARIANTES, nunca direcciones.
@@ -8404,9 +8157,8 @@ ${texto || "(mensaje sin texto)"}
 
 INTENCIÓN TÉCNICA DETECTADA:
 - Solicita catálogo: ${catalogRequestedNow ? "sí" : "no"}
-- Consulta sobre plazo/fecha/horario de entrega: ${isDeliveryTimingQuestion(texto) ? "sí" : "no"}
 
-Respondé ahora como vendedor. Seguí la instrucción obligatoria y todos los datos técnicos de fecha, hora y entrega incluidos en el mensaje de sistema. No inventes ciudad ni datos.
+Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes ciudad ni datos.
 Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas del backend.
 `.trim();
 
