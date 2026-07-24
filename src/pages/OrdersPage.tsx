@@ -1,5 +1,5 @@
 // ORDERS PAGE — DASHBOARD EJECUTIVO PROFESIONAL (v7)
-// Mejoras V8: detección compatible de pagos anticipados reales, pagos anticipados reales, monto recibido y tarjetas ejecutivas con jerarquía visual profesional,
+// Mejoras V11: asociación estricta de comprobante mediante confirmación fuerte de pago; detección compatible de pagos anticipados reales, pagos anticipados reales, monto recibido y tarjetas ejecutivas con jerarquía visual profesional,
 // campos PRODUCTO, CLIENTE, CIUDAD, CALLE, OBSERVACIÓN y MONTO,
 // tipografía más limpia, fondo corporativo y acciones compactas.
 
@@ -440,36 +440,75 @@ function getPhoneVariants(phone: string | null | undefined): string[] {
   );
 }
 
-const PAYMENT_EVIDENCE_RE = /\b(pago anticipado|comprobante(?: de pago)?|transferencia(?: recibida| realizada| hecha)?|deposito|depósito|pagador|monto recibido|operacion|operación|acreditacion|acreditación|transaccion|transacción)\b/i;
-const PRODUCT_MEDIA_RE = /\b(oferta|promocion|promoción|precio|delivery|stock|producto|pack|combo|2x1|3x1|envio gratis|envío gratis)\b/i;
+const STRONG_PAYMENT_SIGNAL_PATTERNS = [
+  /pago anticipado recibido/i,
+  /comprobante recibido/i,
+  /pagador\s*:/i,
+  /monto(?:\s+recibido)?\s*:/i,
+  /operaci[oó]n\s*:/i,
+  /acreditaci[oó]n pendiente/i,
+  /requiere verificaci[oó]n manual/i,
+  /destinatario verificado\s*:/i,
+];
+
+const PRODUCT_MEDIA_RE = /(oferta|promocion|promoción|precio|delivery|stock|producto|pack|combo|2x1|3x1|envio gratis|envío gratis|black friday|solo por|aprovecha)/i;
 
 function isIncomingMediaMessage(row: any) {
   const type = clean(row?.message_type).toLowerCase();
   const url = clean(row?.media_url_text);
-  return Boolean(!type.startsWith("out_") && url && (/image|document|pdf/.test(type) || /\.(png|jpe?g|webp|pdf)(?:\?|$)/i.test(url)));
+  return Boolean(
+    !type.startsWith("out_") &&
+      url &&
+      (/image|document|pdf/.test(type) || /\.(png|jpe?g|webp|pdf)(?:\?|$)/i.test(url))
+  );
+}
+
+function isStrongPaymentConfirmation(row: any) {
+  const type = clean(row?.message_type).toLowerCase();
+  const body = clean(row?.message);
+  if (!body) return false;
+
+  // La confirmación normalmente la envía el bot. Aceptamos también registros
+  // antiguos sin prefijo out_, pero nunca una imagen entrante aislada.
+  if (isIncomingMediaMessage(row)) return false;
+
+  const signals = STRONG_PAYMENT_SIGNAL_PATTERNS.filter((pattern) => pattern.test(body)).length;
+  const explicitHeader = /pedido confirmado/i.test(body) && /pago anticipado/i.test(body);
+  return signals >= 3 || (explicitHeader && signals >= 2);
 }
 
 function findRealPaymentProof(rows: any[]) {
-  const sorted = [...rows].sort((a,b)=>new Date(a.created_at||0).getTime()-new Date(b.created_at||0).getTime());
-  const maxDiff = 12 * 60 * 1000;
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    const media = sorted[i];
-    if (!isIncomingMediaMessage(media)) continue;
-    const mediaBody = clean(media.message);
-    if (PAYMENT_EVIDENCE_RE.test(mediaBody)) return media;
-    const mediaTime = new Date(media.created_at || 0).getTime();
-    let paymentNearby = false;
-    let productNearby = PRODUCT_MEDIA_RE.test(mediaBody);
-    for (let j = 0; j < sorted.length; j++) {
-      if (j === i) continue;
-      const t = new Date(sorted[j].created_at || 0).getTime();
-      if (!Number.isFinite(t) || Math.abs(t-mediaTime) > maxDiff) continue;
-      const body = clean(sorted[j].message);
-      if (PAYMENT_EVIDENCE_RE.test(body)) paymentNearby = true;
-      if (PRODUCT_MEDIA_RE.test(body)) productNearby = true;
+  const sorted = [...rows].sort(
+    (a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+  );
+  const maxDiff = 20 * 60 * 1000;
+
+  // Partimos de una confirmación fuerte del pago y buscamos únicamente
+  // la imagen entrante inmediatamente anterior que originó esa confirmación.
+  for (let confirmationIndex = sorted.length - 1; confirmationIndex >= 0; confirmationIndex--) {
+    const confirmation = sorted[confirmationIndex];
+    if (!isStrongPaymentConfirmation(confirmation)) continue;
+
+    const confirmationTime = new Date(confirmation.created_at || 0).getTime();
+    if (!Number.isFinite(confirmationTime)) continue;
+
+    for (let mediaIndex = confirmationIndex - 1; mediaIndex >= 0; mediaIndex--) {
+      const candidate = sorted[mediaIndex];
+      const candidateTime = new Date(candidate.created_at || 0).getTime();
+      if (!Number.isFinite(candidateTime)) continue;
+
+      const diff = confirmationTime - candidateTime;
+      if (diff < 0) continue;
+      if (diff > maxDiff) break;
+      if (!isIncomingMediaMessage(candidate)) continue;
+
+      const body = clean(candidate.message);
+      if (PRODUCT_MEDIA_RE.test(body)) continue;
+
+      return candidate;
     }
-    if (paymentNearby && !productNearby) return media;
   }
+
   return null;
 }
 
