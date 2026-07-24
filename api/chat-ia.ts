@@ -5,6 +5,7 @@ import { createClient } from "@supabase/supabase-js";
  * 
  * V121: evita interpretar errores de escritura de "precio" como ciudades; Gemini mantiene toda respuesta normal.
  * V122: preguntas sobre entrega/horario las responde Gemini desde el entrenamiento, sin mensaje fijo ni loop.
+ * V123: corrige ciudades con zonas, productos dentro de preguntas y consultas sobre origen/dirección sin alterar el pedido.
  * V116: TODA respuesta visible la redacta Gemini, excepto cierres, comprobantes y detección automática del celular.
  * V114: conserva la cantidad elegida antes de la ciudad y evita usar titulares publicitarios como nombre del producto.
  * V118: todas las respuestas normales las redacta Gemini; solo cierre, comprobantes y detección del celular permanecen fijos.
@@ -1037,12 +1038,28 @@ function detectProductsMentioned(text: string, parsed: ParsedTraining): ProductI
       .map(normalize)
       .filter((value) => value.length >= 4 && !isGenericProductWord(value));
 
-    const matches = Array.from(new Set(candidates)).some((candidate) => {
+    const exactCandidateMatch = Array.from(new Set(candidates)).some((candidate) => {
       const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       return new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(msg);
     });
 
-    if (!matches) continue;
+    // V123: también reconoce una palabra distintiva del producto dentro de una
+    // pregunta natural. Ej.: “cuánto sale la crema para el varices”.
+    const messageWords = msg
+      .split(/\s+/)
+      .map(singularizeProductWord)
+      .filter((word) => word.length >= 5 && !isGenericProductWord(word));
+
+    const distinctiveWordMatch = Array.from(new Set(candidates)).some((candidate) => {
+      const candidateWords = candidate
+        .split(/\s+/)
+        .map(singularizeProductWord)
+        .filter((word) => word.length >= 5 && !isGenericProductWord(word));
+
+      return candidateWords.some((word) => messageWords.includes(word));
+    });
+
+    if (!exactCandidateMatch && !distinctiveWordMatch) continue;
 
     const key = normalize(product.canonical || product.product);
     if (!key || seen.has(key)) continue;
@@ -1565,6 +1582,10 @@ function exactKnownCity(text: string, parsed: ParsedTraining): string {
     asuncion: "Asunción",
     asu: "Asunción",
     "fernando de la mora": "Fernando de la Mora",
+    "fernando zona sur": "Fernando de la Mora",
+    "fernando sur": "Fernando de la Mora",
+    "fdo zona sur": "Fernando de la Mora",
+    "fndo zona sur": "Fernando de la Mora",
     "fdo de la mora": "Fernando de la Mora",
     "fndo de la mora": "Fernando de la Mora",
     "san lorenzo": "San Lorenzo",
@@ -1611,10 +1632,22 @@ function isOnlyPurchaseWithSize(text: string): boolean {
   );
 }
 
+function isBusinessOriginOrAddressQuestion(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /\b(de donde son|de donde sos|donde estan|donde están|donde queda|donde quedan|ubicacion del local|ubicación del local|direccion del local|dirección del local|direccion de ustedes|dirección de ustedes|dame tu direccion|dame su direccion|pasame tu direccion|pásame tu dirección|tienen local|tienen tienda|son de asuncion|son de asunción|no son de asuncion|no son de asunción)\b/.test(n)
+  );
+}
+
 function isClearlyNotCityMessage(text: string): boolean {
   const raw = clean(text);
   const n = normalize(raw);
   if (!n) return true;
+
+  // V123: preguntas sobre el origen, local o dirección del negocio no son ciudad del cliente.
+  if (isBusinessOriginOrAddressQuestion(raw)) return true;
 
   // Confirmaciones, negaciones y respuestas conversacionales nunca son ciudades.
   if (/^(si|sii|siii|sip|si asi es|sii asi es|siii asi es|asi es|correcto|exacto|esa es|es esa|ok|ok gracias|dale|listo|no|nop|gracias|muchas gracias|mil gracias|perfecto|esta bien|está bien)$/i.test(n)) return true;
@@ -1706,6 +1739,11 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   // nunca puede convertirse en ciudad. Esta validación no genera mensajes:
   // únicamente conserva el estado para que Gemini responda normalmente.
   if (isPriceQuery(raw)) return previous;
+
+  // V123: preguntas sobre el negocio y menciones claras de productos tampoco
+  // pueden convertirse en una ciudad del cliente.
+  if (isBusinessOriginOrAddressQuestion(raw)) return previous;
+  if (detectProductsMentioned(raw, parsed).length > 0 && !extractCityStatement(raw)) return previous;
 
   // PRIMERO: una coincidencia exacta del entrenamiento siempre gana,
   // incluso si contiene números, por ejemplo "Campo 9".
@@ -2245,7 +2283,7 @@ function extractExplicitKnownCityFromSentence(text: string, parsed: ParsedTraini
   // Se ejecuta antes de cualquier análisis difuso o de precio.
   const hardKnownCities: Array<[RegExp, string]> = [
     [/\b(asuncion|asu)\b/i, "Asunción"],
-    [/\b(fernando de la mora|fdo de la mora|fndo de la mora|fdo dela mora|fndo dela mora)\b/i, "Fernando de la Mora"],
+    [/\b(fernando(?: de la mora)?(?: zona sur| sur)?|fdo(?: de la mora| dela mora| zona sur)?|fndo(?: de la mora| dela mora| zona sur)?)\b/i, "Fernando de la Mora"],
     [/\bsan lorenzo\b/i, "San Lorenzo"],
     [/\bluque\b/i, "Luque"],
     [/\b(lambare)\b/i, "Lambaré"],
@@ -5782,6 +5820,9 @@ REGLAS DURAS:
 - Mencioná de 1 a 3 beneficios concretos presentes en ese copy. No uses una respuesta genérica si hay información específica del producto.
 - No inventes resultados, porcentajes, tiempos ni garantías que no estén escritos en el copy.
 - Si el cliente hace una consulta durante la compra: respondé primero la consulta usando SOLO el entrenamiento disponible y después retomá exactamente el siguiente dato faltante del ESTADO DEL PEDIDO.
+- Si pregunta de dónde somos, dónde queda el local o pide la dirección del negocio: respondé únicamente con la información que exista en ENTRENAMIENTO GENERAL. Esa pregunta NO es la ciudad ni la dirección del cliente, NO cambia el pedido y NO habilita mostrar datos bancarios.
+- No muestres titular, CI, banco, cuenta ni alias por una consulta sobre el origen o la dirección del negocio. Mostralos solamente cuando corresponda por el flujo de pago o cuando el cliente los pida explícitamente.
+- Si el cliente escribe solamente “gracias”, “muchas gracias” o una despedida breve, respondé amablemente una sola vez. No repitas en ese mismo turno la misma pregunta pendiente ni reinicies el flujo.
 - Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: respondé EXCLUSIVAMENTE con la regla de entrega/tiempo/horario que figure en ENTRENAMIENTO GENERAL. No uses frases genéricas ni un mensaje estándar sobre rutas, disponibilidad o que el delivery llama, salvo que eso esté escrito expresamente en el entrenamiento.
 - Una pregunta sobre entrega es solo una consulta: NO la guardes como fecha preferida, NO cambies ciudad, cantidad, nombre ni dirección y NO reinicies el pedido.
 - Después de responder la consulta de entrega, pedí solamente el siguiente dato realmente faltante. Si no falta ningún dato, respondé la consulta sin volver a repetir el cierre del pedido.
