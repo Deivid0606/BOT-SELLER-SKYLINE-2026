@@ -308,7 +308,14 @@ function getOrderObservation(order: Order): string {
   return unique.join(" | ");
 }
 
-function isPrepaidOrder(order: Order) {
+function getConversationKey(value: string | null | undefined): string {
+  const digits = clean(value).replace(/\D/g, "");
+  if (!digits) return "";
+  const withoutCountry = digits.startsWith("595") ? digits.slice(3) : digits.replace(/^0/, "");
+  return withoutCountry.slice(-9);
+}
+
+function isPrepaidOrder(order: Order, hasChatProof = false) {
   const paymentText = clean(
     `${order.metodo_pago || ""} ${order.payment_note || ""} ${order.observation || ""} ${order.observacion || ""}`
   ).toLowerCase();
@@ -332,11 +339,11 @@ function isPrepaidOrder(order: Order) {
       paymentText
     );
 
-  return hasStoredProof || hasPaymentMetadata || hasExplicitPrepaidText;
+  return hasStoredProof || hasPaymentMetadata || hasExplicitPrepaidText || hasChatProof;
 }
 
-function getReceivedPrepaidAmount(order: Order): number {
-  if (!isPrepaidOrder(order)) return 0;
+function getReceivedPrepaidAmount(order: Order, hasChatProof = false): number {
+  if (!isPrepaidOrder(order, hasChatProof)) return 0;
 
   // Priorizamos el monto leído del comprobante. Si no existe, usamos
   // el total del pedido únicamente cuando el comprobante fue recibido/verificado.
@@ -346,7 +353,8 @@ function getReceivedPrepaidAmount(order: Order): number {
   if (
     Boolean(clean(order.comprobante_url)) ||
     order.payment_proof_received === true ||
-    order.payment_proof_verified === true
+    order.payment_proof_verified === true ||
+    hasChatProof
   ) {
     return parseCurrencyValue(order.total_amount);
   }
@@ -485,6 +493,7 @@ export default function OrdersPage() {
   const [dateTo, setDateTo] = useState(() => localDateInputValue());
   const [userId, setUserId] = useState<string | null>(null);
   const [selectedCity, setSelectedCity] = useState("all");
+  const [chatProofKeys, setChatProofKeys] = useState<Set<string>>(new Set());
 
   // Vista previa del chat
   const [previewOrder, setPreviewOrder] = useState<Order | null>(null);
@@ -512,6 +521,49 @@ export default function OrdersPage() {
         return acc;
       }, []);
       setOrders(unique);
+
+      // V9: algunos pedidos antiguos no guardaron los campos del comprobante
+      // en orders. Detectamos evidencia real en inbox_messages y la asociamos
+      // por número de conversación.
+      const { data: messageRows, error: messageError } = await supabase
+        .from("inbox_messages")
+        .select("sender_id, from_number, message, message_type, media_url_text, created_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(5000);
+
+      if (messageError) {
+        console.error("Error buscando comprobantes en chats:", messageError);
+        setChatProofKeys(new Set());
+      } else {
+        const evidence = new Map<string, { incomingMedia: boolean; paymentText: boolean }>();
+        for (const row of messageRows || []) {
+          const key = getConversationKey(row.sender_id || row.from_number);
+          if (!key) continue;
+          const current = evidence.get(key) || { incomingMedia: false, paymentText: false };
+          const type = clean(row.message_type).toLowerCase();
+          const body = clean(row.message).toLowerCase();
+          const url = clean(row.media_url_text);
+          const outgoing = type.startsWith("out_");
+
+          if (!outgoing && url && (/image|document|pdf/.test(type) || /\.(png|jpe?g|webp|pdf)(?:\?|$)/i.test(url))) {
+            current.incomingMedia = true;
+          }
+
+          if (/\b(pago anticipado|comprobante|transferencia|deposito|depósito|pagador|monto recibido|operacion|operación|acreditacion|acreditación)\b/.test(body)) {
+            current.paymentText = true;
+          }
+          evidence.set(key, current);
+        }
+
+        setChatProofKeys(
+          new Set(
+            Array.from(evidence.entries())
+              .filter(([, value]) => value.incomingMedia && value.paymentText)
+              .map(([key]) => key)
+          )
+        );
+      }
     }
     setLoading(false);
   }, [userId]);
@@ -693,13 +745,23 @@ export default function OrdersPage() {
       droppx: periodOrders.filter((o) => normalizeStatus(o.status) === "droppx").length,
       ingresos: periodOrders.filter((o) => normalizeStatus(o.status) !== "cancelado").reduce((s, o) => s + parseCurrencyValue(o.total_amount), 0),
       unidadesVendidas: totalUnitsFromOrders(periodOrders),
-      pagosAnticipados: periodOrders.filter(isPrepaidOrder).length,
+      pagosAnticipados: periodOrders.filter((order) =>
+        isPrepaidOrder(
+          order,
+          chatProofKeys.has(getConversationKey(order.from_number || order.phone))
+        )
+      ).length,
       montoPagosAnticipados: periodOrders.reduce(
-        (sum, order) => sum + getReceivedPrepaidAmount(order),
+        (sum, order) =>
+          sum +
+          getReceivedPrepaidAmount(
+            order,
+            chatProofKeys.has(getConversationKey(order.from_number || order.phone))
+          ),
         0
       ),
     }),
-    [periodOrders]
+    [periodOrders, chatProofKeys]
   );
 
   const productRanking = useMemo(() => productRankingFromOrders(periodOrders), [periodOrders]);
@@ -970,6 +1032,9 @@ export default function OrdersPage() {
               <OrderCard
                 key={order.id}
                 order={order}
+                hasChatProof={chatProofKeys.has(
+                  getConversationKey(order.from_number || order.phone)
+                )}
                 onPreview={() => openPreview(order)}
                 onChat={() => openChat(order.from_number || order.phone)}
                 onEcommerce={() => openEcommerce(order)}
@@ -1175,6 +1240,7 @@ export default function OrdersPage() {
 
 function OrderCard({
   order,
+  hasChatProof,
   onPreview,
   onChat,
   onEcommerce,
@@ -1183,6 +1249,7 @@ function OrderCard({
   onStatus,
 }: {
   order: Order;
+  hasChatProof: boolean;
   onPreview: () => void;
   onChat: () => void;
   onEcommerce: () => void;
@@ -1199,7 +1266,7 @@ function OrderCard({
   const totalItems =
     items.reduce((sum, item) => sum + Number(item.quantity || 1), 0) ||
     Number(order.quantity || 1);
-  const prepaid = isPrepaidOrder(order);
+  const prepaid = isPrepaidOrder(order, hasChatProof);
   const paymentSummary = getPaymentSummary(order);
   const productName = getPrimaryProductName(order);
   const street = clean(order.address) || "Ubicación pendiente";
