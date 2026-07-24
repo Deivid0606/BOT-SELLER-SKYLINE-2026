@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
  * CHAT IA VENDEDOR AUTÓNOMO V115 - Mega Todo Store / One Store
  * 
  * V121: evita interpretar errores de escritura de "precio" como ciudades; Gemini mantiene toda respuesta normal.
+ * V122: preguntas sobre entrega/horario las responde Gemini desde el entrenamiento, sin mensaje fijo ni loop.
  * V116: TODA respuesta visible la redacta Gemini, excepto cierres, comprobantes y detección automática del celular.
  * V114: conserva la cantidad elegida antes de la ciudad y evita usar titulares publicitarios como nombre del producto.
  * V118: todas las respuestas normales las redacta Gemini; solo cierre, comprobantes y detección del celular permanecen fijos.
@@ -5781,6 +5782,9 @@ REGLAS DURAS:
 - Mencioná de 1 a 3 beneficios concretos presentes en ese copy. No uses una respuesta genérica si hay información específica del producto.
 - No inventes resultados, porcentajes, tiempos ni garantías que no estén escritos en el copy.
 - Si el cliente hace una consulta durante la compra: respondé primero la consulta usando SOLO el entrenamiento disponible y después retomá exactamente el siguiente dato faltante del ESTADO DEL PEDIDO.
+- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: respondé EXCLUSIVAMENTE con la regla de entrega/tiempo/horario que figure en ENTRENAMIENTO GENERAL. No uses frases genéricas ni un mensaje estándar sobre rutas, disponibilidad o que el delivery llama, salvo que eso esté escrito expresamente en el entrenamiento.
+- Una pregunta sobre entrega es solo una consulta: NO la guardes como fecha preferida, NO cambies ciudad, cantidad, nombre ni dirección y NO reinicies el pedido.
+- Después de responder la consulta de entrega, pedí solamente el siguiente dato realmente faltante. Si no falta ningún dato, respondé la consulta sin volver a repetir el cierre del pedido.
 - Si después de responder la consulta todavía falta ciudad, preguntá ciudad. No menciones transportadora, falta de cobertura ni pago anticipado hasta tener una ciudad real.
 - Si Ciudad ya tiene valor en ESTADO DEL PEDIDO, PROHIBIDO volver a preguntar ciudad.
 - PROHIBIDO usar ciudad vieja si no aparece en ESTADO DEL PEDIDO.
@@ -7051,7 +7055,11 @@ export default async function handler(req: any, res: any) {
       console.error("⚠️ extractOrderObservation falló:", error);
     }
 
-    if (isDeliveryTimingQuestion(texto) && oldOrder.product) {
+    // V122: las consultas sobre fecha, demora u horario de entrega NO usan
+    // una respuesta fija del backend. Continúan hacia Gemini para que responda
+    // exclusivamente con las reglas de entrega cargadas en el entrenamiento
+    // y luego retome el siguiente dato faltante sin reiniciar el pedido.
+    if (false && isDeliveryTimingQuestion(texto) && oldOrder.product) {
       return res.json({
         response: buildDeliveryTimingQuestionResponse(texto, oldOrder),
         context: {
