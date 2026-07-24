@@ -6,6 +6,7 @@ import { createClient } from "@supabase/supabase-js";
  * V121: evita interpretar errores de escritura de "precio" como ciudades; Gemini mantiene toda respuesta normal.
  * V122: preguntas sobre entrega/horario las responde Gemini desde el entrenamiento, sin mensaje fijo ni loop.
  * V123: corrige ciudades con zonas, productos dentro de preguntas y consultas sobre origen/dirección sin alterar el pedido.
+ * V124: evita convertir “precio”, “uno para probar/provar” y frases de cantidad/uso en ciudades.
  * V116: TODA respuesta visible la redacta Gemini, excepto cierres, comprobantes y detección automática del celular.
  * V114: conserva la cantidad elegida antes de la ciudad y evita usar titulares publicitarios como nombre del producto.
  * V118: todas las respuestas normales las redacta Gemini; solo cierre, comprobantes y detección del celular permanecen fijos.
@@ -298,6 +299,28 @@ function isPriceQuery(text: string) {
   if (technicalQuestion && !explicitPriceWord && !explicitPricePhrase) return false;
 
   return explicitPriceWord || explicitPricePhrase;
+}
+
+function isQuantityOrPurposePhrase(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  // V124: respuestas que eligen cantidad y explican para qué se llevará
+  // el producto. La parte posterior a "para" nunca debe tratarse como ciudad.
+  if (
+    /\b(?:quiero|kiero|qiero|llevo|dame|mandame|reservame|pasame|enviame|seria|sería|prefiero|voy a llevar|me llevo)?\s*(?:un|uno|una|dos|tres|cuatro|cinco|\d{1,3})\s*(?:unidad(?:es)?|crema(?:s)?|producto(?:s)?|pieza(?:s)?)?\s+para\s+(?:probar|provar|usar|regalar|ver|mi|mí|mama|mamá|papa|papá|esposa|esposo|hijo|hija|casa|trabajo)\b/.test(n)
+  ) {
+    return true;
+  }
+
+  if (
+    /^(?:y\s+)?(?:quiero|kiero|qiero|llevo|dame|mandame|reservame|pasame|enviame|seria|sería|prefiero|voy a llevar|me llevo)?\s*(?:un|uno|una|dos|tres|cuatro|cinco|\d{1,3})\s*(?:unidad(?:es)?|crema(?:s)?|producto(?:s)?|pieza(?:s)?)?\s*(?:nomas|nomás|no mas|no más)?(?:\s+para\s+\w+(?:\s+\w+){0,4})?$/.test(n)
+  ) {
+    return true;
+  }
+
+  return /\b(?:probar|provar)\b/.test(n) &&
+    /\b(?:un|uno|una|dos|tres|cuatro|cinco|\d{1,3}|quiero|llevo|dame)\b/.test(n);
 }
 
 function isBuyIntent(text: string) {
@@ -1649,6 +1672,10 @@ function isClearlyNotCityMessage(text: string): boolean {
   // V123: preguntas sobre el origen, local o dirección del negocio no son ciudad del cliente.
   if (isBusinessOriginOrAddressQuestion(raw)) return true;
 
+  // V124: cantidades con finalidad, por ejemplo “uno para probar/provar”,
+  // son selección de cantidad y nunca una ciudad.
+  if (isQuantityOrPurposePhrase(raw)) return true;
+
   // Confirmaciones, negaciones y respuestas conversacionales nunca son ciudades.
   if (/^(si|sii|siii|sip|si asi es|sii asi es|siii asi es|asi es|correcto|exacto|esa es|es esa|ok|ok gracias|dale|listo|no|nop|gracias|muchas gracias|mil gracias|perfecto|esta bien|está bien)$/i.test(n)) return true;
 
@@ -1740,6 +1767,10 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   // únicamente conserva el estado para que Gemini responda normalmente.
   if (isPriceQuery(raw)) return previous;
 
+  // V124: “uno para probar/provar”, “dos para regalar” y expresiones
+  // equivalentes registran cantidad, pero jamás crean o reemplazan la ciudad.
+  if (isQuantityOrPurposePhrase(raw)) return previous;
+
   // V123: preguntas sobre el negocio y menciones claras de productos tampoco
   // pueden convertirse en una ciudad del cliente.
   if (isBusinessOriginOrAddressQuestion(raw)) return previous;
@@ -1821,7 +1852,7 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   // Bloqueo final de expresiones que tienen forma de texto pero no de localidad.
   if (
     /^(quiero|quiero uno|quiero una|quiero dos|quiero 1|quiero 2|uno|una|dos|tres|cuatro|cinco|2x1|2 x 1)$/i.test(normalizedCandidate) ||
-    /\b(gracias|pedido|precio|presio|presyo|prezio|preio|prcio|pecio|prescio|precios|presios|producto|promo|promocion|promoción|unidad|unidades|comprar|compro|quiero|necesito|delivery|envio|envío)\b/.test(normalizedCandidate)
+    /\b(gracias|pedido|precio|presio|presyo|prezio|preio|prcio|pecio|prescio|precios|presios|probar|provar|usar|regalar|producto|promo|promocion|promoción|unidad|unidades|comprar|compro|quiero|necesito|delivery|envio|envío)\b/.test(normalizedCandidate)
   ) {
     return previous;
   }
@@ -1874,6 +1905,10 @@ function extractCityStatement(text: string): string {
   // Una fecha u horario de entrega nunca debe convertirse en ciudad.
   // Ej.: "quiero para fin de mes", "puede ser para el sábado".
   if (isTemporalDeliveryExpression(norm)) return "";
+
+  // V124: el patrón genérico “para ...” no debe extraer finalidades de compra.
+  // Ej.: “uno para probar”, “dos para regalar”, “una para mi mamá”.
+  if (isQuantityOrPurposePhrase(norm)) return "";
 
   // La validación contra productos se realiza también en detectCity, donde
   // está disponible el catálogo completo. Aquí bloqueamos coordinaciones
@@ -5841,6 +5876,8 @@ REGLAS DURAS:
 - Si no hay cobertura y ya hay cantidad, podés mostrar datos de transferencia.
 - Si hay cobertura, indicar envío gratis contra-entrega cuando corresponda.
 - Si el cliente pregunta precio, respondé precio y guiá al siguiente paso.
+- “Precio”, “presio”, “prezio” y variantes nunca son ciudades.
+- Frases como “uno para probar/provar”, “dos para regalar” o “una para mi mamá” indican cantidad y finalidad: registrá la cantidad, no guardes la palabra posterior a “para” como ciudad y luego pedí solamente la ciudad si todavía falta.
 - Si el cliente pide explícitamente los datos bancarios/de transferencia (aunque haya cobertura), dáselos directamente, no repitas "podés pagar efectivo o transferencia al delivery" sin dar el dato pedido.
 - PRIORIDAD DE PRECIOS:
   1) Si hay plantilla activa, usá SOLO producto, cantidad y precio de la plantilla.
