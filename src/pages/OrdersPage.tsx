@@ -440,6 +440,40 @@ function getPhoneVariants(phone: string | null | undefined): string[] {
   );
 }
 
+const PAYMENT_EVIDENCE_RE = /\b(pago anticipado|comprobante(?: de pago)?|transferencia(?: recibida| realizada| hecha)?|deposito|depósito|pagador|monto recibido|operacion|operación|acreditacion|acreditación|transaccion|transacción)\b/i;
+const PRODUCT_MEDIA_RE = /\b(oferta|promocion|promoción|precio|delivery|stock|producto|pack|combo|2x1|3x1|envio gratis|envío gratis)\b/i;
+
+function isIncomingMediaMessage(row: any) {
+  const type = clean(row?.message_type).toLowerCase();
+  const url = clean(row?.media_url_text);
+  return Boolean(!type.startsWith("out_") && url && (/image|document|pdf/.test(type) || /\.(png|jpe?g|webp|pdf)(?:\?|$)/i.test(url)));
+}
+
+function findRealPaymentProof(rows: any[]) {
+  const sorted = [...rows].sort((a,b)=>new Date(a.created_at||0).getTime()-new Date(b.created_at||0).getTime());
+  const maxDiff = 12 * 60 * 1000;
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const media = sorted[i];
+    if (!isIncomingMediaMessage(media)) continue;
+    const mediaBody = clean(media.message);
+    if (PAYMENT_EVIDENCE_RE.test(mediaBody)) return media;
+    const mediaTime = new Date(media.created_at || 0).getTime();
+    let paymentNearby = false;
+    let productNearby = PRODUCT_MEDIA_RE.test(mediaBody);
+    for (let j = 0; j < sorted.length; j++) {
+      if (j === i) continue;
+      const t = new Date(sorted[j].created_at || 0).getTime();
+      if (!Number.isFinite(t) || Math.abs(t-mediaTime) > maxDiff) continue;
+      const body = clean(sorted[j].message);
+      if (PAYMENT_EVIDENCE_RE.test(body)) paymentNearby = true;
+      if (PRODUCT_MEDIA_RE.test(body)) productNearby = true;
+    }
+    if (paymentNearby && !productNearby) return media;
+  }
+  return null;
+}
+
+
 async function getCurrentUser() {
   const {
     data: { user },
@@ -536,33 +570,15 @@ export default function OrdersPage() {
         console.error("Error buscando comprobantes en chats:", messageError);
         setChatProofKeys(new Set());
       } else {
-        const evidence = new Map<string, { incomingMedia: boolean; paymentText: boolean }>();
+        const grouped = new Map<string, any[]>();
         for (const row of messageRows || []) {
           const key = getConversationKey(row.sender_id || row.from_number);
           if (!key) continue;
-          const current = evidence.get(key) || { incomingMedia: false, paymentText: false };
-          const type = clean(row.message_type).toLowerCase();
-          const body = clean(row.message).toLowerCase();
-          const url = clean(row.media_url_text);
-          const outgoing = type.startsWith("out_");
-
-          if (!outgoing && url && (/image|document|pdf/.test(type) || /\.(png|jpe?g|webp|pdf)(?:\?|$)/i.test(url))) {
-            current.incomingMedia = true;
-          }
-
-          if (/\b(pago anticipado|comprobante|transferencia|deposito|depósito|pagador|monto recibido|operacion|operación|acreditacion|acreditación)\b/.test(body)) {
-            current.paymentText = true;
-          }
-          evidence.set(key, current);
+          const rows = grouped.get(key) || [];
+          rows.push(row);
+          grouped.set(key, rows);
         }
-
-        setChatProofKeys(
-          new Set(
-            Array.from(evidence.entries())
-              .filter(([, value]) => value.incomingMedia && value.paymentText)
-              .map(([key]) => key)
-          )
-        );
+        setChatProofKeys(new Set(Array.from(grouped.entries()).filter(([, rows]) => Boolean(findRealPaymentProof(rows))).map(([key]) => key)));
       }
     }
     setLoading(false);
@@ -682,17 +698,11 @@ export default function OrdersPage() {
         .select("id, sender_id, from_number, message, message_type, media_url_text, created_at")
         .eq("user_id", userId)
         .in("sender_id", variants)
-        .not("media_url_text", "is", null)
-        .order("created_at", { ascending: false })
-        .limit(50);
+        .order("created_at", { ascending: true })
+        .limit(300);
       if (error) throw error;
-      const candidate = (data || []).find((row: any) => {
-        const type = clean(row.message_type).toLowerCase();
-        const body = clean(row.message).toLowerCase();
-        const url = clean(row.media_url_text);
-        return !type.startsWith("out_") && url && (/\\b(comprobante|transferencia|pago|deposito|depósito)\\b/.test(body) || /image|document|pdf/.test(type) || /\\.(png|jpe?g|webp|pdf)(?:\\?|$)/i.test(url));
-      });
-      if (!candidate?.media_url_text) throw new Error("No encontré un comprobante guardado en el pedido ni en el chat.");
+      const candidate = findRealPaymentProof(data || []);
+      if (!candidate?.media_url_text) throw new Error("No encontré una imagen vinculada a un pago real.");
       setProofUrl(clean(candidate.media_url_text));
     } catch (error: any) {
       console.error("Error buscando comprobante:", error);
