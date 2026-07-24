@@ -1,5 +1,5 @@
 // ORDERS PAGE — DASHBOARD EJECUTIVO PROFESIONAL (v7)
-// Mejoras V7: pagos anticipados reales, monto recibido y tarjetas ejecutivas con jerarquía visual profesional,
+// Mejoras V8: detección compatible de pagos anticipados reales, pagos anticipados reales, monto recibido y tarjetas ejecutivas con jerarquía visual profesional,
 // campos PRODUCTO, CLIENTE, CIUDAD, CALLE, OBSERVACIÓN y MONTO,
 // tipografía más limpia, fondo corporativo y acciones compactas.
 
@@ -310,20 +310,29 @@ function getOrderObservation(order: Order): string {
 
 function isPrepaidOrder(order: Order) {
   const paymentText = clean(
-    `${order.metodo_pago || ""} ${order.payment_note || ""}`
+    `${order.metodo_pago || ""} ${order.payment_note || ""} ${order.observation || ""} ${order.observacion || ""}`
   ).toLowerCase();
 
-  // Solo consideramos pago anticipado cuando existe evidencia real del pago
-  // o cuando el método/nota de pago lo indica expresamente.
-  // "Transportadora" por sí sola NO significa que el pedido ya fue pagado.
-  return (
+  // Un pago anticipado real puede venir de versiones distintas del backend.
+  // Por eso aceptamos como evidencia cualquiera de estos datos:
+  // URL/flags del comprobante, datos extraídos del pago o texto explícito.
+  // "Transportadora" por sí sola NO se considera pago anticipado.
+  const hasStoredProof =
     Boolean(clean(order.comprobante_url)) ||
     order.payment_proof_received === true ||
-    order.payment_proof_verified === true ||
-    /\b(pago anticipado|anticipado|transferencia anticipada|comprobante recibido|pago previo)\b/.test(
+    order.payment_proof_verified === true;
+
+  const hasPaymentMetadata =
+    Boolean(clean(order.payment_holder_name)) ||
+    Boolean(clean(order.payment_operation_number)) ||
+    parseCurrencyValue(order.payment_amount) > 0;
+
+  const hasExplicitPrepaidText =
+    /\b(pago anticipado|anticipado recibido|pago previo|comprobante recibido|comprobante validado|transferencia recibida|transferencia procesada|acreditacion pendiente|acreditación pendiente|pagador|numero de operacion|número de operación)\b/.test(
       paymentText
-    )
-  );
+    );
+
+  return hasStoredProof || hasPaymentMetadata || hasExplicitPrepaidText;
 }
 
 function getReceivedPrepaidAmount(order: Order): number {
