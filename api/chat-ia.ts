@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V133: reglas de ciudad estructuradas por usuario, respuesta logística inmediata desde entrenamiento y fallback dinámico cuando Gemini no está disponible.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
  * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
  * CHAT IA VENDEDOR AUTÓNOMO V115 - Mega Todo Store / One Store
@@ -124,9 +125,27 @@ type TrainingSections = {
   bankingItems: number;
 };
 
+type CityRule = {
+  alias: string;
+  canonical: string;
+  covered: boolean;
+  department?: string;
+  logisticsZone?: string;
+  modality?: string;
+  paymentMethod?: string;
+  addressOptional?: boolean;
+  deliveryRule?: string;
+  deliveryTime?: string;
+  schedule?: string;
+  carrier?: string;
+  shippingCost?: number;
+  requiresAdvancePayment?: boolean;
+  rawBlock?: string;
+};
+
 type ParsedTraining = {
   products: ProductItem[];
-  cities: { alias: string; canonical: string; covered: boolean }[];
+  cities: CityRule[];
   catalogUrl: string;
   bankData: BankData | null;
 
@@ -182,6 +201,7 @@ type ConversationState = {
   order: OrderData;
   step: string;
   productInfo: ProductItem | null;
+  cityRule: CityRule | null;
   coverage: boolean | null;
   total: number;
   missing: string[];
@@ -818,7 +838,7 @@ function autoDetectProductsFromTraining(_training: string, _existing: ProductIte
 
 function parseTraining(training: string): ParsedTraining {
   const products: ProductItem[] = [];
-  const cities: { alias: string; canonical: string; covered: boolean }[] = [];
+  const cities: CityRule[] = [];
 
   const catalog =
     training.match(/CATALOGO_PRODUCTOS([\s\S]*?)FIN_CATALOGO_PRODUCTOS/i)?.[1] || "";
@@ -862,11 +882,72 @@ function parseTraining(training: string): ParsedTraining {
   const autoProducts = autoDetectProductsFromTraining(training, products);
   products.push(...autoProducts);
 
-  const addCity = (alias: string, canonical?: string, covered = true) => {
-    const a = clean(alias);
-    const c = clean(canonical || alias);
-    if (!a || a.length < 2) return;
-    cities.push({ alias: a, canonical: c, covered });
+  const parseStructuredField = (block: string, names: string[]) => {
+    for (const name of names) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const value = clean(block.match(new RegExp(`^${escaped}\\s*:\\s*(.+)$`, "im"))?.[1] || "");
+      if (value) return value;
+    }
+    return "";
+  };
+
+  const parseShippingCost = (value: string) => {
+    const amount = parseNumberGs(value);
+    return amount > 0 ? amount : undefined;
+  };
+
+  const buildCityRule = (canonical: string, block: string, defaultCovered: boolean): CityRule => {
+    const coverageField = normalize(parseStructuredField(block, ["COBERTURA"]));
+    const modality = parseStructuredField(block, ["MODALIDAD", "TIPO_ENVÍO", "TIPO_ENVIO"]);
+    const paymentMethod = parseStructuredField(block, ["PAGO", "FORMA_PAGO", "FORMA DE PAGO"]);
+    const addressField = normalize(parseStructuredField(block, ["DIRECCIÓN", "DIRECCION", "UBICACIÓN", "UBICACION"]));
+    const deliveryRule = parseStructuredField(block, ["REGLA_ENTREGA", "REGLA DE ENTREGA"]);
+    const deliveryTime = parseStructuredField(block, ["PLAZO", "TIEMPO_ENTREGA", "TIEMPO DE ENTREGA"]);
+    const schedule = parseStructuredField(block, ["HORARIO", "HORARIO_ENTREGA", "HORARIO DE ENTREGA"]);
+    const carrier = parseStructuredField(block, ["TRANSPORTADORA", "EMPRESA_ENVÍO", "EMPRESA_ENVIO"]);
+    const shippingCostText = parseStructuredField(block, ["COSTO_ENVÍO", "COSTO_ENVIO", "COSTO DE ENVÍO", "COSTO DE ENVIO"]);
+
+    const blockNorm = normalize(block);
+    const explicitlyNotCovered =
+      coverageField === "no" ||
+      /\b(sin cobertura|fuera de cobertura|no contra entrega|sin contra entrega)\b/.test(blockNorm);
+    const explicitlyCovered = coverageField === "si";
+    const covered = explicitlyNotCovered ? false : explicitlyCovered ? true : defaultCovered;
+
+    const addressOptional =
+      /\bopcional\b/.test(addressField) ||
+      /\b(direccion|ubicacion|referencia)\b[\s\S]{0,50}\bopcional\b/.test(blockNorm);
+
+    const requiresAdvancePayment =
+      /\b(anticipado|transferencia previa|pago previo)\b/.test(
+        normalize(`${paymentMethod} ${modality} ${block}`)
+      );
+
+    return {
+      alias: canonical,
+      canonical,
+      covered,
+      department: parseStructuredField(block, ["DEPARTAMENTO"]),
+      logisticsZone: parseStructuredField(block, ["ZONA_LOGÍSTICA", "ZONA_LOGISTICA"]),
+      modality,
+      paymentMethod,
+      addressOptional,
+      deliveryRule,
+      deliveryTime,
+      schedule,
+      carrier,
+      shippingCost: parseShippingCost(shippingCostText),
+      requiresAdvancePayment,
+      rawBlock: clean(block),
+    };
+  };
+
+  const addCityRule = (rule: CityRule, aliases: string[]) => {
+    for (const alias of aliases) {
+      const cleanAlias = clean(alias);
+      if (!cleanAlias || cleanAlias.length < 2) continue;
+      cities.push({ ...rule, alias: cleanAlias });
+    }
   };
 
   const parseCityBlocks = (section: string, defaultCovered: boolean) => {
@@ -877,32 +958,20 @@ function parseTraining(training: string): ParsedTraining {
       const canonical = clean(lines[0]);
       if (!canonical || canonical.length < 2) continue;
 
-      const blockNorm = normalize(block);
-      const explicitlyNotCovered =
-        /\b(sin cobertura|fuera de cobertura|transportadora|pago anticipado|no contra entrega|sin contra entrega)\b/.test(blockNorm);
-      const covered = explicitlyNotCovered ? false : defaultCovered;
-
-      addCity(canonical, canonical, covered);
-
+      const rule = buildCityRule(canonical, block, defaultCovered);
       const variantsLine = lines.find((line) => /^[✅✔]/.test(line));
-      if (variantsLine) {
-        variantsLine
-          .replace(/^[✅✔]\s*/, "")
-          .split(",")
-          .map(clean)
-          .filter(Boolean)
-          .forEach((variant) => addCity(variant, canonical, covered));
-      }
+      const aliases = variantsLine
+        ? variantsLine.replace(/^[✅✔]\s*/, "").split(",").map(clean).filter(Boolean)
+        : [];
+
+      addCityRule(rule, [canonical, ...aliases]);
     }
   };
 
-  // Lista completa personalizada: cada bloque puede declarar explícitamente
-  // "sin cobertura", "transportadora" o "pago anticipado".
   const completeCitySection =
     training.match(/LISTA COMPLETA POR CIUDAD([\s\S]*?)⚙️ INSTRUCCIÓN FINAL/i)?.[1] || "";
   if (completeCitySection) parseCityBlocks(completeCitySection, true);
 
-  // Secciones explícitas del entrenamiento.
   const coveredSection =
     training.match(/ZONAS CON COBERTURA([\s\S]*?)(?:ZONAS SIN COBERTURA|⚙️ INSTRUCCIÓN FINAL|$)/i)?.[1] || "";
   const uncoveredSection =
@@ -918,16 +987,21 @@ function parseTraining(training: string): ParsedTraining {
       .filter((line) => {
         const n = normalize(line);
         if (!line || line.length < 3 || line.length > 80) return false;
-        if (/\b(pago|transportadora|contra entrega|cobertura|envio|envío|delivery|anticipado)\b/.test(n)) return false;
+        if (/\b(pago|transportadora|contra entrega|cobertura|envio|delivery|anticipado)\b/.test(n)) return false;
         return /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(line);
       })
-      .forEach((city) => addCity(city, city, covered));
+      .forEach((city) => addCityRule({
+        alias: city,
+        canonical: city,
+        covered,
+        rawBlock: city,
+      }, [city]));
   };
 
   parseSimpleCityList(coveredSection, true);
   parseSimpleCityList(uncoveredSection, false);
 
-  const cityMap = new Map<string, { alias: string; canonical: string; covered: boolean }>();
+  const cityMap = new Map<string, CityRule>();
   for (const c of cities) {
     const key = normalize(c.alias);
     if (!key) continue;
@@ -1939,6 +2013,61 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   }
 
   return toTitleCase(candidate);
+}
+
+function getCityRule(city: string, parsed: ParsedTraining): CityRule | null {
+  const c = normalize(city);
+  if (!c) return null;
+
+  return (
+    parsed.cities.find((item) => {
+      const alias = normalize(item.alias);
+      const canonical = normalize(item.canonical);
+      return c === alias || c === canonical;
+    }) || null
+  );
+}
+
+function resolveDeliveryText(rule: CityRule | null): string {
+  if (!rule) return "";
+  if (clean(rule.deliveryTime)) return clean(rule.deliveryTime);
+
+  const normalizedRule = normalize(rule.deliveryRule || "");
+  if (!normalizedRule) return "";
+
+  if (/corte.?12.?30/.test(normalizedRule)) {
+    const now = new Date();
+    const pyTime = new Date(
+      now.toLocaleString("en-US", { timeZone: "America/Asuncion" })
+    );
+    const day = pyTime.getDay();
+    const minutes = pyTime.getHours() * 60 + pyTime.getMinutes();
+
+    if (day === 0) return "El pedido se procesa desde el lunes";
+    if (minutes < 12 * 60 + 30) return "Entrega prevista para hoy";
+    return "Entrega prevista para el siguiente día de reparto";
+  }
+
+  return clean(rule.deliveryRule || "");
+}
+
+function cityRuleFacts(rule: CityRule | null) {
+  if (!rule) return null;
+  return {
+    city: rule.canonical,
+    department: rule.department || "",
+    logistics_zone: rule.logisticsZone || "",
+    coverage: rule.covered,
+    modality: rule.modality || "",
+    payment_method: rule.paymentMethod || "",
+    address_optional: Boolean(rule.addressOptional),
+    delivery_rule: rule.deliveryRule || "",
+    delivery_time: resolveDeliveryText(rule),
+    schedule: rule.schedule || "",
+    carrier: rule.carrier || "",
+    shipping_cost: rule.shippingCost || 0,
+    requires_advance_payment: Boolean(rule.requiresAdvancePayment),
+  };
 }
 
 function hasCoverage(city: string, parsed: ParsedTraining) {
@@ -4856,9 +4985,12 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
   }
 
   const productInfo = getProductInfo(order.product, parsed);
-  const coverage = order.city ? hasCoverage(order.city, parsed) : null;
+  const cityRule = order.city ? getCityRule(order.city, parsed) : null;
+  const coverage = order.city ? (cityRule ? cityRule.covered : hasCoverage(order.city, parsed)) : null;
   const total = order.product && order.quantity ? calculateTotal(order.product, order.quantity, parsed, order.locked_offer) : 0;
-  const addressOptional = isAddressOptionalByTraining(parsed, coverage);
+  const addressOptional = cityRule?.addressOptional === true
+    ? true
+    : isAddressOptionalByTraining(parsed, coverage);
   const missing = getMissing(order, coverage, addressOptional);
   const step = nextStep(order, coverage, addressOptional);
 
@@ -4866,6 +4998,7 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
     order,
     step,
     productInfo,
+    cityRule,
     coverage,
     total,
     missing,
@@ -5020,15 +5153,6 @@ async function safeUpsertOrder(
 
   const extendedPayload: Record<string, any> = {
     ...basePayload,
-    items: [
-      {
-        product: canonicalProduct,
-        name: canonicalProduct,
-        quantity: order.quantity,
-        amount: total,
-        price: total,
-      },
-    ],
     metodo_pago: paymentMethod,
     detected_by_ai: true,
     observation: clean(order.observation) || null,
@@ -5039,7 +5163,6 @@ async function safeUpsertOrder(
 
   const mediumPayload: Record<string, any> = {
     ...basePayload,
-    items: extendedPayload.items,
     metodo_pago: paymentMethod,
     detected_by_ai: true,
   };
@@ -5690,44 +5813,21 @@ Nuestro equipo se pondrá en contacto para coordinar la entrega. 📲
 
 function deterministicAfterCityCoverageMessage(state: ConversationState) {
   const o = state.order;
-  if (!o.product || !o.city) return "";
-
-  // Los packs fijos usan un mensaje más completo en otra función.
+  const rule = state.cityRule;
+  if (!o.product || !o.city || !rule) return "";
   if (o.locked_offer?.fixed_quantity) return "";
 
-  if (state.coverage === false) {
-    if (!o.quantity) {
-      return `📍 ${o.city} está fuera de nuestra zona de contra-entrega.
+  const parts: string[] = [];
+  if (rule.modality) parts.push(rule.modality);
+  if (rule.paymentMethod) parts.push(`Forma de pago: ${rule.paymentMethod}`);
+  const delivery = resolveDeliveryText(rule);
+  if (delivery) parts.push(delivery);
+  if (rule.schedule) parts.push(`Horario: ${rule.schedule}`);
+  if (rule.shippingCost) parts.push(`Costo de envío: ${formatGs(rule.shippingCost)} Gs`);
+  if (rule.carrier) parts.push(`Transportadora: ${rule.carrier}`);
 
-😊 Igual podemos enviarte por transportadora 🚚
-💳 Para este destino el pago es anticipado.
-
-¿Cuántas unidades querés llevar?`;
-    }
-
-    return `📍 ${o.city} está fuera de nuestra zona de contra-entrega.
-
-😊 Igual podemos enviarte por transportadora 🚚
-💳 Para este destino el pago es anticipado.
-
-Para continuar, realizá la transferencia y enviame el comprobante.
-
-Si todavía no me pasaste tu nombre completo, enviámelo junto con el comprobante.`;
-  }
-
-  if (!o.quantity) {
-    const offers = state.productInfo ? productOffersText(state.productInfo) : "";
-    return `✅ Tenemos envío GRATIS contra entrega en ${o.city} 🚚
-
-Pagás solamente el producto cuando lo recibís 😊
-
-${offers ? `🔥 Promociones disponibles:
-${offers}
-
-` : ""}¿Cuántas unidades querés llevar?`;
-  }
-
-  return "";
+  if (!o.quantity) parts.push("¿Cuántas unidades querés llevar?");
+  return parts.join("\n\n");
 }
 
 function deterministicAfterCityFixedOfferMessage(state: ConversationState, parsed: ParsedTraining) {
@@ -5894,11 +5994,77 @@ function deterministicObservationAckMessage(state: ConversationState, parsed: Pa
   return `${intro}\n\n✅ Tengo todos los datos del pedido. Nuestro equipo tendrá en cuenta esa observación para coordinar 😊`;
 }
 
+
+function nextMissingQuestion(state: ConversationState): string {
+  const missing = state.missing[0] || "";
+  if (missing === "producto") return "¿Qué producto te interesa?";
+  if (missing === "ciudad") return "¿Para qué ciudad sería el envío?";
+  if (missing === "cantidad") return "¿Cuántas unidades querés llevar?";
+  if (missing === "nombre y apellido") return "¿Me indicás tu nombre y apellido?";
+  if (missing === "dirección o referencia") return "¿Me pasás la dirección o una referencia para la entrega?";
+  if (missing === "comprobante de transferencia") return "Enviame el comprobante de transferencia para continuar.";
+  return "";
+}
+
+function buildTrainingDerivedFallback(
+  customerMessage: string,
+  state: ConversationState,
+  parsed: ParsedTraining,
+  copyAlreadySent: boolean
+): { response: string; media_urls: string[] } {
+  const o = state.order;
+  const rule = state.cityRule;
+  const parts: string[] = [];
+  const media_urls: string[] = [];
+
+  if (state.productInfo && !copyAlreadySent && clean(state.productInfo.salesCopy)) {
+    parts.push(clean(state.productInfo.salesCopy));
+    media_urls.push(...(state.productInfo.images || []));
+  } else if (isPriceQuery(customerMessage) && state.productInfo) {
+    const prices = productOffersText(state.productInfo);
+    if (prices) parts.push(prices);
+  }
+
+  if (rule && o.city) {
+    const cityParts: string[] = [];
+    if (clean(rule.modality)) cityParts.push(clean(rule.modality));
+    if (clean(rule.paymentMethod)) cityParts.push(`Forma de pago: ${clean(rule.paymentMethod)}`);
+    const delivery = resolveDeliveryText(rule);
+    if (delivery) cityParts.push(delivery);
+    if (clean(rule.schedule)) cityParts.push(`Horario: ${clean(rule.schedule)}`);
+    if (rule.shippingCost) cityParts.push(`Costo de envío: ${formatGs(rule.shippingCost)} Gs`);
+    if (clean(rule.carrier)) cityParts.push(`Transportadora: ${clean(rule.carrier)}`);
+
+    if (cityParts.length) {
+      parts.push(`Para ${rule.canonical}: ${cityParts.join(". ")}.`);
+    } else {
+      parts.push(
+        rule.covered
+          ? `Tenemos cobertura para ${rule.canonical}.`
+          : `La modalidad para ${rule.canonical} se gestiona según la regla de cobertura configurada.`
+      );
+    }
+  }
+
+  if (state.coverage === false && o.quantity > 0 && parsed.bankData) {
+    const bank = bankDataText(parsed);
+    if (bank) parts.push(bank);
+  }
+
+  const next = nextMissingQuestion(state);
+  if (next) parts.push(next);
+
+  return {
+    response: parts.filter(Boolean).join("\\n\\n").trim(),
+    media_urls: Array.from(new Set(media_urls)),
+  };
+}
+
 function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null, copyAlreadySent = false) {
   const o = state.order;
 
   return `
-Sos la IA vendedora de Mega Todo Store / One Store.
+Sos la asistente comercial definida por los entrenamientos activos del usuario actual.
 Tu trabajo es vender de forma natural, amable y segura por WhatsApp. Cuando hay copy de producto cargado, debés respetarlo completo la PRIMERA vez que se presenta.
 
 REGLA PRINCIPAL:
@@ -5912,7 +6078,8 @@ ESTADO DEL PEDIDO:
 - Producto: ${o.product || "faltante"}
 - Cantidad: ${o.quantity || "faltante"}
 - Ciudad: ${o.city || "faltante"}
-- Tiene cobertura contra-entrega: ${state.coverage === null ? "aún no se sabe" : state.coverage ? "sí" : "no"}
+- Tiene cobertura: ${state.coverage === null ? "aún no se sabe" : state.coverage ? "sí" : "no"}
+- Regla técnica exacta de la ciudad: ${JSON.stringify(cityRuleFacts(state.cityRule))}
 - Nombre: ${o.customer_name || "faltante"}
 - Dirección: ${o.address || "faltante"}
 - Teléfono: ${o.phone || "faltante"}
@@ -5960,7 +6127,8 @@ CÓMO USAR LOS ENTRENAMIENTOS DEL USUARIO:
 - Los entrenamientos generales deciden tono, conversación, cierres de venta, objeciones, factura, entrega, postventa y forma de pedir datos.
 - El backend decide únicamente los datos técnicos: producto detectado, cantidad registrada, ciudad, cobertura, total, datos faltantes y si el pedido puede confirmarse.
 - Nunca reemplaces un dato técnico válido por una suposición del entrenamiento.
-- No uses la lista completa de cobertura para redactar: usá el valor de cobertura ya calculado en ESTADO DEL PEDIDO.
+- Para ciudad, cobertura, modalidad, forma de pago, plazo, horario, costo y transportadora, usá exclusivamente la "Regla técnica exacta de la ciudad".
+- Si un dato no aparece en esa regla ni en los entrenamientos activos, no lo inventes.
 - Usá solamente los datos bancarios estructurados mostrados en DATOS DE TRANSFERENCIA.
 
 ORDEN DE PRIORIDAD:
@@ -8389,19 +8557,44 @@ Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas de
     }
 
     if (!aiResponse || aiResponse === "__GEMINI_QUOTA_EXCEEDED__") {
-      // V116: jamás enviar una respuesta fija que pueda revelar automatización
-      // o provocar loops. El canal debe reintentar la generación con IA.
-      return res.status(503).json({
-        response: "",
-        retryable: true,
+      const fallback = buildTrainingDerivedFallback(
+        texto,
+        finalState,
+        parsed,
+        copyAlreadySent
+      );
+
+      if (!fallback.response) {
+        return res.status(503).json({
+          response: "",
+          retryable: true,
+          context: {
+            ...(context || {}),
+            order_data: orderData,
+            order_id: orderData.order_id || null,
+            step: finalState.step,
+            updated_at: new Date().toISOString(),
+          },
+          debug: { ai_response_required: true, fallback_empty: true },
+        });
+      }
+
+      return res.status(200).json({
+        response: fallback.response,
+        media_urls: fallback.media_urls,
         context: {
           ...(context || {}),
           order_data: orderData,
           order_id: orderData.order_id || null,
           step: finalState.step,
+          address_optional: finalState.addressOptional,
           updated_at: new Date().toISOString(),
         },
-        debug: { ai_response_required: true },
+        debug: {
+          training_derived_fallback: true,
+          gemini_quota_exceeded: aiResponse === "__GEMINI_QUOTA_EXCEEDED__",
+          city_rule: cityRuleFacts(finalState.cityRule),
+        },
       });
     }
 
