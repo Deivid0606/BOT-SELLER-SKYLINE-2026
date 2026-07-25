@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V129: corrige cambios explícitos de ciudad con km/ruta, separa ciudad y referencia, clasifica Central técnicamente y permite reutilizar de forma real los datos del pedido anterior en una nueva compra.
  * V128: elimina las respuestas comerciales activas del backend. Gemini redacta toda conversación normal desde el entrenamiento; se conservan intactos cierres, comprobantes, validaciones y estados.
  * V127: la IA redacta toda la conversación normal; el backend conserva estados, validaciones, comprobantes y cierres fijos. Identidad y tienda salen del entrenamiento activo.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
@@ -409,10 +410,19 @@ function trainingItemText(item: any): string {
 
 function classifyTrainingItem(item: any): "general" | "coverage" | "banking" {
   const intent = normalize(item?.intent || "");
-  const body = normalize(getTrainingBody(item));
+  const rawBody = getTrainingBody(item);
+  const body = normalize(rawBody);
 
-  // Primero datos bancarios para que una frase como "sin cobertura se paga por
-  // transferencia" dentro de las reglas generales no clasifique mal la tarjeta.
+  // V129: un entrenamiento integral/general puede contener reglas bancarias y
+  // cobertura sin convertirse por eso en una tarjeta bancaria. La categoría
+  // explícita y los encabezados generales tienen prioridad.
+  const explicitlyGeneral =
+    /\b(entrenamiento general|reglas de venta|reglas generales|asistente|identidad|conversacion natural|arquitectura)\b/.test(intent) ||
+    /ENTRENAMIENTO GENERAL|REGLAS DE VENTA|PRIORIDAD Y ARQUITECTURA GENERAL/i.test(rawBody);
+
+  if (explicitlyGeneral) return "general";
+
+  // Las tarjetas realmente especializadas de banco se detectan después.
   const bankingByTitle =
     /\b(informacion bancaria|datos bancarios|datos para transferencia|datos de transferencia|cuenta bancaria)\b/.test(intent);
   const bankingByStructure =
@@ -2240,6 +2250,132 @@ function isDeliveryCostQuestion(text: string): boolean {
 
 function buildDeliveryCostResponse(state: ConversationState): string {
   return "";
+}
+
+
+function findKnownCityAnywhere(text: string, parsed: ParsedTraining): string {
+  const n = normalize(text);
+  if (!n) return "";
+
+  const ordered = [...(parsed.cities || [])].sort(
+    (a, b) =>
+      Math.max(normalize(b.alias).length, normalize(b.canonical).length) -
+      Math.max(normalize(a.alias).length, normalize(a.canonical).length)
+  );
+
+  for (const city of ordered) {
+    const aliases = Array.from(
+      new Set([city.alias, city.canonical].map(normalize).filter(Boolean))
+    );
+
+    for (const alias of aliases) {
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(n)) {
+        return city.canonical;
+      }
+    }
+  }
+
+  return "";
+}
+
+function isExplicitCityCorrection(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /\b(perdon|disculpa|disculpe|me equivoque|correccion|corrijo|en realidad|mejor dicho|quise decir|cambio de ciudad|cambiar ciudad)\b/.test(n) ||
+    /^(?:no\s+)?(?:seria|sería)\s+(?:para\s+)?/.test(n) ||
+    /\b(?:no|mejor)\s+(?:es|seria|sería)\s+(?:para\s+)?/.test(n)
+  );
+}
+
+function extractReferenceFromCityMessage(
+  text: string,
+  city: string,
+  parsed: ParsedTraining
+): string {
+  if (!city) return "";
+
+  let value = clean(text);
+
+  // Quita expresiones de corrección que no forman parte de la referencia.
+  value = value.replace(
+    /\b(perd[oó]n|disculp[ae]|disculpe|me equivoqu[eé]|correcci[oó]n|corrijo|en realidad|mejor dicho|quise decir|no ser[ií]a|ser[ií]a para|mejor es|cambio de ciudad)\b/gi,
+    " "
+  );
+
+  const cityCandidates = (parsed.cities || [])
+    .filter((item) => normalize(item.canonical) === normalize(city))
+    .flatMap((item) => [item.alias, item.canonical])
+    .concat(city)
+    .map(clean)
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+
+  for (const candidate of Array.from(new Set(cityCandidates))) {
+    const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    value = value.replace(new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "ig"), " ");
+  }
+
+  value = value
+    .replace(/\b(?:para|envio|envío|entrega|delivery|ciudad|seria|sería|es)\b/gi, " ")
+    .replace(/\bkm\s*(\d+)\b/gi, "km $1")
+    .replace(/\s+/g, " ")
+    .replace(/^[,;:.\-\s]+|[,;:.\-\s]+$/g, "")
+    .trim();
+
+  const n = normalize(value);
+  const hasReferenceCue =
+    /\b(km|kilometro|kilómetro|ruta|barrio|zona|centro|compania|compañía|fraccion|fracción|calle|avenida|avda|esquina|frente|lado|manzana|mz|lote|casa|edificio|piso|departamento|dpto|referencia)\b/.test(n) ||
+    /maps\.app|google\.com\/maps/i.test(value);
+
+  return hasReferenceCue ? value : "";
+}
+
+function isCentralDepartmentCity(city: string): boolean {
+  const n = normalize(city);
+  if (!n) return false;
+
+  const centralCities = new Set([
+    "aregua",
+    "capiata",
+    "fernando de la mora",
+    "guarambare",
+    "ita",
+    "itaugua",
+    "jose augusto saldivar",
+    "lambare",
+    "limpio",
+    "luque",
+    "mariano roque alonso",
+    "nemby",
+    "nueva italia",
+    "san antonio",
+    "san lorenzo",
+    "villa elisa",
+    "villeta",
+    "ypane",
+  ]);
+
+  return centralCities.has(n);
+}
+
+function getPreviousConfirmedOrder(context: any, parsed: ParsedTraining): OrderData | null {
+  const raw = context?.previous_confirmed_order;
+  if (!raw) return null;
+
+  const order = sanitizeOldOrder(raw, parsed);
+  if (!order.city && !order.customer_name && !order.address) return null;
+  return order;
+}
+
+function shouldReusePreviousOrderData(text: string, context: any, currentOrder: OrderData): boolean {
+  if (!context?.previous_confirmed_order) return false;
+  if (!clean(currentOrder.product)) return false;
+
+  const n = normalize(text);
+  return /^(si|sí|sii|siii|sip|dale|ok|correcto|exacto|asi es|así es|los mismos|mismos datos|misma direccion|misma dirección|misma ciudad|para el mismo lugar)$/.test(n);
 }
 
 function extractExplicitKnownCityFromSentence(text: string, parsed: ParsedTraining): string {
@@ -5458,6 +5594,8 @@ ESTADO DEL PEDIDO:
 - Producto: ${o.product || "faltante"}
 - Cantidad: ${o.quantity || "faltante"}
 - Ciudad: ${o.city || "faltante"}
+- Pertenece al Departamento Central: ${o.city ? (isCentralDepartmentCity(o.city) ? "sí" : "no") : "aún no se sabe"}
+- Regla de entrega aplicable: ${o.city ? (isCentralDepartmentCity(o.city) ? "Central: corte 12:30" : "Fuera de Central") : "depende de la ciudad"}
 - Tiene cobertura contra-entrega: ${state.coverage === null ? "aún no se sabe" : state.coverage ? "sí" : "no"}
 - Nombre: ${o.customer_name || "faltante"}
 - Dirección: ${o.address || "faltante"}
@@ -5506,6 +5644,9 @@ CÓMO USAR LOS ENTRENAMIENTOS DEL USUARIO:
 - Los entrenamientos generales deciden tono, conversación, cierres de venta, objeciones, factura, entrega, postventa y forma de pedir datos.
 - El backend decide únicamente los datos técnicos: producto detectado, cantidad registrada, ciudad, cobertura, total, datos faltantes y si el pedido puede confirmarse.
 - Nunca reemplaces un dato técnico válido por una suposición del entrenamiento.
+- Nunca afirmes que una ciudad, cantidad, nombre o dirección quedó anotada si ese valor no aparece realmente en ESTADO DEL PEDIDO.
+- Si el cliente corrige una ciudad, usá exclusivamente la ciudad técnica actual y no mezcles la ciudad anterior con la referencia.
+- Si “Pertenece al Departamento Central” dice “sí”, aplicá la regla de Central y nunca el plazo general de 24 a 48 horas.
 - No uses la lista completa de cobertura para redactar: usá el valor de cobertura ya calculado en ESTADO DEL PEDIDO.
 - Usá solamente los datos bancarios estructurados mostrados en DATOS DE TRANSFERENCIA.
 
@@ -6079,6 +6220,14 @@ export default async function handler(req: any, res: any) {
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
     if (!oldOrder.phone) oldOrder.phone = senderPhoneFallback(fromNumber);
 
+    // V129: snapshot técnico del último pedido confirmado. Se conserva para
+    // poder reutilizar ciudad, referencia, nombre y contacto únicamente cuando
+    // el cliente confirme expresamente que desea usar los mismos datos.
+    let previousConfirmedOrder: OrderData | null =
+      context?.step === "pedido_confirmado"
+        ? { ...oldOrder }
+        : getPreviousConfirmedOrder(context, parsed);
+
     // V100: un chat nuevo o una sesión vencida jamás hereda producto,
     // cantidad, ciudad ni datos de un chat anterior.
     const resetBecauseNewChat =
@@ -6112,7 +6261,9 @@ export default async function handler(req: any, res: any) {
 
       if (explicitNewPurchaseAfterConfirmed) {
         forceFreshOrderFromConfirmedTemplate = true;
+        previousConfirmedOrder = { ...oldOrder };
         oldOrder = emptyOrder(makeOrderId(fromNumber));
+        oldOrder.phone = senderPhoneFallback(fromNumber);
       } else {
         // V52: después de confirmar, un dato adicional de ubicación (por ejemplo
         // "Barrio San Ramón") complementa la dirección. Nunca debe reemplazar
@@ -6279,6 +6430,18 @@ export default async function handler(req: any, res: any) {
           },
           debug: { dynamic_post_sale_from_training: true },
         });
+      }
+    }
+
+    // V129: si existe una nueva compra abierta y Pamela preguntó por reutilizar
+    // los datos anteriores, una confirmación breve copia los datos de verdad.
+    if (shouldReusePreviousOrderData(texto, context, oldOrder)) {
+      const previous = getPreviousConfirmedOrder(context, parsed);
+      if (previous) {
+        if (!oldOrder.city) oldOrder.city = previous.city;
+        if (!oldOrder.customer_name) oldOrder.customer_name = previous.customer_name;
+        if (!oldOrder.address) oldOrder.address = previous.address;
+        if (!oldOrder.phone) oldOrder.phone = previous.phone || senderPhoneFallback(fromNumber);
       }
     }
 
@@ -6504,6 +6667,16 @@ export default async function handler(req: any, res: any) {
     const explicitKnownCityFromMessage = extractExplicitKnownCityFromSentence(texto, parsed);
     const detectedCityRaw = detectCity(texto, parsed, sanitizedOldCity || "");
     const exactCityFromMessage = exactKnownCity(texto, parsed);
+
+    // V129: "Perdón Capiatá km21" debe reemplazar la ciudad anterior y guardar
+    // únicamente "km 21" como referencia.
+    const cityCorrectionRequested = isExplicitCityCorrection(texto);
+    const correctedKnownCity = cityCorrectionRequested
+      ? findKnownCityAnywhere(texto, parsed)
+      : "";
+    const correctedCityReference = correctedKnownCity
+      ? extractReferenceFromCityMessage(texto, correctedKnownCity, parsed)
+      : "";
     const explicitDifferentCity = Boolean(
       cityStatement &&
       exactKnownCity(cityStatement, parsed) &&
@@ -6518,15 +6691,17 @@ export default async function handler(req: any, res: any) {
     // Solo cambia si el cliente declara expresamente otra ciudad o escribe
     // exactamente otra localidad conocida. Una pregunta, dirección, talle,
     // cantidad o respuesta corta jamás puede reemplazarla.
-    const detectedCity = explicitKnownCityFromMessage
-      ? explicitKnownCityFromMessage
-      : oldOrder.city && !explicitDifferentCity && !exactDifferentCity
-        ? canonicalizeStoredCity(oldOrder.city, parsed)
-        : explicitDifferentCity
-          ? canonicalizeStoredCity(cityStatement, parsed)
-          : exactDifferentCity
-            ? exactCityFromMessage
-            : detectedCityRaw;
+    const detectedCity = correctedKnownCity
+      ? correctedKnownCity
+      : explicitKnownCityFromMessage
+        ? explicitKnownCityFromMessage
+        : oldOrder.city && !explicitDifferentCity && !exactDifferentCity
+          ? canonicalizeStoredCity(oldOrder.city, parsed)
+          : explicitDifferentCity
+            ? canonicalizeStoredCity(cityStatement, parsed)
+            : exactDifferentCity
+              ? exactCityFromMessage
+              : detectedCityRaw;
 
     const pendingCityConfirmation = clean(context?.pending_city_confirmation || "");
     let cityConfirmedNow = "";
@@ -6728,6 +6903,14 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    if (
+      correctedKnownCity &&
+      normalize(correctedKnownCity) !== normalize(oldOrder.city || "")
+    ) {
+      oldOrder.city = "";
+      oldOrder.address = "";
+    }
+
     let orderData = mergeOrderData(
       oldOrder,
       {
@@ -6737,7 +6920,7 @@ export default async function handler(req: any, res: any) {
         phone,
         name,
         old_name_is_contaminated: isContaminatedCustomerName(clean((context?.order_data || {}).customer_name || ""), parsed),
-        address,
+        address: correctedCityReference || address,
         locked_offer: lockedOffer,
         ...observationPatch,
       },
@@ -7589,6 +7772,7 @@ export default async function handler(req: any, res: any) {
             last_ad_offer: orderData.locked_offer || null,
             order_data: orderData,
             order_id: orderData.order_id || null,
+            previous_confirmed_order: previousConfirmedOrder || context?.previous_confirmed_order || null,
             step: finalState.step,
             address_optional: finalState.addressOptional,
             updated_at: new Date().toISOString(),
@@ -7923,6 +8107,7 @@ No repitas la misma pregunta si el cliente ya respondió el dato o si acaba de h
         last_ad_offer: orderData.locked_offer || null,
         order_data: orderData,
         order_id: orderData.order_id || null,
+        previous_confirmed_order: previousConfirmedOrder || context?.previous_confirmed_order || null,
         payment_proof_received: (orderData as any).payment_proof_received || false,
         step: confirm ? "pedido_confirmado" : finalState.step,
         updated_at: new Date().toISOString(),
