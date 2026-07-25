@@ -1,9 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V127: la IA redacta toda la conversación normal; el backend conserva estados, validaciones, comprobantes y cierres fijos. Identidad y tienda salen del entrenamiento activo.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
  * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
- * CHAT IA VENDEDOR AUTÓNOMO V115 - Mega Todo Store / One Store
+ * CHAT VENDEDOR AUTÓNOMO — identidad tomada del entrenamiento activo
  * 
  * V121: evita interpretar errores de escritura de "precio" como ciudades; Gemini mantiene toda respuesta normal.
  * V124: confirmaciones numéricas de precio nunca se guardan como dirección ni completan el pedido.
@@ -55,6 +56,31 @@ import { createClient } from "@supabase/supabase-js";
  * ✔️ No se queda en bucle
  * ✔️ Venta fluida y natural
  */
+
+
+/*
+V127 — ARQUITECTURA DE CONVERSACIÓN
+
+BACKEND:
+- detecta y valida producto, ciudad, cantidad, nombre, cobertura y pago;
+- conserva los estados collecting_city, collecting_quantity y collecting_name;
+- interpreta respuestas breves según el estado;
+- calcula precios y totales;
+- guarda el pedido;
+- procesa comprobantes;
+- genera únicamente los cierres definitivos.
+
+GEMINI:
+- responde consultas;
+- presenta productos;
+- pregunta ciudad, cantidad y nombre;
+- explica cobertura, entrega, pagos y factura;
+- maneja objeciones y postventa;
+- usa la identidad y el nombre de la tienda del entrenamiento;
+- redacta naturalmente y evita loops.
+
+Los estados técnicos no deben convertirse en respuestas visibles fijas.
+*/
 
 const supabase = createClient(
   process.env.SUPABASE_URL as string,
@@ -675,6 +701,41 @@ function parseCatalogUrl(training: string) {
     "";
 
   return clean(explicit).replace(/[)\].,;]+$/, "");
+}
+
+
+type BusinessIdentity = {
+  storeName: string;
+  assistantName: string;
+};
+
+function parseBusinessIdentity(training: string): BusinessIdentity {
+  const raw = clean(training);
+  const storeName =
+    clean(raw.match(/(?:^|\n)\s*NOMBRE\s+DE\s+LA\s+TIENDA\s*:\s*(.+)$/im)?.[1]) ||
+    clean(raw.match(/(?:^|\n)\s*NOMBRE\s+DEL\s+NEGOCIO\s*:\s*(.+)$/im)?.[1]) ||
+    clean(raw.match(/(?:^|\n)\s*TIENDA\s*:\s*(.+)$/im)?.[1]) ||
+    "";
+
+  const assistantName =
+    clean(raw.match(/(?:^|\n)\s*(?:TU\s+NOMBRE\s+ES|NOMBRE\s+DE\s+LA\s+ASISTENTE|NOMBRE\s+DE\s+LA\s+VENDEDORA)\s*:?\s*(.+)$/im)?.[1]) ||
+    clean(raw.match(/\bTu nombre es\s+([A-ZÁÉÍÓÚÑ][^\n.]{2,80})/i)?.[1]) ||
+    "";
+
+  return {
+    storeName: storeName.replace(/[.]+$/, "").trim(),
+    assistantName: assistantName.replace(/[.]+$/, "").trim(),
+  };
+}
+
+function isBusinessIdentityQuestion(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /\b(?:como te llamas|cual es tu nombre|quien sos|con quien hablo|nombre de la vendedora|nombre de la asesora|nombre de la asistente)\b/.test(n) ||
+    /\b(?:como se llama la tienda|cual es el nombre de la tienda|nombre de la tienda|nombre del negocio|como se llama el negocio|nombre de la empresa)\b/.test(n)
+  );
 }
 
 function parseBankData(training: string): BankData | null {
@@ -1843,6 +1904,7 @@ function isStrictStandaloneCustomerName(
 
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const raw = clean(text);
+  if (isBusinessIdentityQuestion(raw)) return previous;
   const previous = canonicalizeStoredCity(prev || "", parsed);
 
   if (!raw) return previous;
@@ -2975,6 +3037,7 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   }
 
   const raw = clean(text);
+  if (isBusinessIdentityQuestion(raw)) return "";
   const rawNorm = normalize(raw);
 
   // V126: una ubicación postergada no es una dirección.
@@ -3173,6 +3236,8 @@ function observationBlock(order: Partial<OrderData> | null | undefined) {
 function isDeliveryTimingQuestion(text: string): boolean {
   const raw = clean(text);
   const n = normalize(raw);
+
+  if (isBusinessIdentityQuestion(raw)) return "";
   if (!raw || !n) return false;
   return (
     /[?¿]/.test(raw) && /\b(hoy|manana|mañana|cuando|cuándo|que hora|qué hora|horario|entrega|llega|llegaria|llegaría|demora|tarda|tiempo)\b/.test(n)
@@ -4303,8 +4368,12 @@ function deterministicPostSaleResponse(text: string, order: OrderData, parsed: P
 }
 
 function buildPostSaleSystemPrompt(parsed: ParsedTraining, order: OrderData) {
+  const identity = parseBusinessIdentity(parsed.generalTraining || parsed.raw);
   return `
-Sos vendedor/postventa de Mega Todo Store / One Store por WhatsApp.
+Sos la asistente de ventas y postventa del negocio configurado por el usuario.
+Nombre de la tienda: ${identity.storeName || "no especificado en el entrenamiento"}
+Nombre de la asistente: ${identity.assistantName || "no especificado en el entrenamiento"}
+Nunca uses nombres comerciales o personales fijos escritos en el código.
 El pedido del cliente YA ESTÁ CONFIRMADO. No vuelvas a confirmar el pedido salvo que te lo pida.
 
 DATOS DEL PEDIDO CONFIRMADO:
@@ -5896,9 +5965,13 @@ function deterministicObservationAckMessage(state: ConversationState, parsed: Pa
 
 function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null, copyAlreadySent = false) {
   const o = state.order;
+  const identity = parseBusinessIdentity(parsed.generalTraining || parsed.raw);
 
   return `
-Sos la IA vendedora de Mega Todo Store / One Store.
+Sos la asistente de ventas oficial del negocio configurado por el usuario.
+Nombre de la tienda: ${identity.storeName || "no especificado en el entrenamiento"}
+Nombre de la asistente: ${identity.assistantName || "no especificado en el entrenamiento"}
+Nunca uses nombres fijos escritos en el backend y nunca digas que sos una IA.
 Tu trabajo es vender de forma natural, amable y segura por WhatsApp. Cuando hay copy de producto cargado, debés respetarlo completo la PRIMERA vez que se presenta.
 
 REGLA PRINCIPAL:
@@ -5975,6 +6048,12 @@ REGLAS DURAS:
 - Si el COPY DE VENTA ya se envió antes (ver arriba), NO lo repitas: avanzá directo al siguiente paso del pedido con una respuesta breve y natural.
 - Si es la primera vez que se presenta el producto (copy NO enviado todavía) y hay COPY DE VENTA ORIGINAL, NO lo resumas, NO lo acortes y NO le quites partes: enviá el copy completo aunque sea largo.
 - No digas que sos IA.
+- Si el cliente pregunta el nombre de la tienda, respondé usando únicamente “Nombre de la tienda” indicado arriba.
+- Si pregunta tu nombre o con quién habla, respondé usando únicamente “Nombre de la asistente” indicado arriba.
+- Las preguntas de identidad no son nombre del cliente, ciudad, producto, dirección ni cantidad.
+- Respondé primero la pregunta de identidad y después continuá solamente con el siguiente dato realmente faltante, salvo que el cliente solo esté haciendo una consulta informativa.
+- Toda respuesta normal debe ser redactada por vos de manera natural. El backend no debe imponer frases fijas para pedir ciudad, cantidad, nombre, dirección, factura, entrega, pago u objeciones.
+- Conservá los estados técnicos para interpretar respuestas breves, pero variá la redacción y evitá repetir literalmente la última pregunta.
 - No menciones backend, sistema ni estado interno.
 - No inventes productos, precios, bancos, cuentas, enlaces, ciudades ni tiempos.
 - PROHIBIDO inventar ciudad. Si Ciudad = faltante, preguntá ciudad.
@@ -6028,7 +6107,7 @@ REGLAS DURAS:
 - Fuera del cierre confirmado y del flujo técnico de comprobantes, PROHIBIDO responder con textos genéricos fijos: redactá siempre desde los entrenamientos activos y los datos reales del pedido.
 - El teléfono se obtiene automáticamente del número de WhatsApp. Si el estado ya contiene teléfono, nunca lo pidas de nuevo. Solo solicitá uno nuevo si el cliente quiere cambiarlo.
 - En preguntas sobre demora o fecha, usá el plazo exacto del entrenamiento. Si no existe, indicá que no está especificado y que se coordina, sin inventar “próxima ronda” ni una hora.
-- Cuando falte algún dato, mostrale un resumen fijo de lo que ya tenés y pedí solamente lo faltante.
+- Cuando falte algún dato, pedí solamente el siguiente dato faltante de forma natural. Mostrá un resumen únicamente cuando ayude realmente al cliente y sin convertirlo en una plantilla repetitiva.
 - PROHIBIDO pedir confirmación intermedia. Si ya están todos los datos, confirmá automáticamente.
 - Frases como "quiero en calce 42", "talle 40" o "número 39" son VARIANTES, nunca direcciones.
 - Guardá el talle/calce en observación. Pedí dirección solamente cuando Dirección opcional = no.
@@ -8299,7 +8378,7 @@ export default async function handler(req: any, res: any) {
       )
     );
 
-    if (shouldPresentExactCatalogCopy) {
+    if (false && shouldPresentExactCatalogCopy) {
       const exactCopyResponse = buildFullProductCopyResponse(finalState, templatePricing);
       const exactImages = finalState.productInfo?.images?.length
         ? finalState.productInfo.images.slice(0, 3)
@@ -8365,8 +8444,14 @@ ${texto || "(mensaje sin texto)"}
 INTENCIÓN TÉCNICA DETECTADA:
 - Solicita catálogo: ${catalogRequestedNow ? "sí" : "no"}
 
-Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes ciudad ni datos.
-Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas del backend.
+Respondé ahora como la asistente configurada en el entrenamiento.
+Seguí la instrucción obligatoria y no inventes ciudad ni datos.
+Toda respuesta visible normal debe ser escrita por vos usando los entrenamientos activos.
+Las únicas salidas visibles fijas permitidas del backend son:
+1. cierre definitivo del pedido;
+2. procesamiento, validación y resultado de comprobantes;
+3. errores técnicos sin contenido comercial.
+No repitas la misma pregunta si el cliente ya respondió el dato o si acaba de hacer una consulta que primero debe ser contestada.
 `.trim();
 
     contents.push({
@@ -8422,6 +8507,7 @@ Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas de
     let followUpResponse = "";
 
     if (
+      false &&
       explicitProductInterestNow &&
       !isPriceQuery(texto) &&
       !copyAlreadySentInConversation &&
