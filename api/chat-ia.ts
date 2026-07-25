@@ -6456,6 +6456,63 @@ export default async function handler(req: any, res: any) {
     attachProductImages(parsed.products, allTraining);
     sanitizeProductPrices(parsed);
 
+    // V131: única fábrica de respuestas comerciales normales.
+    // El backend entrega hechos y estado; Gemini redacta usando exclusivamente
+    // los entrenamientos activos, catálogo y datos técnicos del usuario actual.
+    const commercialResponse = async ({
+      event,
+      order,
+      extraFacts,
+      copyAlreadySent = false,
+    }: {
+      event: string;
+      order?: OrderData;
+      extraFacts?: Record<string, any>;
+      copyAlreadySent?: boolean;
+    }) => {
+      const technicalOrder = sanitizeOldOrder(order || context?.order_data || {}, parsed);
+      if (!technicalOrder.phone) technicalOrder.phone = senderPhoneFallback(fromNumber);
+      const technicalState = buildState(technicalOrder, parsed);
+      technicalState.hardInstruction = event;
+
+      const systemPrompt = buildSalesSystemPrompt(parsed, technicalState, null, copyAlreadySent);
+      const aiContents = (history || [])
+        .slice(-12)
+        .filter((h: any) => clean(h?.content))
+        .map((h: any) => ({
+          role: h.role === "assistant" ? "model" : "user",
+          parts: [{ text: clean(h.content) }],
+        }));
+
+      aiContents.push({
+        role: "user",
+        parts: [{
+          text: `Mensaje del cliente:\n${texto || "(mensaje sin texto)"}\n\nEVENTO TÉCNICO ACTUAL:\n${event}\n\nHECHOS ADICIONALES VALIDADOS POR EL BACKEND:\n${JSON.stringify(extraFacts || {}, null, 2)}\n\nRedactá únicamente el mensaje visible para el cliente. No muestres estados, JSON, backend, sistema ni entrenamiento. No generes un cierre definitivo ni un resultado técnico de comprobante.`,
+        }],
+      });
+
+      const generated = await callGemini({
+        apiKey,
+        model,
+        system: systemPrompt,
+        contents: aiContents,
+        temperature: iaConfig.temperature ?? 0.55,
+        maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
+      });
+
+      if (!generated || generated === "__GEMINI_QUOTA_EXCEEDED__") return "";
+      return postProcessResponse(generated);
+    };
+
+    const requireCommercialResponse = async (args: Parameters<typeof commercialResponse>[0]) => {
+      const generated = await commercialResponse(args);
+      if (!generated) {
+        res.status(503);
+        return "";
+      }
+      return generated;
+    };
+
     // V116: catálogo es intención informativa. No se responde con texto fijo:
     // se conserva el pedido y Gemini redacta usando productos, URL y entrenamiento.
     const catalogRequestedNow =
@@ -6464,6 +6521,118 @@ export default async function handler(req: any, res: any) {
 
     const productsMentionedNow = detectProductsMentioned(texto, parsed);
     let activeMultiCart = getMultiCartFromContext(context, parsed);
+
+    // V131: cambio o agregado de producto en mensajes sucesivos.
+    // El backend modifica solamente el estado; Gemini redacta la conversación.
+    const productActionNorm = normalize(texto);
+    const explicitAddProductIntent = /\b(tambien|también|ademas|además|agrega|agregame|agregáme|suma|sumame|sumáme|junto con|los dos|ambos|aparte)\b/.test(productActionNorm);
+    const explicitReplaceProductIntent = /\b(mejor|en vez de|cambia|cambiame|cambiáme|reemplaza|reemplazame|saca|sacame|quitame|quita|ya no quiero|prefiero)\b/.test(productActionNorm);
+    const pendingProductDecision = clean(context?.pending_product_decision || "");
+    const currentSequentialOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
+
+    if (pendingProductDecision && currentSequentialOrder.product) {
+      const pendingInfo = getProductInfo(pendingProductDecision, parsed);
+      const chooseAdd = explicitAddProductIntent || /^(los dos|ambos|agrega|agregalo|agregálo|tambien|también|si agrega|sí agrega)$/.test(productActionNorm);
+      const chooseReplace = explicitReplaceProductIntent || /^(cambia|cambialo|cambiálo|reemplaza|reemplazalo|reemplazálo|solo el nuevo|el nuevo)$/.test(productActionNorm);
+
+      if (pendingInfo && chooseAdd) {
+        const currentInfo = getProductInfo(currentSequentialOrder.product, parsed);
+        const cart = createMultiCart([currentInfo, pendingInfo].filter(Boolean) as ProductItem[]);
+        const currentCartItem = cart.find((item) => normalize(item.product) === normalize(currentSequentialOrder.product));
+        if (currentCartItem && currentSequentialOrder.quantity > 0) {
+          currentCartItem.quantity = currentSequentialOrder.quantity;
+          currentCartItem.total = calculateTotal(currentCartItem.product, currentCartItem.quantity, parsed, currentSequentialOrder.locked_offer || null);
+        }
+        return res.json({
+          response: await requireCommercialResponse({
+            event: "Confirmá que el nuevo producto se agregó al mismo pedido y solicitá únicamente las cantidades que todavía faltan.",
+            order: currentSequentialOrder,
+            extraFacts: { action: "ADD_PRODUCT", added_product: pendingInfo.canonical, multi_product_cart: cart, missing_quantities: multiCartMissingQuantities(cart) },
+          }),
+          context: { ...(context || {}), pending_product_decision: null, current_product: null, order_data: currentSequentialOrder, multi_product_cart: cart, multi_order_id: clean(context?.multi_order_id) || makeOrderId(fromNumber), step: "collecting_multiple_product_quantities", updated_at: new Date().toISOString() },
+          debug: { sequential_product_action: "add" },
+        });
+      }
+
+      if (pendingInfo && chooseReplace) {
+        const replacedOrder = { ...currentSequentialOrder, product: pendingInfo.canonical, quantity: pendingInfo.fixedPackQuantity || 0, locked_offer: null };
+        return res.json({
+          response: await requireCommercialResponse({
+            event: "Confirmá el cambio al nuevo producto. No menciones como activo el producto anterior y continuá solicitando únicamente el siguiente dato faltante.",
+            order: replacedOrder,
+            extraFacts: { action: "REPLACE_PRODUCT", previous_product: currentSequentialOrder.product, current_product: pendingInfo.canonical },
+          }),
+          context: { ...(context || {}), pending_product_decision: null, current_product: pendingInfo.canonical, order_data: replacedOrder, multi_product_cart: [], step: buildState(replacedOrder, parsed).step, updated_at: new Date().toISOString() },
+          debug: { sequential_product_action: "replace" },
+        });
+      }
+    }
+
+    if (activeMultiCart.length >= 1 && productsMentionedNow.length >= 1) {
+      const existingKeys = new Set(activeMultiCart.map((item) => normalize(item.product)));
+      const additions = productsMentionedNow.filter((product) => !existingKeys.has(normalize(product.canonical)));
+      if (additions.length > 0) {
+        activeMultiCart = [...activeMultiCart, ...createMultiCart(additions)];
+        const commonOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
+        return res.json({
+          response: await requireCommercialResponse({
+            event: "Confirmá que los productos nuevos se agregaron al pedido y solicitá únicamente sus cantidades faltantes.",
+            order: commonOrder,
+            extraFacts: { action: "ADD_TO_EXISTING_CART", added_products: additions.map((p) => p.canonical), multi_product_cart: activeMultiCart },
+          }),
+          context: { ...(context || {}), pending_product_decision: null, current_product: null, order_data: commonOrder, multi_product_cart: activeMultiCart, multi_order_id: clean(context?.multi_order_id) || makeOrderId(fromNumber), step: "collecting_multiple_product_quantities", updated_at: new Date().toISOString() },
+          debug: { sequential_product_action: "add_to_cart", added: additions.map((p) => p.canonical) },
+        });
+      }
+    }
+
+    if (activeMultiCart.length === 0 && currentSequentialOrder.product && productsMentionedNow.length === 1) {
+      const mentioned = productsMentionedNow[0];
+      const differentProduct = normalize(mentioned.canonical) !== normalize(currentSequentialOrder.product);
+      if (differentProduct) {
+        if (explicitAddProductIntent) {
+          const currentInfo = getProductInfo(currentSequentialOrder.product, parsed);
+          const cart = createMultiCart([currentInfo, mentioned].filter(Boolean) as ProductItem[]);
+          const currentCartItem = cart.find((item) => normalize(item.product) === normalize(currentSequentialOrder.product));
+          if (currentCartItem && currentSequentialOrder.quantity > 0) {
+            currentCartItem.quantity = currentSequentialOrder.quantity;
+            currentCartItem.total = calculateTotal(currentCartItem.product, currentCartItem.quantity, parsed, currentSequentialOrder.locked_offer || null);
+          }
+          return res.json({
+            response: await requireCommercialResponse({
+              event: "Confirmá que el nuevo producto se agregó al mismo pedido y solicitá únicamente la cantidad que falta del producto agregado.",
+              order: currentSequentialOrder,
+              extraFacts: { action: "ADD_PRODUCT", added_product: mentioned.canonical, multi_product_cart: cart },
+            }),
+            context: { ...(context || {}), current_product: null, order_data: currentSequentialOrder, multi_product_cart: cart, multi_order_id: makeOrderId(fromNumber), step: "collecting_multiple_product_quantities", updated_at: new Date().toISOString() },
+            debug: { sequential_product_action: "add" },
+          });
+        }
+
+        if (explicitReplaceProductIntent) {
+          const replacedOrder = { ...currentSequentialOrder, product: mentioned.canonical, quantity: mentioned.fixedPackQuantity || 0, locked_offer: null };
+          return res.json({
+            response: await requireCommercialResponse({
+              event: "Confirmá el reemplazo del producto anterior por el nuevo y continuá con el siguiente dato faltante.",
+              order: replacedOrder,
+              extraFacts: { action: "REPLACE_PRODUCT", previous_product: currentSequentialOrder.product, current_product: mentioned.canonical },
+            }),
+            context: { ...(context || {}), current_product: mentioned.canonical, order_data: replacedOrder, multi_product_cart: [], step: buildState(replacedOrder, parsed).step, updated_at: new Date().toISOString() },
+            debug: { sequential_product_action: "replace" },
+          });
+        }
+
+        return res.json({
+          response: await requireCommercialResponse({
+            event: "Preguntá si el nuevo producto debe agregarse al mismo pedido o reemplazar al producto actual. No modifiques todavía el pedido.",
+            order: currentSequentialOrder,
+            extraFacts: { action: "ASK_ADD_OR_REPLACE", current_product: currentSequentialOrder.product, mentioned_product: mentioned.canonical },
+          }),
+          context: { ...(context || {}), pending_product_decision: mentioned.canonical, order_data: currentSequentialOrder, step: context?.step || buildState(currentSequentialOrder, parsed).step, updated_at: new Date().toISOString() },
+          debug: { sequential_product_action: "clarify", current_product: currentSequentialOrder.product, mentioned_product: mentioned.canonical },
+        });
+      }
+    }
 
     // V57: iniciar carrito multiproducto con respuesta breve.
     // Si el cliente ya indicó cantidades (ej. "1 peladora y 1 afilador"),
@@ -6478,7 +6647,13 @@ export default async function handler(req: any, res: any) {
       if (missingQty.length === 0) {
         const nextStep = existingOrder.city ? "collecting_multiple_customer_data" : "collecting_multiple_city";
         return res.json({
-          response: `${multiCartSummary(activeMultiCart)}\n\n${existingOrder.city ? "Ahora pasame tu nombre y apellido, dirección exacta. El celular es opcional; si no lo pasás usamos este WhatsApp. 📲" : "📍 ¿Para qué ciudad sería el envío? 😊"}`,
+          response: await requireCommercialResponse({
+            event: existingOrder.city
+              ? "Confirmá que las cantidades del carrito fueron registradas y solicitá únicamente el siguiente dato faltante."
+              : "Confirmá que las cantidades del carrito fueron registradas y solicitá únicamente la ciudad de envío.",
+            order: existingOrder,
+            extraFacts: { multi_product_cart: activeMultiCart, next_step: nextStep },
+          }),
           context: {
             ...(context || {}),
             order_data: existingOrder,
@@ -6500,7 +6675,11 @@ export default async function handler(req: any, res: any) {
 
       if (hasAnyNamedQuantity) {
         return res.json({
-          response: `Perfecto 😊 Me falta la cantidad de:\n${missingQty.map((p) => `• ${p}`).join("\n")}\n\nEjemplo: “1 ${missingQty[0]}”.`,
+          response: await requireCommercialResponse({
+            event: "Solicitá únicamente las cantidades faltantes de los productos indicados, sin modificar las cantidades ya registradas.",
+            order: existingOrder,
+            extraFacts: { multi_product_cart: activeMultiCart, products_missing_quantity: missingQty },
+          }),
           context: {
             ...(context || {}),
             order_data: existingOrder,
@@ -6520,7 +6699,11 @@ export default async function handler(req: any, res: any) {
       }
 
       return res.json({
-        response: buildMultipleProductsInformation(productsMentionedNow, existingOrder.city || ""),
+        response: await requireCommercialResponse({
+          event: "Presentá brevemente los productos detectados usando solo sus copys y promociones reales, explicá que pueden agregarse al mismo pedido y solicitá la cantidad de cada uno.",
+          order: existingOrder,
+          extraFacts: { products: productsMentionedNow.map((p) => ({ product: p.canonical, sales_copy: p.salesCopy, offers: productOffersText(p) })), city: existingOrder.city || null },
+        }),
         context: {
           ...(context || {}),
           order_data: existingOrder,
@@ -6549,7 +6732,11 @@ export default async function handler(req: any, res: any) {
       if (context?.step === "collecting_multiple_product_quantities" || missingQty.length > 0) {
         if (missingQty.length > 0) {
           return res.json({
-            response: `Perfecto 😊 Me falta la cantidad de:\n${missingQty.map((p) => `• ${p}`).join("\n")}\n\nPodés responder, por ejemplo: “1 ${missingQty[0]}”.`,
+            response: await requireCommercialResponse({
+              event: "Solicitá únicamente las cantidades que todavía faltan en el carrito multiproducto.",
+              order: commonOrder,
+              extraFacts: { multi_product_cart: activeMultiCart, products_missing_quantity: missingQty },
+            }),
             context: {
               ...(context || {}),
               order_data: commonOrder,
@@ -6563,7 +6750,13 @@ export default async function handler(req: any, res: any) {
 
         const nextStep = commonOrder.city ? "collecting_multiple_customer_data" : "collecting_multiple_city";
         return res.json({
-          response: `${multiCartSummary(activeMultiCart)}\n\n${commonOrder.city ? "Ahora pasame tu nombre y apellido, dirección exacta. El celular es opcional; si no lo pasás usamos este WhatsApp. 📲" : "📍 ¿Para qué ciudad sería el envío? 😊"}`,
+          response: await requireCommercialResponse({
+            event: commonOrder.city
+              ? "Confirmá el carrito multiproducto y solicitá únicamente el siguiente dato personal realmente faltante."
+              : "Confirmá el carrito multiproducto y solicitá únicamente la ciudad de envío.",
+            order: commonOrder,
+            extraFacts: { multi_product_cart: activeMultiCart, next_step: nextStep },
+          }),
           context: {
             ...(context || {}),
             order_data: commonOrder,
@@ -6580,7 +6773,11 @@ export default async function handler(req: any, res: any) {
         if (detectedMultiCity) commonOrder.city = detectedMultiCity;
         if (!commonOrder.city) {
           return res.json({
-            response: "📍 ¿Para qué ciudad sería el envío? 😊",
+            response: await requireCommercialResponse({
+              event: "Solicitá únicamente la ciudad de envío para continuar con el pedido multiproducto.",
+              order: commonOrder,
+              extraFacts: { multi_product_cart: activeMultiCart },
+            }),
             context: { ...(context || {}), order_data: commonOrder, multi_product_cart: activeMultiCart, multi_order_id: multiOrderId, step: "collecting_multiple_city", updated_at: new Date().toISOString() },
           });
         }
@@ -6604,7 +6801,11 @@ export default async function handler(req: any, res: any) {
       if (missingData.length > 0) {
         const coverage = hasCoverage(commonOrder.city, parsed);
         return res.json({
-          response: `${coverage ? `✅ Tenemos cobertura en ${commonOrder.city}.` : `😊 Hasta ${commonOrder.city} podemos enviarte por transportadora.`}\n\n${multiCartSummary(activeMultiCart)}\n\nPara finalizar me falta:\n✅ ${missingData.join("\n✅ ")}`,
+          response: await requireCommercialResponse({
+            event: "Respondé usando la cobertura validada y solicitá únicamente los datos faltantes del pedido multiproducto.",
+            order: commonOrder,
+            extraFacts: { multi_product_cart: activeMultiCart, coverage, missing_fields: missingData },
+          }),
           context: { ...(context || {}), order_data: commonOrder, multi_product_cart: activeMultiCart, multi_order_id: multiOrderId, step: "collecting_multiple_customer_data", updated_at: new Date().toISOString() },
         });
       }
@@ -7100,7 +7301,10 @@ export default async function handler(req: any, res: any) {
 
     if (cityConfirmationDeclined) {
       return res.json({
-        response: `😊 Entendido, ¿cuál sería tu ciudad entonces?`,
+        response: await requireCommercialResponse({
+          event: "El cliente rechazó la ciudad sugerida. Pedí únicamente su ciudad correcta, de forma natural y sin asumir ninguna localidad.",
+          order: oldOrder,
+        }),
         context: {
           ...(context || {}),
           pending_city_confirmation: null,
@@ -7132,7 +7336,7 @@ export default async function handler(req: any, res: any) {
     // "transportadora con pago anticipado".
     const needsCityConfirmation = false;
 
-    if (needsCityConfirmation) {
+    if (false && needsCityConfirmation) {
       // Bloque conservado únicamente como referencia defensiva; no se ejecuta.
       return res.json({
         response: "😊 ¿De qué ciudad sos? Así te confirmo la modalidad de entrega. 📍",
@@ -7154,7 +7358,10 @@ export default async function handler(req: any, res: any) {
 
     if (isCityStep && !effectiveDetectedCity && messageIsPurchaseOrQuantity) {
       return res.json({
-        response: buildFriendlyCityQuestion(),
+        response: await requireCommercialResponse({
+          event: "La ciudad sigue faltando. Respondé al mensaje actual y solicitá únicamente la ciudad de envío, sin interpretar cantidades o intención de compra como ciudad.",
+          order: { ...oldOrder, quantity: explicitQty > 0 ? explicitQty : oldOrder.quantity },
+        }),
         context: {
           ...(context || {}),
           pending_city_confirmation: null,
@@ -7183,7 +7390,10 @@ export default async function handler(req: any, res: any) {
       !isShortAcknowledgement(texto)
     ) {
       return res.json({
-        response: buildFriendlyCityQuestion(),
+        response: await requireCommercialResponse({
+          event: "El mensaje recibido no contiene una ciudad válida. Solicitá únicamente la ciudad de envío sin declarar falta de cobertura.",
+          order: oldOrder,
+        }),
         context: {
           ...(context || {}),
           pending_city_confirmation: null,
@@ -7825,7 +8035,11 @@ export default async function handler(req: any, res: any) {
         }
 
         return res.json({
-          response: mandatoryOutsideCoverageResponse,
+          response: await requireCommercialResponse({
+            event: "Informá la modalidad correspondiente a la ciudad sin cobertura contra entrega, usando únicamente los datos bancarios y logísticos del entrenamiento, y pedí solo el siguiente requisito faltante.",
+            order: orderData,
+            extraFacts: { coverage: false, city: orderData.city, step: finalState.step, bank_data_available: Boolean(parsed.bankData) },
+          }),
           context: {
             ...(context || {}),
             pending_city_confirmation: null,
@@ -8299,7 +8513,7 @@ export default async function handler(req: any, res: any) {
       )
     );
 
-    if (shouldPresentExactCatalogCopy) {
+    if (false && shouldPresentExactCatalogCopy) {
       const exactCopyResponse = buildFullProductCopyResponse(finalState, templatePricing);
       const exactImages = finalState.productInfo?.images?.length
         ? finalState.productInfo.images.slice(0, 3)
@@ -8422,6 +8636,7 @@ Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas de
     let followUpResponse = "";
 
     if (
+      false &&
       explicitProductInterestNow &&
       !isPriceQuery(texto) &&
       !copyAlreadySentInConversation &&
@@ -8506,14 +8721,9 @@ Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas de
     const safeOrder = safeContext?.order_data || {};
     const safeMessage = clean(req.body?.message || "");
 
-    return res.status(200).json({
-      response: isPayOnDeliveryRequest(safeMessage)
-        ? "😊 Para indicarte correctamente la forma de pago, decime nuevamente tu ciudad. Si tu zona no tiene contra-entrega, el envío es por transportadora y el pago es anticipado."
-        : safeOrder?.city
-          ? !clean(safeOrder?.customer_name)
-            ? "😊 Recibí tu mensaje. Para continuar, pasame tu nombre y apellido."
-            : "😊 Recibí tu mensaje. Ya tengo los datos principales del pedido; podés enviar la ubicación después o pasarla directamente al delivery."
-          : "😊 Recibí tu mensaje. Indicame primero tu ciudad para confirmar la modalidad de entrega. 📍",
+    return res.status(503).json({
+      response: "",
+      retryable: true,
       context: {
         ...safeContext,
         order_data: safeOrder,
@@ -8522,6 +8732,7 @@ Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas de
       },
       debug: {
         recovered_from_internal_error: true,
+        ai_response_required: true,
         error: error?.message || "Error interno",
       },
     });
