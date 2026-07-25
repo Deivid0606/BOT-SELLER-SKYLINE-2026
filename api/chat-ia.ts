@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V131: evita insertar dos veces la misma confirmación, actualiza el pedido confirmado en postventa y guarda factura/RUC en observación sin crear otra fila.
  * V130: reconoce RUC paraguayo con guion y dígito verificador, procesa ubicación GPS antes de volver a pedir ciudad, conserva la ciudad ya registrada y fuerza el cierre técnico cuando el pedido queda completo.
  * V129: corrige cambios explícitos de ciudad con km/ruta, separa ciudad y referencia, clasifica Central técnicamente y permite reutilizar de forma real los datos del pedido anterior en una nueva compra.
  * V128: elimina las respuestas comerciales activas del backend. Gemini redacta toda conversación normal desde el entrenamiento; se conservan intactos cierres, comprobantes, validaciones y estados.
@@ -62,7 +63,7 @@ import { createClient } from "@supabase/supabase-js";
 
 
 /*
-V130 — ARQUITECTURA DEFINITIVA: SOLO IA CONVERSA; BACKEND GUARDA RUC, GPS Y CIERRA
+V131 — ARQUITECTURA DEFINITIVA: SOLO IA CONVERSA; GUARDADO IDEMPOTENTE Y POSTVENTA SOBRE LA MISMA FILA
 
 BACKEND:
 - detecta y valida producto, ciudad, cantidad, nombre, cobertura y pago;
@@ -4891,6 +4892,113 @@ function looksLikeNewChatSession(text: string, context: any, history: any[]) {
   return ageMinutes > 45;
 }
 
+
+function normalizeOrderPhoneKey(value: any): string {
+  const digits = clean(value).replace(/\D/g, "");
+  if (!digits) return "";
+  const withoutCountry = digits.startsWith("595")
+    ? digits.slice(3)
+    : digits.replace(/^0/, "");
+  return withoutCountry.slice(-9);
+}
+
+function isRecentTimestamp(value: any, minutes = 20): boolean {
+  const time = new Date(value || 0).getTime();
+  if (!Number.isFinite(time)) return false;
+  return Date.now() - time >= 0 && Date.now() - time <= minutes * 60 * 1000;
+}
+
+/**
+ * V131: actualiza el último pedido confirmado de la conversación.
+ * Se usa para factura, RUC, ubicación, fecha u otra observación postventa.
+ * Nunca inserta una fila nueva.
+ */
+async function updateLatestConfirmedOrderAfterSale(
+  userId: string,
+  from: string,
+  order: OrderData,
+  parsed: ParsedTraining
+): Promise<string | null> {
+  if (!userId || !from) return null;
+
+  const phoneKey = normalizeOrderPhoneKey(from);
+  const canonicalProduct =
+    getProductInfo(order.product, parsed)?.canonical || clean(order.product);
+
+  let query: any = supabase
+    .from("orders")
+    .select(
+      "id, from_number, phone, product, quantity, city, customer_name, observation, preferred_delivery_date, preferred_delivery_time, payment_note, created_at, status"
+    )
+    .eq("user_id", userId)
+    .in("status", ["confirmado", "confirmed"])
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("❌ V131: no se pudo buscar el pedido confirmado para postventa:", error);
+    return null;
+  }
+
+  const candidates = (data || []).filter((row: any) => {
+    const rowPhoneKey = normalizeOrderPhoneKey(row.from_number || row.phone);
+    if (!phoneKey || rowPhoneKey !== phoneKey) return false;
+
+    if (
+      canonicalProduct &&
+      row.product &&
+      normalize(row.product) !== normalize(canonicalProduct)
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+
+  const target = candidates[0];
+  if (!target?.id) {
+    console.error("❌ V131: no se encontró pedido confirmado para actualizar postventa", {
+      userId,
+      from,
+      product: canonicalProduct,
+    });
+    return null;
+  }
+
+  const updatePayload: Record<string, any> = {
+    observation: clean(order.observation) || clean(target.observation) || null,
+    preferred_delivery_date:
+      clean(order.preferred_delivery_date) ||
+      clean(target.preferred_delivery_date) ||
+      null,
+    preferred_delivery_time:
+      clean(order.preferred_delivery_time) ||
+      clean(target.preferred_delivery_time) ||
+      null,
+    payment_note:
+      clean(order.payment_note) || clean(target.payment_note) || null,
+  };
+
+  // Una referencia o ubicación adicional también actualiza la misma fila.
+  if (clean(order.address)) updatePayload.address = clean(order.address);
+
+  const { data: updated, error: updateError } = await supabase
+    .from("orders")
+    .update(updatePayload)
+    .eq("id", target.id)
+    .eq("user_id", userId)
+    .select("id")
+    .single();
+
+  if (updateError || !updated?.id) {
+    console.error("❌ V131: falló actualización postventa del pedido confirmado:", updateError);
+    return null;
+  }
+
+  return updated.id;
+}
+
 async function safeUpsertOrder(
   userId: string,
   from: string,
@@ -5058,6 +5166,64 @@ async function safeUpsertOrder(
   };
 
   let activeOrderId: string | null = null;
+
+  // V131: idempotencia de confirmación. Un reintento del webhook o una segunda
+  // ejecución del mismo cierre debe actualizar la fila reciente, no insertar otra.
+  if (confirm) {
+    const phoneKey = normalizeOrderPhoneKey(from);
+    const { data: recentConfirmedRows, error: recentConfirmedError } = await supabase
+      .from("orders")
+      .select("id, from_number, phone, product, quantity, city, customer_name, created_at, status")
+      .eq("user_id", userId)
+      .in("status", ["confirmado", "confirmed"])
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (recentConfirmedError) {
+      console.error("❌ V131: error buscando confirmación reciente:", recentConfirmedError);
+    } else {
+      const recentSameOrder = (recentConfirmedRows || []).find((row: any) => {
+        const samePhone =
+          phoneKey &&
+          normalizeOrderPhoneKey(row.from_number || row.phone) === phoneKey;
+        const sameProduct =
+          normalize(row.product) === normalize(canonicalProduct);
+        const sameQuantity =
+          sanitizeQuantity(row.quantity) === sanitizeQuantity(order.quantity);
+        const sameCity =
+          !clean(order.city) ||
+          !clean(row.city) ||
+          normalize(row.city) === normalize(order.city);
+        const sameCustomer =
+          !clean(order.customer_name) ||
+          !clean(row.customer_name) ||
+          normalize(row.customer_name) === normalize(order.customer_name);
+
+        return Boolean(
+          samePhone &&
+          sameProduct &&
+          sameQuantity &&
+          sameCity &&
+          sameCustomer &&
+          isRecentTimestamp(row.created_at, 20)
+        );
+      });
+
+      if (recentSameOrder?.id) {
+        for (const payload of payloadCandidates) {
+          const updatedId = await tryWrite("update", payload, recentSameOrder.id);
+          if (updatedId) {
+            console.log("✅ V131: confirmación repetida reutilizó la misma fila", {
+              id: updatedId,
+              from,
+              product: canonicalProduct,
+            });
+            return updatedId;
+          }
+        }
+      }
+    }
+  }
 
   const { data: activeOrder, error: activeError } = await supabase
     .from("orders")
@@ -5686,6 +5852,8 @@ CÓMO USAR LOS ENTRENAMIENTOS DEL USUARIO:
 - Una ubicación GPS recibida nunca borra ni reinicia la ciudad, producto, cantidad o nombre ya registrados.
 - Si el estado técnico ya contiene ciudad, no vuelvas a pedirla al recibir coordenadas.
 - No simules un cierre comercial. Cuando el pedido quede completo, el backend enviará el cierre definitivo.
+- Después de un pedido confirmado, una solicitud de factura o RUC actualiza el mismo pedido; nunca representa una segunda compra.
+- Cuando el estado técnico contenga “Factura legal — RUC: …” en observación, podés confirmar naturalmente que fue agregado, sin repetir el cierre.
 - Si el cliente corrige una ciudad, usá exclusivamente la ciudad técnica actual y no mezcles la ciudad anterior con la referencia.
 - Si “Pertenece al Departamento Central” dice “sí”, aplicá la regla de Central y nunca el plazo general de 24 a 48 horas.
 - No uses la lista completa de cobertura para redactar: usá el valor de cobertura ya calculado en ESTADO DEL PEDIDO.
@@ -6311,7 +6479,12 @@ export default async function handler(req: any, res: any) {
         // el nombre del cliente ni iniciar otro pedido.
         if (looksLikeAddressSupplement(texto)) {
           oldOrder.address = mergeAddressSupplement(oldOrder.address, texto);
-          await safeUpsertOrder(user_id, fromNumber, oldOrder, parsed, true);
+          await updateLatestConfirmedOrderAfterSale(
+            user_id,
+            fromNumber,
+            oldOrder,
+            parsed
+          );
 
           // V118: se guarda el dato, pero NO se repite el cierre ni se usa un acuse fijo.
           // La respuesta visible continúa por Gemini más abajo.
@@ -6343,10 +6516,33 @@ export default async function handler(req: any, res: any) {
             mergeOrderObservation(oldOrder, postConfirmationObservation)
           );
 
-          await safeUpsertOrder(user_id, fromNumber, oldOrder, parsed, true);
+          await updateLatestConfirmedOrderAfterSale(
+            user_id,
+            fromNumber,
+            oldOrder,
+            parsed
+          );
 
-          // V118: la observación se persiste silenciosamente. Gemini redacta el acuse
-          // natural y contextual; aquí no existe ninguna respuesta visible fija.
+          // V131: la observación se actualiza sobre la fila confirmada existente.
+          // Nunca se crea un segundo pedido por factura, RUC o dato postventa.
+          // Gemini redacta el acuse natural y contextual.
+        }
+
+        // V131: factura/RUC después del cierre se guarda en la observación
+        // del pedido confirmado. No abre otra venta y no repite el cierre.
+        const postSaleRuc = extractParaguayanRuc(texto);
+        if (postSaleRuc) {
+          oldOrder.observation = mergeUniqueText(
+            oldOrder.observation,
+            `Factura legal — RUC: ${postSaleRuc}`
+          );
+
+          await updateLatestConfirmedOrderAfterSale(
+            user_id,
+            fromNumber,
+            oldOrder,
+            parsed
+          );
         }
 
         const postConfirmationNorm = normalize(texto);
