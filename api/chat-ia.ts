@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V132: restaura el envío determinístico del copy e imágenes, agrega fallback comercial seguro cuando Gemini falla y corrige la zona logística en postventa.
  * V131: evita insertar dos veces la misma confirmación, actualiza el pedido confirmado en postventa y guarda factura/RUC en observación sin crear otra fila.
  * V130: reconoce RUC paraguayo con guion y dígito verificador, procesa ubicación GPS antes de volver a pedir ciudad, conserva la ciudad ya registrada y fuerza el cierre técnico cuando el pedido queda completo.
  * V129: corrige cambios explícitos de ciudad con km/ruta, separa ciudad y referencia, clasifica Central técnicamente y permite reutilizar de forma real los datos del pedido anterior en una nueva compra.
@@ -4225,6 +4226,18 @@ function deterministicPostSaleResponse(text: string, order: OrderData, parsed: P
 
 function buildPostSaleSystemPrompt(parsed: ParsedTraining, order: OrderData) {
   const identity = parseBusinessIdentity(parsed.generalTraining || parsed.raw);
+  const belongsToCentral = order.city ? isCentralDepartmentCity(order.city) : false;
+  const technicalZone = order.city
+    ? (belongsToCentral ? "CENTRAL" : "FUERA_DE_CENTRAL")
+    : "NO_DETERMINADA";
+  const technicalDeliveryRule = order.city
+    ? (
+        belongsToCentral
+          ? "CENTRAL: antes de las 12:30 entrega el mismo día; a las 12:30 o después entrega al día siguiente; los domingos no hay entrega y se agenda para el lunes; horario de lunes a sábado de 9:00 a 18:00."
+          : "FUERA_DE_CENTRAL: entrega entre 24 y 48 horas; no aplica el corte de las 12:30; los domingos el plazo comienza desde el lunes; horario de lunes a sábado de 9:00 a 18:00."
+      )
+    : "No se puede determinar sin una ciudad válida.";
+
   return `
 Sos la asistente de ventas y postventa del negocio configurado por el usuario.
 Nombre de la tienda: ${identity.storeName || "no especificado en el entrenamiento"}
@@ -4232,41 +4245,49 @@ Nombre de la asistente: ${identity.assistantName || "no especificado en el entre
 Nunca uses nombres comerciales o personales fijos escritos en el código.
 El pedido del cliente YA ESTÁ CONFIRMADO. No vuelvas a confirmar el pedido salvo que te lo pida.
 
-DATOS DEL PEDIDO CONFIRMADO:
+DATOS TÉCNICOS DEL PEDIDO CONFIRMADO:
 - Producto: ${order.product || "no disponible"}
 - Cantidad: ${order.quantity || "no disponible"}
 - Ciudad: ${order.city || "no disponible"}
+- Pertenece al Departamento Central: ${order.city ? (belongsToCentral ? "sí" : "no") : "no determinado"}
+- Zona logística: ${technicalZone}
+- Regla de entrega aplicable: ${technicalDeliveryRule}
 - Dirección: ${order.address || "no disponible"}
 - Cliente: ${order.customer_name || "no disponible"}
 - Teléfono: ${order.phone || "no disponible"}
 
+PRIORIDAD ABSOLUTA:
+1. Los datos técnicos calculados arriba.
+2. El entrenamiento específico de cobertura y logística.
+3. Los entrenamientos generales activos.
+4. Los datos bancarios estructurados.
+
 REGLAS OBLIGATORIAS:
-- Respondé usando PRIMERO y de forma estricta los ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO.
-- PROHIBIDO usar respuestas genéricas, plantillas universales o frases prearmadas no respaldadas por el entrenamiento.
-- Para entrega, demora, fecha, horario, pago, factura, garantía, cambios, catálogo y postventa, extraé la respuesta concreta del entrenamiento y del estado real del pedido.
-- Si el entrenamiento indica un plazo (por ejemplo 24 a 48 horas hábiles), respondé exactamente ese plazo.
-- Si el entrenamiento no contiene el dato solicitado, decí de forma breve que no está especificado y que el equipo/delivery lo coordinará; no inventes “próxima ronda”, fechas, horas ni políticas.
-- El número del cliente YA está disponible en DATOS DEL PEDIDO. Nunca vuelvas a pedir teléfono salvo que el cliente diga expresamente que desea cambiarlo.
+- Nunca contradigas los datos técnicos calculados.
+- Si “Pertenece al Departamento Central” es “sí”, PROHIBIDO decir que la ciudad está fuera de Central.
+- Si la zona logística es CENTRAL, PROHIBIDO responder 24 a 48 horas.
+- Solo podés responder 24 a 48 horas cuando la zona logística calculada sea FUERA_DE_CENTRAL.
+- Para preguntas de entrega, demora, fecha u horario, usá primero la “Regla de entrega aplicable”.
+- No inventes una fecha exacta si el historial no permite conocer con seguridad el día y la hora en que se registró el pedido.
+- PROHIBIDO usar respuestas genéricas, plantillas universales o frases no respaldadas por los datos técnicos o el entrenamiento.
+- Para pago, factura, garantía, cambios, catálogo y demás postventa, extraé la respuesta concreta del entrenamiento y del estado real del pedido.
+- Si el entrenamiento no contiene el dato solicitado, decí brevemente que no está especificado y que el equipo lo coordinará.
+- El número del cliente YA está disponible. Nunca vuelvas a pedir teléfono salvo que el cliente quiera cambiarlo.
 - Si quiere cambiar dirección o teléfono, pedile únicamente el dato nuevo correspondiente.
 - Si quiere cancelar, seguí la regla específica del entrenamiento; si no existe, pedí confirmación clara.
 - No crees un pedido nuevo.
 - No repitas el bloque de ✅ PEDIDO CONFIRMADO.
-- ÚNICAS excepciones permitidas como texto fijo del backend: cierre confirmado y procesamiento/validación de comprobantes.
-- La detección del celular es técnica y automática, pero cualquier frase visible sobre el celular también la redactás vos.
-- No copies frases genéricas recurrentes. Variá naturalmente la redacción según el mensaje exacto y el historial.
-- Nunca vuelvas a preguntar un dato que ya figura en DATOS DEL PEDIDO.
-- Sé natural, directo y coherente con el estilo definido por el entrenamiento.
+- Nunca vuelvas a preguntar un dato que ya figura arriba.
+- Respondé de manera natural, directa y coherente con el estilo configurado.
+
+ENTRENAMIENTO ESPECÍFICO DE COBERTURA Y LOGÍSTICA:
+${parsed.coverageTraining || "No hay entrenamiento específico de cobertura configurado."}
 
 ENTRENAMIENTOS GENERALES DEL USUARIO:
 ${parsed.generalTraining || "No hay reglas generales configuradas para este usuario."}
 
 DATOS DE TRANSFERENCIA DEL USUARIO:
 ${bankDataText(parsed)}
-
-IMPORTANTE:
-- Aplicá todos los entrenamientos generales activos del usuario, no solamente el primero.
-- El estado técnico del pedido prevalece únicamente para datos calculados y validaciones.
-- El estilo, la conversación, la postventa y las reglas comerciales deben salir de los entrenamientos generales del usuario.
 `.trim();
 }
 
@@ -5944,7 +5965,7 @@ REGLAS DURAS:
 }
 
 function buildFullProductCopyResponse(state: ConversationState, _templatePricing?: TemplatePricing | null) {
-  return "";
+  return clean(state.productInfo?.salesCopy || "");
 }
 
 function buildFriendlyCityQuestion() {
@@ -8171,7 +8192,7 @@ export default async function handler(req: any, res: any) {
       )
     );
 
-    if (false && shouldPresentExactCatalogCopy) {
+    if (shouldPresentExactCatalogCopy) {
       const exactCopyResponse = buildFullProductCopyResponse(finalState, templatePricing);
       const exactImages = finalState.productInfo?.images?.length
         ? finalState.productInfo.images.slice(0, 3)
@@ -8179,7 +8200,7 @@ export default async function handler(req: any, res: any) {
 
       return res.json({
         response: exactCopyResponse,
-        follow_up_response: buildFriendlyCityQuestion(),
+        follow_up_response: !orderData.city ? buildFriendlyCityQuestion() : undefined,
         media_urls: exactImages,
         context: {
           ...(context || {}),
@@ -8214,6 +8235,7 @@ export default async function handler(req: any, res: any) {
               city: orderData.city,
               step: finalState.step,
               copy_already_sent: copyAlreadySentInConversation,
+              images_sent: exactImages?.length || 0,
             }
           : undefined,
       });
@@ -8270,8 +8292,50 @@ No repitas la misma pregunta si el cliente ya respondió el dato o si acaba de h
     }
 
     if (!aiResponse || aiResponse === "__GEMINI_QUOTA_EXCEEDED__") {
-      // V116: jamás enviar una respuesta fija que pueda revelar automatización
-      // o provocar loops. El canal debe reintentar la generación con IA.
+      // V132: la primera presentación del producto nunca depende de Gemini.
+      // Si existe copy real del catálogo, se recupera la venta con el copy y
+      // las imágenes configuradas en lugar de devolver un 503 vacío.
+      const fallbackCopy = buildFullProductCopyResponse(finalState, templatePricing);
+      const fallbackImages = finalState.productInfo?.images?.length
+        ? finalState.productInfo.images.slice(0, 3)
+        : undefined;
+
+      const canRecoverWithCatalog =
+        Boolean(fallbackCopy) &&
+        !orderData.city &&
+        !copyAlreadySentInConversation &&
+        !currentMessageHasQuantityBeforeAI &&
+        !currentMessageIsAcknowledgementBeforeAI &&
+        (!currentMessageIsQuestionBeforeAI || productMentionNow);
+
+      if (canRecoverWithCatalog) {
+        return res.status(200).json({
+          response: fallbackCopy,
+          follow_up_response: buildFriendlyCityQuestion(),
+          media_urls: fallbackImages,
+          retryable: false,
+          context: {
+            ...(context || {}),
+            current_product: orderData.product || null,
+            last_topic: orderData.product || context?.last_topic || null,
+            last_ad_offer: orderData.locked_offer || null,
+            order_data: orderData,
+            order_id: orderData.order_id || null,
+            payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            step: finalState.step,
+            address_optional: finalState.addressOptional,
+            updated_at: new Date().toISOString(),
+          },
+          debug: {
+            gemini_failed: true,
+            recovered_with_catalog_copy: true,
+            product: orderData.product || null,
+            images_sent: fallbackImages?.length || 0,
+          },
+        });
+      }
+
       return res.status(503).json({
         response: "",
         retryable: true,
@@ -8282,7 +8346,10 @@ No repitas la misma pregunta si el cliente ya respondió el dato o si acaba de h
           step: finalState.step,
           updated_at: new Date().toISOString(),
         },
-        debug: { ai_response_required: true },
+        debug: {
+          ai_response_required: true,
+          catalog_fallback_available: Boolean(fallbackCopy),
+        },
       });
     }
 
