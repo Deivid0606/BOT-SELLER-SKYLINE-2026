@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * V133: reglas de ciudad estructuradas por usuario, respuesta logística inmediata desde entrenamiento y fallback dinámico cuando Gemini no está disponible.
+ * V134: usa el entrenamiento activo como conocimiento; calcula día/hora de Paraguay, corte, domingos y siguiente día hábil antes de pedir el próximo dato.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
  * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
  * CHAT IA VENDEDOR AUTÓNOMO V115 - Mega Todo Store / One Store
@@ -134,13 +134,37 @@ type CityRule = {
   modality?: string;
   paymentMethod?: string;
   addressOptional?: boolean;
-  deliveryRule?: string;
-  deliveryTime?: string;
-  schedule?: string;
   carrier?: string;
   shippingCost?: number;
-  requiresAdvancePayment?: boolean;
   rawBlock?: string;
+};
+
+type DeliveryPolicy = {
+  workingDays: number[];
+  startMinutes: number | null;
+  endMinutes: number | null;
+  cutoffMinutes: number | null;
+  sundayDelivery: boolean;
+  sundayProcessingDay: number | null;
+  centralSameDayBeforeCutoff: boolean;
+  centralNextWorkingDayAfterCutoff: boolean;
+  outsideCentralCoveredMinHours: number | null;
+  outsideCentralCoveredMaxHours: number | null;
+  raw: string;
+};
+
+type DeliveryDecision = {
+  timezone: string;
+  currentDate: string;
+  currentDayName: string;
+  currentTime: string;
+  isWorkingDay: boolean;
+  isCentral: boolean | null;
+  estimatedDayName: string;
+  estimatedDate: string;
+  sameDay: boolean;
+  reason: string;
+  customerFacts: string[];
 };
 
 type ParsedTraining = {
@@ -202,6 +226,8 @@ type ConversationState = {
   step: string;
   productInfo: ProductItem | null;
   cityRule: CityRule | null;
+  deliveryPolicy: DeliveryPolicy;
+  deliveryDecision: DeliveryDecision | null;
   coverage: boolean | null;
   total: number;
   missing: string[];
@@ -882,71 +908,93 @@ function parseTraining(training: string): ParsedTraining {
   const autoProducts = autoDetectProductsFromTraining(training, products);
   products.push(...autoProducts);
 
-  const parseStructuredField = (block: string, names: string[]) => {
-    for (const name of names) {
-      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const value = clean(block.match(new RegExp(`^${escaped}\\s*:\\s*(.+)$`, "im"))?.[1] || "");
+  const parseBlockField = (block: string, labels: string[]) => {
+    for (const label of labels) {
+      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const value = clean(
+        block.match(new RegExp(`^${escaped}\\s*:\\s*(.+)$`, "im"))?.[1] || ""
+      );
       if (value) return value;
     }
     return "";
   };
 
-  const parseShippingCost = (value: string) => {
-    const amount = parseNumberGs(value);
-    return amount > 0 ? amount : undefined;
+  const parseCoveredValue = (block: string, defaultCovered: boolean) => {
+    const explicit = normalize(parseBlockField(block, ["COBERTURA"]));
+    if (/^(no|sin cobertura|fuera de cobertura)$/.test(explicit)) return false;
+    if (/^(si|sí|con cobertura)$/.test(explicit)) return true;
+
+    const n = normalize(block);
+    if (/\b(sin cobertura|fuera de cobertura|no contra entrega|sin contra entrega)\b/.test(n)) {
+      return false;
+    }
+    return defaultCovered;
   };
 
-  const buildCityRule = (canonical: string, block: string, defaultCovered: boolean): CityRule => {
-    const coverageField = normalize(parseStructuredField(block, ["COBERTURA"]));
-    const modality = parseStructuredField(block, ["MODALIDAD", "TIPO_ENVÍO", "TIPO_ENVIO"]);
-    const paymentMethod = parseStructuredField(block, ["PAGO", "FORMA_PAGO", "FORMA DE PAGO"]);
-    const addressField = normalize(parseStructuredField(block, ["DIRECCIÓN", "DIRECCION", "UBICACIÓN", "UBICACION"]));
-    const deliveryRule = parseStructuredField(block, ["REGLA_ENTREGA", "REGLA DE ENTREGA"]);
-    const deliveryTime = parseStructuredField(block, ["PLAZO", "TIEMPO_ENTREGA", "TIEMPO DE ENTREGA"]);
-    const schedule = parseStructuredField(block, ["HORARIO", "HORARIO_ENTREGA", "HORARIO DE ENTREGA"]);
-    const carrier = parseStructuredField(block, ["TRANSPORTADORA", "EMPRESA_ENVÍO", "EMPRESA_ENVIO"]);
-    const shippingCostText = parseStructuredField(block, ["COSTO_ENVÍO", "COSTO_ENVIO", "COSTO DE ENVÍO", "COSTO DE ENVIO"]);
-
-    const blockNorm = normalize(block);
-    const explicitlyNotCovered =
-      coverageField === "no" ||
-      /\b(sin cobertura|fuera de cobertura|no contra entrega|sin contra entrega)\b/.test(blockNorm);
-    const explicitlyCovered = coverageField === "si";
-    const covered = explicitlyNotCovered ? false : explicitlyCovered ? true : defaultCovered;
-
-    const addressOptional =
-      /\bopcional\b/.test(addressField) ||
-      /\b(direccion|ubicacion|referencia)\b[\s\S]{0,50}\bopcional\b/.test(blockNorm);
-
-    const requiresAdvancePayment =
-      /\b(anticipado|transferencia previa|pago previo)\b/.test(
-        normalize(`${paymentMethod} ${modality} ${block}`)
-      );
+  const buildCityRule = (
+    canonical: string,
+    block: string,
+    defaultCovered: boolean
+  ): CityRule => {
+    const modality = parseBlockField(block, [
+      "MODALIDAD",
+      "TIPO_ENVÍO",
+      "TIPO_ENVIO",
+      "MODALIDAD_ENVÍO",
+      "MODALIDAD_ENVIO",
+    ]);
+    const paymentMethod = parseBlockField(block, [
+      "PAGO",
+      "FORMA_PAGO",
+      "FORMA DE PAGO",
+    ]);
+    const addressValue = normalize(
+      parseBlockField(block, [
+        "DIRECCIÓN",
+        "DIRECCION",
+        "UBICACIÓN",
+        "UBICACION",
+      ])
+    );
+    const shippingCostText = parseBlockField(block, [
+      "COSTO_ENVÍO",
+      "COSTO_ENVIO",
+      "COSTO DE ENVÍO",
+      "COSTO DE ENVIO",
+    ]);
 
     return {
       alias: canonical,
       canonical,
-      covered,
-      department: parseStructuredField(block, ["DEPARTAMENTO"]),
-      logisticsZone: parseStructuredField(block, ["ZONA_LOGÍSTICA", "ZONA_LOGISTICA"]),
+      covered: parseCoveredValue(block, defaultCovered),
+      department: parseBlockField(block, ["DEPARTAMENTO"]),
+      logisticsZone: parseBlockField(block, [
+        "ZONA_LOGÍSTICA",
+        "ZONA_LOGISTICA",
+        "ZONA",
+      ]),
       modality,
       paymentMethod,
-      addressOptional,
-      deliveryRule,
-      deliveryTime,
-      schedule,
-      carrier,
-      shippingCost: parseShippingCost(shippingCostText),
-      requiresAdvancePayment,
+      addressOptional:
+        /\bopcional\b/.test(addressValue) ||
+        /\b(direccion|ubicacion|referencia)\b[\s\S]{0,60}\bopcional\b/.test(
+          normalize(block)
+        ),
+      carrier: parseBlockField(block, [
+        "TRANSPORTADORA",
+        "EMPRESA_ENVÍO",
+        "EMPRESA_ENVIO",
+      ]),
+      shippingCost: parseNumberGs(shippingCostText) || undefined,
       rawBlock: clean(block),
     };
   };
 
   const addCityRule = (rule: CityRule, aliases: string[]) => {
     for (const alias of aliases) {
-      const cleanAlias = clean(alias);
-      if (!cleanAlias || cleanAlias.length < 2) continue;
-      cities.push({ ...rule, alias: cleanAlias });
+      const value = clean(alias);
+      if (!value || value.length < 2) continue;
+      cities.push({ ...rule, alias: value });
     }
   };
 
@@ -961,7 +1009,11 @@ function parseTraining(training: string): ParsedTraining {
       const rule = buildCityRule(canonical, block, defaultCovered);
       const variantsLine = lines.find((line) => /^[✅✔]/.test(line));
       const aliases = variantsLine
-        ? variantsLine.replace(/^[✅✔]\s*/, "").split(",").map(clean).filter(Boolean)
+        ? variantsLine
+            .replace(/^[✅✔]\s*/, "")
+            .split(",")
+            .map(clean)
+            .filter(Boolean)
         : [];
 
       addCityRule(rule, [canonical, ...aliases]);
@@ -987,26 +1039,57 @@ function parseTraining(training: string): ParsedTraining {
       .filter((line) => {
         const n = normalize(line);
         if (!line || line.length < 3 || line.length > 80) return false;
-        if (/\b(pago|transportadora|contra entrega|cobertura|envio|delivery|anticipado)\b/.test(n)) return false;
+        if (/\b(pago|transportadora|contra entrega|cobertura|envio|delivery|anticipado)\b/.test(n)) {
+          return false;
+        }
         return /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(line);
       })
-      .forEach((city) => addCityRule({
-        alias: city,
-        canonical: city,
-        covered,
-        rawBlock: city,
-      }, [city]));
+      .forEach((city) =>
+        addCityRule(
+          {
+            alias: city,
+            canonical: city,
+            covered,
+            rawBlock: city,
+          },
+          [city]
+        )
+      );
   };
 
   parseSimpleCityList(coveredSection, true);
   parseSimpleCityList(uncoveredSection, false);
 
   const cityMap = new Map<string, CityRule>();
-  for (const c of cities) {
-    const key = normalize(c.alias);
+  for (const city of cities) {
+    const key = normalize(city.alias);
     if (!key) continue;
+
     const existing = cityMap.get(key);
-    if (!existing || c.covered === false) cityMap.set(key, c);
+    const cityHasMoreData = Boolean(
+      city.department ||
+        city.logisticsZone ||
+        city.modality ||
+        city.paymentMethod ||
+        city.carrier ||
+        city.shippingCost
+    );
+    const existingHasMoreData = Boolean(
+      existing?.department ||
+        existing?.logisticsZone ||
+        existing?.modality ||
+        existing?.paymentMethod ||
+        existing?.carrier ||
+        existing?.shippingCost
+    );
+
+    if (
+      !existing ||
+      city.covered === false ||
+      (cityHasMoreData && !existingHasMoreData)
+    ) {
+      cityMap.set(key, city);
+    }
   }
 
   return {
@@ -2028,45 +2111,271 @@ function getCityRule(city: string, parsed: ParsedTraining): CityRule | null {
   );
 }
 
-function resolveDeliveryText(rule: CityRule | null): string {
-  if (!rule) return "";
-  if (clean(rule.deliveryTime)) return clean(rule.deliveryTime);
-
-  const normalizedRule = normalize(rule.deliveryRule || "");
-  if (!normalizedRule) return "";
-
-  if (/corte.?12.?30/.test(normalizedRule)) {
-    const now = new Date();
-    const pyTime = new Date(
-      now.toLocaleString("en-US", { timeZone: "America/Asuncion" })
-    );
-    const day = pyTime.getDay();
-    const minutes = pyTime.getHours() * 60 + pyTime.getMinutes();
-
-    if (day === 0) return "El pedido se procesa desde el lunes";
-    if (minutes < 12 * 60 + 30) return "Entrega prevista para hoy";
-    return "Entrega prevista para el siguiente día de reparto";
-  }
-
-  return clean(rule.deliveryRule || "");
+function parseTimeToMinutes(value: string): number | null {
+  const match = clean(value).match(/\b(\d{1,2})(?::(\d{2}))?\b/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2] || 0);
+  if (hours > 23 || minutes > 59) return null;
+  return hours * 60 + minutes;
 }
 
-function cityRuleFacts(rule: CityRule | null) {
-  if (!rule) return null;
+function parseDeliveryPolicy(training: string): DeliveryPolicy {
+  const raw = clean(training);
+  const n = normalize(raw);
+
+  const scheduleMatch = raw.match(
+    /(?:entregas?|horario)[^\n]{0,80}?(?:lunes|lun)\s+a\s+(?:sábado|sabado|sáb|sab)[^\n]{0,80}?(\d{1,2}(?::\d{2})?)\s*(?:a|-|hasta)\s*(\d{1,2}(?::\d{2})?)/i
+  );
+  const genericScheduleMatch = raw.match(
+    /(?:de|desde)\s+(\d{1,2}(?::\d{2})?)\s*(?:a|-|hasta)\s*(\d{1,2}(?::\d{2})?)/i
+  );
+  const cutoffMatch = raw.match(
+    /(?:antes de las|corte(?: de| a las)?|hasta las)\s*(\d{1,2}(?::\d{2})?)/i
+  );
+  const rangeMatch = n.match(
+    /(?:fuera de central|interior)[\s\S]{0,180}?(\d{1,3})\s*(?:a|-|y)\s*(\d{1,3})\s*horas/
+  );
+
+  const schedule = scheduleMatch || genericScheduleMatch;
+  const sundayDelivery = !/\b(los )?domingos? no se realizan entregas\b/.test(n) &&
+    !/\bdomingo[s]?\s+(?:no trabajamos|sin entregas)\b/.test(n);
+
   return {
-    city: rule.canonical,
-    department: rule.department || "",
-    logistics_zone: rule.logisticsZone || "",
-    coverage: rule.covered,
-    modality: rule.modality || "",
-    payment_method: rule.paymentMethod || "",
-    address_optional: Boolean(rule.addressOptional),
-    delivery_rule: rule.deliveryRule || "",
-    delivery_time: resolveDeliveryText(rule),
-    schedule: rule.schedule || "",
-    carrier: rule.carrier || "",
-    shipping_cost: rule.shippingCost || 0,
-    requires_advance_payment: Boolean(rule.requiresAdvancePayment),
+    workingDays: /lunes a sabado|lunes a sábado/.test(n)
+      ? [1, 2, 3, 4, 5, 6]
+      : [1, 2, 3, 4, 5, 6],
+    startMinutes: schedule ? parseTimeToMinutes(schedule[1]) : null,
+    endMinutes: schedule ? parseTimeToMinutes(schedule[2]) : null,
+    cutoffMinutes: cutoffMatch ? parseTimeToMinutes(cutoffMatch[1]) : null,
+    sundayDelivery,
+    sundayProcessingDay:
+      /\bpedidos? del domingo[\s\S]{0,80}\blunes\b/.test(n) ||
+      /\bdomingo[\s\S]{0,80}\bprocesan desde el lunes\b/.test(n)
+        ? 1
+        : null,
+    centralSameDayBeforeCutoff:
+      /\bcentral\b[\s\S]{0,220}\bantes de las?\s*\d{1,2}(?::\d{2})?[\s\S]{0,100}\bmismo dia\b/.test(n),
+    centralNextWorkingDayAfterCutoff:
+      /\bcentral\b[\s\S]{0,260}\b(?:a las|despues de las|después de las)\s*\d{1,2}(?::\d{2})?[\s\S]{0,120}\bdia siguiente\b/.test(n),
+    outsideCentralCoveredMinHours: rangeMatch ? Number(rangeMatch[1]) : null,
+    outsideCentralCoveredMaxHours: rangeMatch ? Number(rangeMatch[2]) : null,
+    raw,
+  };
+}
+
+function getParaguayNow() {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Asuncion",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    weekday: "long",
+  });
+
+  const parts = Object.fromEntries(
+    formatter
+      .formatToParts(new Date())
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value])
+  );
+
+  const year = Number(parts.year);
+  const month = Number(parts.month);
+  const day = Number(parts.day);
+  const hour = Number(parts.hour);
+  const minute = Number(parts.minute);
+  const weekdayMap: Record<string, number> = {
+    Sunday: 0,
+    Monday: 1,
+    Tuesday: 2,
+    Wednesday: 3,
+    Thursday: 4,
+    Friday: 5,
+    Saturday: 6,
+  };
+
+  return {
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    dayOfWeek: weekdayMap[parts.weekday] ?? new Date().getDay(),
+    date: `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+    time: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+  };
+}
+
+function dayNameEs(day: number) {
+  return ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"][day] || "";
+}
+
+function addDaysToLocalDate(
+  year: number,
+  month: number,
+  day: number,
+  amount: number
+) {
+  const date = new Date(Date.UTC(year, month - 1, day + amount, 12, 0, 0));
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+    dayOfWeek: date.getUTCDay(),
+    iso: `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`,
+  };
+}
+
+function nextWorkingDate(
+  now: ReturnType<typeof getParaguayNow>,
+  policy: DeliveryPolicy,
+  startOffset: number
+) {
+  for (let offset = startOffset; offset <= 14; offset++) {
+    const candidate = addDaysToLocalDate(now.year, now.month, now.day, offset);
+    if (policy.workingDays.includes(candidate.dayOfWeek)) return candidate;
+  }
+  return addDaysToLocalDate(now.year, now.month, now.day, startOffset);
+}
+
+function isCentralCityRule(rule: CityRule | null): boolean | null {
+  if (!rule) return null;
+  const value = normalize(
+    `${rule.department || ""} ${rule.logisticsZone || ""} ${rule.rawBlock || ""}`
+  );
+  if (/\bcentral\b/.test(value)) return true;
+  if (rule.department || rule.logisticsZone) return false;
+  return null;
+}
+
+function calculateDeliveryDecision(
+  cityRule: CityRule | null,
+  coverage: boolean | null,
+  policy: DeliveryPolicy
+): DeliveryDecision | null {
+  if (!cityRule || coverage === null) return null;
+
+  const now = getParaguayNow();
+  const minutesNow = now.hour * 60 + now.minute;
+  const isWorkingDay = policy.workingDays.includes(now.dayOfWeek);
+  const isCentral = isCentralCityRule(cityRule);
+  const facts: string[] = [];
+
+  if (policy.startMinutes !== null && policy.endMinutes !== null) {
+    const format = (minutes: number) =>
+      `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+    facts.push(
+      `Las entregas se realizan de ${format(policy.startMinutes)} a ${format(policy.endMinutes)}`
+    );
+  }
+
+  if (now.dayOfWeek === 0 && !policy.sundayDelivery) {
+    const next = nextWorkingDate(now, policy, 1);
+    facts.push("Los domingos no se realizan entregas");
+    facts.push(`El pedido se procesa desde el ${dayNameEs(next.dayOfWeek)}`);
+
+    return {
+      timezone: "America/Asuncion",
+      currentDate: now.date,
+      currentDayName: dayNameEs(now.dayOfWeek),
+      currentTime: now.time,
+      isWorkingDay: false,
+      isCentral,
+      estimatedDayName: dayNameEs(next.dayOfWeek),
+      estimatedDate: next.iso,
+      sameDay: false,
+      reason: "Hoy es domingo y el entrenamiento indica que no se realizan entregas",
+      customerFacts: facts,
+    };
+  }
+
+  if (coverage === true && isCentral === true && policy.cutoffMinutes !== null) {
+    if (
+      isWorkingDay &&
+      minutesNow < policy.cutoffMinutes &&
+      policy.centralSameDayBeforeCutoff
+    ) {
+      facts.push(
+        `Como el pedido ingresó antes de las ${String(Math.floor(policy.cutoffMinutes / 60)).padStart(2, "0")}:${String(policy.cutoffMinutes % 60).padStart(2, "0")}, puede entregarse hoy`
+      );
+
+      return {
+        timezone: "America/Asuncion",
+        currentDate: now.date,
+        currentDayName: dayNameEs(now.dayOfWeek),
+        currentTime: now.time,
+        isWorkingDay,
+        isCentral,
+        estimatedDayName: dayNameEs(now.dayOfWeek),
+        estimatedDate: now.date,
+        sameDay: true,
+        reason: "Ciudad de Central y pedido antes del horario de corte",
+        customerFacts: facts,
+      };
+    }
+
+    const next = nextWorkingDate(now, policy, 1);
+    facts.push(
+      `Como el pedido ingresó después del horario de corte, la entrega corresponde al ${dayNameEs(next.dayOfWeek)}`
+    );
+
+    return {
+      timezone: "America/Asuncion",
+      currentDate: now.date,
+      currentDayName: dayNameEs(now.dayOfWeek),
+      currentTime: now.time,
+      isWorkingDay,
+      isCentral,
+      estimatedDayName: dayNameEs(next.dayOfWeek),
+      estimatedDate: next.iso,
+      sameDay: false,
+      reason: "Ciudad de Central y pedido después del horario de corte",
+      customerFacts: facts,
+    };
+  }
+
+  if (
+    coverage === true &&
+    isCentral === false &&
+    policy.outsideCentralCoveredMinHours &&
+    policy.outsideCentralCoveredMaxHours
+  ) {
+    facts.push(
+      `La entrega estimada es de ${policy.outsideCentralCoveredMinHours} a ${policy.outsideCentralCoveredMaxHours} horas, según ubicación y ruta`
+    );
+
+    return {
+      timezone: "America/Asuncion",
+      currentDate: now.date,
+      currentDayName: dayNameEs(now.dayOfWeek),
+      currentTime: now.time,
+      isWorkingDay,
+      isCentral,
+      estimatedDayName: "",
+      estimatedDate: "",
+      sameDay: false,
+      reason: "Ciudad fuera de Central con cobertura",
+      customerFacts: facts,
+    };
+  }
+
+  return {
+    timezone: "America/Asuncion",
+    currentDate: now.date,
+    currentDayName: dayNameEs(now.dayOfWeek),
+    currentTime: now.time,
+    isWorkingDay,
+    isCentral,
+    estimatedDayName: "",
+    estimatedDate: "",
+    sameDay: false,
+    reason: "No existe una regla suficientemente específica para calcular una fecha exacta",
+    customerFacts: facts,
   };
 }
 
@@ -4986,11 +5295,22 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
 
   const productInfo = getProductInfo(order.product, parsed);
   const cityRule = order.city ? getCityRule(order.city, parsed) : null;
-  const coverage = order.city ? (cityRule ? cityRule.covered : hasCoverage(order.city, parsed)) : null;
+  const coverage = order.city
+    ? cityRule
+      ? cityRule.covered
+      : hasCoverage(order.city, parsed)
+    : null;
+  const deliveryPolicy = parseDeliveryPolicy(parsed.generalTraining);
+  const deliveryDecision = calculateDeliveryDecision(
+    cityRule,
+    coverage,
+    deliveryPolicy
+  );
   const total = order.product && order.quantity ? calculateTotal(order.product, order.quantity, parsed, order.locked_offer) : 0;
-  const addressOptional = cityRule?.addressOptional === true
-    ? true
-    : isAddressOptionalByTraining(parsed, coverage);
+  const addressOptional =
+    cityRule?.addressOptional === true
+      ? true
+      : isAddressOptionalByTraining(parsed, coverage);
   const missing = getMissing(order, coverage, addressOptional);
   const step = nextStep(order, coverage, addressOptional);
 
@@ -4999,6 +5319,8 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
     step,
     productInfo,
     cityRule,
+    deliveryPolicy,
+    deliveryDecision,
     coverage,
     total,
     missing,
@@ -5813,20 +6135,33 @@ Nuestro equipo se pondrá en contacto para coordinar la entrega. 📲
 
 function deterministicAfterCityCoverageMessage(state: ConversationState) {
   const o = state.order;
-  const rule = state.cityRule;
-  if (!o.product || !o.city || !rule) return "";
+  if (!o.product || !o.city) return "";
   if (o.locked_offer?.fixed_quantity) return "";
 
+  const rule = state.cityRule;
+  const decision = state.deliveryDecision;
   const parts: string[] = [];
-  if (rule.modality) parts.push(rule.modality);
-  if (rule.paymentMethod) parts.push(`Forma de pago: ${rule.paymentMethod}`);
-  const delivery = resolveDeliveryText(rule);
-  if (delivery) parts.push(delivery);
-  if (rule.schedule) parts.push(`Horario: ${rule.schedule}`);
-  if (rule.shippingCost) parts.push(`Costo de envío: ${formatGs(rule.shippingCost)} Gs`);
-  if (rule.carrier) parts.push(`Transportadora: ${rule.carrier}`);
 
-  if (!o.quantity) parts.push("¿Cuántas unidades querés llevar?");
+  if (rule?.modality) parts.push(clean(rule.modality));
+  if (rule?.paymentMethod) {
+    parts.push(`Forma de pago: ${clean(rule.paymentMethod)}`);
+  }
+  if (rule?.shippingCost) {
+    parts.push(`Costo de envío: ${formatGs(rule.shippingCost)} Gs`);
+  }
+  if (rule?.carrier) {
+    parts.push(`Envío por ${clean(rule.carrier)}`);
+  }
+  if (decision?.customerFacts?.length) {
+    parts.push(...decision.customerFacts);
+  }
+
+  if (!o.quantity) {
+    const offers = state.productInfo ? productOffersText(state.productInfo) : "";
+    if (offers) parts.push(offers);
+    parts.push("¿Cuántas unidades querés llevar?");
+  }
+
   return parts.join("\n\n");
 }
 
@@ -5994,30 +6329,70 @@ function deterministicObservationAckMessage(state: ConversationState, parsed: Pa
   return `${intro}\n\n✅ Tengo todos los datos del pedido. Nuestro equipo tendrá en cuenta esa observación para coordinar 😊`;
 }
 
-
-function nextMissingQuestion(state: ConversationState): string {
+function nextMissingQuestionFromState(state: ConversationState) {
   const missing = state.missing[0] || "";
   if (missing === "producto") return "¿Qué producto te interesa?";
   if (missing === "ciudad") return "¿Para qué ciudad sería el envío?";
   if (missing === "cantidad") return "¿Cuántas unidades querés llevar?";
   if (missing === "nombre y apellido") return "¿Me indicás tu nombre y apellido?";
-  if (missing === "dirección o referencia") return "¿Me pasás la dirección o una referencia para la entrega?";
-  if (missing === "comprobante de transferencia") return "Enviame el comprobante de transferencia para continuar.";
+  if (missing === "dirección o referencia") {
+    return "¿Me pasás la dirección o una referencia para la entrega?";
+  }
+  if (missing === "comprobante de transferencia") {
+    return "Enviame el comprobante de transferencia para continuar.";
+  }
   return "";
 }
 
-function buildTrainingDerivedFallback(
+function isDeliveryRelatedQuestion(text: string) {
+  const n = normalize(text);
+  return /\b(envio|entrega|delivery|cobertura|cuando llega|cuanto tarda|horario|pago al recibir|como se paga|forma de pago)\b/.test(n);
+}
+
+function isQuantityOnlyAnswer(text: string) {
+  return (
+    extractQuantity(text) > 0 &&
+    !isPriceQuery(text) &&
+    !isDeliveryRelatedQuestion(text)
+  );
+}
+
+function naturalizeConfiguredValue(value: string) {
+  return clean(value)
+    .toLocaleLowerCase("es-PY")
+    .replace(/\s+/g, " ")
+    .replace(/^envio\b/, "envío");
+}
+
+function buildTrainingFallback(
   customerMessage: string,
   state: ConversationState,
-  parsed: ParsedTraining,
-  copyAlreadySent: boolean
+  copyAlreadySent: boolean,
+  previousCity: string
 ): { response: string; media_urls: string[] } {
-  const o = state.order;
-  const rule = state.cityRule;
   const parts: string[] = [];
   const media_urls: string[] = [];
+  const currentCity = clean(state.order.city);
+  const cityJustDetected =
+    Boolean(currentCity) &&
+    normalize(previousCity) !== normalize(currentCity);
 
-  if (state.productInfo && !copyAlreadySent && clean(state.productInfo.salesCopy)) {
+  if (isQuantityOnlyAnswer(customerMessage) && state.order.quantity > 0) {
+    parts.push(
+      `Perfecto, te preparo ${state.order.quantity} ${
+        state.order.quantity === 1 ? "unidad" : "unidades"
+      } 😊`
+    );
+    const next = nextMissingQuestionFromState(state);
+    if (next) parts.push(next);
+    return { response: parts.join(" "), media_urls };
+  }
+
+  if (
+    state.productInfo &&
+    !copyAlreadySent &&
+    clean(state.productInfo.salesCopy)
+  ) {
     parts.push(clean(state.productInfo.salesCopy));
     media_urls.push(...(state.productInfo.images || []));
   } else if (isPriceQuery(customerMessage) && state.productInfo) {
@@ -6025,37 +6400,52 @@ function buildTrainingDerivedFallback(
     if (prices) parts.push(prices);
   }
 
-  if (rule && o.city) {
-    const cityParts: string[] = [];
-    if (clean(rule.modality)) cityParts.push(clean(rule.modality));
-    if (clean(rule.paymentMethod)) cityParts.push(`Forma de pago: ${clean(rule.paymentMethod)}`);
-    const delivery = resolveDeliveryText(rule);
-    if (delivery) cityParts.push(delivery);
-    if (clean(rule.schedule)) cityParts.push(`Horario: ${clean(rule.schedule)}`);
-    if (rule.shippingCost) cityParts.push(`Costo de envío: ${formatGs(rule.shippingCost)} Gs`);
-    if (clean(rule.carrier)) cityParts.push(`Transportadora: ${clean(rule.carrier)}`);
+  if (
+    state.cityRule &&
+    (cityJustDetected || isDeliveryRelatedQuestion(customerMessage))
+  ) {
+    const deliveryParts: string[] = [];
 
-    if (cityParts.length) {
-      parts.push(`Para ${rule.canonical}: ${cityParts.join(". ")}.`);
-    } else {
+    if (state.cityRule.modality) {
+      deliveryParts.push(naturalizeConfiguredValue(state.cityRule.modality));
+    }
+    if (state.cityRule.paymentMethod) {
+      const payment = normalize(state.cityRule.paymentMethod);
+      deliveryParts.push(
+        payment === "al recibir"
+          ? "podés pagar al recibir"
+          : `la forma de pago es ${naturalizeConfiguredValue(
+              state.cityRule.paymentMethod
+            )}`
+      );
+    }
+    if (state.cityRule.shippingCost) {
+      deliveryParts.push(
+        `el costo de envío es ${formatGs(state.cityRule.shippingCost)} Gs`
+      );
+    }
+    if (state.deliveryDecision?.customerFacts?.length) {
+      deliveryParts.push(
+        ...state.deliveryDecision.customerFacts.map((fact) =>
+          clean(fact).replace(/[.]+$/, "")
+        )
+      );
+    }
+
+    if (deliveryParts.length) {
       parts.push(
-        rule.covered
-          ? `Tenemos cobertura para ${rule.canonical}.`
-          : `La modalidad para ${rule.canonical} se gestiona según la regla de cobertura configurada.`
+        `Perfecto 😊 Para ${state.cityRule.canonical}, ${deliveryParts.join(
+          ". "
+        )}.`
       );
     }
   }
 
-  if (state.coverage === false && o.quantity > 0 && parsed.bankData) {
-    const bank = bankDataText(parsed);
-    if (bank) parts.push(bank);
-  }
-
-  const next = nextMissingQuestion(state);
+  const next = nextMissingQuestionFromState(state);
   if (next) parts.push(next);
 
   return {
-    response: parts.filter(Boolean).join("\\n\\n").trim(),
+    response: parts.filter(Boolean).join("\n\n").trim(),
     media_urls: Array.from(new Set(media_urls)),
   };
 }
@@ -6079,7 +6469,8 @@ ESTADO DEL PEDIDO:
 - Cantidad: ${o.quantity || "faltante"}
 - Ciudad: ${o.city || "faltante"}
 - Tiene cobertura: ${state.coverage === null ? "aún no se sabe" : state.coverage ? "sí" : "no"}
-- Regla técnica exacta de la ciudad: ${JSON.stringify(cityRuleFacts(state.cityRule))}
+- Regla exacta de la ciudad: ${JSON.stringify(state.cityRule || null)}
+- Resultado técnico de entrega: ${JSON.stringify(state.deliveryDecision || null)}
 - Nombre: ${o.customer_name || "faltante"}
 - Dirección: ${o.address || "faltante"}
 - Teléfono: ${o.phone || "faltante"}
@@ -6127,8 +6518,12 @@ CÓMO USAR LOS ENTRENAMIENTOS DEL USUARIO:
 - Los entrenamientos generales deciden tono, conversación, cierres de venta, objeciones, factura, entrega, postventa y forma de pedir datos.
 - El backend decide únicamente los datos técnicos: producto detectado, cantidad registrada, ciudad, cobertura, total, datos faltantes y si el pedido puede confirmarse.
 - Nunca reemplaces un dato técnico válido por una suposición del entrenamiento.
-- Para ciudad, cobertura, modalidad, forma de pago, plazo, horario, costo y transportadora, usá exclusivamente la "Regla técnica exacta de la ciudad".
-- Si un dato no aparece en esa regla ni en los entrenamientos activos, no lo inventes.
+- La lista y las reglas del entrenamiento son conocimiento interno: nunca muestres etiquetas técnicas ni copies campos como MODALIDAD, PAGO, DEPARTAMENTO o REGLA_ENTREGA.
+- Para ciudad y cobertura usá la Regla exacta de la ciudad.
+- Para día, hora, corte, domingo y fecha estimada usá exclusivamente el Resultado técnico de entrega.
+- Convertí esos hechos en una explicación natural y breve; no muestres JSON ni nombres de variables.
+- Informá las condiciones de entrega cuando la ciudad acaba de registrarse o cuando el cliente consulta entrega, horario, cobertura o pago.
+- No repitas toda la explicación logística en el turno siguiente si el cliente respondió cantidad, nombre o dirección.
 - Usá solamente los datos bancarios estructurados mostrados en DATOS DE TRANSFERENCIA.
 
 ORDEN DE PRIORIDAD:
@@ -6155,7 +6550,10 @@ REGLAS DURAS:
 - Mencioná de 1 a 3 beneficios concretos presentes en ese copy. No uses una respuesta genérica si hay información específica del producto.
 - No inventes resultados, porcentajes, tiempos ni garantías que no estén escritos en el copy.
 - Si el cliente hace una consulta durante la compra: respondé primero la consulta usando SOLO el entrenamiento disponible y después retomá exactamente el siguiente dato faltante del ESTADO DEL PEDIDO.
-- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: respondé EXCLUSIVAMENTE con la regla de entrega/tiempo/horario que figure en ENTRENAMIENTO GENERAL. No uses frases genéricas ni un mensaje estándar sobre rutas, disponibilidad o que el delivery llama, salvo que eso esté escrito expresamente en el entrenamiento.
+- Cuando el cliente acaba de indicar una ciudad válida, explicá naturalmente la modalidad, forma de pago y resultado técnico de entrega que correspondan, y luego pedí solo el siguiente dato faltante.
+- Si hoy es domingo y el Resultado técnico de entrega indica que no hay entregas, explicá que el pedido se procesa desde el lunes; nunca digas simplemente “mañana” sin considerar los días de trabajo.
+- Si es sábado después del corte y el domingo no se trabaja, el siguiente día de entrega es lunes.
+- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: respondé EXCLUSIVAMENTE con el Resultado técnico de entrega y las reglas del entrenamiento activo. No inventes una hora exacta.
 - Una pregunta sobre entrega es solo una consulta: NO la guardes como fecha preferida, NO cambies ciudad, cantidad, nombre ni dirección y NO reinicies el pedido.
 - Después de responder la consulta de entrega, pedí solamente el siguiente dato realmente faltante. Si no falta ningún dato, respondé la consulta sin volver a repetir el cierre del pedido.
 - Si después de responder la consulta todavía falta ciudad, preguntá ciudad. No menciones transportadora, falta de cobertura ni pago anticipado hasta tener una ciudad real.
@@ -8557,11 +8955,12 @@ Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas de
     }
 
     if (!aiResponse || aiResponse === "__GEMINI_QUOTA_EXCEEDED__") {
-      const fallback = buildTrainingDerivedFallback(
+      const previousCity = clean(context?.order_data?.city || "");
+      const fallback = buildTrainingFallback(
         texto,
         finalState,
-        parsed,
-        copyAlreadySent
+        copyAlreadySent,
+        previousCity
       );
 
       if (!fallback.response) {
@@ -8591,9 +8990,11 @@ Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas de
           updated_at: new Date().toISOString(),
         },
         debug: {
-          training_derived_fallback: true,
-          gemini_quota_exceeded: aiResponse === "__GEMINI_QUOTA_EXCEEDED__",
-          city_rule: cityRuleFacts(finalState.cityRule),
+          training_fallback: true,
+          gemini_quota_exceeded:
+            aiResponse === "__GEMINI_QUOTA_EXCEEDED__",
+          city_rule: finalState.cityRule,
+          delivery_decision: finalState.deliveryDecision,
         },
       });
     }
