@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V132: interpreta departamento, zona logística y regla de entrega por ciudad desde el entrenamiento; impide aplicar 24–48 horas a Capiatá u otra ciudad CENTRAL y limpia la referencia de ciudad.
  * V131: evita insertar dos veces la misma confirmación, actualiza el pedido confirmado en postventa y guarda factura/RUC en observación sin crear otra fila.
  * V130: reconoce RUC paraguayo con guion y dígito verificador, procesa ubicación GPS antes de volver a pedir ciudad, conserva la ciudad ya registrada y fuerza el cierre técnico cuando el pedido queda completo.
  * V129: corrige cambios explícitos de ciudad con km/ruta, separa ciudad y referencia, clasifica Central técnicamente y permite reutilizar de forma real los datos del pedido anterior en una nueva compra.
@@ -63,7 +64,7 @@ import { createClient } from "@supabase/supabase-js";
 
 
 /*
-V131 — ARQUITECTURA DEFINITIVA: SOLO IA CONVERSA; GUARDADO IDEMPOTENTE Y POSTVENTA SOBRE LA MISMA FILA
+V132 — ARQUITECTURA DEFINITIVA: CIUDAD, DEPARTAMENTO, ZONA LOGÍSTICA Y REGLA DE ENTREGA SON DATOS TÉCNICOS
 
 BACKEND:
 - detecta y valida producto, ciudad, cantidad, nombre, cobertura y pago;
@@ -154,9 +155,20 @@ type TrainingSections = {
   bankingItems: number;
 };
 
+type CityItem = {
+  alias: string;
+  canonical: string;
+  covered: boolean;
+  department: string;
+  logisticsZone: "CENTRAL" | "FUERA_DE_CENTRAL" | "";
+  deliveryRule: "CORTE_12_30" | "24_A_48_HORAS" | "";
+  modality: string;
+  payment: string;
+};
+
 type ParsedTraining = {
   products: ProductItem[];
-  cities: { alias: string; canonical: string; covered: boolean }[];
+  cities: CityItem[];
   catalogUrl: string;
   bankData: BankData | null;
 
@@ -213,6 +225,7 @@ type ConversationState = {
   step: string;
   productInfo: ProductItem | null;
   coverage: boolean | null;
+  cityInfo: CityItem | null;
   total: number;
   missing: string[];
   hardInstruction: string;
@@ -892,7 +905,7 @@ function autoDetectProductsFromTraining(_training: string, _existing: ProductIte
 
 function parseTraining(training: string): ParsedTraining {
   const products: ProductItem[] = [];
-  const cities: { alias: string; canonical: string; covered: boolean }[] = [];
+  const cities: CityItem[] = [];
 
   const catalog =
     training.match(/CATALOGO_PRODUCTOS([\s\S]*?)FIN_CATALOGO_PRODUCTOS/i)?.[1] || "";
@@ -936,11 +949,44 @@ function parseTraining(training: string): ParsedTraining {
   const autoProducts = autoDetectProductsFromTraining(training, products);
   products.push(...autoProducts);
 
-  const addCity = (alias: string, canonical?: string, covered = true) => {
+  const addCity = (
+    alias: string,
+    canonical?: string,
+    covered = true,
+    metadata?: Partial<CityItem>
+  ) => {
     const a = clean(alias);
     const c = clean(canonical || alias);
     if (!a || a.length < 2) return;
-    cities.push({ alias: a, canonical: c, covered });
+
+    const fallbackCentral = isCentralDepartmentCity(c) || normalize(c) === "asuncion";
+    const logisticsZone =
+      metadata?.logisticsZone ||
+      (covered ? (fallbackCentral ? "CENTRAL" : "FUERA_DE_CENTRAL") : "");
+    const deliveryRule =
+      metadata?.deliveryRule ||
+      (logisticsZone === "CENTRAL"
+        ? "CORTE_12_30"
+        : logisticsZone === "FUERA_DE_CENTRAL"
+          ? "24_A_48_HORAS"
+          : "");
+
+    cities.push({
+      alias: a,
+      canonical: c,
+      covered,
+      department:
+        clean(metadata?.department) ||
+        (normalize(c) === "asuncion"
+          ? "Distrito Capital"
+          : fallbackCentral
+            ? "Central"
+            : ""),
+      logisticsZone,
+      deliveryRule,
+      modality: clean(metadata?.modality),
+      payment: clean(metadata?.payment),
+    });
   };
 
   const parseCityBlocks = (section: string, defaultCovered: boolean) => {
@@ -954,9 +1000,52 @@ function parseTraining(training: string): ParsedTraining {
       const blockNorm = normalize(block);
       const explicitlyNotCovered =
         /\b(sin cobertura|fuera de cobertura|transportadora|pago anticipado|no contra entrega|sin contra entrega)\b/.test(blockNorm);
-      const covered = explicitlyNotCovered ? false : defaultCovered;
 
-      addCity(canonical, canonical, covered);
+      const coverageLine = clean(
+        lines.find((line) => /^COBERTURA\s*:/i.test(line))?.split(":").slice(1).join(":")
+      );
+      const covered =
+        /^(no|false|sin)$/i.test(normalize(coverageLine))
+          ? false
+          : explicitlyNotCovered
+            ? false
+            : defaultCovered;
+
+      const department = clean(
+        lines.find((line) => /^DEPARTAMENTO\s*:/i.test(line))?.split(":").slice(1).join(":")
+      );
+      const logisticsRaw = normalize(
+        lines.find((line) => /^ZONA_LOG[ÍI]STICA\s*:/i.test(line))?.split(":").slice(1).join(":")
+      );
+      const ruleRaw = normalize(
+        lines.find((line) => /^REGLA_ENTREGA\s*:/i.test(line))?.split(":").slice(1).join(":")
+      );
+      const modality = clean(
+        lines.find((line) => /^MODALIDAD\s*:/i.test(line))?.split(":").slice(1).join(":")
+      );
+      const payment = clean(
+        lines.find((line) => /^PAGO\s*:/i.test(line))?.split(":").slice(1).join(":")
+      );
+
+      const metadata: Partial<CityItem> = {
+        department,
+        logisticsZone:
+          logisticsRaw === "central"
+            ? "CENTRAL"
+            : logisticsRaw === "fuera_de_central" || logisticsRaw === "fuera de central"
+              ? "FUERA_DE_CENTRAL"
+              : "",
+        deliveryRule:
+          ruleRaw === "corte_12_30" || ruleRaw === "corte 12 30"
+            ? "CORTE_12_30"
+            : ruleRaw === "24_a_48_horas" || ruleRaw === "24 a 48 horas"
+              ? "24_A_48_HORAS"
+              : "",
+        modality,
+        payment,
+      };
+
+      addCity(canonical, canonical, covered, metadata);
 
       const variantsLine = lines.find((line) => /^[✅✔]/.test(line));
       if (variantsLine) {
@@ -965,7 +1054,7 @@ function parseTraining(training: string): ParsedTraining {
           .split(",")
           .map(clean)
           .filter(Boolean)
-          .forEach((variant) => addCity(variant, canonical, covered));
+          .forEach((variant) => addCity(variant, canonical, covered, metadata));
       }
     }
   };
@@ -1001,7 +1090,7 @@ function parseTraining(training: string): ParsedTraining {
   parseSimpleCityList(coveredSection, true);
   parseSimpleCityList(uncoveredSection, false);
 
-  const cityMap = new Map<string, { alias: string; canonical: string; covered: boolean }>();
+  const cityMap = new Map<string, CityItem>();
   for (const c of cities) {
     const key = normalize(c.alias);
     if (!key) continue;
@@ -1837,6 +1926,49 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   return toTitleCase(candidate);
 }
 
+function getCityInfo(city: string, parsed: ParsedTraining): CityItem | null {
+  const c = normalize(city);
+  if (!c) return null;
+
+  return (
+    parsed.cities.find((item) => {
+      const alias = normalize(item.alias);
+      const canonical = normalize(item.canonical);
+      return c === alias || c === canonical;
+    }) || null
+  );
+}
+
+function cityDepartment(city: string, parsed: ParsedTraining): string {
+  return getCityInfo(city, parsed)?.department || "";
+}
+
+function cityLogisticsZone(
+  city: string,
+  parsed: ParsedTraining
+): "CENTRAL" | "FUERA_DE_CENTRAL" | "" {
+  const info = getCityInfo(city, parsed);
+  if (info?.logisticsZone) return info.logisticsZone;
+  if (!city) return "";
+  return isCentralDepartmentCity(city) || normalize(city) === "asuncion"
+    ? "CENTRAL"
+    : "FUERA_DE_CENTRAL";
+}
+
+function cityDeliveryRule(
+  city: string,
+  parsed: ParsedTraining
+): "CORTE_12_30" | "24_A_48_HORAS" | "" {
+  const info = getCityInfo(city, parsed);
+  if (info?.deliveryRule) return info.deliveryRule;
+  const zone = cityLogisticsZone(city, parsed);
+  return zone === "CENTRAL"
+    ? "CORTE_12_30"
+    : zone === "FUERA_DE_CENTRAL"
+      ? "24_A_48_HORAS"
+      : "";
+}
+
 function hasCoverage(city: string, parsed: ParsedTraining) {
   const c = normalize(city);
   if (!c) return false;
@@ -1844,12 +1976,7 @@ function hasCoverage(city: string, parsed: ParsedTraining) {
   // V82: solamente las ciudades cargadas en el entrenamiento tienen
   // contra-entrega. Toda localidad válida no configurada usa pago anticipado.
 
-  const configured = parsed.cities.find((item) => {
-    const alias = normalize(item.alias);
-    const canonical = normalize(item.canonical);
-    return c === alias || c === canonical;
-  });
-
+  const configured = getCityInfo(city, parsed);
   return configured ? configured.covered !== false : false;
 }
 
@@ -2352,8 +2479,9 @@ function extractReferenceFromCityMessage(
   }
 
   value = value
-    .replace(/\b(?:para|envio|envío|entrega|delivery|ciudad|seria|sería|es)\b/gi, " ")
-    .replace(/\bkm\s*(\d+)\b/gi, "km $1")
+    .replace(/^\s*(?:para|ser[ií]a\s+para|env[ií]o\s+a|entrega\s+en)\s+/i, "")
+    .replace(/\b(?:envio|envío|entrega|delivery|ciudad|seria|sería)\b/gi, " ")
+    .replace(/\bkm\s*(\d+(?:[.,]\d+)?)\b/gi, "km $1")
     .replace(/\s+/g, " ")
     .replace(/^[,;:.\-\s]+|[,;:.\-\s]+$/g, "")
     .trim();
@@ -4780,6 +4908,7 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
   }
 
   const productInfo = getProductInfo(order.product, parsed);
+  const cityInfo = order.city ? getCityInfo(order.city, parsed) : null;
   const coverage = order.city ? hasCoverage(order.city, parsed) : null;
   const total = order.product && order.quantity ? calculateTotal(order.product, order.quantity, parsed, order.locked_offer) : 0;
   const addressOptional = isAddressOptionalByTraining(parsed, coverage);
@@ -4791,6 +4920,7 @@ function buildState(order: OrderData, parsed: ParsedTraining): ConversationState
     step,
     productInfo,
     coverage,
+    cityInfo,
     total,
     missing,
     hardInstruction: "",
@@ -5796,8 +5926,10 @@ ESTADO DEL PEDIDO:
 - Producto: ${o.product || "faltante"}
 - Cantidad: ${o.quantity || "faltante"}
 - Ciudad: ${o.city || "faltante"}
-- Pertenece al Departamento Central: ${o.city ? (isCentralDepartmentCity(o.city) ? "sí" : "no") : "aún no se sabe"}
-- Regla de entrega aplicable: ${o.city ? (isCentralDepartmentCity(o.city) ? "Central: corte 12:30" : "Fuera de Central") : "depende de la ciudad"}
+- Departamento técnico: ${state.cityInfo?.department || (o.city ? cityDepartment(o.city, parsed) || "no configurado" : "aún no se sabe")}
+- Zona logística técnica: ${o.city ? cityLogisticsZone(o.city, parsed) || "no configurada" : "aún no se sabe"}
+- Pertenece a zona logística CENTRAL: ${o.city ? (cityLogisticsZone(o.city, parsed) === "CENTRAL" ? "sí" : "no") : "aún no se sabe"}
+- Regla de entrega técnica: ${o.city ? cityDeliveryRule(o.city, parsed) || "no configurada" : "depende de la ciudad"}
 - Tiene cobertura contra-entrega: ${state.coverage === null ? "aún no se sabe" : state.coverage ? "sí" : "no"}
 - Nombre: ${o.customer_name || "faltante"}
 - Dirección: ${o.address || "faltante"}
@@ -5855,7 +5987,10 @@ CÓMO USAR LOS ENTRENAMIENTOS DEL USUARIO:
 - Después de un pedido confirmado, una solicitud de factura o RUC actualiza el mismo pedido; nunca representa una segunda compra.
 - Cuando el estado técnico contenga “Factura legal — RUC: …” en observación, podés confirmar naturalmente que fue agregado, sin repetir el cierre.
 - Si el cliente corrige una ciudad, usá exclusivamente la ciudad técnica actual y no mezcles la ciudad anterior con la referencia.
-- Si “Pertenece al Departamento Central” dice “sí”, aplicá la regla de Central y nunca el plazo general de 24 a 48 horas.
+- La ZONA LOGÍSTICA TÉCNICA y la REGLA DE ENTREGA TÉCNICA son obligatorias y tienen prioridad absoluta sobre cualquier inferencia.
+- Si “Zona logística técnica” es CENTRAL o “Regla de entrega técnica” es CORTE_12_30, jamás digas “fuera de Central” ni “24 a 48 horas”.
+- Capiatá, Areguá, Fernando de la Mora, Guarambaré, Itá, Itauguá, J. Augusto Saldívar, Lambaré, Limpio, Luque, Mariano Roque Alonso, Nueva Italia, Ñemby, San Antonio, San Lorenzo, Villa Elisa, Villeta, Ypané y Asunción usan la regla CENTRAL cuando así lo indique el estado técnico.
+- Nunca decidas el plazo solamente por conocimiento general o por lectura parcial del historial; usá la regla técnica del estado actual.
 - No uses la lista completa de cobertura para redactar: usá el valor de cobertura ya calculado en ESTADO DEL PEDIDO.
 - Usá solamente los datos bancarios estructurados mostrados en DATOS DE TRANSFERENCIA.
 
@@ -5889,7 +6024,7 @@ REGLAS DURAS:
 - Mencioná de 1 a 3 beneficios concretos presentes en ese copy. No uses una respuesta genérica si hay información específica del producto.
 - No inventes resultados, porcentajes, tiempos ni garantías que no estén escritos en el copy.
 - Si el cliente hace una consulta durante la compra: respondé primero la consulta usando SOLO el entrenamiento disponible y después retomá exactamente el siguiente dato faltante del ESTADO DEL PEDIDO.
-- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: respondé EXCLUSIVAMENTE con la regla de entrega/tiempo/horario que figure en ENTRENAMIENTO GENERAL. No uses frases genéricas ni un mensaje estándar sobre rutas, disponibilidad o que el delivery llama, salvo que eso esté escrito expresamente en el entrenamiento.
+- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: respondé primero con la ZONA LOGÍSTICA TÉCNICA y la REGLA DE ENTREGA TÉCNICA del ESTADO DEL PEDIDO; usá el entrenamiento general solo para redactar los horarios y condiciones complementarias. No uses frases genéricas ni un mensaje estándar sobre rutas, disponibilidad o que el delivery llama, salvo que eso esté escrito expresamente en el entrenamiento.
 - Una pregunta sobre entrega es solo una consulta: NO la guardes como fecha preferida, NO cambies ciudad, cantidad, nombre ni dirección y NO reinicies el pedido.
 - Después de responder la consulta de entrega, pedí solamente el siguiente dato realmente faltante. Si no falta ningún dato, respondé la consulta sin volver a repetir el cierre del pedido.
 - Si después de responder la consulta todavía falta ciudad, preguntá ciudad. No menciones transportadora, falta de cobertura ni pago anticipado hasta tener una ciudad real.
@@ -8352,6 +8487,9 @@ No repitas la misma pregunta si el cliente ya respondió el dato o si acaba de h
         last_ad_offer: orderData.locked_offer || null,
         order_data: orderData,
         order_id: orderData.order_id || null,
+        city_department: cityDepartment(orderData.city, parsed) || null,
+        logistics_zone: cityLogisticsZone(orderData.city, parsed) || null,
+        delivery_rule: cityDeliveryRule(orderData.city, parsed) || null,
         previous_confirmed_order: previousConfirmedOrder || context?.previous_confirmed_order || null,
         payment_proof_received: (orderData as any).payment_proof_received || false,
         step: confirm ? "pedido_confirmado" : finalState.step,
@@ -8366,6 +8504,9 @@ No repitas la misma pregunta si el cliente ya respondió el dato o si acaba de h
             product: orderData.product,
             quantity: orderData.quantity,
             city: orderData.city,
+            department: cityDepartment(orderData.city, parsed),
+            logistics_zone: cityLogisticsZone(orderData.city, parsed),
+            delivery_rule: cityDeliveryRule(orderData.city, parsed),
             coverage: finalState.coverage,
             total: finalState.total,
             missing: finalState.missing,
