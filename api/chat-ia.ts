@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V128: elimina las respuestas comerciales activas del backend. Gemini redacta toda conversación normal desde el entrenamiento; se conservan intactos cierres, comprobantes, validaciones y estados.
  * V127: la IA redacta toda la conversación normal; el backend conserva estados, validaciones, comprobantes y cierres fijos. Identidad y tienda salen del entrenamiento activo.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
  * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
@@ -59,7 +60,7 @@ import { createClient } from "@supabase/supabase-js";
 
 
 /*
-V127 — ARQUITECTURA DE CONVERSACIÓN
+V128 — ARQUITECTURA DEFINITIVA: SOLO IA CONVERSA
 
 BACKEND:
 - detecta y valida producto, ciudad, cantidad, nombre, cobertura y pago;
@@ -1125,14 +1126,7 @@ function detectProductsMentioned(text: string, parsed: ParsedTraining): ProductI
 }
 
 function buildMultipleProductsClarification(products: ProductItem[], currentCity: string): string {
-  const names = products.map((p) => p.canonical || p.product).filter(Boolean);
-  if (names.length < 2) return "";
-
-  const joined = names.length === 2
-    ? `${names[0]} y ${names[1]}`
-    : `${names.slice(0, -1).join(", ")} y ${names[names.length - 1]}`;
-
-  return `¡Perfecto! Podemos prepararte ${joined}. 😊\n\nPara registrar correctamente las cantidades, decime cuántas unidades querés de cada producto.\n\nEjemplo: “1 ${names[0]} y 1 ${names[1]}”.${currentCity ? `\n\n📍 Mantengo la ciudad de envío: ${currentCity}.` : ""}`;
+  return "";
 }
 
 
@@ -1211,12 +1205,7 @@ function shortProductBenefit(product: ProductItem): string {
 }
 
 function buildMultipleProductsInformation(products: ProductItem[], currentCity: string): string {
-  const sections = products.map((p) => {
-    return `📦 *${p.canonical}*\n${shortProductBenefit(p)}\n${productOffersText(p)}`;
-  });
-
-  const examples = products.map((p) => `1 ${p.canonical}`).join(" y ");
-  return `¡Claro! Tenemos estos productos disponibles 😊\n\n${sections.join("\n\n")}\n\n🛒 Podés llevarlos en un solo pedido.\n¿Cuántos querés de cada uno?\nEjemplo: “${examples}”.${currentCity ? `\n\n📍 Envío a: ${currentCity}.` : ""}`;
+  return "";
 }
 
 function extractQuantityForNamedProduct(text: string, product: ProductItem): number {
@@ -1369,94 +1358,7 @@ function isProductEffectivenessQuestion(text: string): boolean {
 }
 
 function buildProductEffectivenessResponse(state: ConversationState): string {
-  // V116: deshabilitado. La explicación del producto sale del entrenamiento vía Gemini.
   return "";
-  /*
-  const product =
-    clean(state.productInfo?.canonical) ||
-    clean(state.order.product) ||
-    "este producto";
-
-  const copy = clean(state.productInfo?.salesCopy || "");
-
-  const usefulLines = copy
-    .split(/\r?\n/g)
-    .map((line) =>
-      clean(
-        line
-          .replace(/^[^a-zA-ZÁÉÍÓÚáéíóúÑñ0-9]+/, "")
-          .replace(/\s+/g, " ")
-      )
-    )
-    .filter(Boolean)
-    .filter((line) => {
-      const n = normalize(line);
-
-      if (line.length < 12 || line.length > 170) return false;
-
-      if (
-        /\b(gs|precio|precios|oferta|promo|promocion|promoción|antes|hoy|stock|quedan|envio|envío|delivery|whatsapp|escribi|escribí|pedi|pedí|comprá|compra|garantia|garantía|devolvemos|unidad|unidades)\b/.test(n)
-      ) {
-        return false;
-      }
-
-      return /\b(ayuda|sirve|permite|ideal|diseñado|disenado|reduce|alivia|absorbe|soporte|protege|limpia|atrapa|afila|filo|tritura|pica|procesa|mezcla|hidrata|rejuvenece|corrige|mejora|respira|vapor|calienta|elimina|fortalece|comodidad|impacto|postura|arco|dolor|resultado|funciona)\b/.test(n);
-    });
-
-  const uniqueBenefits: string[] = [];
-  for (const line of usefulLines) {
-    const normalizedLine = normalize(line);
-    if (
-      !uniqueBenefits.some((existing) => {
-        const normalizedExisting = normalize(existing);
-        return (
-          normalizedExisting === normalizedLine ||
-          normalizedExisting.includes(normalizedLine) ||
-          normalizedLine.includes(normalizedExisting)
-        );
-      })
-    ) {
-      uniqueBenefits.push(line.replace(/[.!?]+$/, ""));
-    }
-
-    if (uniqueBenefits.length >= 3) break;
-  }
-
-  let explanation = "";
-
-  if (uniqueBenefits.length > 0) {
-    explanation =
-      `Sí 😊 El ${product} está diseñado para cumplir la función explicada en la publicación.\n\n` +
-      `${uniqueBenefits.map((benefit) => `✅ ${benefit}`).join("\n")}\n\n` +
-      `El resultado depende de usarlo correctamente y de cada caso particular.`;
-  } else if (copy) {
-    explanation =
-      `Sí 😊 El ${product} funciona para el uso explicado en la publicación. ` +
-      `Está pensado para brindar los beneficios indicados en su descripción cuando se utiliza correctamente.`;
-  } else {
-    explanation =
-      `Sí 😊 El ${product} está diseñado para cumplir la función indicada. ` +
-      `El resultado depende del uso correcto y de cada caso particular.`;
-  }
-
-  let continuation = "";
-
-  if (!clean(state.order.city)) {
-    continuation =
-      "😊 Para confirmar la cobertura y la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
-  } else if (
-    !state.order.quantity &&
-    !state.order.locked_offer?.fixed_quantity
-  ) {
-    continuation = "¿Cuántas unidades querés llevar? 😊";
-  } else if (!clean(state.order.customer_name)) {
-    continuation = "Para continuar, pasame tu nombre y apellido. 😊";
-  } else if (!state.addressOptional && !clean(state.order.address)) {
-    continuation = "Ahora solo me falta la calle o dirección exacta para la entrega. 📍";
-  }
-
-  return `${explanation}${continuation ? `\n\n${continuation}` : ""}`;
-  */
 }
 
 function isQuestionLikeMessage(text: string) {
@@ -1505,11 +1407,7 @@ function buildMissingDataContinuation(state: ConversationState): string {
 }
 
 function buildInvoiceQuestionResponse(state: ConversationState): string {
-  const continuation = buildMissingDataContinuation(state);
-
-  return `✅ Sí, contamos con factura legal 😊
-
-Podés enviarme tu RUC y razón social o tu número de cédula para agregarla al pedido.${continuation ? `\n\n${continuation}` : ""}`;
+  return "";
 }
 
 function sanitizeCoverageAndShippingResponse(
@@ -1549,83 +1447,7 @@ Pagás solamente el producto cuando lo recibís 😊${continuation ? `\n\n${cont
 }
 
 function buildDeterministicBusinessQuestionResponse(text: string, state: ConversationState) {
-  const n = normalize(text);
-  if (!n) return "";
-
-  if (isInvoiceQuestion(text)) {
-    return buildInvoiceQuestionResponse(state);
-  }
-
-  if (isAmbiguousProductRejection(text, state.order.product || "")) {
-    return `Entiendo 😊 Solo para confirmar: ¿ya no querés continuar con ${state.order.product}?`;
-  }
-
-  if (isProductEffectivenessQuestion(text)) {
-    return buildProductEffectivenessResponse(state);
-  }
-
-  if (isDeliveryCostQuestion(text)) {
-    return buildDeliveryCostResponse(state);
-  }
-
-  const asksDeliveryAvailability =
-    /\b(cuentan con delivery|tienen delivery|hay delivery|hacen envios|hacen envio|realizan delivery|envian a domicilio|entregan a domicilio)\b/.test(n);
-
-  if (asksDeliveryAvailability) {
-    const continuation = state.order.city
-      ? state.order.quantity
-        ? !state.order.customer_name
-          ? "Para continuar, pasame tu nombre y apellido."
-          : !state.order.address
-            ? "Ahora pasame la dirección exacta o ubicación para la entrega."
-            : ""
-        : "¿Cuántas unidades querés llevar?"
-      : "📍 ¿Para qué ciudad sería el envío?";
-
-    return `¡Claro que sí! Contamos con delivery 😊${continuation ? `\n\n${continuation}` : ""}`;
-  }
-
-  if (isPayOnDeliveryRequest(text)) {
-    return buildPayOnDeliveryResponse(state);
-  }
-
-  if (isPaymentInformationQuestion(text)) {
-    let continuation = "";
-    if (!state.order.city) continuation = "📍 ¿Para qué ciudad sería el envío?";
-    else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) continuation = "¿Cuántas unidades querés llevar?";
-    else if (!state.order.customer_name) continuation = "Para continuar, pasame tu nombre y apellido.";
-    else if (!state.addressOptional && !state.order.address) continuation = "Ahora pasame la dirección exacta o ubicación.";
-    
-
-    if (state.coverage === false && state.order.city) {
-      return `📍 Para ${state.order.city} el envío es por transportadora.
-
-💳 En este caso el pago es anticipado por transferencia.
-📎 Para confirmar el pedido necesitamos la foto o PDF del comprobante.`;
-    }
-
-    return `💵 Podés pagar en efectivo o por transferencia al delivery cuando recibís tu pedido. 😊${continuation ? `\n\n${continuation}` : ""}`;
-  }
-
-  const asksOrigin =
-    /\b(?:pero\s+)?(?:de\s+)?d(?:o|oi|ó)nde\s+son(?:\s+ustedes)?\b/.test(n) ||
-    /\bde que ciudad son\b/.test(n) ||
-    /\bubicacion de ustedes\b/.test(n);
-
-  if (!asksOrigin) return "";
-
-  let continuation = "";
-  if (!state.order.city) {
-    continuation = "📍 ¿Para qué ciudad sería el envío?";
-  } else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) {
-    continuation = "¿Cuántas unidades querés llevar?";
-  } else if (!state.order.customer_name) {
-    continuation = "Para continuar, pasame tu nombre y apellido.";
-  } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
-    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
-  }
-
-  return `Somos de Asunción y hacemos envíos a todo el país. 😊${continuation ? `\n\n${continuation}` : ""}`;
+  return "";
 }
 
 function exactKnownCity(text: string, parsed: ParsedTraining): string {
@@ -2391,26 +2213,7 @@ function isPayOnDeliveryRequest(text: string): boolean {
 }
 
 function buildPayOnDeliveryResponse(state: ConversationState): string {
-  const city = clean(state.order.city);
-
-  if (!city) {
-    return "😊 Para confirmarte si podés pagar al recibir, primero indicame de qué ciudad sos. 📍";
-  }
-
-  if (state.coverage === true) {
-    const continuation = !state.order.customer_name
-      ? "\n\nAhora solo necesito tu nombre y apellido."
-      : !state.order.address
-        ? "\n\nAhora solo me falta la calle o dirección exacta para la entrega."
-        : "";
-
-    return `✅ Sí, para ${city} podés pagar cuando recibís tu pedido, en efectivo o por transferencia al delivery.${continuation}`;
-  }
-
-  return `📍 Para ${city} el envío se realiza por transportadora y no contamos con pago contra entrega.
-
-💳 Para este destino el pago es anticipado por transferencia.
-📎 Después del pago, enviame la foto o PDF del comprobante para confirmar el pedido.`;
+  return "";
 }
 
 function isPaymentInformationQuestion(text: string): boolean {
@@ -2436,16 +2239,7 @@ function isDeliveryCostQuestion(text: string): boolean {
 }
 
 function buildDeliveryCostResponse(state: ConversationState): string {
-  const city = clean(state.order.city);
-  if (!city) {
-    return "🚚 Para confirmarte el costo del envío, decime primero tu ciudad.";
-  }
-
-  if (state.coverage === true) {
-    return `🚚 El delivery a ${city} es GRATIS 😊\nPagás solamente el producto cuando lo recibís.`;
-  }
-
-  return `🚚 Hasta ${city} enviamos por transportadora.\n\nEl costo de la encomienda lo define la transportadora según el destino y no está incluido en el precio del producto.\n\nPara este tipo de envío trabajamos con pago anticipado.`;
+  return "";
 }
 
 function extractExplicitKnownCityFromSentence(text: string, parsed: ParsedTraining): string {
@@ -3254,10 +3048,7 @@ function isConfirmedDeliveryPreference(text: string): boolean {
 }
 
 function buildDeliveryTimingQuestionResponse(text: string, order: OrderData): string {
-  const n = normalize(text);
-  const requested = /\bmanana|mañana\b/.test(n) ? "mañana" : /\bhoy\b/.test(n) ? "hoy" : "la fecha consultada";
-  const product = clean(order.product) ? ` de ${order.product}` : "";
-  return `🚚 No podemos asegurar una hora exacta porque depende de la ruta del delivery. Tu pedido${product} se coordina según disponibilidad y el delivery te contacta antes de llegar.\n\n¿Querés que anote como preferencia de entrega para ${requested}?`;
+  return "";
 }
 
 function extractOrderObservation(text: string): Partial<OrderData> {
@@ -4220,38 +4011,7 @@ function isShortAcknowledgement(text: string) {
 }
 
 function buildDeterministicAcknowledgementResponse(text: string, state: ConversationState) {
-  // V116: deshabilitado. Saludos y acuses los redacta Gemini.
   return "";
-  /*
-  if (!isShortAcknowledgement(text)) return "";
-
-  const n = normalize(text);
-  const isThanks = /\b(gracias|muchas gracias|🙏)\b/.test(n) || clean(text) === "🙏";
-  const friendlyLead = isThanks
-    ? "¡Con mucho gusto! 😊"
-    : "¡Perfecto! 😊";
-
-  if (state.step === "pedido_confirmado") {
-    return isThanks
-      ? "¡Con mucho gusto! 😊 Gracias por tu compra. Tu pedido ya quedó agendado y estaremos coordinando la entrega. 🚚📦"
-      : "¡Perfecto! 😊 Tu pedido ya quedó confirmado y agendado. 🚚📦";
-  }
-
-  let continuation = "";
-  if (!state.order.product) {
-    continuation = "¿Qué producto te interesa?";
-  } else if (!state.order.city) {
-    continuation = "📍 Para continuar, ¿para qué ciudad sería el envío?";
-  } else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) {
-    continuation = "¿Cuántas unidades querés llevar?";
-  } else if (!state.order.customer_name) {
-    continuation = "Para completar el pedido, pasame tu nombre y apellido.";
-  } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
-    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
-  }
-
-  return `${friendlyLead}${continuation ? `\n\n${continuation}` : ""}`;
-  */
 }
 
 function isConversationClosing(text: string) {
@@ -4282,89 +4042,12 @@ function isCatalogRequest(text: string) {
 }
 
 function buildCatalogResponse(parsed: ParsedTraining) {
-  const products = (parsed.products || []).filter((p) => clean(p.canonical || p.product));
-
-  const productLines = products.slice(0, 20).map((product) => {
-    const offers = productOffersText(product);
-    return `📦 *${product.canonical || product.product}*${offers ? `\n${offers}` : ""}`;
-  });
-
-  const catalogLink = clean(parsed.catalogUrl);
-  const header = "😊 ¡Claro! Este es nuestro catálogo disponible:";
-  const body = productLines.length
-    ? productLines.join("\n\n")
-    : "Por el momento no hay productos cargados en el catálogo.";
-  const linkBlock = catalogLink ? `\n\n🔗 Catálogo completo: ${catalogLink}` : "";
-  const closing = products.length > 20
-    ? "\n\nDecime qué producto te interesa y te paso su promoción 😊"
-    : "\n\nDecime cuál te interesa y te ayudo con la compra 😊";
-
-  return `${header}\n\n${body}${linkBlock}${closing}`;
+  return "";
 }
 
 
 function deterministicPostSaleResponse(text: string, order: OrderData, parsed: ParsedTraining) {
-  // V116: deshabilitado. Postventa visible siempre generada por Gemini.
   return "";
-  /*
-  const n = normalize(text);
-
-  const hasFiscalData =
-    /\b(ruc|razon social|razón social|cedula|cédula|ci)\b/.test(n) && /\d{5,}/.test(text);
-
-  if (hasFiscalData) {
-    return `✅ Perfecto, recibimos tus datos para la factura legal 😊\n📎 Los dejamos anotados para emitirla con tu pedido.`;
-  }
-
-  if (/\b(factura|boleta|ruc|razon social|razón social|cedula|cédula)\b/.test(n)) {
-    return `✅ Sí, contamos con FACTURA LEGAL 😊\n📎 Pasame tu RUC y Razón Social, o tu número de Cédula, y te la emitimos sin problema.`;
-  }
-
-  const asksBankDataDirectly =
-    /\b(datos bancarios|datos para transferir|datos para pagar|datos de transferencia|numero de cuenta|número de cuenta|cuenta bancaria|pasame los datos|dame los datos|cual es el alias|cual es la cuenta)\b/.test(n);
-
-  if (asksBankDataDirectly) {
-    return `💵 ¡Claro! Estos son los datos para transferir:\n\n${bankDataText(parsed)}\n\n📎 Cuando hagas la transferencia, pasame el comprobante así queda todo registrado 😊`;
-  }
-
-  const asksFreeDelivery =
-    /\b(delivery|deli?very|drlivery|envio|envío)\b[\s\S]{0,25}\b(gratis|grati|gratuito|grayis)\b/.test(n) ||
-    /\b(gratis|grati|gratuito|grayis)\b[\s\S]{0,25}\b(delivery|deli?very|drlivery|envio|envío)\b/.test(n);
-
-  if (asksFreeDelivery) {
-    if (hasCoverage(order.city || "", parsed)) {
-      return `✅ Sí, el envío a ${order.city || "tu ciudad"} es GRATIS y pagás al recibir. 🚚😊`;
-    }
-    return `🚚 Hasta ${order.city || "tu zona"} enviamos por transportadora; el costo se coordina según la agencia y el destino.`;
-  }
-
-  if (/\b(cuando|cuándo|llega|llego|llegaria|llegaría|entrega|delivery|envio|envío|demora|tarda|horario|hora|seguimiento|estado)\b/.test(n)) {
-    const product = order.product ? ` de ${order.product}` : "";
-    return `🚚 Tu pedido${product} ya quedó confirmado y agendado para la próxima ronda de envíos. El delivery te confirma cuando llegue a tu zona. 😊`;
-  }
-
-  if (/\b(pagar|pago|efectivo|transferencia|forma de pago|metodo de pago|método de pago)\b/.test(n)) {
-    if (hasCoverage(order.city || "", parsed)) {
-      return `💵 Podés pagar en EFECTIVO o por TRANSFERENCIA AL DELIVERY cuando recibas tu producto. Como te quede más cómodo 😊🚚`;
-    }
-
-    return `💵 Para tu zona el pago es anticipado por transferencia. Te paso los datos:\n\n${bankDataText(parsed)}`;
-  }
-
-  if (/\b(cambiar|cambio|direccion|dirección|ubicacion|ubicación|telefono|teléfono|celular|numero|número)\b/.test(n)) {
-    return `✅ Sin problema 😊 Pasame el dato nuevo que querés actualizar: dirección exacta/ubicación o número de celular.`;
-  }
-
-  if (/\b(cancelar|anular|cancela|cancele|ya no quiero)\b/.test(n)) {
-    return `Entiendo. Para cancelar el pedido, confirmame por favor escribiendo: CANCELAR PEDIDO.`;
-  }
-
-  if (/\b(garantia|garantía|cambio|devolucion|devolución|defecto|fallado|falla)\b/.test(n)) {
-    return `✅ Contamos con atención postventa 😊 Si el producto llega con algún inconveniente, escribinos con foto/video del producto y revisamos el caso.`;
-  }
-
-  return "";
-  */
 }
 
 function buildPostSaleSystemPrompt(parsed: ParsedTraining, order: OrderData) {
@@ -4667,8 +4350,7 @@ function isAddressOptionalByTraining(
 }
 
 function addressPendingMessage(state: ConversationState): string {
-  if (!state.addressOptional || clean(state.order.address)) return "";
-  return "📍 Ubicación: pendiente; puede enviarla más tarde o pasarla directamente al delivery.";
+  return "";
 }
 
 function nextStep(order: OrderData, coverage: boolean | null, addressOptional = false) {
@@ -5658,30 +5340,7 @@ async function transcribeAudioSmart({
 
 
 function buildDeterministicMissingDataSummary(state: ConversationState) {
-  const o = state.order;
-  const lines = [
-    `📦 Producto: ${clean(o.product) || "—"}`,
-    `🔢 Cantidad: ${o.quantity || "—"}`,
-    `📍 Ciudad: ${clean(o.city) || "—"}`,
-    `📞 Celular: ${clean(o.phone) || "—"}`,
-  ];
-
-  const missing: string[] = [];
-
-  if (!clean(o.customer_name)) missing.push("nombre y apellido");
-  if (!state.addressOptional && (!clean(o.address) || isOnlyPurchaseWithSize(o.address))) missing.push("calle o dirección exacta");
-
-  // El teléfono nunca se pide: se toma del WhatsApp.
-  if (!clean(o.phone)) {
-    o.phone = senderPhoneFallback("");
-  }
-
-  if (!missing.length) return "";
-
-  return `${lines.join("\n")}
-
-Solo me falta:
-${missing.map((item) => `✅ ${item}`).join("\n")}`;
+  return "";
 }
 
 function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraining) {
@@ -5758,209 +5417,23 @@ Nuestro equipo se pondrá en contacto para coordinar la entrega. 📲
 }
 
 function deterministicAfterCityCoverageMessage(state: ConversationState) {
-  const o = state.order;
-  if (!o.product || !o.city) return "";
-
-  // Los packs fijos usan un mensaje más completo en otra función.
-  if (o.locked_offer?.fixed_quantity) return "";
-
-  if (state.coverage === false) {
-    if (!o.quantity) {
-      return `📍 ${o.city} está fuera de nuestra zona de contra-entrega.
-
-😊 Igual podemos enviarte por transportadora 🚚
-💳 Para este destino el pago es anticipado.
-
-¿Cuántas unidades querés llevar?`;
-    }
-
-    return `📍 ${o.city} está fuera de nuestra zona de contra-entrega.
-
-😊 Igual podemos enviarte por transportadora 🚚
-💳 Para este destino el pago es anticipado.
-
-Para continuar, realizá la transferencia y enviame el comprobante.
-
-Si todavía no me pasaste tu nombre completo, enviámelo junto con el comprobante.`;
-  }
-
-  if (!o.quantity) {
-    const offers = state.productInfo ? productOffersText(state.productInfo) : "";
-    return `✅ Tenemos envío GRATIS contra entrega en ${o.city} 🚚
-
-Pagás solamente el producto cuando lo recibís 😊
-
-${offers ? `🔥 Promociones disponibles:
-${offers}
-
-` : ""}¿Cuántas unidades querés llevar?`;
-  }
-
   return "";
 }
 
 function deterministicAfterCityFixedOfferMessage(state: ConversationState, parsed: ParsedTraining) {
-  const o = state.order;
-  if (!o.product || !o.city || !o.locked_offer?.fixed_quantity) return "";
-
-  const total = o.locked_offer.total;
-
-  if (state.coverage === false) {
-    return `✅ Perfecto 😊
-
-📦 Promo confirmada:
-${o.locked_offer.quantity} unidades de ${o.product}
-💰 Total: ${formatGs(total)} Gs
-
-📍 ${o.city} no cuenta con contra-entrega, pero hacemos envío por transportadora 🚚
-
-💵 Para avanzar, realizá la transferencia y enviame el comprobante.
-
-📞 Ya tengo tu número de WhatsApp.
-👤 Si todavía no me pasaste tu nombre completo, enviámelo también para registrar el pedido.
-
-${bankDataText(parsed)} 📲`;
-  }
-
-  const fixedRequiredLines = [
-    !clean(o.customer_name) ? "✅ nombre y apellido" : "",
-    !state.addressOptional && !clean(o.address) ? "✅ dirección exacta o ubicación" : "",
-  ].filter(Boolean);
-
-  const fixedOptionalLocation =
-    state.addressOptional && !clean(o.address)
-      ? "\n\n📍 La ubicación es opcional; podés enviarla después o pasarla directamente al delivery."
-      : "";
-
-  return `✅ Perfecto 😊
-
-📦 Promo confirmada:
-${o.locked_offer.quantity} unidades de ${o.product}
-💰 Total: ${formatGs(total)} Gs
-
-📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚${observationBlock(o)}
-
-${fixedRequiredLines.length ? `Ahora solo necesito:
-${fixedRequiredLines.join("\n")}` : "Ya tengo los datos obligatorios para registrar el pedido."}${fixedOptionalLocation}
-📞 Ya tengo tu número de WhatsApp: ${o.phone || senderPhoneFallback("")}`;
+  return "";
 }
 
 function deterministicAfterQuantityMessage(state: ConversationState, parsed: ParsedTraining) {
-  const o = state.order;
-  if (!o.product || !o.city || !o.quantity) return "";
-
-  if (state.step !== "collecting_name" && state.step !== "collecting_address" && state.step !== "collecting_phone") {
-    return "";
-  }
-
-  if (state.missing.includes("ciudad")) return "";
-
-  const promoLine =
-    o.locked_offer && o.locked_offer.quantity === o.quantity
-      ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(state.total)} Gs`
-      : `💰 Total: ${formatGs(state.total)} Gs`;
-
-  if (state.coverage === false) {
-    return `🎉 ¡Perfecto! Queda seleccionado:
-
-📦 ${o.product}
-🔢 Cantidad: ${o.quantity}
-${promoLine}
-📍 Ciudad: ${o.city}${observationBlock(o)}
-
-🚚 Para tu zona hacemos envío por transportadora con pago anticipado.
-
-💵 Para avanzar, realizá la transferencia y enviame el comprobante junto con:
-✅ nombre completo
-📞 Ya tengo tu número de WhatsApp
-
-${bankDataText(parsed)} 📲`;
-  }
-
-  const optionalLocationNote =
-    state.addressOptional && !clean(o.address)
-      ? "\n\n📍 La ubicación es opcional; podés enviarla después o pasarla directamente al delivery."
-      : "";
-
-  const requiredLines = [
-    !clean(o.customer_name) ? "✅ nombre y apellido" : "",
-    !state.addressOptional && !clean(o.address) ? "✅ dirección exacta o ubicación" : "",
-  ].filter(Boolean);
-
-  return `🎉 ¡Excelente elección! Queda seleccionado:
-
-📦 ${o.product}
-🔢 Cantidad: ${o.quantity}
-${promoLine}
-📍 ${o.city} tiene envío GRATIS y pagás al recibir 🚚
-
-${requiredLines.length ? `Ahora solo necesito:
-${requiredLines.join("\n")}` : "Ya tengo los datos obligatorios para registrar el pedido."}${optionalLocationNote}
-📞 Ya tengo tu número de WhatsApp: ${o.phone || senderPhoneFallback("")}`;
+  return "";
 }
 
 function deterministicWaitingPaymentProofMessage(state: ConversationState, parsed: ParsedTraining) {
-  const o = state.order;
-  if (state.coverage !== false) return "";
-  if (state.step !== "waiting_payment_proof") return "";
-  if (!o.product || !o.city || !o.quantity || !o.phone) return "";
-
-  if (o.payment_proof_received && !o.payment_proof_verified) {
-    return paymentProofVerificationMessage(o, state.total);
-  }
-
-  return `✅ Perfecto, ya tengo tus datos 😊
-
-📦 Producto: ${o.product}
-🔢 Cantidad: ${o.quantity}
-💰 Total: ${formatGs(state.total)} Gs
-📍 Ciudad: ${o.city}
-👤 Cliente: ${o.customer_name || "pendiente"}
-📞 Celular: ${o.phone}${observationBlock(o)}
-
-🚚 Para tu zona hacemos envío por transportadora con pago anticipado.
-
-📎 Para CONFIRMAR tu pedido necesito que me envíes la foto/PDF del comprobante de transferencia.
-
-${bankDataText(parsed)} 📲
-
-Cuando me pases el comprobante, validaré el destinatario y el monto. Si todo coincide, el pedido se confirma automáticamente 😊`;
+  return "";
 }
 
 function deterministicObservationAckMessage(state: ConversationState, parsed: ParsedTraining, observationPatch?: Partial<OrderData> | null) {
-  if (!hasOrderObservation(observationPatch || {})) return "";
-
-  const o = state.order;
-  const obs = observationBlock(o);
-  const intro = `Perfecto 😊 dejé anotada esa observación para tu pedido.${obs}`;
-
-  if (state.coverage === false && state.step === "waiting_payment_proof") {
-    const proofMsg = deterministicWaitingPaymentProofMessage(state, parsed);
-    if (proofMsg) return proofMsg;
-  }
-
-  if (!o.product) {
-    return `${intro}\n\nPara ayudarte bien, decime qué producto te interesa 😊`;
-  }
-
-  if (!o.city) {
-    return `${intro}\n\n📍 ¿Para qué ciudad sería el envío? 😊`;
-  }
-
-  if (!o.quantity) {
-    return `${intro}\n\n¿Cuántas unidades querés llevar? 😊`;
-  }
-
-  if (state.coverage === false && !o.payment_proof_received) {
-    return `${intro}\n\n🚚 Para tu zona hacemos envío por transportadora con pago anticipado.\n\nPara avanzar, enviame por favor:\n✅ nombre completo\n📞 Ya tengo tu número de WhatsApp\n✅ comprobante de transferencia\n\n${bankDataText(parsed)} 📲`;
-  }
-
-  if (state.missing.length) {
-    const deterministicSummary = buildDeterministicMissingDataSummary(state);
-    if (deterministicSummary) return deterministicSummary;
-  }
-
-  return `${intro}\n\n✅ Tengo todos los datos del pedido. Nuestro equipo tendrá en cuenta esa observación para coordinar 😊`;
+  return "";
 }
 
 function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null, copyAlreadySent = false) {
@@ -6121,12 +5594,7 @@ REGLAS DURAS:
 }
 
 function buildFullProductCopyResponse(state: ConversationState, _templatePricing?: TemplatePricing | null) {
-  const copy = clean(state.productInfo?.salesCopy || "");
-  if (!copy) return "";
-
-  // V72: el copy comercial se entrega limpio. La pregunta de ciudad se envía
-  // como un segundo mensaje desde webhook para que la conversación sea más natural.
-  return copy;
+  return "";
 }
 
 function buildFriendlyCityQuestion() {
@@ -6139,115 +5607,11 @@ function buildPriceOnlyResponse(
   state: ConversationState,
   templatePricing?: TemplatePricing | null
 ) {
-  const productInfo = state.productInfo;
-  if (!productInfo) return "";
-
-  const priceText = productPriceText(
-    productInfo,
-    state.order.locked_offer,
-    templatePricing
-  );
-
-  if (!priceText) return "";
-
-  let continuation = "";
-
-  if (!state.order.city) {
-    continuation = "📍 ¿Para qué ciudad sería el envío? 😊";
-  } else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) {
-    continuation = "¿Cuántas unidades querés llevar? 😊";
-  } else if (!state.order.customer_name) {
-    continuation = "Para continuar, pasame tu nombre y apellido. 😊";
-  } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
-    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega. 😊";
-  } else if (!state.order.phone) {
-    continuation = "Por último, pasame un número de celular para coordinar la entrega. 😊";
-  }
-
-  return `🔥 Precio de hoy:
-${priceText}${continuation ? `
-
-${continuation}` : ""}`;
+  return "";
 }
 
 function buildFallbackResponse(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
-  const o = state.order;
-
-  if (!o.product) {
-    return `😊 Dale, te ayudo.
-
-Tenemos estas opciones disponibles:
-
-${productsSummary(parsed)}
-
-¿Cuál te interesa?`;
-  }
-
-  if (!o.city) {
-    const copy = state.productInfo?.salesCopy;
-    const priceLine = productPriceText(state.productInfo, o.locked_offer, templatePricing);
-    return copy
-      ? `${copy.trim()}\n\n📍 ¿Para qué ciudad sería el envío? 😊`
-      : `¡Excelente elección! 🔥
-
-${state.productInfo?.canonical || o.product}
-${priceLine}
-
-📍 ¿Para qué ciudad sería el envío? 😊`;
-  }
-
-  const missingSummary = buildDeterministicMissingDataSummary(state);
-  if (missingSummary && o.product && o.city && o.quantity) {
-    return missingSummary;
-  }
-
-  if (!o.quantity) {
-    const templateActive = hasActiveTemplatePricing(templatePricing, o);
-
-    const qtyQuestion = templateActive
-      ? `¿Cuál de estas opciones de la plantilla querés confirmar?\n${templatePricingSummary(templatePricing)} 😊`
-      : o.locked_offer && o.locked_offer.quantity > 1
-        ? `¿Querés 1 unidad por ${formatGs(getTemplatePrice1(templatePricing || null, o.product) || state.productInfo?.price1 || 0)} Gs o la promo de ${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs? 😊`
-        : "¿Cuántas unidades querés llevar? 😊";
-
-    if (state.coverage === false) {
-      return `ℹ️ ${o.city} no entra en nuestra zona de contra-entrega, pero sí podemos enviarte por transportadora 🚚
-
-Antes de pasarte el total y los datos de pago, decime: ${qtyQuestion}`;
-    }
-
-    return `✅ Perfecto, ${o.city} tiene envío gratis contra-entrega 🚚
-
-${qtyQuestion}`;
-  }
-
-  if (state.missing.length) {
-    const promoLine =
-      o.locked_offer && o.locked_offer.quantity === o.quantity
-        ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(state.total)} Gs\n`
-        : "";
-
-    return `🎉 ¡Perfecto! Queda avanzado tu pedido 😊
-
-📦 Producto: ${o.product}
-${promoLine}🔢 Cantidad: ${o.quantity}
-💰 Total: ${formatGs(state.total)} Gs
-📍 Ciudad: ${o.city}${observationBlock(o)}
-
-Para agendarlo, me falta:
-✅ ${state.missing.join("\n✅ ")} 📲`;
-  }
-
-  return `✅ PEDIDO CONFIRMADO
-
-📦 Producto: ${o.product}
-🔢 Cantidad: ${o.quantity}
-💰 Total: ${formatGs(state.total)} Gs
-👤 Cliente: ${o.customer_name}
-📍 Ciudad: ${o.city}
-📞 Teléfono: ${o.phone}${o.address ? `\n🏠 Dirección: ${o.address}` : ""}${observationBlock(o)}
-
-¡Gracias por tu compra! 💜`;
+  return "";
 }
 
 function postProcessResponse(resp: string) {
@@ -6619,7 +5983,7 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    if (activeMultiCart.length >= 2) {
+    if (false && activeMultiCart.length >= 2) {
       let commonOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
       const multiOrderId = clean(context?.multi_order_id) || makeOrderId(fromNumber);
       activeMultiCart = applyQuantitiesToMultiCart(texto, activeMultiCart, parsed);
@@ -7177,7 +6541,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    if (cityConfirmationDeclined) {
+    if (false && cityConfirmationDeclined) {
       return res.json({
         response: `😊 Entendido, ¿cuál sería tu ciudad entonces?`,
         context: {
@@ -7211,7 +6575,7 @@ export default async function handler(req: any, res: any) {
     // "transportadora con pago anticipado".
     const needsCityConfirmation = false;
 
-    if (needsCityConfirmation) {
+    if (false && needsCityConfirmation) {
       // Bloque conservado únicamente como referencia defensiva; no se ejecuta.
       return res.json({
         response: "😊 ¿De qué ciudad sos? Así te confirmo la modalidad de entrega. 📍",
@@ -7231,7 +6595,7 @@ export default async function handler(req: any, res: any) {
       explicitQty > 0 ||
       /\b\d+\s*x\s*1\b/i.test(normalize(texto));
 
-    if (isCityStep && !effectiveDetectedCity && messageIsPurchaseOrQuantity) {
+    if (false && isCityStep && !effectiveDetectedCity && messageIsPurchaseOrQuantity) {
       return res.json({
         response: buildFriendlyCityQuestion(),
         context: {
@@ -7898,7 +7262,7 @@ export default async function handler(req: any, res: any) {
     // antes de pedir nombre, dirección o cualquier otro dato.
     if (!confirm && cityConfirmedNow && finalState.coverage === false) {
       const mandatoryOutsideCoverageResponse = deterministicAfterCityCoverageMessage(finalState);
-      if (mandatoryOutsideCoverageResponse) {
+      if (false && mandatoryOutsideCoverageResponse) {
         if (orderData.product) {
           await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
         }
@@ -8447,6 +7811,9 @@ INTENCIÓN TÉCNICA DETECTADA:
 Respondé ahora como la asistente configurada en el entrenamiento.
 Seguí la instrucción obligatoria y no inventes ciudad ni datos.
 Toda respuesta visible normal debe ser escrita por vos usando los entrenamientos activos.
+No existe ninguna respuesta comercial de respaldo en el backend.
+Toda pregunta, explicación, venta, objeción, continuidad, identidad, ciudad, cantidad, nombre, dirección, factura, precio, entrega, cobertura y postventa debe salir únicamente de los entrenamientos activos.
+El backend solo entrega datos técnicos válidos, estados internos, validaciones, comprobantes y el cierre definitivo.
 Las únicas salidas visibles fijas permitidas del backend son:
 1. cierre definitivo del pedido;
 2. procesamiento, validación y resultado de comprobantes;
@@ -8547,7 +7914,7 @@ No repitas la misma pregunta si el cliente ya respondió el dato o si acaba de h
 
     return res.json({
       response: postProcessResponse(aiResponse),
-      follow_up_response: followUpResponse || undefined,
+      follow_up_response: undefined,
       media_urls: imagesToSend,
       context: {
         ...(context || {}),
