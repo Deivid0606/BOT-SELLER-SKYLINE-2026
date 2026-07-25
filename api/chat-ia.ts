@@ -1,6 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V137: al registrar o corregir una ciudad, informa inmediatamente cobertura, pago, horario y plazo calculado antes de pedir el siguiente dato.
+ * V136: prioriza consultas de entrega como “cuándo me llega”; responde con ciudad, día, hora, corte y domingo antes de pedir el siguiente dato.
  * V134: usa el entrenamiento activo como conocimiento; calcula día/hora de Paraguay, corte, domingos y siguiente día hábil antes de pedir el próximo dato.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
  * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
@@ -6346,7 +6348,92 @@ function nextMissingQuestionFromState(state: ConversationState) {
 
 function isDeliveryRelatedQuestion(text: string) {
   const n = normalize(text);
-  return /\b(envio|entrega|delivery|cobertura|cuando llega|cuanto tarda|horario|pago al recibir|como se paga|forma de pago)\b/.test(n);
+  if (!n) return false;
+
+  return (
+    /\b(envio|entrega|delivery|cobertura|horario|despacho|transportadora|encomienda)\b/.test(n) ||
+    /\b(cuando|cuando me|que dia|en que dia|para que dia|a que hora|en que horario)\b[\s\S]{0,30}\b(llega|llegaria|entregan|entregarian|recibo|recibiria|traen|envian|despachan)\b/.test(n) ||
+    /\b(llega|llegaria|entregan|recibo|traen|envian)\b[\s\S]{0,20}\b(hoy|manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo|cuando|que dia)\b/.test(n) ||
+    /\b(cuanto tarda|cuanto demora|tiempo de entrega|plazo de entrega|cuando me llega|cuando llegaria|que dia me llega|cuando recibo)\b/.test(n) ||
+    /\b(pago al recibir|como se paga|forma de pago|puedo pagar al recibir)\b/.test(n)
+  );
+}
+
+
+
+
+function cityRuleFacts(rule: CityRule | null) {
+  if (!rule) return null;
+
+  return {
+    city: rule.canonical,
+    department: rule.department || "",
+    logistics_zone: rule.logisticsZone || "",
+    coverage: rule.covered,
+    modality: rule.modality || "",
+    payment_method: rule.paymentMethod || "",
+    address_optional: Boolean(rule.addressOptional),
+    carrier: rule.carrier || "",
+    shipping_cost: rule.shippingCost || 0,
+  };
+}
+
+function responseIncludesRequiredCityDeliveryFacts(
+  response: string,
+  state: ConversationState
+) {
+  const n = normalize(response);
+  if (!n || !state.order.city || !state.cityRule) return false;
+
+  const hasPayment =
+    !state.cityRule.paymentMethod ||
+    /\b(pagar|pago|recibir|transferencia|efectivo|qr|debito)\b/.test(n);
+
+  const hasDeliveryTiming =
+    !state.deliveryDecision ||
+    /\b(hoy|manana|lunes|martes|miercoles|jueves|viernes|sabado|domingo|24|48|hora|horario|12 30|ruta|entrega|procesa)\b/.test(n);
+
+  const hasModality =
+    !state.cityRule.modality ||
+    /\b(envio|delivery|contra entrega|transportadora|encomienda)\b/.test(n);
+
+  return hasPayment && hasDeliveryTiming && hasModality;
+}
+
+function buildDeliveryConsultationAnswer(state: ConversationState): string {
+  const decision = state.deliveryDecision;
+  const rule = state.cityRule;
+  if (!decision || !state.order.city) return "";
+
+  const facts: string[] = [];
+
+  if (rule?.covered && rule?.modality) {
+    facts.push(naturalizeConfiguredValue(rule.modality));
+  }
+
+  if (rule?.paymentMethod) {
+    const payment = normalize(rule.paymentMethod);
+    if (payment === "al recibir") facts.push("podés pagar al recibir");
+  }
+
+  if (decision.customerFacts?.length) {
+    facts.push(
+      ...decision.customerFacts
+        .map((fact) => clean(fact).replace(/[.]+$/, ""))
+        .filter(Boolean)
+    );
+  }
+
+  if (!facts.length && decision.reason) {
+    facts.push(clean(decision.reason).replace(/[.]+$/, ""));
+  }
+
+  const intro = facts.length
+    ? `Para ${state.order.city}, ${facts.join(". ")}.`
+    : `Para ${state.order.city}, la entrega se coordina según la ruta disponible.`;
+
+  const next = nextMissingQuestionFromState(state);
+  return [intro, next].filter(Boolean).join("\\n\\n");
 }
 
 function isQuantityOnlyAnswer(text: string) {
@@ -6376,6 +6463,13 @@ function buildTrainingFallback(
   const cityJustDetected =
     Boolean(currentCity) &&
     normalize(previousCity) !== normalize(currentCity);
+
+  if (isDeliveryRelatedQuestion(customerMessage)) {
+    const deliveryAnswer = buildDeliveryConsultationAnswer(state);
+    if (deliveryAnswer) {
+      return { response: deliveryAnswer, media_urls };
+    }
+  }
 
   if (isQuantityOnlyAnswer(customerMessage) && state.order.quantity > 0) {
     parts.push(
@@ -6459,6 +6553,12 @@ Tu trabajo es vender de forma natural, amable y segura por WhatsApp. Cuando hay 
 
 REGLA PRINCIPAL:
 El backend ya calculó y validó el estado. Vos NO inventás datos. Vos redactás una respuesta fluida siguiendo la INSTRUCCIÓN OBLIGATORIA.
+
+PRIORIDAD ABSOLUTA:
+- Si la ciudad acaba de registrarse o corregirse, informá en ese mismo turno cobertura, modalidad, forma de pago, horario y plazo o día calculado. No esperes a que el cliente pregunte cuándo llega.
+- Si el cliente pregunta cuándo llega, qué día llega, cuánto tarda, horario, envío, cobertura o forma de pago, respondé primero esa consulta usando el RESULTADO TÉCNICO DE ENTREGA.
+- Después de responder, pedí únicamente el siguiente dato faltante.
+- Nunca ignores una consulta de entrega para repetir solamente la pregunta de nombre, cantidad, ciudad o dirección.
 
 INSTRUCCIÓN OBLIGATORIA:
 ${state.hardInstruction}
@@ -8914,6 +9014,22 @@ export default async function handler(req: any, res: any) {
     }
 
     const copyAlreadySent = wasProductCopyAlreadySent(history, finalState.productInfo);
+    const previousCityForTurn = clean(context?.order_data?.city || "");
+    const cityJustRegisteredOrChanged =
+      Boolean(finalState.order.city) &&
+      normalize(previousCityForTurn) !== normalize(finalState.order.city);
+
+    if (cityJustRegisteredOrChanged && finalState.cityRule) {
+      finalState.hardInstruction = [
+        "La ciudad acaba de registrarse o corregirse.",
+        "Informá inmediatamente la cobertura real, la modalidad de envío y la forma de pago.",
+        "Explicá también el horario y el plazo o día calculado usando el resultado técnico de entrega.",
+        "Incluí el corte de horario y la regla de domingo cuando correspondan.",
+        "No muestres JSON, variables ni etiquetas técnicas.",
+        "Después pedí solamente el siguiente dato faltante.",
+      ].join(" ");
+    }
+
     const system = buildSalesSystemPrompt(parsed, finalState, templatePricing, copyAlreadySent);
 
     const contents = (history || [])
@@ -8930,6 +9046,16 @@ ${texto || "(mensaje sin texto)"}
 
 INTENCIÓN TÉCNICA DETECTADA:
 - Solicita catálogo: ${catalogRequestedNow ? "sí" : "no"}
+- Consulta entrega/horario/cobertura/pago: ${isDeliveryRelatedQuestion(texto) ? "sí" : "no"}
+- Ciudad recién registrada o corregida: ${cityJustRegisteredOrChanged ? "sí" : "no"}
+
+DATOS OBLIGATORIOS CUANDO LA CIUDAD ACABA DE REGISTRARSE:
+- Regla exacta de ciudad: ${JSON.stringify(cityRuleFacts(finalState.cityRule))}
+- Resultado técnico de entrega: ${JSON.stringify(finalState.deliveryDecision)}
+- Siguiente dato faltante: ${finalState.missing[0] || "ninguno"}
+
+Si “Ciudad recién registrada o corregida” es “sí”, no te limites a confirmar cobertura.
+Informá también pago, horario y plazo o día de entrega calculado, y después pedí el siguiente dato faltante.
 
 Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes ciudad ni datos.
 Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas del backend.
@@ -8952,6 +9078,60 @@ Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas de
       });
     } catch (error) {
       console.error("⚠️ Gemini falló; se usa respuesta determinística:", error);
+    }
+
+    if (
+      aiResponse &&
+      aiResponse !== "__GEMINI_QUOTA_EXCEEDED__" &&
+      cityJustRegisteredOrChanged &&
+      !responseIncludesRequiredCityDeliveryFacts(aiResponse, finalState)
+    ) {
+      try {
+        const correctionPayload = `
+La respuesta anterior quedó incompleta porque la ciudad acaba de registrarse.
+
+Mensaje del cliente:
+${texto}
+
+Debés responder nuevamente e incluir obligatoriamente:
+1. cobertura y modalidad;
+2. forma de pago;
+3. horario de entrega;
+4. plazo o día calculado;
+5. corte y domingo cuando correspondan;
+6. solamente después, el siguiente dato faltante.
+
+Regla de ciudad:
+${JSON.stringify(cityRuleFacts(finalState.cityRule))}
+
+Resultado técnico de entrega:
+${JSON.stringify(finalState.deliveryDecision)}
+
+Siguiente dato faltante:
+${finalState.missing[0] || "ninguno"}
+
+Redactá una sola respuesta natural de WhatsApp. No muestres etiquetas técnicas ni JSON.
+`.trim();
+
+        const corrected = await callGemini({
+          apiKey,
+          model,
+          system,
+          contents: [
+            ...contents,
+            { role: "model", parts: [{ text: aiResponse }] },
+            { role: "user", parts: [{ text: correctionPayload }] },
+          ],
+          temperature: Math.min(iaConfig.temperature ?? 0.55, 0.4),
+          maxTokens: Math.max(iaConfig.max_tokens ?? 0, 2048),
+        });
+
+        if (corrected && corrected !== "__GEMINI_QUOTA_EXCEEDED__") {
+          aiResponse = corrected;
+        }
+      } catch (error) {
+        console.error("⚠️ No se pudo completar la respuesta de ciudad con Gemini:", error);
+      }
     }
 
     if (!aiResponse || aiResponse === "__GEMINI_QUOTA_EXCEEDED__") {
@@ -9018,6 +9198,8 @@ Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas de
     if (
       explicitProductInterestNow &&
       !isPriceQuery(texto) &&
+      !isDeliveryRelatedQuestion(texto) &&
+      !cityJustRegisteredOrChanged &&
       !copyAlreadySentInConversation &&
       clean(finalState.productInfo?.salesCopy || "") &&
       !currentMessageIsQuestionBeforeAI
