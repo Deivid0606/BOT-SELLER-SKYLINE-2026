@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V130: reconoce RUC paraguayo con guion y dígito verificador, procesa ubicación GPS antes de volver a pedir ciudad, conserva la ciudad ya registrada y fuerza el cierre técnico cuando el pedido queda completo.
  * V129: corrige cambios explícitos de ciudad con km/ruta, separa ciudad y referencia, clasifica Central técnicamente y permite reutilizar de forma real los datos del pedido anterior en una nueva compra.
  * V128: elimina las respuestas comerciales activas del backend. Gemini redacta toda conversación normal desde el entrenamiento; se conservan intactos cierres, comprobantes, validaciones y estados.
  * V127: la IA redacta toda la conversación normal; el backend conserva estados, validaciones, comprobantes y cierres fijos. Identidad y tienda salen del entrenamiento activo.
@@ -61,7 +62,7 @@ import { createClient } from "@supabase/supabase-js";
 
 
 /*
-V128 — ARQUITECTURA DEFINITIVA: SOLO IA CONVERSA
+V130 — ARQUITECTURA DEFINITIVA: SOLO IA CONVERSA; BACKEND GUARDA RUC, GPS Y CIERRA
 
 BACKEND:
 - detecta y valida producto, ciudad, cantidad, nombre, cobertura y pago;
@@ -2155,6 +2156,32 @@ function isDeliveryTimingMessage(text: string): boolean {
   );
 }
 
+
+function normalizeParaguayanRuc(value: string): string {
+  const match = clean(value).match(/\b(\d{5,9})\s*-\s*(\d)\b/);
+  return match ? `${match[1]}-${match[2]}` : "";
+}
+
+function extractParaguayanRuc(text: string): string {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw) return "";
+
+  const ruc = normalizeParaguayanRuc(raw);
+  if (!ruc) return "";
+
+  // El formato con guion y dígito verificador se acepta como RUC cuando el
+  // propio mensaje habla de factura/RUC o cuando el dato viene rotulado.
+  const invoiceContext =
+    /\b(ruc|factura|facturar|facturacion|facturación|razon social|razón social|datos fiscales|credito fiscal|crédito fiscal)\b/.test(n);
+
+  return invoiceContext ? ruc : "";
+}
+
+function hasParaguayanRuc(text: string): boolean {
+  return !!extractParaguayanRuc(text);
+}
+
 function isInvoiceQuestion(text: string): boolean {
   const raw = clean(text);
   const n = normalize(raw);
@@ -2164,6 +2191,10 @@ function isInvoiceQuestion(text: string): boolean {
     /\b(factura|factura legal|facturar|facturacion|facturación|credito fiscal|crédito fiscal)\b/.test(n);
 
   if (!mentionsInvoice) return false;
+
+  // V130: "Quiero factura 5347454-6" contiene un RUC real. No debe tratarse
+  // como una consulta vacía ni pedir nuevamente si es RUC o cédula.
+  if (hasParaguayanRuc(raw)) return false;
 
   // Una pregunta o consulta general sobre factura NO es un dato fiscal.
   return (
@@ -2179,6 +2210,7 @@ function isInvoiceOrTaxDataMessage(text: string): boolean {
   if (!raw || !n) return false;
 
   return (
+    hasParaguayanRuc(raw) ||
     /\b(factura|factura legal|con factura|sin factura|facturar|facturacion|facturación|comprobante legal|credito fiscal|crédito fiscal)\b/.test(n) ||
     /\b(ruc|razon social|razón social|nombre de factura|datos para factura|datos de facturacion|datos de facturación)\b/.test(n) ||
     /\bfactura\s+(?:a|al)\s+nombre\s+de\b/.test(n) ||
@@ -3209,12 +3241,16 @@ function extractOrderObservation(text: string): Partial<OrderData> {
   // V97: una PREGUNTA sobre factura se responde, pero no se guarda como observación.
   // Solo se conservan datos fiscales reales enviados por el cliente.
   const invoiceQuestion = isInvoiceQuestion(raw);
+  const detectedRuc = extractParaguayanRuc(raw);
   const hasExplicitFiscalData =
+    !!detectedRuc ||
     isStandaloneTaxOrIdentityData(raw) ||
     (/\b(ruc|razon social|razón social|cedula|cédula|ci)\b/.test(n) && /\d{5,}/.test(raw)) ||
     /^(?:razon social|razón social|nombre para factura)\s*[:#-]\s*.+$/i.test(raw);
 
-  if (!invoiceQuestion && hasExplicitFiscalData) {
+  if (detectedRuc) {
+    obs.observation = mergeUniqueText(obs.observation, `Factura legal — RUC: ${detectedRuc}`);
+  } else if (!invoiceQuestion && hasExplicitFiscalData) {
     obs.observation = mergeUniqueText(obs.observation, raw);
   }
 
@@ -5645,6 +5681,11 @@ CÓMO USAR LOS ENTRENAMIENTOS DEL USUARIO:
 - El backend decide únicamente los datos técnicos: producto detectado, cantidad registrada, ciudad, cobertura, total, datos faltantes y si el pedido puede confirmarse.
 - Nunca reemplaces un dato técnico válido por una suposición del entrenamiento.
 - Nunca afirmes que una ciudad, cantidad, nombre o dirección quedó anotada si ese valor no aparece realmente en ESTADO DEL PEDIDO.
+- Cuando el cliente escriba “quiero factura” junto con un número de 5 a 9 dígitos, guion y un dígito verificador, por ejemplo 5347454-6 o 5347454 - 6, interpretalo como RUC paraguayo y no preguntes si es RUC o cédula.
+- Normalizá los espacios del RUC: “5347454 - 6” se expresa como “5347454-6”.
+- Una ubicación GPS recibida nunca borra ni reinicia la ciudad, producto, cantidad o nombre ya registrados.
+- Si el estado técnico ya contiene ciudad, no vuelvas a pedirla al recibir coordenadas.
+- No simules un cierre comercial. Cuando el pedido quede completo, el backend enviará el cierre definitivo.
 - Si el cliente corrige una ciudad, usá exclusivamente la ciudad técnica actual y no mezcles la ciudad anterior con la referencia.
 - Si “Pertenece al Departamento Central” dice “sí”, aplicá la regla de Central y nunca el plazo general de 24 a 48 horas.
 - No uses la lista completa de cobertura para redactar: usá el valor de cobertura ya calculado en ESTADO DEL PEDIDO.
@@ -6792,11 +6833,27 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    // V130: una ubicación GPS se procesa antes de cualquier rama que pueda
+    // volver a pedir ciudad. Si la ciudad ya estaba registrada se conserva; si
+    // faltó en el objeto actual, se recupera del historial reciente.
+    const coordinateLikeMessage =
+      /^\s*(?:📍\s*)?(?:ubicacion|ubicación)?\s*:?-?\s*-?\d{1,3}\.\d+\s*,\s*-?\d{1,3}\.\d+\s*$/i.test(texto);
+
+    const historyRecoveredCity =
+      !oldOrder.city && coordinateLikeMessage
+        ? recoverRecentCityFromHistory(history, parsed)
+        : "";
+
+    if (!effectiveDetectedCity && historyRecoveredCity) {
+      effectiveDetectedCity = historyRecoveredCity;
+    }
+
     // Un texto que claramente no es ciudad recibe nuevamente la pregunta,
     // pero nunca se marca como "fuera de cobertura".
     if (
       isCityStep &&
       !effectiveDetectedCity &&
+      !coordinateLikeMessage &&
       !isQuestionLikeMessage(texto) &&
       !isShortAcknowledgement(texto)
     ) {
@@ -6817,16 +6874,8 @@ export default async function handler(req: any, res: any) {
     const phone = extractPhone(texto);
     const qty = explicitQty;
 
-    const coordinateLikeMessage =
-      /^\s*(?:📍\s*)?(?:ubicacion|ubicación)?\s*:?-?\s*-?\d{1,3}\.\d+\s*,\s*-?\d{1,3}\.\d+\s*$/i.test(texto);
-
-    const historyRecoveredCity =
-      !oldOrder.city && coordinateLikeMessage
-        ? recoverRecentCityFromHistory(history, parsed)
-        : "";
-
-    if (!effectiveDetectedCity && historyRecoveredCity) {
-      effectiveDetectedCity = historyRecoveredCity;
+    if (coordinateLikeMessage && oldOrder.city && !effectiveDetectedCity) {
+      effectiveDetectedCity = canonicalizeStoredCity(oldOrder.city, parsed);
     }
 
     // V98: cada extractor está aislado. Un dato difícil de interpretar no debe
