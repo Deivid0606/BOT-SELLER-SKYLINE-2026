@@ -1957,59 +1957,6 @@ function hasCoverage(city: string, parsed: ParsedTraining) {
   return configured ? configured.covered !== false : false;
 }
 
-
-function currentParaguayDeliveryContext() {
-  const timeZone = "America/Asuncion";
-  const now = new Date();
-
-  const parts = new Intl.DateTimeFormat("es-PY", {
-    timeZone,
-    weekday: "long",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(now);
-
-  const get = (type: string) => parts.find((part) => part.type === type)?.value || "";
-  const weekday = get("weekday").toLowerCase();
-  const hour = Number(get("hour") || 0);
-  const minute = Number(get("minute") || 0);
-
-  return {
-    timeZone,
-    weekday,
-    isSunday: weekday === "domingo",
-    minutesOfDay: hour * 60 + minute,
-    display: `${weekday}, ${get("day")}/${get("month")}/${get("year")} ${get("hour")}:${get("minute")}`,
-  };
-}
-
-function coverageRulesForCurrentCity(parsed: ParsedTraining, city: string) {
-  const training = clean(parsed.coverageTraining || "");
-  const canonical = clean(city);
-  if (!training || !canonical) return "No hay ciudad actual o entrenamiento específico de cobertura.";
-
-  const escapedCity = canonical.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const cityBlock =
-    training.match(new RegExp(`📍\\s*${escapedCity}\\s*\\n([\\s\\S]*?)(?=\\n\\s*📍|\\n\\s*━━━━━━━━|$)`, "i"))?.[0] || "";
-
-  const zone = clean(cityBlock.match(/ZONA_LOGÍSTICA\s*:\s*([^\n]+)/i)?.[1]);
-  let zoneBlock = "";
-  if (zone) {
-    const escapedZone = zone.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    zoneBlock =
-      training.match(new RegExp(`ZONA_LOGÍSTICA\\s*:\\s*${escapedZone}\\s*\\n([\\s\\S]*?)(?=\\n\\s*ZONA_LOGÍSTICA\\s*:|\\n\\s*━━━━━━━━|$)`, "i"))?.[0] || "";
-  }
-
-  return [
-    cityBlock ? `REGLAS DE LA CIUDAD ACTUAL:\n${cityBlock}` : `Ciudad actual: ${canonical}. Usar únicamente los datos técnicos ya calculados.`,
-    zoneBlock ? `REGLAS DE SU ZONA LOGÍSTICA:\n${zoneBlock}` : "",
-  ].filter(Boolean).join("\n\n");
-}
-
 function isTemporalDeliveryExpression(text: string): boolean {
   const n = normalize(text);
   if (!n) return false;
@@ -5949,8 +5896,6 @@ function deterministicObservationAckMessage(state: ConversationState, parsed: Pa
 
 function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null, copyAlreadySent = false) {
   const o = state.order;
-  const pyNow = currentParaguayDeliveryContext();
-  const currentCityCoverageRules = coverageRulesForCurrentCity(parsed, o.city);
 
   return `
 Sos la IA vendedora de Mega Todo Store / One Store.
@@ -5976,11 +5921,6 @@ ESTADO DEL PEDIDO:
 - Dirección opcional según entrenamiento: ${state.addressOptional ? "sí" : "no"}
 - Promo bloqueada desde plantilla: ${o.locked_offer ? `${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs` : "no"}
 - Observación del cliente: ${observationLines(o).length ? observationLines(o).join(" | ") : "sin observación"}
-- Fecha y hora actual en Paraguay: ${pyNow.display}
-- Hoy es domingo: ${pyNow.isSunday ? "sí" : "no"}
-
-REGLAS DE COBERTURA Y ENTREGA APLICABLES A LA CIUDAD ACTUAL:
-${currentCityCoverageRules}
 
 FUENTE DE PRODUCTO / CANTIDAD / PRECIO:
 ${catalogForPrompt(parsed, state, templatePricing)}
@@ -6047,7 +5987,7 @@ REGLAS DURAS:
 - Mencioná de 1 a 3 beneficios concretos presentes en ese copy. No uses una respuesta genérica si hay información específica del producto.
 - No inventes resultados, porcentajes, tiempos ni garantías que no estén escritos en el copy.
 - Si el cliente hace una consulta durante la compra: respondé primero la consulta usando SOLO el entrenamiento disponible y después retomá exactamente el siguiente dato faltante del ESTADO DEL PEDIDO.
-- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: usá primero las REGLAS DE COBERTURA Y ENTREGA APLICABLES A LA CIUDAD ACTUAL y la FECHA/HORA ACTUAL EN PARAGUAY. Complementá con ENTRENAMIENTO GENERAL solo cuando no contradiga esas reglas específicas. No inventes plazos.
+- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: respondé EXCLUSIVAMENTE con la regla de entrega/tiempo/horario que figure en ENTRENAMIENTO GENERAL. No uses frases genéricas ni un mensaje estándar sobre rutas, disponibilidad o que el delivery llama, salvo que eso esté escrito expresamente en el entrenamiento.
 - Una pregunta sobre entrega es solo una consulta: NO la guardes como fecha preferida, NO cambies ciudad, cantidad, nombre ni dirección y NO reinicies el pedido.
 - Después de responder la consulta de entrega, pedí solamente el siguiente dato realmente faltante. Si no falta ningún dato, respondé la consulta sin volver a repetir el cierre del pedido.
 - Si después de responder la consulta todavía falta ciudad, preguntá ciudad. No menciones transportadora, falta de cobertura ni pago anticipado hasta tener una ciudad real.
@@ -6087,7 +6027,7 @@ REGLAS DURAS:
 - PROHIBIDO redactar un cierre libre. El único cierre válido es el generado por finalConfirmationMessage().
 - Fuera del cierre confirmado y del flujo técnico de comprobantes, PROHIBIDO responder con textos genéricos fijos: redactá siempre desde los entrenamientos activos y los datos reales del pedido.
 - El teléfono se obtiene automáticamente del número de WhatsApp. Si el estado ya contiene teléfono, nunca lo pidas de nuevo. Solo solicitá uno nuevo si el cliente quiere cambiarlo.
-- En preguntas sobre demora o fecha, calculá la respuesta con el día y la hora actuales de Paraguay y la regla exacta de la zona logística de la ciudad. Si hoy es domingo y la regla indica que no hay entregas, aclarar que el pedido se procesa o que el plazo comienza el lunes. Si la zona CENTRAL usa corte 12:30, aplicalo únicamente de lunes a sábado. Si no existe una regla aplicable, indicá que no está especificado, sin inventar.
+- En preguntas sobre demora o fecha, usá el plazo exacto del entrenamiento. Si no existe, indicá que no está especificado y que se coordina, sin inventar “próxima ronda” ni una hora.
 - Cuando falte algún dato, mostrale un resumen fijo de lo que ya tenés y pedí solamente lo faltante.
 - PROHIBIDO pedir confirmación intermedia. Si ya están todos los datos, confirmá automáticamente.
 - Frases como "quiero en calce 42", "talle 40" o "número 39" son VARIANTES, nunca direcciones.
