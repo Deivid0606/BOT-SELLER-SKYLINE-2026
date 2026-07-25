@@ -1,7 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * V135: corrige la compra de un segundo producto: pregunta ciudad junto al copy, conserva el pedido confirmado anterior y reconoce “en la misma” sin perder producto ni cantidad.
+ * V136: toda consulta, pregunta y continuidad comercial vuelve a Gemini usando los entrenamientos; el backend conserva solo estados, validaciones, comprobantes y cierres definitivos.
+ * V135: corrige la compra de un segundo producto: conserva el pedido confirmado anterior y reconoce “en la misma” sin perder producto ni cantidad.
  * V133: restaura copy e imagen determinísticos desde catálogo, fallback comercial seguro, precio sin repetir copy, multiproducto y postventa logística validada.
  * V133: restaura el envío determinístico del copy e imágenes, agrega fallback comercial seguro cuando Gemini falla y corrige la zona logística en postventa.
  * V134: continúa respuestas breves como “Quiero” sin depender de Gemini y evita errores 503 después de enviar el copy.
@@ -5826,7 +5827,9 @@ Nunca uses nombres fijos escritos en el backend y nunca digas que sos una IA.
 Tu trabajo es vender de forma natural, amable y segura por WhatsApp. Cuando hay copy de producto cargado, debés respetarlo completo la PRIMERA vez que se presenta.
 
 REGLA PRINCIPAL:
-El backend ya calculó y validó el estado. Vos NO inventás datos. Vos redactás una respuesta fluida siguiendo la INSTRUCCIÓN OBLIGATORIA.
+El backend ya calculó y validó el estado. Vos NO inventás datos.
+Si el mensaje actual contiene una consulta o pregunta, RESPONDELA PRIMERO usando los entrenamientos activos. Solo después retomá el siguiente dato faltante.
+La INSTRUCCIÓN OBLIGATORIA indica el objetivo técnico pendiente, pero NUNCA autoriza ignorar ni reemplazar la consulta actual del cliente.
 
 INSTRUCCIÓN OBLIGATORIA:
 ${state.hardInstruction}
@@ -5900,10 +5903,11 @@ CÓMO USAR LOS ENTRENAMIENTOS DEL USUARIO:
 - Usá solamente los datos bancarios estructurados mostrados en DATOS DE TRANSFERENCIA.
 
 ORDEN DE PRIORIDAD:
-1. Datos técnicos ya calculados en ESTADO DEL PEDIDO.
-2. INSTRUCCIÓN OBLIGATORIA sobre el siguiente objetivo técnico.
-3. TODOS los ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO para decidir cómo conversar y vender.
-4. Copy, precios y promociones reales del catálogo o plantilla activa.
+1. La consulta o pregunta escrita por el cliente en el mensaje actual: responderla primero.
+2. Datos técnicos ya calculados en ESTADO DEL PEDIDO.
+3. TODOS los ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO para responder y conversar.
+4. INSTRUCCIÓN OBLIGATORIA sobre el siguiente objetivo técnico, únicamente después de responder la consulta actual.
+5. Copy, precios y promociones reales del catálogo o plantilla activa.
 
 REGLAS DURAS:
 - Respondé en español paraguayo/neutro, estilo WhatsApp.
@@ -8304,7 +8308,7 @@ export default async function handler(req: any, res: any) {
       extractQuantity(texto) <= 0
     );
 
-    if (shouldAdvanceDeterministically) {
+    if (false && shouldAdvanceDeterministically) {
       const nextStepResponse = buildNextStepOnlyResponse(finalState, templatePricing);
 
       return res.status(200).json({
@@ -8405,7 +8409,7 @@ export default async function handler(req: any, res: any) {
       )
     );
 
-    if (shouldPresentExactCatalogCopy) {
+    if (false && shouldPresentExactCatalogCopy) {
       const exactCopyResponse = buildFullProductCopyResponse(finalState, templatePricing);
       const exactImages = finalState.productInfo?.images?.length
         ? finalState.productInfo.images.slice(0, 3)
@@ -8487,7 +8491,9 @@ INTENCIÓN TÉCNICA DETECTADA:
 - Solicita catálogo: ${catalogRequestedNow ? "sí" : "no"}
 
 Respondé ahora como la asistente configurada en el entrenamiento.
-Seguí la instrucción obligatoria y no inventes ciudad ni datos.
+Si el mensaje del cliente es una consulta o pregunta, contestala primero con la información de los entrenamientos activos. Después, y solo después, retomá el siguiente dato técnico faltante.
+La instrucción obligatoria no puede reemplazar, omitir ni esquivar la consulta actual.
+No inventes ciudad ni datos.
 Toda respuesta visible normal debe ser escrita por vos usando los entrenamientos activos.
 No existe ninguna respuesta comercial de respaldo en el backend.
 Toda pregunta, explicación, venta, objeción, continuidad, identidad, ciudad, cantidad, nombre, dirección, factura, precio, entrega, cobertura y postventa debe salir únicamente de los entrenamientos activos.
@@ -8519,92 +8525,35 @@ No repitas la misma pregunta si el cliente ya respondió el dato o si acaba de h
     }
 
     if (!aiResponse || aiResponse === "__GEMINI_QUOTA_EXCEEDED__") {
-      // V132: la primera presentación del producto nunca depende de Gemini.
-      // Si existe copy real del catálogo, se recupera la venta con el copy y
-      // las imágenes configuradas en lugar de devolver un 503 vacío.
-      const fallbackCopy = buildFullProductCopyResponse(finalState, templatePricing);
-      const fallbackImages = finalState.productInfo?.images?.length
-        ? finalState.productInfo.images.slice(0, 3)
-        : undefined;
-
-      const canRecoverWithCatalog =
-        Boolean(fallbackCopy) &&
-        !orderData.city &&
-        !copyAlreadySentInConversation &&
-        !currentMessageHasQuantityBeforeAI &&
-        !currentMessageIsAcknowledgementBeforeAI &&
-        (!currentMessageIsQuestionBeforeAI || productMentionNow);
-
-      if (canRecoverWithCatalog) {
-        return res.status(200).json({
-          response: fallbackCopy,
-          follow_up_response: buildFriendlyCityQuestion(),
-          media_urls: fallbackImages,
-          retryable: false,
-          context: {
-            ...(context || {}),
-            current_product: orderData.product || null,
-            last_topic: orderData.product || context?.last_topic || null,
-            last_ad_offer: orderData.locked_offer || null,
-            order_data: orderData,
-            order_id: orderData.order_id || null,
-            payment_proof_received: orderData.payment_proof_received || false,
-            payment_proof_verified: orderData.payment_proof_verified || false,
-            step: finalState.step,
-            address_optional: finalState.addressOptional,
-            updated_at: new Date().toISOString(),
-          },
-          debug: {
-            gemini_failed: true,
-            recovered_with_catalog_copy: true,
-            product: orderData.product || null,
-            images_sent: fallbackImages?.length || 0,
-          },
-        });
-      }
-
-      // V134: incluso si Gemini falla después de que el copy ya fue enviado,
-      // continuar con el siguiente dato faltante en lugar de mostrar error técnico.
-      const nextStepFallback = buildNextStepOnlyResponse(finalState, templatePricing);
-      if (nextStepFallback) {
-        return res.status(200).json({
-          response: nextStepFallback,
-          retryable: false,
-          context: {
-            ...(context || {}),
-            current_product: orderData.product || null,
-            last_topic: orderData.product || context?.last_topic || null,
-            last_ad_offer: orderData.locked_offer || null,
-            order_data: orderData,
-            order_id: orderData.order_id || null,
-            payment_proof_received: orderData.payment_proof_received || false,
-            payment_proof_verified: orderData.payment_proof_verified || false,
-            step: finalState.step,
-            address_optional: finalState.addressOptional,
-            updated_at: new Date().toISOString(),
-          },
-          debug: {
-            gemini_failed: true,
-            recovered_with_next_step: true,
-            product: orderData.product || null,
-            step: finalState.step,
-          },
-        });
-      }
-
+      // V136: ninguna consulta ni continuidad comercial se redacta en el backend.
+      // Ante una falla real de Gemini se devuelve únicamente un error técnico,
+      // conservando intactos el pedido y el paso para poder reintentar.
       return res.status(503).json({
         response: "",
         retryable: true,
         context: {
           ...(context || {}),
+          previous_confirmed_order:
+            previousConfirmedOrder ||
+            context?.previous_confirmed_order ||
+            null,
+          current_product: orderData.product || null,
+          last_topic: orderData.product || context?.last_topic || null,
+          last_ad_offer: orderData.locked_offer || null,
           order_data: orderData,
           order_id: orderData.order_id || null,
+          payment_proof_received: orderData.payment_proof_received || false,
+          payment_proof_verified: orderData.payment_proof_verified || false,
           step: finalState.step,
+          address_optional: finalState.addressOptional,
           updated_at: new Date().toISOString(),
         },
         debug: {
+          gemini_failed: true,
           ai_response_required: true,
-          catalog_fallback_available: Boolean(fallbackCopy),
+          no_commercial_backend_fallback: true,
+          product: orderData.product || null,
+          step: finalState.step,
         },
       });
     }
@@ -8710,24 +8659,22 @@ No repitas la misma pregunta si el cliente ya respondió el dato o si acaba de h
 
     const safeContext = req.body?.context || {};
     const safeOrder = safeContext?.order_data || {};
-    const safeMessage = clean(req.body?.message || "");
 
-    return res.status(200).json({
-      response: isPayOnDeliveryRequest(safeMessage)
-        ? "😊 Para indicarte correctamente la forma de pago, decime nuevamente tu ciudad. Si tu zona no tiene contra-entrega, el envío es por transportadora y el pago es anticipado."
-        : safeOrder?.city
-          ? !clean(safeOrder?.customer_name)
-            ? "😊 Recibí tu mensaje. Para continuar, pasame tu nombre y apellido."
-            : "😊 Recibí tu mensaje. Ya tengo los datos principales del pedido; podés enviar la ubicación después o pasarla directamente al delivery."
-          : "😊 Recibí tu mensaje. Indicame primero tu ciudad para confirmar la modalidad de entrega. 📍",
+    // V136: el manejador de errores no conversa ni formula preguntas comerciales.
+    // Solo informa el fallo técnico y conserva el contexto para reintentar.
+    return res.status(503).json({
+      response: "",
+      retryable: true,
       context: {
         ...safeContext,
         order_data: safeOrder,
+        order_id: safeOrder?.order_id || safeContext?.order_id || null,
         step: safeContext?.step || "selling",
         updated_at: new Date().toISOString(),
       },
       debug: {
-        recovered_from_internal_error: true,
+        recovered_from_internal_error: false,
+        technical_error_only: true,
         error: error?.message || "Error interno",
       },
     });
