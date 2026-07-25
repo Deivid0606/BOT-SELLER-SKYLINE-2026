@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 /**
  * V133: restaura copy e imagen determinísticos desde catálogo, fallback comercial seguro, precio sin repetir copy, multiproducto y postventa logística validada.
  * V133: restaura el envío determinístico del copy e imágenes, agrega fallback comercial seguro cuando Gemini falla y corrige la zona logística en postventa.
+ * V134: continúa respuestas breves como “Quiero” sin depender de Gemini y evita errores 503 después de enviar el copy.
  * V131: evita insertar dos veces la misma confirmación, actualiza el pedido confirmado en postventa y guarda factura/RUC en observación sin crear otra fila.
  * V130: reconoce RUC paraguayo con guion y dígito verificador, procesa ubicación GPS antes de volver a pedir ciudad, conserva la ciudad ya registrada y fuerza el cierre técnico cuando el pedido queda completo.
  * V129: corrige cambios explícitos de ciudad con km/ruta, separa ciudad y referencia, clasifica Central técnicamente y permite reutilizar de forma real los datos del pedido anterior en una nueva compra.
@@ -6027,6 +6028,40 @@ ${priceText}${continuation ? `
 ${continuation}` : ""}`;
 }
 
+function buildNextStepOnlyResponse(state: ConversationState, templatePricing?: TemplatePricing | null) {
+  const o = state.order;
+
+  if (!o.product) {
+    return "😊 ¿Qué producto te interesa?";
+  }
+
+  if (!o.city) {
+    return buildFriendlyCityQuestion();
+  }
+
+  if (!o.quantity && !o.locked_offer?.fixed_quantity) {
+    const templateActive = hasActiveTemplatePricing(templatePricing, o);
+    if (templateActive) {
+      return `😊 ¿Cuál de estas opciones querés llevar?\n${templatePricingSummary(templatePricing)}`;
+    }
+    return "😊 ¿Cuántas unidades querés llevar?";
+  }
+
+  if (!o.customer_name) {
+    return "😊 Para registrar tu pedido, ¿me pasás tu nombre y apellido?";
+  }
+
+  if (state.coverage !== false && !state.addressOptional && !o.address) {
+    return "📍 Pasame la dirección exacta o tu ubicación para la entrega, por favor.";
+  }
+
+  if (!o.phone) {
+    return "📞 Pasame un número de celular para coordinar la entrega, por favor.";
+  }
+
+  return "😊 Tu pedido ya tiene todos los datos necesarios.";
+}
+
 function buildFallbackResponse(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
   const o = state.order;
 
@@ -8245,6 +8280,44 @@ export default async function handler(req: any, res: any) {
     // ✅ FIX V46: verificar si el copy ya se envió antes en esta conversación
     const copyAlreadySentInConversation = wasCopyAlreadySentInThisConversation(history, finalState.productInfo);
 
+    // V134: una respuesta breve de compra después de haber mostrado el producto
+    // no debe depender de Gemini. Se avanza directamente al siguiente dato faltante.
+    const shouldAdvanceDeterministically = Boolean(
+      copyAlreadySentInConversation &&
+      finalState.productInfo &&
+      (isGenericBuyReply(texto) || isShortAcknowledgement(texto)) &&
+      !isQuestionLikeMessage(texto) &&
+      extractQuantity(texto) <= 0
+    );
+
+    if (shouldAdvanceDeterministically) {
+      const nextStepResponse = buildNextStepOnlyResponse(finalState, templatePricing);
+
+      return res.status(200).json({
+        response: nextStepResponse,
+        retryable: false,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || null,
+          last_topic: orderData.product || context?.last_topic || null,
+          last_ad_offer: orderData.locked_offer || null,
+          order_data: orderData,
+          order_id: orderData.order_id || null,
+          payment_proof_received: orderData.payment_proof_received || false,
+          payment_proof_verified: orderData.payment_proof_verified || false,
+          step: finalState.step,
+          address_optional: finalState.addressOptional,
+          updated_at: new Date().toISOString(),
+        },
+        debug: {
+          deterministic_short_buy_continuation: true,
+          gemini_skipped: true,
+          product: orderData.product || null,
+          step: finalState.step,
+        },
+      });
+    }
+
     // Parche 6: Desactivado respuesta fija de precio ("precio solo")
     if (
       false &&
@@ -8454,6 +8527,35 @@ No repitas la misma pregunta si el cliente ya respondió el dato o si acaba de h
             recovered_with_catalog_copy: true,
             product: orderData.product || null,
             images_sent: fallbackImages?.length || 0,
+          },
+        });
+      }
+
+      // V134: incluso si Gemini falla después de que el copy ya fue enviado,
+      // continuar con el siguiente dato faltante en lugar de mostrar error técnico.
+      const nextStepFallback = buildNextStepOnlyResponse(finalState, templatePricing);
+      if (nextStepFallback) {
+        return res.status(200).json({
+          response: nextStepFallback,
+          retryable: false,
+          context: {
+            ...(context || {}),
+            current_product: orderData.product || null,
+            last_topic: orderData.product || context?.last_topic || null,
+            last_ad_offer: orderData.locked_offer || null,
+            order_data: orderData,
+            order_id: orderData.order_id || null,
+            payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            step: finalState.step,
+            address_optional: finalState.addressOptional,
+            updated_at: new Date().toISOString(),
+          },
+          debug: {
+            gemini_failed: true,
+            recovered_with_next_step: true,
+            product: orderData.product || null,
+            step: finalState.step,
           },
         });
       }
