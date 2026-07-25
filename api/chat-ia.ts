@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V135: corrige la compra de un segundo producto: pregunta ciudad junto al copy, conserva el pedido confirmado anterior y reconoce “en la misma” sin perder producto ni cantidad.
  * V133: restaura copy e imagen determinísticos desde catálogo, fallback comercial seguro, precio sin repetir copy, multiproducto y postventa logística validada.
  * V133: restaura el envío determinístico del copy e imágenes, agrega fallback comercial seguro cuando Gemini falla y corrige la zona logística en postventa.
  * V134: continúa respuestas breves como “Quiero” sin depender de Gemini y evita errores 503 después de enviar el copy.
@@ -2423,7 +2424,11 @@ function shouldReusePreviousOrderData(text: string, context: any, currentOrder: 
   if (!clean(currentOrder.product)) return false;
 
   const n = normalize(text);
-  return /^(si|sí|sii|siii|sip|dale|ok|correcto|exacto|asi es|así es|los mismos|mismos datos|misma direccion|misma dirección|misma ciudad|para el mismo lugar)$/.test(n);
+  if (!n) return false;
+
+  // V135: referencias explícitas a la ubicación/datos del pedido confirmado anterior.
+  // Nunca deben convertirse en una ciudad literal como “En La Misma”.
+  return /^(si|sí|sii|siii|sip|dale|ok|correcto|exacto|asi es|así es|los mismos|mismos datos|en la misma|la misma|misma direccion|misma dirección|misma ciudad|en el mismo lugar|para el mismo lugar|mismo lugar|ahi mismo|ahí mismo|para ahi mismo|para ahí mismo)$/.test(n);
 }
 
 function extractExplicitKnownCityFromSentence(text: string, parsed: ParsedTraining): string {
@@ -7067,7 +7072,14 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const cityStatement = extractCityStatement(texto);
+    const reusingPreviousOrderData = shouldReusePreviousOrderData(texto, context, oldOrder);
+
+    // V135: si el cliente dice “en la misma”, los datos ya fueron copiados arriba.
+    // Se limpia la entrada para detectores de ciudad/dirección y se conserva ciudad,
+    // referencia, nombre, teléfono, producto y cantidad del pedido nuevo.
+    const cityInputText = reusingPreviousOrderData ? "" : texto;
+
+    const cityStatement = extractCityStatement(cityInputText);
     const prevStep = freshOrder ? "" : context?.step || "";
     const isCityStep = prevStep === "collecting_city";
     const isDataCollectionStep = ["collecting_name", "collecting_address", "collecting_phone", "collecting_quantity"].includes(prevStep);
@@ -7079,9 +7091,9 @@ export default async function handler(req: any, res: any) {
       oldOrder.city = sanitizedOldCity;
     }
 
-    const explicitKnownCityFromMessage = extractExplicitKnownCityFromSentence(texto, parsed);
-    const detectedCityRaw = detectCity(texto, parsed, sanitizedOldCity || "");
-    const exactCityFromMessage = exactKnownCity(texto, parsed);
+    const explicitKnownCityFromMessage = extractExplicitKnownCityFromSentence(cityInputText, parsed);
+    const detectedCityRaw = detectCity(cityInputText, parsed, sanitizedOldCity || "");
+    const exactCityFromMessage = exactKnownCity(cityInputText, parsed);
 
     // V129: "Perdón Capiatá km21" debe reemplazar la ciudad anterior y guardar
     // únicamente "km 21" como referencia.
@@ -7286,13 +7298,15 @@ export default async function handler(req: any, res: any) {
 
     let address = "";
     try {
-      address = extractAddress(
-        texto,
-        effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
-        phone,
-        name,
-        parsed
-      );
+      address = reusingPreviousOrderData
+        ? ""
+        : extractAddress(
+            texto,
+            effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
+            phone,
+            name,
+            parsed
+          );
     } catch (error) {
       console.error("⚠️ extractAddress falló; se continúa sin dirección:", error);
     }
@@ -8298,6 +8312,10 @@ export default async function handler(req: any, res: any) {
         retryable: false,
         context: {
           ...(context || {}),
+          previous_confirmed_order:
+            previousConfirmedOrder ||
+            context?.previous_confirmed_order ||
+            null,
           current_product: orderData.product || null,
           last_topic: orderData.product || context?.last_topic || null,
           last_ad_offer: orderData.locked_offer || null,
@@ -8393,12 +8411,21 @@ export default async function handler(req: any, res: any) {
         ? finalState.productInfo.images.slice(0, 3)
         : undefined;
 
+      const exactVisibleResponse = !orderData.city
+        ? `${exactCopyResponse}\n\n${buildFriendlyCityQuestion()}`
+        : exactCopyResponse;
+
       return res.json({
-        response: exactCopyResponse,
-        follow_up_response: !orderData.city ? buildFriendlyCityQuestion() : undefined,
+        response: exactVisibleResponse,
+        // V135: la pregunta se incluye dentro de response para garantizar su envío.
+        // Se omite follow_up_response para evitar mensajes duplicados.
         media_urls: exactImages,
         context: {
           ...(context || {}),
+          previous_confirmed_order:
+            previousConfirmedOrder ||
+            context?.previous_confirmed_order ||
+            null,
           current_product: orderData.product || null,
           last_topic: orderData.product || context?.last_topic || null,
           last_ad_offer: orderData.locked_offer || null,
@@ -8431,6 +8458,11 @@ export default async function handler(req: any, res: any) {
               step: finalState.step,
               copy_already_sent: copyAlreadySentInConversation,
               images_sent: exactImages?.length || 0,
+              previous_order_preserved: !!(
+                previousConfirmedOrder ||
+                context?.previous_confirmed_order
+              ),
+              city_question_included_with_copy: !orderData.city,
             }
           : undefined,
       });
