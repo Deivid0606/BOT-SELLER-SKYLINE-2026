@@ -73,68 +73,6 @@ const normalize = (v: any) =>
     .replace(/\s+/g, " ")
     .trim();
 
-// V132: contexto temporal confiable de Paraguay para calcular entregas.
-type ParaguayDateContext = {
-  iso: string;
-  date: string;
-  time: string;
-  weekday: string;
-  weekdayNumber: number;
-  hour: number;
-  minute: number;
-  minutesOfDay: number;
-  isSunday: boolean;
-  isSaturday: boolean;
-  beforeCutoff1230: boolean;
-};
-
-function getParaguayDateContext(now = new Date()): ParaguayDateContext {
-  const formatter = new Intl.DateTimeFormat("es-PY", {
-    timeZone: "America/Asuncion",
-    weekday: "long",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  });
-
-  const parts = formatter.formatToParts(now);
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((item) => item.type === type)?.value || "";
-
-  const weekday = normalize(part("weekday"));
-  const hour = Number(part("hour") || 0);
-  const minute = Number(part("minute") || 0);
-  const minutesOfDay = hour * 60 + minute;
-
-  const weekdayMap: Record<string, number> = {
-    domingo: 0,
-    lunes: 1,
-    martes: 2,
-    miercoles: 3,
-    jueves: 4,
-    viernes: 5,
-    sabado: 6,
-  };
-
-  return {
-    iso: now.toISOString(),
-    date: `${part("day")}/${part("month")}/${part("year")}`,
-    time: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
-    weekday,
-    weekdayNumber: weekdayMap[weekday] ?? -1,
-    hour,
-    minute,
-    minutesOfDay,
-    isSunday: weekday === "domingo",
-    isSaturday: weekday === "sabado",
-    beforeCutoff1230: minutesOfDay < 12 * 60 + 30,
-  };
-}
-
 type ProductItem = {
   product: string;
   canonical: string;
@@ -5956,15 +5894,8 @@ function deterministicObservationAckMessage(state: ConversationState, parsed: Pa
   return `${intro}\n\n✅ Tengo todos los datos del pedido. Nuestro equipo tendrá en cuenta esa observación para coordinar 😊`;
 }
 
-function buildSalesSystemPrompt(
-  parsed: ParsedTraining,
-  state: ConversationState,
-  templatePricing?: TemplatePricing | null,
-  copyAlreadySent = false,
-  cityWasCapturedNow = false
-) {
+function buildSalesSystemPrompt(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null, copyAlreadySent = false) {
   const o = state.order;
-  const pyNow = getParaguayDateContext();
 
   return `
 Sos la IA vendedora de Mega Todo Store / One Store.
@@ -5972,20 +5903,6 @@ Tu trabajo es vender de forma natural, amable y segura por WhatsApp. Cuando hay 
 
 REGLA PRINCIPAL:
 El backend ya calculó y validó el estado. Vos NO inventás datos. Vos redactás una respuesta fluida siguiendo la INSTRUCCIÓN OBLIGATORIA.
-
-CONTEXTO TEMPORAL CONFIABLE DEL SISTEMA:
-- Zona horaria obligatoria: America/Asuncion
-- Fecha actual en Paraguay: ${pyNow.date}
-- Día actual en Paraguay: ${pyNow.weekday}
-- Hora actual en Paraguay: ${pyNow.time}
-- Es domingo: ${pyNow.isSunday ? "sí" : "no"}
-- Es sábado: ${pyNow.isSaturday ? "sí" : "no"}
-- Está antes del corte de las 12:30: ${pyNow.beforeCutoff1230 ? "sí" : "no"}
-- Estos datos son técnicos y confiables. No uses UTC ni la hora del servidor sin convertir.
-- Podés decir “hoy”, “mañana”, “lunes” u otro día solamente cuando coincida con estos datos y con la regla logística configurada.
-
-EVENTO ACTUAL:
-- La ciudad fue recibida o corregida en este mensaje: ${cityWasCapturedNow ? "sí" : "no"}
 
 INSTRUCCIÓN OBLIGATORIA:
 ${state.hardInstruction}
@@ -6030,18 +5947,6 @@ DATOS DE TRANSFERENCIA:
 ${bankDataText(parsed)}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ENTRENAMIENTO ESPECÍFICO DE ZONAS Y COBERTURA
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-${parsed.coverageTraining || "No hay entrenamiento específico de cobertura configurado."}
-
-PRIORIDAD LOGÍSTICA OBLIGATORIA:
-- Para ciudad, normalización, zona logística, cobertura, modalidad, pago, dirección opcional, horario, días de reparto, corte y plazo, este entrenamiento específico tiene prioridad.
-- No permitas que una regla logística general contradiga el entrenamiento específico de cobertura.
-- Para redactar, usá la ciudad y la cobertura ya calculadas en ESTADO DEL PEDIDO.
-- No muestres etiquetas internas como ZONA_LOGÍSTICA, REGLA_ENTREGA o COBERTURA.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -6065,10 +5970,6 @@ ORDEN DE PRIORIDAD:
 4. Copy, precios y promociones reales del catálogo o plantilla activa.
 
 REGLAS DURAS:
-- Si "La ciudad fue recibida o corregida en este mensaje" = sí, respondé inmediatamente y en este orden: confirmar naturalmente la ciudad canónica; informar cobertura real; informar modalidad de envío y forma de pago; informar horario y plazo aplicando la fecha/hora de Paraguay, la zona logística, el corte y la regla de domingo; finalmente pedir SOLO el siguiente dato faltante.
-- No esperes que el cliente pregunte cuándo llega para dar esa primera información logística.
-- Si la ciudad fue recién capturada, no respondas únicamente con una pregunta de cantidad, nombre o dirección: primero debe aparecer la información logística contextual.
-- Adaptá la respuesta al día y la hora actuales. El ejemplo de domingo es solo un ejemplo y nunca debe repetirse en otro día.
 - Respondé en español paraguayo/neutro, estilo WhatsApp.
 - Sé vendedor amable, cálido y fluido. Usá emojis comerciales moderados: 😊🔥🚚✅📦💰📍📲.
 - Si el COPY DE VENTA ya se envió antes (ver arriba), NO lo repitas: avanzá directo al siguiente paso del pedido con una respuesta breve y natural.
@@ -8184,19 +8085,6 @@ export default async function handler(req: any, res: any) {
         finalState.step = "collecting_quantity";
         finalState.missing = Array.from(new Set(["cantidad", ...(finalState.missing || []).filter((x) => x !== "cantidad")]));
       }
-
-      // V132: al recibir/corregir ciudad, la prioridad visible es informar logística
-      // contextual antes de solicitar el siguiente dato faltante. Gemini conserva
-      // la redacción natural y usa el entrenamiento específico de cobertura.
-      finalState.hardInstruction = [
-        `La ciudad ${orderData.city} acaba de ser recibida o corregida.`,
-        "Informar inmediatamente cobertura, modalidad de envío, forma de pago, horario y plazo aplicable.",
-        "Aplicar estrictamente el entrenamiento específico de zonas y cobertura y la fecha/hora confiable de America/Asuncion incluida en el prompt.",
-        finalState.missing.length
-          ? `Después pedir solamente el siguiente dato faltante: ${finalState.missing[0]}.`
-          : "No pedir nuevamente ningún dato ya registrado.",
-      ].join(" ");
-
       const cityCoverageResponse = deterministicAfterCityCoverageMessage(finalState);
       // Parche 3: Solo desactivamos el return, pero conservamos la lógica de estado (quantity reset)
       if (false && cityCoverageResponse) {
@@ -8460,7 +8348,7 @@ export default async function handler(req: any, res: any) {
     }
 
     const copyAlreadySent = wasProductCopyAlreadySent(history, finalState.productInfo);
-    const system = buildSalesSystemPrompt(parsed, finalState, templatePricing, copyAlreadySent, cityWasCapturedNow);
+    const system = buildSalesSystemPrompt(parsed, finalState, templatePricing, copyAlreadySent);
 
     const contents = (history || [])
       .slice(-12)
