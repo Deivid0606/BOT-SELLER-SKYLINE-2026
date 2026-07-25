@@ -1,7 +1,8 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * V132: restaura el envío determinístico del copy e imágenes, agrega fallback comercial seguro cuando Gemini falla y corrige la zona logística en postventa.
+ * V133: restaura copy e imagen determinísticos desde catálogo, fallback comercial seguro, precio sin repetir copy, multiproducto y postventa logística validada.
+ * V133: restaura el envío determinístico del copy e imágenes, agrega fallback comercial seguro cuando Gemini falla y corrige la zona logística en postventa.
  * V131: evita insertar dos veces la misma confirmación, actualiza el pedido confirmado en postventa y guarda factura/RUC en observación sin crear otra fila.
  * V130: reconoce RUC paraguayo con guion y dígito verificador, procesa ubicación GPS antes de volver a pedir ciudad, conserva la ciudad ya registrada y fuerza el cierre técnico cuando el pedido queda completo.
  * V129: corrige cambios explícitos de ciudad con km/ruta, separa ciudad y referencia, clasifica Central técnicamente y permite reutilizar de forma real los datos del pedido anterior en una nueva compra.
@@ -1139,7 +1140,14 @@ function detectProductsMentioned(text: string, parsed: ParsedTraining): ProductI
 }
 
 function buildMultipleProductsClarification(products: ProductItem[], currentCity: string): string {
-  return "";
+  const names = products.map((p) => p.canonical || p.product).filter(Boolean);
+  if (names.length < 2) return "";
+
+  const joined = names.length === 2
+    ? `${names[0]} y ${names[1]}`
+    : `${names.slice(0, -1).join(", ")} y ${names[names.length - 1]}`;
+
+  return `¡Perfecto! Podemos prepararte ${joined}. 😊\n\nPara registrar correctamente las cantidades, decime cuántas unidades querés de cada producto.\n\nEjemplo: “1 ${names[0]} y 1 ${names[1]}”.${currentCity ? `\n\n📍 Mantengo la ciudad de envío: ${currentCity}.` : ""}`;
 }
 
 
@@ -1218,7 +1226,12 @@ function shortProductBenefit(product: ProductItem): string {
 }
 
 function buildMultipleProductsInformation(products: ProductItem[], currentCity: string): string {
-  return "";
+  const sections = products.map((p) => {
+    return `📦 *${p.canonical}*\n${shortProductBenefit(p)}\n${productOffersText(p)}`;
+  });
+
+  const examples = products.map((p) => `1 ${p.canonical}`).join(" y ");
+  return `¡Claro! Tenemos estos productos disponibles 😊\n\n${sections.join("\n\n")}\n\n🛒 Podés llevarlos en un solo pedido.\n¿Cuántos querés de cada uno?\nEjemplo: “${examples}”.${currentCity ? `\n\n📍 Envío a: ${currentCity}.` : ""}`;
 }
 
 function extractQuantityForNamedProduct(text: string, product: ProductItem): number {
@@ -1739,8 +1752,8 @@ function isStrictStandaloneCustomerName(
 
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const raw = clean(text);
-  if (isBusinessIdentityQuestion(raw)) return previous;
   const previous = canonicalizeStoredCity(prev || "", parsed);
+  if (isBusinessIdentityQuestion(raw)) return previous;
 
   if (!raw) return previous;
 
@@ -3201,7 +3214,7 @@ function isDeliveryTimingQuestion(text: string): boolean {
   const raw = clean(text);
   const n = normalize(raw);
 
-  if (isBusinessIdentityQuestion(raw)) return "";
+  if (isBusinessIdentityQuestion(raw)) return false;
   if (!raw || !n) return false;
   return (
     /[?¿]/.test(raw) && /\b(hoy|manana|mañana|cuando|cuándo|que hora|qué hora|horario|entrega|llega|llegaria|llegaría|demora|tarda|tiempo)\b/.test(n)
@@ -5965,7 +5978,12 @@ REGLAS DURAS:
 }
 
 function buildFullProductCopyResponse(state: ConversationState, _templatePricing?: TemplatePricing | null) {
-  return clean(state.productInfo?.salesCopy || "");
+  const copy = clean(state.productInfo?.salesCopy || "");
+  if (!copy) return "";
+
+  // V72: el copy comercial se entrega limpio. La pregunta de ciudad se envía
+  // como un segundo mensaje desde webhook para que la conversación sea más natural.
+  return copy;
 }
 
 function buildFriendlyCityQuestion() {
@@ -5978,11 +5996,115 @@ function buildPriceOnlyResponse(
   state: ConversationState,
   templatePricing?: TemplatePricing | null
 ) {
-  return "";
+  const productInfo = state.productInfo;
+  if (!productInfo) return "";
+
+  const priceText = productPriceText(
+    productInfo,
+    state.order.locked_offer,
+    templatePricing
+  );
+
+  if (!priceText) return "";
+
+  let continuation = "";
+
+  if (!state.order.city) {
+    continuation = "📍 ¿Para qué ciudad sería el envío? 😊";
+  } else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) {
+    continuation = "¿Cuántas unidades querés llevar? 😊";
+  } else if (!state.order.customer_name) {
+    continuation = "Para continuar, pasame tu nombre y apellido. 😊";
+  } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
+    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega. 😊";
+  } else if (!state.order.phone) {
+    continuation = "Por último, pasame un número de celular para coordinar la entrega. 😊";
+  }
+
+  return `🔥 Precio de hoy:
+${priceText}${continuation ? `
+
+${continuation}` : ""}`;
 }
 
 function buildFallbackResponse(parsed: ParsedTraining, state: ConversationState, templatePricing?: TemplatePricing | null) {
-  return "";
+  const o = state.order;
+
+  if (!o.product) {
+    return `😊 Dale, te ayudo.
+
+Tenemos estas opciones disponibles:
+
+${productsSummary(parsed)}
+
+¿Cuál te interesa?`;
+  }
+
+  if (!o.city) {
+    const copy = state.productInfo?.salesCopy;
+    const priceLine = productPriceText(state.productInfo, o.locked_offer, templatePricing);
+    return copy
+      ? `${copy.trim()}\n\n📍 ¿Para qué ciudad sería el envío? 😊`
+      : `¡Excelente elección! 🔥
+
+${state.productInfo?.canonical || o.product}
+${priceLine}
+
+📍 ¿Para qué ciudad sería el envío? 😊`;
+  }
+
+  const missingSummary = buildDeterministicMissingDataSummary(state);
+  if (missingSummary && o.product && o.city && o.quantity) {
+    return missingSummary;
+  }
+
+  if (!o.quantity) {
+    const templateActive = hasActiveTemplatePricing(templatePricing, o);
+
+    const qtyQuestion = templateActive
+      ? `¿Cuál de estas opciones de la plantilla querés confirmar?\n${templatePricingSummary(templatePricing)} 😊`
+      : o.locked_offer && o.locked_offer.quantity > 1
+        ? `¿Querés 1 unidad por ${formatGs(getTemplatePrice1(templatePricing || null, o.product) || state.productInfo?.price1 || 0)} Gs o la promo de ${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs? 😊`
+        : "¿Cuántas unidades querés llevar? 😊";
+
+    if (state.coverage === false) {
+      return `ℹ️ ${o.city} no entra en nuestra zona de contra-entrega, pero sí podemos enviarte por transportadora 🚚
+
+Antes de pasarte el total y los datos de pago, decime: ${qtyQuestion}`;
+    }
+
+    return `✅ Perfecto, ${o.city} tiene envío gratis contra-entrega 🚚
+
+${qtyQuestion}`;
+  }
+
+  if (state.missing.length) {
+    const promoLine =
+      o.locked_offer && o.locked_offer.quantity === o.quantity
+        ? `🔥 Promo aplicada: ${o.quantity} unidades por ${formatGs(state.total)} Gs\n`
+        : "";
+
+    return `🎉 ¡Perfecto! Queda avanzado tu pedido 😊
+
+📦 Producto: ${o.product}
+${promoLine}🔢 Cantidad: ${o.quantity}
+💰 Total: ${formatGs(state.total)} Gs
+📍 Ciudad: ${o.city}${observationBlock(o)}
+
+Para agendarlo, me falta:
+✅ ${state.missing.join("\n✅ ")} 📲`;
+  }
+
+  return `✅ PEDIDO CONFIRMADO
+
+📦 Producto: ${o.product}
+🔢 Cantidad: ${o.quantity}
+💰 Total: ${formatGs(state.total)} Gs
+👤 Cliente: ${o.customer_name}
+📍 Ciudad: ${o.city}
+📞 Teléfono: ${o.phone}${o.address ? `\n🏠 Dirección: ${o.address}` : ""}${observationBlock(o)}
+
+¡Gracias por tu compra! 💜`;
 }
 
 function postProcessResponse(resp: string) {
