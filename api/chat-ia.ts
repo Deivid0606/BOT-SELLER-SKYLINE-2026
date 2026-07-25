@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
  * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
  * CHAT IA VENDEDOR AUTÓNOMO V115 - Mega Todo Store / One Store
  * 
@@ -1705,6 +1706,141 @@ function canonicalizeStoredCity(value: string, parsed: ParsedTraining): string {
   return "";
 }
 
+
+/* ============================================================
+   V126 — CLASIFICACIÓN ESTRICTA DE DATOS
+   ============================================================ */
+
+function isDeferredLocationMessage(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    (
+      /\b(?:te|le|les)?\s*(?:envio|enviare|mandare|paso|pasare|comparto|compartire)\s+(?:la\s+)?ubicacion\b/.test(n) &&
+      /\b(?:despues|mas tarde|cuando|una vez|al llegar|cuando llegue|cuando este|cuando me contacten|cuando contacte|delivery)\b/.test(n)
+    ) ||
+    /\b(?:ubicacion|direccion|referencia)\s+(?:la\s+)?(?:envio|mando|paso|comparto)\s+(?:despues|mas tarde|cuando)\b/.test(n) ||
+    /\b(?:cuando|una vez)\s+(?:este|llegue|vuelva)\s+(?:a|en)\s+(?:mi\s+)?casa\b/.test(n) ||
+    /\b(?:le|te)\s+(?:paso|envio|mando)\s+(?:al|cuando llegue el|cuando me escriba el)\s+delivery\b/.test(n) ||
+    /\b(?:a coordinar|coordino|coordinamos)\s+con\s+(?:el\s+)?delivery\b/.test(n) ||
+    /\b(?:todavia|ahora)\s+no\s+(?:estoy|tengo)\s+(?:en\s+)?(?:mi\s+)?casa\b/.test(n)
+  );
+}
+
+function isConversationalLocationPhrase(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return (
+    /^(?:ahi|ai|aca|aqui)\s+(?:esta|es|queda|seria)\b/.test(n) ||
+    /\b(?:ahi|ai|aca|aqui)\s+(?:esta|es|queda)\s*(?:el\s+)?km\b/.test(n) ||
+    /\b(?:cuando este en mi casa|cuando llegue a casa|una vez este en casa)\b/.test(n) ||
+    isDeferredLocationMessage(text)
+  );
+}
+
+function configuredCityInsideMessage(text: string, parsed: ParsedTraining): string {
+  const n = normalize(text);
+  if (!n) return "";
+
+  const ordered = [...(parsed.cities || [])].sort(
+    (a, b) =>
+      Math.max(normalize(b.alias).length, normalize(b.canonical).length) -
+      Math.max(normalize(a.alias).length, normalize(a.canonical).length)
+  );
+
+  for (const city of ordered) {
+    const names = Array.from(
+      new Set([city.alias, city.canonical].map(normalize).filter(Boolean))
+    ).sort((a, b) => b.length - a.length);
+
+    for (const name of names) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (new RegExp(`(?:^|\\b)${escaped}(?:\\b|$)`, "i").test(n)) {
+        return city.canonical;
+      }
+    }
+  }
+
+  return "";
+}
+
+function extractReferenceAfterKnownCity(
+  text: string,
+  city: string,
+  parsed: ParsedTraining
+): string {
+  let raw = clean(text);
+  const canonical = clean(city || configuredCityInsideMessage(raw, parsed));
+  if (!raw || !canonical) return "";
+
+  const cityEntry = (parsed.cities || []).find(
+    (c) => normalize(c.canonical) === normalize(canonical)
+  );
+
+  const names = Array.from(
+    new Set(
+      [
+        canonical,
+        cityEntry?.alias || "",
+        cityEntry?.canonical || "",
+      ].map(clean).filter(Boolean)
+    )
+  ).sort((a, b) => b.length - a.length);
+
+  for (const name of names) {
+    const parts = name
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const cityRe = new RegExp(`(?:^|\\b)${parts.join("\\s+")}(?:\\b|$)`, "i");
+    if (cityRe.test(raw)) {
+      raw = raw.replace(cityRe, " ");
+      break;
+    }
+  }
+
+  raw = clean(raw)
+    .replace(/^(?:soy\s+de|estoy\s+en|vivo\s+en|seria\s+para|sería\s+para|para|en)\s+/i, "")
+    .replace(/^[,;:\-–—\s]+|[,;:\-–—\s]+$/g, "");
+
+  if (!raw) return "";
+
+  const n = normalize(raw);
+  const hasReferenceCue =
+    /\b(?:ex\s+ruta|ruta|km|kilometro|kilómetro|barrio|zona|centro|compania|compañia|fraccion|fracción|calle|avenida|avda|esquina|casi|frente|lado|referencia|numero|nro|manzana|mz|lote)\b/.test(n);
+
+  if (!hasReferenceCue) return "";
+  if (isDeferredLocationMessage(raw)) return "";
+
+  return raw;
+}
+
+function isStrictStandaloneCustomerName(
+  text: string,
+  city: string,
+  parsed?: ParsedTraining
+): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  const words = raw.split(/\s+/).filter(Boolean);
+
+  if (!raw || words.length < 2 || words.length > 5) return false;
+  if (!/^[a-zA-ZÁÉÍÓÚáéíóúÑñ'’.\-\s]+$/.test(raw)) return false;
+  if (/\d/.test(raw)) return false;
+  if (isQuestionLikeMessage(raw) || isPoliteClosingOrAcknowledgement(raw)) return false;
+  if (isDeferredLocationMessage(raw) || isConversationalLocationPhrase(raw)) return false;
+  if (city && normalize(city) === n) return false;
+  if (parsed && configuredCityInsideMessage(raw, parsed)) return false;
+  if (parsed && isContaminatedCustomerName(raw, parsed)) return false;
+
+  const forbidden =
+    /\b(?:ahi|ai|aca|aqui|esta|este|queda|quedo|casa|calle|avenida|avda|ruta|km|kilometro|barrio|zona|centro|esquina|frente|lado|ubicacion|direccion|referencia|delivery|envio|precio|producto|unidad|unidades|quiero|necesito|despues|luego|cuando|gracias|hola|buenas|perfecto|correcto|efectivo|transferencia)\b/;
+
+  return !forbidden.test(n);
+}
+
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const raw = clean(text);
   const previous = canonicalizeStoredCity(prev || "", parsed);
@@ -1715,6 +1851,11 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   // nunca puede convertirse en ciudad. Esta validación no genera mensajes:
   // únicamente conserva el estado para que Gemini responda normalmente.
   if (isPriceQuery(raw)) return previous;
+
+  // V126: una ciudad configurada dentro de una frase siempre gana.
+  // Ejemplos: "Capiatá ex ruta 1", "Luque zona aeropuerto".
+  const configuredInsideMessage = configuredCityInsideMessage(raw, parsed);
+  if (configuredInsideMessage) return configuredInsideMessage;
 
   // PRIMERO: una coincidencia exacta del entrenamiento siempre gana,
   // incluso si contiene números, por ejemplo "Campo 9".
@@ -2573,7 +2714,7 @@ function extractTrailingNameFromCompositeLine(
   return "";
 }
 
-function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining) {
+function extractName(text: string, detectedCity: string, phone: string, parsed?: ParsedTraining, allowImplicitName = false) {
   const normalizedRawNameInput = normalize(text);
   if (/\b(hice mi pedido|ya hice mi pedido|mi pedido|pedido confirmado|pedido realizado)\b/.test(normalizedRawNameInput)) return "";
 
@@ -2609,11 +2750,19 @@ function extractName(text: string, detectedCity: string, phone: string, parsed?:
       words.length > 5 ||
       /\d/.test(candidate) ||
       /\b(calle|avenida|avda|barrio|ciudad|delivery|envio|precio|producto|unidad|unidades)\b/.test(candidateNorm) ||
+      isDeferredLocationMessage(candidate) ||
+      isConversationalLocationPhrase(candidate) ||
       (parsed ? isContaminatedCustomerName(candidate, parsed) : false);
 
     if (!forbiddenExplicitName) return toTitleCase(candidate);
   }
 
+  // V126: frases conversacionales o de ubicación nunca son nombres.
+  if (isDeferredLocationMessage(raw) || isConversationalLocationPhrase(raw)) return "";
+
+  // Los nombres implícitos solo se aceptan cuando el flujo está esperando nombre.
+  if (!allowImplicitName) return "";
+  if (!isStrictStandaloneCustomerName(raw, detectedCity, parsed)) return "";
 
   const trailingCompositeName = extractTrailingNameFromCompositeLine(
     raw,
@@ -2820,13 +2969,23 @@ function stripPhoneFromAddress(value: string, phone?: string): string {
     .trim();
 }
 
-function extractAddress(text: string, detectedCity: string, phone: string, name: string) {
+function extractAddress(text: string, detectedCity: string, phone: string, name: string, parsed?: ParsedTraining) {
   if (isOnlyPurchaseWithSize(text)) {
     return "";
   }
 
   const raw = clean(text);
   const rawNorm = normalize(raw);
+
+  // V126: una ubicación postergada no es una dirección.
+  if (isDeferredLocationMessage(raw)) return "";
+
+  // Ciudad + ruta/km/barrio/zona: guardar solo la referencia.
+  if (parsed) {
+    const cityInMessage = detectedCity || configuredCityInsideMessage(raw, parsed);
+    const cityReference = extractReferenceAfterKnownCity(raw, cityInMessage, parsed);
+    if (cityReference) return stripPhoneFromAddress(cityReference, phone);
+  }
 
   // V123: una consulta o confirmación de precio jamás puede ser dirección,
   // aunque contenga varios números o más de tres palabras.
@@ -3634,7 +3793,9 @@ function recoverRecentValidNameFromHistory(
   phone: string,
   parsed: ParsedTraining
 ): string {
-  const list = Array.isArray(history) ? history.slice(-50).reverse() : [];
+  // V126: nunca inferir nombres desde frases antiguas.
+  // Solo recuperar declaraciones explícitas.
+  const list = Array.isArray(history) ? history.slice(-30).reverse() : [];
 
   for (const item of list) {
     if (!isIncomingHistoryItem(item)) continue;
@@ -3642,11 +3803,18 @@ function recoverRecentValidNameFromHistory(
     const value = getHistoryText(item);
     if (!value) continue;
 
-    const candidate = extractName(value, city, phone, parsed);
+    const n = normalize(value);
+    const explicit =
+      /\b(?:mi nombre es|me llamo|nombre\s*:)\b/.test(n) ||
+      /^soy\s+[a-záéíóúñ]+\s+[a-záéíóúñ]+(?:\s+[a-záéíóúñ]+){0,3}$/i.test(n);
+
+    if (!explicit) continue;
+
+    const candidate = extractName(value, city, phone, parsed, true);
 
     if (
       candidate &&
-      candidate.split(/\s+/).filter(Boolean).length >= 2 &&
+      isStrictStandaloneCustomerName(candidate, city, parsed) &&
       !isContaminatedCustomerName(candidate, parsed)
     ) {
       return candidate;
@@ -4722,6 +4890,7 @@ function shouldConfirmOrder(state: ConversationState) {
   if (
     confirmationWords.length < 2 ||
     /\d/.test(o.customer_name) ||
+    !isStrictStandaloneCustomerName(o.customer_name, o.city) ||
     /\b(nombre|apellido|cliente|usuario|contacto|y apellido)\b/.test(confirmationName) ||
     /\b(noo+|nop+|qro|kiero|quiero|voia|voy|poder|solo|solamente|pra|prfavor|porfa|favor|combo|promo|crema|producto|para mi)\b/.test(confirmationName) ||
     /^(yo|no|noo+|nop+|n|qro|kiero|quiero|solo|solamente)\b/.test(confirmationName) ||
@@ -7050,7 +7219,8 @@ export default async function handler(req: any, res: any) {
         texto,
         effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
         phone,
-        parsed
+        parsed,
+        prevStep === "collecting_name"
       );
     } catch (error) {
       console.error("⚠️ extractName falló; se continúa sin nombre:", error);
@@ -7079,7 +7249,8 @@ export default async function handler(req: any, res: any) {
         texto,
         effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
         phone,
-        name
+        name,
+        parsed
       );
     } catch (error) {
       console.error("⚠️ extractAddress falló; se continúa sin dirección:", error);
@@ -7284,12 +7455,20 @@ export default async function handler(req: any, res: any) {
         null;
     }
 
-    // V110: ninguna ciudad puede quedar guardada como nombre del cliente.
+    // V110/V126: ninguna ciudad, referencia o frase conversacional
+    // puede quedar guardada como nombre.
     if (
       orderData.customer_name &&
-      isInvalidCustomerNameForOrder(orderData.customer_name, orderData.city, parsed)
+      (
+        isInvalidCustomerNameForOrder(orderData.customer_name, orderData.city, parsed) ||
+        !isStrictStandaloneCustomerName(orderData.customer_name, orderData.city, parsed)
+      )
     ) {
       orderData.customer_name = "";
+    }
+
+    if (orderData.address && isDeferredLocationMessage(orderData.address)) {
+      orderData.address = "";
     }
 
     const proofReceived = hasPaymentProof(context, texto, media_url, media_type || mime_type);
