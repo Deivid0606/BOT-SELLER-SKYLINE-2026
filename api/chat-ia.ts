@@ -2,6 +2,8 @@ import { createClient } from "@supabase/supabase-js";
 
 /**
  * V140: después de una compra confirmada, otro producto abre una venta nueva y reenvía imagen/copy; solo agrega al pedido con intención explícita de mismo pedido.
+ * V141: un producto nuevo con interés explícito reinicia cualquier carrito/estado viejo antes de procesarlo y reenvía imagen + copy.
+ * V140: otro producto tras una compra abre venta nueva salvo intención explícita de agregar al mismo pedido.
  * V139: pide un solo dato por respuesta; captura ciudad y cantidad combinadas y, si llega solo cantidad, conserva la cantidad y pregunta únicamente ciudad.
  * V138: bloquea cantidades antes de detectar ciudad, conserva ciudad ante departamentos/regiones y reinicia pedidos confirmados vencidos.
  * V137: corrige postventa multiproducto, persiste teléfono alternativo y exige una ubicación completa (no solo km/barrio).
@@ -6875,15 +6877,44 @@ export default async function handler(req: any, res: any) {
     const mentionedNewProduct =
       productsMentionedNow.length === 1 ? productsMentionedNow[0] : null;
     const previousConfirmedProduct = getProductInfo(confirmedOrderNow.product, parsed);
-    const isDifferentProductAfterConfirmed =
-      !!mentionedNewProduct &&
-      (!previousConfirmedProduct ||
-        normalize(mentionedNewProduct.canonical) !== normalize(previousConfirmedProduct.canonical));
     const explicitSameOrderAdd = hasExplicitSameOrderAddIntent(texto);
 
+    // V141: el estado puede haber quedado contaminado en una etapa multiproducto
+    // (por ejemplo collecting_multiple_product_quantities). En ese caso no alcanza
+    // con revisar únicamente pedido_confirmado: el carrito viejo se procesaría antes
+    // y respondería con el producto anterior. Reunimos todos los productos activos
+    // del contexto y damos prioridad absoluta al nuevo interés explícito.
+    const contextProductNames = Array.from(new Set([
+      clean(confirmedOrderNow.product),
+      clean(context?.current_product),
+      ...(Array.isArray(context?.multi_product_cart)
+        ? context.multi_product_cart.map((item: any) => clean(item?.product))
+        : []),
+      ...(Array.isArray(context?.pending_multiple_products)
+        ? context.pending_multiple_products.map((item: any) => clean(item?.product || item))
+        : []),
+    ].filter(Boolean).map(normalize)));
+
+    const hasPreviousCommerceState =
+      contextProductNames.length > 0 ||
+      confirmedStepNow ||
+      /^(collecting_multiple_|pedido_confirmado|collecting_quantity|collecting_city|collecting_name|collecting_address)/.test(clean(context?.step));
+
+    const isDifferentProductFromActiveContext =
+      !!mentionedNewProduct &&
+      !contextProductNames.includes(normalize(mentionedNewProduct.canonical));
+
+    const explicitNewProductInterest =
+      !!mentionedNewProduct &&
+      (hasExplicitProductInterestPhrase(texto) ||
+        isBuyIntent(texto) ||
+        isPriceQuery(texto) ||
+        /\b(tenes|tenés|hay|disponible|informacion|información|precio|me interesa|quiero|necesito)\b/.test(normalize(texto)));
+
     if (
-      confirmedStepNow &&
-      isDifferentProductAfterConfirmed &&
+      hasPreviousCommerceState &&
+      isDifferentProductFromActiveContext &&
+      explicitNewProductInterest &&
       !explicitSameOrderAdd
     ) {
       const newOrder = emptyOrder(makeOrderId(fromNumber));
@@ -6942,7 +6973,8 @@ export default async function handler(req: any, res: any) {
           updated_at: new Date().toISOString(),
         },
         debug: {
-          v140_new_sale_after_confirmed: true,
+          v141_new_sale_preempts_old_context: true,
+          v140_new_sale_after_confirmed: confirmedStepNow,
           previous_product: previousConfirmedProduct?.canonical || null,
           new_product: mentionedNewProduct!.canonical,
           explicit_same_order_add: false,
