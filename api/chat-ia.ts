@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V137: corrige postventa multiproducto, persiste teléfono alternativo y exige una ubicación completa (no solo km/barrio).
  * V136: dirección o ubicación obligatoria para zonas cubiertas y fecha/hora real de Paraguay en consultas temporales.
  * V135: informa cobertura, horario y plazo al capturar/corregir cualquier ciudad cubierta, con o sin cantidad y también en packs fijos.
  * V134: pago anticipado automático; envía datos bancarios al definir ciudad/cantidad, usa pagador válido como cliente y fuerza cierre directo.
@@ -3052,6 +3053,37 @@ function stripPhoneFromAddress(value: string, phone?: string): string {
     .trim();
 }
 
+
+function isSufficientDeliveryLocation(value: any): boolean {
+  const raw = clean(value);
+  const n = normalize(raw);
+  if (!raw) return false;
+
+  // Google Maps o coordenadas precisas completan la ubicación.
+  if (
+    /maps\.app\.goo\.gl|google\.[^/\s]+\/maps|google\.com\/maps/i.test(raw) ||
+    /-?\d{2}\.\d{3,}\s*,\s*-?\d{2}\.\d{3,}/.test(raw)
+  ) return true;
+
+  // Una referencia aislada no es una dirección suficiente:
+  // "km 21", "barrio San Miguel", "cerca de la plaza", etc.
+  const onlyReference =
+    /^(?:ex\s+)?ruta\s*\d+(?:\s*,?\s*km\s*\d+(?:[.,]\d+)?)?$/.test(n) ||
+    /^km\s*\d+(?:[.,]\d+)?$/.test(n) ||
+    /^(?:barrio|bario|compania|compañia|zona|cerca de|frente a|al lado de)\b.{0,70}$/.test(n);
+
+  if (onlyReference) return false;
+
+  const hasStreetOrHouse =
+    /\b(calle|avenida|avda|casa|numero|nro|manzana|mz|lote|edificio|piso|departamento|dpto|porton|portón|esquina|casi)\b/.test(n);
+
+  const hasUsefulDetail =
+    raw.split(/\s+/).filter(Boolean).length >= 4 &&
+    /\b(barrio|ruta|km|calle|avenida|avda|casa|numero|nro|manzana|mz|lote|edificio|piso|departamento|dpto|porton|portón|esquina|casi|frente|lado)\b/.test(n);
+
+  return hasStreetOrHouse || hasUsefulDetail;
+}
+
 function extractAddress(text: string, detectedCity: string, phone: string, name: string, parsed?: ParsedTraining) {
   if (isOnlyPurchaseWithSize(text)) {
     return "";
@@ -4708,7 +4740,7 @@ function nextStep(order: OrderData, coverage: boolean | null, addressOptional = 
   }
 
   if (!order.customer_name) return "collecting_name";
-  if (!addressOptional && !order.address) return "collecting_address";
+  if (!addressOptional && !isSufficientDeliveryLocation(order.address)) return "collecting_address";
   return "confirm_order";
 }
 
@@ -4720,7 +4752,7 @@ function getMissing(order: OrderData, coverage: boolean | null, addressOptional 
 
   if (order.product && order.city && order.quantity) {
     if (!order.customer_name) missing.push("nombre y apellido");
-    if (coverage !== false && !addressOptional && !order.address) missing.push("dirección escrita o ubicación por Google Maps");
+    if (coverage !== false && !addressOptional && !isSufficientDeliveryLocation(order.address)) missing.push("dirección escrita o ubicación por Google Maps");
     if (coverage === false && !order.payment_proof_verified) missing.push("comprobante de transferencia verificado");
   }
 
@@ -5014,7 +5046,7 @@ function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState) 
   if (!state.productInfo) return false;
 
   if (state.coverage !== false) {
-    return state.addressOptional || Boolean(clean(o.address));
+    return state.addressOptional || isSufficientDeliveryLocation(o.address);
   }
 
   return Boolean(o.payment_proof_verified);
@@ -6761,6 +6793,32 @@ export default async function handler(req: any, res: any) {
     const productsMentionedNow = detectProductsMentioned(texto, parsed);
     let activeMultiCart = getMultiCartFromContext(context, parsed);
 
+    // V137: algunos conectores pueden conservar step/current_product pero perder
+    // multi_product_cart entre el copy del producto agregado y la respuesta de cantidad.
+    // Reconstruimos el carrito desde el pedido confirmado + producto pendiente.
+    if (
+      activeMultiCart.length < 2 &&
+      context?.step === "collecting_multiple_product_quantities" &&
+      clean(context?.current_product)
+    ) {
+      const confirmedBase = sanitizeOldOrder(context?.order_data || {}, parsed);
+      const pendingProduct = getProductInfo(clean(context.current_product), parsed);
+      const previousProduct = getProductInfo(confirmedBase.product, parsed);
+
+      if (
+        pendingProduct &&
+        previousProduct &&
+        normalize(pendingProduct.canonical) !== normalize(previousProduct.canonical)
+      ) {
+        activeMultiCart = createMultiCartFromConfirmedOrder(
+          confirmedBase,
+          pendingProduct,
+          "",
+          parsed
+        );
+      }
+    }
+
     // V57: iniciar carrito multiproducto con respuesta breve.
     // Si el cliente ya indicó cantidades (ej. "1 peladora y 1 afilador"),
     // no repetimos información: calculamos el carrito y avanzamos.
@@ -6879,7 +6937,7 @@ export default async function handler(req: any, res: any) {
           commonOrder.city &&
           commonOrder.customer_name &&
           commonOrder.phone &&
-          (addressOptionalNow || clean(commonOrder.address))
+          (addressOptionalNow || isSufficientDeliveryLocation(commonOrder.address))
         ) {
           await saveMultiProductOrders(user_id, fromNumber, activeMultiCart, commonOrder, parsed, multiOrderId);
           return res.json({
@@ -6900,7 +6958,7 @@ export default async function handler(req: any, res: any) {
         const missingCustomer = [
           !commonOrder.customer_name ? "nombre y apellido" : "",
           !commonOrder.city ? "ciudad" : "",
-          !addressOptionalNow && !clean(commonOrder.address) ? "dirección escrita o ubicación por Google Maps" : "",
+          !addressOptionalNow && !isSufficientDeliveryLocation(commonOrder.address) ? "dirección escrita o ubicación por Google Maps" : "",
         ].filter(Boolean);
 
         return res.json({
@@ -6942,7 +7000,7 @@ export default async function handler(req: any, res: any) {
       const addressOptional = isAddressOptionalByTraining(parsed, coverage);
       const missingData: string[] = [];
       if (!commonOrder.customer_name) missingData.push("nombre y apellido");
-      if (!addressOptional && !commonOrder.address) missingData.push("dirección escrita o ubicación por Google Maps");
+      if (!addressOptional && !isSufficientDeliveryLocation(commonOrder.address)) missingData.push("dirección escrita o ubicación por Google Maps");
 
       if (missingData.length > 0) {
         return res.json({
@@ -7089,6 +7147,18 @@ export default async function handler(req: any, res: any) {
         forceFreshOrderFromConfirmedTemplate = true;
         oldOrder = emptyOrder(makeOrderId(fromNumber));
       } else {
+        // V137: persistir realmente un nuevo número indicado para coordinar
+        // la entrega. La respuesta de Gemini no puede limitarse a prometer el cambio.
+        const postSalePhone = extractPhone(texto);
+        const asksToUseNewPhone =
+          !!postSalePhone &&
+          /\b(escriban|escribile|contacten|contactar|llamen|llamar|coordinen|coordinar|numero|número|telefono|teléfono|celular|ella|el encargado|encargado|contacto)\b/.test(normalize(texto));
+
+        if (asksToUseNewPhone) {
+          oldOrder.phone = senderPhoneFallback(postSalePhone) || postSalePhone;
+          await safeUpsertOrder(user_id, fromNumber, oldOrder, parsed, true);
+        }
+
         // V52: después de confirmar, un dato adicional de ubicación (por ejemplo
         // "Barrio San Ramón") complementa la dirección. Nunca debe reemplazar
         // el nombre del cliente ni iniciar otro pedido.
