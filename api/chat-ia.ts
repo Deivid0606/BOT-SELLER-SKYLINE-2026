@@ -292,10 +292,10 @@ function isPriceQuery(text: string) {
   // V121: reconoce errores frecuentes al escribir "precio" para impedir que
   // mensajes como "presio" se interpreten como ciudad, nombre o dirección.
   const explicitPriceWord =
-    /\b(precio|presio|presyo|prezio|preio|prcio|pecio|prescio|precios|presios|valor|costo|cuesta|cuestan|sale|vale)\b/.test(m);
+    /\b(precio|presio|presyo|prezio|preio|prcio|pecio|prescio|precios|presios|valor|costo|cuesta|cuestan|sale|vale|total|subtotal|suma)\b/.test(m);
 
   const explicitPricePhrase =
-    /\b(cuanto cuesta|cuanto sale|cuanto vale|cual es el precio|que precio|precio porfa|precio por favor|presio porfa|presio por favor|prezio porfa|prezio por favor)\b/.test(m);
+    /\b(cuanto cuesta|cuanto sale|cuanto vale|cual es el precio|que precio|precio porfa|precio por favor|presio porfa|presio por favor|prezio porfa|prezio por favor|cuanto me queda|cuanto seria todo|cuanto es todo|cuanto queda en total|total del pedido|total de ambos|total de los dos)\b/.test(m);
 
   // V123: también reconoce confirmaciones numéricas del precio aunque el
   // cliente no escriba la palabra “precio”. Ejemplos:
@@ -1217,6 +1217,86 @@ function multiCartSummary(cart: MultiCartItem[]) {
 
 function multiCartMissingQuantities(cart: MultiCartItem[]) {
   return cart.filter((i) => i.quantity <= 0).map((i) => i.product);
+}
+
+function isMultiCartTotalQuery(text: string) {
+  const n = normalize(text);
+  if (!n) return false;
+  return /\b(total|subtotal|suma|cuanto me queda|cuanto seria todo|cuanto es todo|cuanto queda|entre los dos|ambos productos|todo junto)\b/.test(n);
+}
+
+function createMultiCartFromConfirmedOrder(
+  confirmedOrder: OrderData,
+  newProduct: ProductItem,
+  text: string,
+  parsed: ParsedTraining
+): MultiCartItem[] {
+  const previousProduct = getProductInfo(confirmedOrder.product, parsed);
+  const cart: MultiCartItem[] = [];
+
+  if (previousProduct && sanitizeQuantity(confirmedOrder.quantity) > 0) {
+    cart.push({
+      product: previousProduct.canonical,
+      quantity: sanitizeQuantity(confirmedOrder.quantity),
+      unit_price: previousProduct.price1 || 0,
+      total: calculateTotal(
+        previousProduct.canonical,
+        sanitizeQuantity(confirmedOrder.quantity),
+        parsed,
+        confirmedOrder.locked_offer || null
+      ),
+    });
+  }
+
+  const sameProduct = cart.some(
+    (item) => normalize(item.product) === normalize(newProduct.canonical)
+  );
+
+  if (!sameProduct) {
+    const explicitQuantity =
+      extractQuantityForNamedProduct(text, newProduct) ||
+      extractQuantity(text) ||
+      newProduct.fixedPackQuantity ||
+      0;
+
+    cart.push({
+      product: newProduct.canonical,
+      quantity: sanitizeQuantity(explicitQuantity),
+      unit_price: newProduct.price1 || 0,
+      total:
+        explicitQuantity > 0
+          ? calculateTotal(newProduct.canonical, explicitQuantity, parsed, null)
+          : 0,
+    });
+  }
+
+  return cart;
+}
+
+function buildMultiProductFinalConfirmation(
+  cart: MultiCartItem[],
+  order: OrderData,
+  coverage: boolean
+) {
+  const location = clean(order.address)
+    ? `${clean(order.city)} — ${clean(order.address)}`
+    : `${clean(order.city)} — ubicación pendiente para coordinar con el delivery`;
+
+  return `✅ PEDIDO CONFIRMADO
+
+${multiCartSummary(cart)}
+
+👤 Cliente: ${order.customer_name}
+📍 Ubicación: ${location}
+📞 Contacto: ${order.phone}${observationBlock(order)}
+
+${coverage
+  ? "🚚 Envío GRATIS\n💵 Pagás al recibir en efectivo o por transferencia al delivery."
+  : "🚚 Envío por transportadora\n💳 Pago anticipado requerido."}
+
+Nuestro equipo se pondrá en contacto para coordinar la entrega. 📲
+
+¡Muchas gracias por tu compra! 💜`;
 }
 
 async function saveMultiProductOrders(
@@ -6681,6 +6761,21 @@ export default async function handler(req: any, res: any) {
       activeMultiCart = applyQuantitiesToMultiCart(texto, activeMultiCart, parsed);
       const missingQty = multiCartMissingQuantities(activeMultiCart);
 
+      if (isMultiCartTotalQuery(texto) && missingQty.length > 0) {
+        return res.json({
+          response: `Para calcular el total exacto, primero necesito la cantidad de:\n${missingQty.map((p) => `• ${p}`).join("\n")}\n\n¿Cuántas unidades querés agregar?`,
+          context: {
+            ...(context || {}),
+            order_data: commonOrder,
+            multi_product_cart: activeMultiCart,
+            multi_order_id: multiOrderId,
+            step: "collecting_multiple_product_quantities",
+            updated_at: new Date().toISOString(),
+          },
+          debug: { multi_cart_total_waiting_for_quantity: true },
+        });
+      }
+
       if (context?.step === "collecting_multiple_product_quantities" || missingQty.length > 0) {
         if (missingQty.length > 0) {
           return res.json({
@@ -6696,9 +6791,39 @@ export default async function handler(req: any, res: any) {
           });
         }
 
+        const coverageNow = hasCoverage(commonOrder.city, parsed);
+        const addressOptionalNow = isAddressOptionalByTraining(parsed, coverageNow);
+
+        if (
+          commonOrder.city &&
+          commonOrder.customer_name &&
+          commonOrder.phone &&
+          (addressOptionalNow || clean(commonOrder.address))
+        ) {
+          await saveMultiProductOrders(user_id, fromNumber, activeMultiCart, commonOrder, parsed, multiOrderId);
+          return res.json({
+            response: buildMultiProductFinalConfirmation(activeMultiCart, commonOrder, coverageNow),
+            context: {
+              ...(context || {}),
+              order_data: commonOrder,
+              multi_product_cart: activeMultiCart,
+              multi_order_id: multiOrderId,
+              step: "pedido_confirmado_multiple",
+              updated_at: new Date().toISOString(),
+            },
+            debug: { multi_product_order_confirmed_after_quantity: true },
+          });
+        }
+
         const nextStep = commonOrder.city ? "collecting_multiple_customer_data" : "collecting_multiple_city";
+        const missingCustomer = [
+          !commonOrder.customer_name ? "nombre y apellido" : "",
+          !commonOrder.city ? "ciudad" : "",
+          !addressOptionalNow && !clean(commonOrder.address) ? "dirección exacta o ubicación" : "",
+        ].filter(Boolean);
+
         return res.json({
-          response: `${multiCartSummary(activeMultiCart)}\n\n${commonOrder.city ? "Ahora pasame tu nombre y apellido, dirección exacta. El celular es opcional; si no lo pasás usamos este WhatsApp. 📲" : "📍 ¿Para qué ciudad sería el envío? 😊"}`,
+          response: `${multiCartSummary(activeMultiCart)}\n\n${missingCustomer.length ? `Para finalizar me falta:\n✅ ${missingCustomer.join("\n✅ ")}` : "Ya tengo los datos del pedido."}`,
           context: {
             ...(context || {}),
             order_data: commonOrder,
@@ -6732,12 +6857,13 @@ export default async function handler(req: any, res: any) {
       const multiObservationPatch = extractOrderObservation(texto);
       Object.assign(commonOrder, mergeOrderObservation(commonOrder, multiObservationPatch));
 
+      const coverage = hasCoverage(commonOrder.city, parsed);
+      const addressOptional = isAddressOptionalByTraining(parsed, coverage);
       const missingData: string[] = [];
       if (!commonOrder.customer_name) missingData.push("nombre y apellido");
-      if (!commonOrder.address) missingData.push("dirección exacta o ubicación");
+      if (!addressOptional && !commonOrder.address) missingData.push("dirección exacta o ubicación");
 
       if (missingData.length > 0) {
-        const coverage = hasCoverage(commonOrder.city, parsed);
         return res.json({
           response: `${coverage ? `✅ Tenemos cobertura en ${commonOrder.city}.` : `😊 Hasta ${commonOrder.city} podemos enviarte por transportadora.`}\n\n${multiCartSummary(activeMultiCart)}\n\nPara finalizar me falta:\n✅ ${missingData.join("\n✅ ")}`,
           context: { ...(context || {}), order_data: commonOrder, multi_product_cart: activeMultiCart, multi_order_id: multiOrderId, step: "collecting_multiple_customer_data", updated_at: new Date().toISOString() },
@@ -6745,9 +6871,8 @@ export default async function handler(req: any, res: any) {
       }
 
       await saveMultiProductOrders(user_id, fromNumber, activeMultiCart, commonOrder, parsed, multiOrderId);
-      const coverage = hasCoverage(commonOrder.city, parsed);
       return res.json({
-        response: `✅ PEDIDO CONFIRMADO\n\n${multiCartSummary(activeMultiCart)}\n\n👤 Cliente: ${commonOrder.customer_name}\n📍 Ciudad: ${commonOrder.city}\n🏠 Dirección: ${commonOrder.address}\n📞 Contacto: ${commonOrder.phone}${observationBlock(commonOrder)}\n\n${coverage ? "🚚 Envío contra entrega. Pagás al recibir." : "🚚 Envío por transportadora con pago anticipado."}\n\n¡Gracias por tu compra! 💜`,
+        response: buildMultiProductFinalConfirmation(activeMultiCart, commonOrder, coverage),
         context: { ...(context || {}), order_data: commonOrder, multi_product_cart: activeMultiCart, multi_order_id: multiOrderId, step: "pedido_confirmado_multiple", updated_at: new Date().toISOString() },
         debug: { multi_product_order_confirmed: true, items: activeMultiCart.length, group_id: multiOrderId },
       });
@@ -6784,6 +6909,59 @@ export default async function handler(req: any, res: any) {
     }
 
     let forceFreshOrderFromConfirmedTemplate = false;
+
+    // V132: agregar un producto nuevo a un pedido ya confirmado.
+    // Este bloque debe ejecutarse ANTES del flujo genérico de postventa para
+    // conservar el pedido anterior, presentar el copy + imagen del producto
+    // nuevo y abrir correctamente el carrito multiproducto.
+    if (
+      (context?.step === "pedido_confirmado" || context?.step === "pedido_confirmado_multiple") &&
+      productsMentionedNow.length === 1
+    ) {
+      const newProduct = productsMentionedNow[0];
+      const previousProduct = getProductInfo(oldOrder.product, parsed);
+      const isDifferentProduct =
+        !!previousProduct &&
+        normalize(previousProduct.canonical) !== normalize(newProduct.canonical);
+      const addIntent =
+        hasExplicitProductInterestPhrase(texto) ||
+        /\b(tambien|también|ademas|además|sumar|agregar|agregame|agregáme|llevar|quiero|dame|y la|y el)\b/.test(normalize(texto));
+
+      if (isDifferentProduct && addIntent) {
+        const multiOrderId = clean(context?.multi_order_id) || makeOrderId(fromNumber);
+        const cart = createMultiCartFromConfirmedOrder(oldOrder, newProduct, texto, parsed);
+        const missingQty = multiCartMissingQuantities(cart);
+        const images = newProduct.images?.length ? newProduct.images.slice(0, 3) : undefined;
+        const copy = clean(newProduct.salesCopy || "") || `📦 ${newProduct.canonical}\n${productOffersText(newProduct)}`;
+
+        return res.json({
+          response: copy,
+          follow_up_response: missingQty.length
+            ? `Podemos agregarlo al mismo pedido 😊\n\n¿Cuántas unidades de ${newProduct.canonical} querés llevar?`
+            : `${multiCartSummary(cart)}\n\nYa tengo tus datos de entrega. El pedido se actualizará con ambos productos.`,
+          media_urls: images,
+          context: {
+            ...(context || {}),
+            order_data: oldOrder,
+            current_product: newProduct.canonical,
+            last_topic: newProduct.canonical,
+            pending_multiple_products: cart.map((item) => item.product),
+            multi_product_cart: cart,
+            multi_order_id: multiOrderId,
+            step: missingQty.length
+              ? "collecting_multiple_product_quantities"
+              : "collecting_multiple_customer_data",
+            updated_at: new Date().toISOString(),
+          },
+          debug: {
+            add_product_to_confirmed_order: true,
+            previous_product: previousProduct?.canonical,
+            new_product: newProduct.canonical,
+            image_count: images?.length || 0,
+          },
+        });
+      }
+    }
 
     if (context?.step === "pedido_confirmado") {
       const msgNormClosed = normalize(texto);
