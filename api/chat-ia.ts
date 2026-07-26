@@ -1,21 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * V148: la IA redacta la pregunta de ciudad y el backend bloquea la ciudad al recibir un nombre válido, incluso si context.step llega atrasado; conserva todas las correcciones de pagos anticipados V147.
- * V147: los comprobantes enviados como imagen/PDF conservan y recuperan producto, cantidad, oferta, ciudad y total; el pago anticipado confirma directamente cuando los datos coinciden.
- * V146: cuando el flujo espera nombre, una respuesta de nombre no puede reemplazar ciudad/cobertura; mejora el nombre canónico de productos y bloquea titulares publicitarios.
- * V145: confirma comprobantes legibles sin exigir la palabra “exitosa” cuando pagador, destinatario y monto coinciden y no existe estado pendiente o negativo.
- * V144: separa transferencia exitosa de acreditación pendiente; comprobante válido confirma inmediatamente y muestra verificación + cierre en una sola respuesta.
- * V143: preserva ciudades reales no listadas entre turnos, impide que cantidades reemplacen ciudad/cobertura y reconoce variantes como procesador/procesadora.
- * V140: después de una compra confirmada, otro producto abre una venta nueva y reenvía imagen/copy; solo agrega al pedido con intención explícita de mismo pedido.
- * V141: un producto nuevo con interés explícito reinicia cualquier carrito/estado viejo antes de procesarlo y reenvía imagen + copy.
- * V140: otro producto tras una compra abre venta nueva salvo intención explícita de agregar al mismo pedido.
- * V139: pide un solo dato por respuesta; captura ciudad y cantidad combinadas y, si llega solo cantidad, conserva la cantidad y pregunta únicamente ciudad.
- * V138: bloquea cantidades antes de detectar ciudad, conserva ciudad ante departamentos/regiones y reinicia pedidos confirmados vencidos.
- * V137: corrige postventa multiproducto, persiste teléfono alternativo y exige una ubicación completa (no solo km/barrio).
- * V136: dirección o ubicación obligatoria para zonas cubiertas y fecha/hora real de Paraguay en consultas temporales.
- * V135: informa cobertura, horario y plazo al capturar/corregir cualquier ciudad cubierta, con o sin cantidad y también en packs fijos.
- * V134: pago anticipado automático; envía datos bancarios al definir ciudad/cantidad, usa pagador válido como cliente y fuerza cierre directo.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
  * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
  * CHAT IA VENDEDOR AUTÓNOMO V115 - Mega Todo Store / One Store
@@ -32,7 +17,7 @@ import { createClient } from "@supabase/supabase-js";
  * V119 histórico reemplazado por V125: el pagador completa el nombre solo cuando todavía no existe un nombre válido del cliente.
  * V118: conserva comprobantes aunque cambie el order_id interno, nunca exige dirección para transportadora y fuerza el cierre fijo correcto.
  * V112: detecta ciudades en frases con errores como “Yo estoi en Caacupe”, bloquea nombres y direcciones contaminadas.
- * V110 histórico: registraba comprobantes pendientes para revisión manual; V145 solo bloquea estados pendientes o negativos expresos.
+ * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
  * V109: impide usar ciudades como nombre del cliente.
  * V108 histórico: valida destinatario bancario y admite PDF sin texto de estado; V125 usa el pagador como cliente únicamente si falta un nombre válido.
  * V107: verifica titular, monto y estado del comprobante antes de confirmar pagos anticipados.
@@ -307,10 +292,10 @@ function isPriceQuery(text: string) {
   // V121: reconoce errores frecuentes al escribir "precio" para impedir que
   // mensajes como "presio" se interpreten como ciudad, nombre o dirección.
   const explicitPriceWord =
-    /\b(precio|presio|presyo|prezio|preio|prcio|pecio|prescio|precios|presios|valor|costo|cuesta|cuestan|sale|vale|total|subtotal|suma)\b/.test(m);
+    /\b(precio|presio|presyo|prezio|preio|prcio|pecio|prescio|precios|presios|valor|costo|cuesta|cuestan|sale|vale)\b/.test(m);
 
   const explicitPricePhrase =
-    /\b(cuanto cuesta|cuanto sale|cuanto vale|cual es el precio|que precio|precio porfa|precio por favor|presio porfa|presio por favor|prezio porfa|prezio por favor|cuanto me queda|cuanto seria todo|cuanto es todo|cuanto queda en total|total del pedido|total de ambos|total de los dos)\b/.test(m);
+    /\b(cuanto cuesta|cuanto sale|cuanto vale|cual es el precio|que precio|precio porfa|precio por favor|presio porfa|presio por favor|prezio porfa|prezio por favor)\b/.test(m);
 
   // V123: también reconoce confirmaciones numéricas del precio aunque el
   // cliente no escriba la palabra “precio”. Ejemplos:
@@ -343,23 +328,6 @@ function isGenericBuyReply(text: string) {
   if (exact.includes(m)) return true;
 
   return /^(si\s+)?(quiero|lo quiero|me interesa|comprar|compro|dale|ok|listo|confirmo|ese quiero|quiero ese|quiero eso)$/.test(m);
-}
-
-function hasExplicitSameOrderAddIntent(text: string): boolean {
-  const n = normalize(text);
-  if (!n) return false;
-
-  // Solo estas expresiones autorizan unir el nuevo producto al pedido confirmado.
-  // "Me interesa", "quiero" o la mera palabra clave del producto abren venta nueva.
-  return (
-    /\b(tambien|también|ademas|además|sumar|sumale|súmale|agregar|agregame|agregáme|anadir|añadir|añadime|adicional)\b/.test(n) ||
-    /\b(mismo pedido|pedido anterior|junto con|junto al|con el anterior|quiero ambos|los dos productos|en el mismo envio|en el mismo envío)\b/.test(n)
-  );
-}
-
-function buildNaturalSingleProductQuantityPrompt(product: ProductItem): string {
-  const offers = productOffersText(product);
-  return `${offers ? `${offers}\n\n` : ""}¿Cuántas unidades de ${product.canonical} querés llevar?`;
 }
 
 function isAffirmative(text: string) {
@@ -800,10 +768,7 @@ function extractProductNameFromCopy(text: string): string {
     const looksLikeAdvertisingHook =
       /[?¿]/.test(clean(value)) ||
       /^(tu|tus|su|sus|el|la)\s+.+\b(no|nunca|todavia|todavía|ya no)\b/.test(candidateNorm) ||
-      /\b(no corta|no funciona|estas cansado|estás cansado|te cuesta|problema|sufris|sufrís|perdes|perdés tiempo)\b/.test(candidateNorm) ||
-      /\b(mas ligeras|más ligeras|mas ligeros|más ligeros|descansadas|descansados|desde los primeros|resultados visibles|volve a sentir|volvé a sentir|sentite|sentí|cambia tu vida|transforma tu|transformá tu)\b/.test(candidateNorm) ||
-      /\b(dias|días|horas|minutos)\b/.test(candidateNorm) &&
-        /\b(primeros|resultado|resultados|visible|visibles|desde)\b/.test(candidateNorm);
+      /\b(no corta|no funciona|estas cansado|estás cansado|te cuesta|problema|sufris|sufrís|perdes|perdés tiempo)\b/.test(candidateNorm);
 
     if (
       looksLikeAdvertisingHook ||
@@ -815,22 +780,6 @@ function extractProductNameFromCopy(text: string): string {
     if (words.length < 1 || words.length > 10) return "";
     return toTitleCase(candidate);
   };
-
-  // V146: prioriza líneas descriptivas reales del producto antes de cualquier
-  // titular publicitario. Ej.: “Crema de Castaña de Indias – 240 gramos”.
-  const descriptiveProductPatterns = [
-    /(?:^|\n)\s*(?:[\p{Extended_Pictographic}\uFE0F\u200D]+\s*)?((?:crema|gel|serum|sérum|locion|loción|aceite|bálsamo|balsamo|spray|shampoo|champú|jabon|jabón|suplemento|capsulas|cápsulas|vitaminas|procesador|procesadora|afilador|corrector|plantillas|masajeador|depilador|limpiador|organizador|sellador|cortador|picador|triturador|aspiradora|cepillo)(?:\s+(?:de|del|para|con)\s+[^\n–—-]{2,80}|\s+[^\n–—-]{2,80}))(?=\s*(?:[–—-]|\n|$))/imu,
-    /(?:^|\n)\s*(?:[\p{Extended_Pictographic}\uFE0F\u200D]+\s*)?((?:crema|gel|serum|sérum|locion|loción|aceite|bálsamo|balsamo|spray|shampoo|champú|jabon|jabón)\s+[^\n]{2,80})$/imu,
-  ];
-
-  for (const pattern of descriptiveProductPatterns) {
-    const rawCandidate = clean(raw.match(pattern)?.[1])
-      .replace(/\s*[–—-]\s*\d+(?:[.,]\d+)?\s*(?:g|gr|gramos?|ml|mililitros?|kg|kilos?)\b.*$/i, "")
-      .replace(/\s+\d+(?:[.,]\d+)?\s*(?:g|gr|gramos?|ml|mililitros?|kg|kilos?)\b.*$/i, "")
-      .trim();
-    const candidate = accept(rawCandidate);
-    if (candidate) return candidate;
-  }
 
   // Ej.: “Con el Procesador de Alimentos Premium RAF PRO® preparás...”
   const introPatterns = [
@@ -1025,10 +974,6 @@ function singularizeProductWord(word: string) {
   let w = normalize(word);
   if (w.length > 5 && w.endsWith("es")) w = w.slice(0, -2);
   else if (w.length > 4 && w.endsWith("s")) w = w.slice(0, -1);
-
-  // V143: variantes de género frecuentes en nombres comerciales.
-  // "procesadora" debe coincidir con "procesador".
-  if (w.length > 6 && w.endsWith("adora")) w = `${w.slice(0, -1)}`;
   return w;
 }
 
@@ -1272,86 +1217,6 @@ function multiCartSummary(cart: MultiCartItem[]) {
 
 function multiCartMissingQuantities(cart: MultiCartItem[]) {
   return cart.filter((i) => i.quantity <= 0).map((i) => i.product);
-}
-
-function isMultiCartTotalQuery(text: string) {
-  const n = normalize(text);
-  if (!n) return false;
-  return /\b(total|subtotal|suma|cuanto me queda|cuanto seria todo|cuanto es todo|cuanto queda|entre los dos|ambos productos|todo junto)\b/.test(n);
-}
-
-function createMultiCartFromConfirmedOrder(
-  confirmedOrder: OrderData,
-  newProduct: ProductItem,
-  text: string,
-  parsed: ParsedTraining
-): MultiCartItem[] {
-  const previousProduct = getProductInfo(confirmedOrder.product, parsed);
-  const cart: MultiCartItem[] = [];
-
-  if (previousProduct && sanitizeQuantity(confirmedOrder.quantity) > 0) {
-    cart.push({
-      product: previousProduct.canonical,
-      quantity: sanitizeQuantity(confirmedOrder.quantity),
-      unit_price: previousProduct.price1 || 0,
-      total: calculateTotal(
-        previousProduct.canonical,
-        sanitizeQuantity(confirmedOrder.quantity),
-        parsed,
-        confirmedOrder.locked_offer || null
-      ),
-    });
-  }
-
-  const sameProduct = cart.some(
-    (item) => normalize(item.product) === normalize(newProduct.canonical)
-  );
-
-  if (!sameProduct) {
-    const explicitQuantity =
-      extractQuantityForNamedProduct(text, newProduct) ||
-      extractQuantity(text) ||
-      newProduct.fixedPackQuantity ||
-      0;
-
-    cart.push({
-      product: newProduct.canonical,
-      quantity: sanitizeQuantity(explicitQuantity),
-      unit_price: newProduct.price1 || 0,
-      total:
-        explicitQuantity > 0
-          ? calculateTotal(newProduct.canonical, explicitQuantity, parsed, null)
-          : 0,
-    });
-  }
-
-  return cart;
-}
-
-function buildMultiProductFinalConfirmation(
-  cart: MultiCartItem[],
-  order: OrderData,
-  coverage: boolean
-) {
-  const location = clean(order.address)
-    ? `${clean(order.city)} — ${clean(order.address)}`
-    : `${clean(order.city)} — ubicación pendiente para coordinar con el delivery`;
-
-  return `✅ PEDIDO CONFIRMADO
-
-${multiCartSummary(cart)}
-
-👤 Cliente: ${order.customer_name}
-📍 Ubicación: ${location}
-📞 Contacto: ${order.phone}${observationBlock(order)}
-
-${coverage
-  ? "🚚 Envío GRATIS\n💵 Pagás al recibir en efectivo o por transferencia al delivery."
-  : "🚚 Envío por transportadora\n💳 Pago anticipado requerido."}
-
-Nuestro equipo se pondrá en contacto para coordinar la entrega. 📲
-
-¡Muchas gracias por tu compra! 💜`;
 }
 
 async function saveMultiProductOrders(
@@ -1651,7 +1516,7 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
         ? !state.order.customer_name
           ? "Para continuar, pasame tu nombre y apellido."
           : !state.order.address
-            ? "Ahora pasame la dirección escrita o ubicación por Google Maps para la entrega."
+            ? "Ahora pasame la dirección exacta o ubicación para la entrega."
             : ""
         : "¿Cuántas unidades querés llevar?"
       : "📍 ¿Para qué ciudad sería el envío?";
@@ -1668,7 +1533,7 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
     if (!state.order.city) continuation = "📍 ¿Para qué ciudad sería el envío?";
     else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) continuation = "¿Cuántas unidades querés llevar?";
     else if (!state.order.customer_name) continuation = "Para continuar, pasame tu nombre y apellido.";
-    else if (!state.addressOptional && !state.order.address) continuation = "Ahora pasame la dirección escrita o ubicación por Google Maps.";
+    else if (!state.addressOptional && !state.order.address) continuation = "Ahora pasame la dirección exacta o ubicación.";
     
 
     if (state.coverage === false && state.order.city) {
@@ -1696,7 +1561,7 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
   } else if (!state.order.customer_name) {
     continuation = "Para continuar, pasame tu nombre y apellido.";
   } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
-    continuation = "Ahora pasame la dirección escrita o ubicación por Google Maps para la entrega.";
+    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
   }
 
   return `Somos de Asunción y hacemos envíos a todo el país. 😊${continuation ? `\n\n${continuation}` : ""}`;
@@ -1756,27 +1621,10 @@ function isOnlyPurchaseWithSize(text: string): boolean {
   );
 }
 
-function isStandaloneQuantityReply(text: string): boolean {
-  const n = normalize(text);
-  if (!n) return false;
-
-  return /^(?:(?:quiero|llevo|dame|mandame|mándame|preparame|prepárame)\s+)?(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|\d{1,3})(?:\s+(?:unidad|unidades|par|pares|u|und|unds))?(?:\s+para\s+probar)?$/.test(n);
-}
-
-function isDepartmentOrRegionOnlyMessage(text: string): boolean {
-  const n = normalize(text);
-  if (!n) return false;
-
-  return /^(?:central|cordillera|alto parana|caaguazu|guaira|paraguari|presidente hayes|san pedro|itapua|misiones|neembucu|ñeembucu|amambay|canindeyu|concepcion|alto paraguay|boqueron|chaco|capital|distrito capital)$/.test(n);
-}
-
 function isClearlyNotCityMessage(text: string): boolean {
   const raw = clean(text);
   const n = normalize(raw);
   if (!n) return true;
-
-  // V138: cantidades aisladas y departamentos/regiones nunca son ciudades.
-  if (isStandaloneQuantityReply(raw) || isDepartmentOrRegionOnlyMessage(raw)) return true;
 
   // Confirmaciones, negaciones y respuestas conversacionales nunca son ciudades.
   if (/^(si|sii|siii|sip|si asi es|sii asi es|siii asi es|asi es|correcto|exacto|esa es|es esa|ok|ok gracias|dale|listo|no|nop|gracias|muchas gracias|mil gracias|perfecto|esta bien|está bien)$/i.test(n)) return true;
@@ -1836,22 +1684,6 @@ function isCompleteMultiwordLocality(text: string): boolean {
   return words.length >= 3 && words.length <= 6;
 }
 
-function stripTrailingDepartmentOrRegion(value: string): string {
-  let result = clean(value)
-    .replace(/[.,;:]+$/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  const trailingRegion =
-    /\s+(?:chaco|boqueron|boquerón|central|cordillera|alto parana|alto paraná|caaguazu|caaguazú|guaira|guairá|paraguari|paraguarí|presidente hayes|san pedro|itapua|itapúa|misiones|neembucu|ñeembucú|amambay|canindeyu|canindeyú|concepcion|concepción|alto paraguay)$/i;
-
-  while (trailingRegion.test(result)) {
-    result = result.replace(trailingRegion, "").trim();
-  }
-
-  return result;
-}
-
 function canonicalizeStoredCity(value: string, parsed: ParsedTraining): string {
   const raw = clean(value);
   const n = normalize(raw);
@@ -1870,28 +1702,7 @@ function canonicalizeStoredCity(value: string, parsed: ParsedTraining): string {
     }
   }
 
-  // V143: una ciudad real no listada debe conservarse entre turnos.
-  // Antes se eliminaba aquí y, al llegar "Uno", el flujo perdía la ciudad previa.
-  if (
-    !isStandaloneQuantityReply(raw) &&
-    !isDepartmentOrRegionOnlyMessage(raw) &&
-    !isClearlyNotCityMessage(raw) &&
-    !isQuestionLikeMessage(raw)
-  ) {
-    const cleanedUnknown = stripTrailingDepartmentOrRegion(raw);
-    const words = normalize(cleanedUnknown).split(/\s+/).filter(Boolean);
-    if (
-      cleanedUnknown.length >= 3 &&
-      cleanedUnknown.length <= 70 &&
-      words.length >= 1 &&
-      words.length <= 6 &&
-      /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(cleanedUnknown) &&
-      /[a-zA-ZÁÉÍÓÚáéíóúÑñ]/.test(cleanedUnknown)
-    ) {
-      return toTitleCase(cleanedUnknown);
-    }
-  }
-
+  // Un valor viejo o contaminado que no existe en el entrenamiento se elimina.
   return "";
 }
 
@@ -2036,13 +1847,6 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 
   if (!raw) return previous;
 
-  // V138: esta protección debe ejecutarse antes de cualquier retorno temprano.
-  // “Dos” es cantidad; “Chaco” es región/departamento contextual y no reemplaza
-  // una ciudad válida ya capturada.
-  if (isStandaloneQuantityReply(raw) || isDepartmentOrRegionOnlyMessage(raw)) {
-    return previous;
-  }
-
   // V121: una consulta de precio, incluso con errores ortográficos comunes,
   // nunca puede convertirse en ciudad. Esta validación no genera mensajes:
   // únicamente conserva el estado para que Gemini responda normalmente.
@@ -2083,14 +1887,7 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
       /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(earlyStatement) &&
       /[a-zA-ZÁÉÍÓÚáéíóúÑñ]/.test(earlyStatement);
 
-    if (
-      validEarlyLocality &&
-      !isStandaloneQuantityReply(earlyStatement) &&
-      !isDepartmentOrRegionOnlyMessage(earlyStatement) &&
-      !isClearlyNotCityMessage(earlyStatement)
-    ) {
-      return toTitleCase(stripTrailingDepartmentOrRegion(earlyStatement));
-    }
+    if (validEarlyLocality) return toTitleCase(earlyStatement);
   }
 
   // Nunca convertir respuestas comerciales, cantidades, agradecimientos,
@@ -2132,7 +1929,6 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
     /[a-zA-ZÁÉÍÓÚáéíóúÑñ]/.test(candidate);
 
   if (!validLocalityShape) return previous;
-  if (isStandaloneQuantityReply(candidate) || isDepartmentOrRegionOnlyMessage(candidate)) return previous;
 
   // Bloqueo final de expresiones que tienen forma de texto pero no de localidad.
   if (
@@ -2142,7 +1938,7 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
     return previous;
   }
 
-  return toTitleCase(stripTrailingDepartmentOrRegion(candidate));
+  return toTitleCase(candidate);
 }
 
 function hasCoverage(city: string, parsed: ParsedTraining) {
@@ -2844,13 +2640,6 @@ function isPendingTransferStatus(value: string): boolean {
   return /\b(pendiente|en proceso|procesando|solicitamos el envio|solicitado el envio|acreditacion dependera|pendiente de acreditacion|por acreditar|en revision|esperando acreditacion|transferencia enviada)\b/.test(n);
 }
 
-function isExplicitNegativeTransferStatus(value: string): boolean {
-  const n = normalize(value);
-  if (!n) return false;
-
-  return /\b(rechazada|rechazado|rechazo|cancelada|cancelado|cancelacion|fallida|fallido|error|anulada|anulado|devuelta|devuelto|revertida|revertido|no procesada|no procesado|no realizada|no realizado|denegada|denegado|declinada|declinado)\b/.test(n);
-}
-
 
 /**
  * V111: separa nombre cuando ciudad + dirección + cliente llegan en una sola línea.
@@ -3178,37 +2967,6 @@ function stripPhoneFromAddress(value: string, phone?: string): string {
     .replace(/\s{2,}/g, " ")
     .replace(/[\s,;.-]+$/g, "")
     .trim();
-}
-
-
-function isSufficientDeliveryLocation(value: any): boolean {
-  const raw = clean(value);
-  const n = normalize(raw);
-  if (!raw) return false;
-
-  // Google Maps o coordenadas precisas completan la ubicación.
-  if (
-    /maps\.app\.goo\.gl|google\.[^/\s]+\/maps|google\.com\/maps/i.test(raw) ||
-    /-?\d{2}\.\d{3,}\s*,\s*-?\d{2}\.\d{3,}/.test(raw)
-  ) return true;
-
-  // Una referencia aislada no es una dirección suficiente:
-  // "km 21", "barrio San Miguel", "cerca de la plaza", etc.
-  const onlyReference =
-    /^(?:ex\s+)?ruta\s*\d+(?:\s*,?\s*km\s*\d+(?:[.,]\d+)?)?$/.test(n) ||
-    /^km\s*\d+(?:[.,]\d+)?$/.test(n) ||
-    /^(?:barrio|bario|compania|compañia|zona|cerca de|frente a|al lado de)\b.{0,70}$/.test(n);
-
-  if (onlyReference) return false;
-
-  const hasStreetOrHouse =
-    /\b(calle|avenida|avda|casa|numero|nro|manzana|mz|lote|edificio|piso|departamento|dpto|porton|portón|esquina|casi)\b/.test(n);
-
-  const hasUsefulDetail =
-    raw.split(/\s+/).filter(Boolean).length >= 4 &&
-    /\b(barrio|ruta|km|calle|avenida|avda|casa|numero|nro|manzana|mz|lote|edificio|piso|departamento|dpto|porton|portón|esquina|casi|frente|lado)\b/.test(n);
-
-  return hasStreetOrHouse || hasUsefulDetail;
 }
 
 function extractAddress(text: string, detectedCity: string, phone: string, name: string, parsed?: ParsedTraining) {
@@ -4424,7 +4182,7 @@ function buildDeterministicAcknowledgementResponse(text: string, state: Conversa
   } else if (!state.order.customer_name) {
     continuation = "Para completar el pedido, pasame tu nombre y apellido.";
   } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
-    continuation = "Ahora pasame la dirección escrita o ubicación por Google Maps para la entrega.";
+    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
   }
 
   return `${friendlyLead}${continuation ? `\n\n${continuation}` : ""}`;
@@ -4818,21 +4576,15 @@ function isAddressOptionalByTraining(
   // Para transportadora la dirección exacta no forma parte del cierre técnico.
   if (coverage === false) return true;
 
-  const raw = clean([
-    parsed.coverageTraining || "",
-    parsed.generalTraining || "",
-    parsed.raw || "",
-  ].filter(Boolean).join("\n\n"));
+  const raw = clean(parsed.generalTraining || "");
   const n = normalize(raw);
   if (!n) return false;
 
-  // V136: para ciudades cubiertas, una regla explícita que exija dirección
-  // escrita O ubicación de Google Maps siempre vuelve obligatorio este dato.
+  // Una regla explícita de obligatoriedad tiene prioridad cuando no convive
+  // con una regla igualmente explícita de opcionalidad.
   const explicitlyRequired =
-    /\b(direccion|ubicacion|ubicacion de google|google maps|pin|referencia)\b[\s\S]{0,70}\b(obligatoria|obligatorio|indispensable|requerida|requerido|necesaria|necesario)\b/.test(n) ||
-    /\b(obligatoria|obligatorio|indispensable|requerida|requerido|necesaria|necesario)\b[\s\S]{0,70}\b(direccion|ubicacion|google maps|pin|referencia)\b/.test(n) ||
-    /\b(no se puede|no debe|no confirmar|no cerrar)\b[\s\S]{0,80}\b(sin direccion|sin ubicacion|sin google maps|sin pin|sin referencia)\b/.test(n) ||
-    /\b(direccion o ubicacion|direccion exacta o ubicacion|ubicacion por google|ubicacion de google)\b[\s\S]{0,80}\b(antes de confirmar|para confirmar|para cerrar|dato faltante)\b/.test(n);
+    /\b(direccion|ubicacion|referencia)\b[\s\S]{0,45}\b(obligatoria|obligatorio|indispensable|requerida|requerido)\b/.test(n) ||
+    /\b(no se puede|no debe|no confirmar)\b[\s\S]{0,55}\b(sin direccion|sin ubicacion|sin referencia)\b/.test(n);
 
   const explicitlyOptional =
     /\b(direccion|ubicacion|referencia|domicilio)\b[\s\S]{0,55}\b(opcional|no obligatoria|no obligatorio|puede faltar|no es necesaria|no es necesario)\b/.test(n) ||
@@ -4841,7 +4593,7 @@ function isAddressOptionalByTraining(
     /\b(direccion|ubicacion|referencia)\b[\s\S]{0,90}\b(despues|más tarde|mas tarde|al delivery|directamente al delivery)\b/.test(n) ||
     /\b(confirmar|registrar|agendar)\b[\s\S]{0,70}\b(pedido)\b[\s\S]{0,70}\b(sin direccion|sin ubicacion)\b/.test(n);
 
-  if (explicitlyRequired) return false;
+  if (explicitlyRequired && !explicitlyOptional) return false;
   return explicitlyOptional;
 }
 
@@ -4867,7 +4619,7 @@ function nextStep(order: OrderData, coverage: boolean | null, addressOptional = 
   }
 
   if (!order.customer_name) return "collecting_name";
-  if (!addressOptional && !isSufficientDeliveryLocation(order.address)) return "collecting_address";
+  if (!addressOptional && !order.address) return "collecting_address";
   return "confirm_order";
 }
 
@@ -4879,7 +4631,7 @@ function getMissing(order: OrderData, coverage: boolean | null, addressOptional 
 
   if (order.product && order.city && order.quantity) {
     if (!order.customer_name) missing.push("nombre y apellido");
-    if (coverage !== false && !addressOptional && !isSufficientDeliveryLocation(order.address)) missing.push("dirección escrita o ubicación por Google Maps");
+    if (coverage !== false && !addressOptional && !order.address) missing.push("dirección exacta o ubicación");
     if (coverage === false && !order.payment_proof_verified) missing.push("comprobante de transferencia verificado");
   }
 
@@ -5046,7 +4798,7 @@ function buildHardInstruction(state: ConversationState) {
     if (order.locked_offer?.fixed_quantity) {
       return `Confirmar que la promo es un pack fijo de ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs, aclarar que no se vende por unidad y preguntar SOLO ciudad de envío. No pedir nombre/dirección/teléfono todavía.`;
     }
-    return "Preguntar EXCLUSIVAMENTE la ciudad de envío. No preguntar cantidad en esta respuesta. No hacer dos preguntas. Si el cliente ya indicó cantidad en el mensaje actual, conservarla y preguntar únicamente ciudad. No inventar ciudad. No pedir nombre/dirección/teléfono todavía.";
+    return "Confirmar producto/precio/promo y preguntar SOLO ciudad de envío. No inventar ciudad. No pedir nombre/dirección/teléfono todavía.";
   }
 
   if (!order.quantity) {
@@ -5173,7 +4925,7 @@ function hasAllRequiredOrderDataForDirectConfirmation(state: ConversationState) 
   if (!state.productInfo) return false;
 
   if (state.coverage !== false) {
-    return state.addressOptional || isSufficientDeliveryLocation(o.address);
+    return state.addressOptional || Boolean(clean(o.address));
   }
 
   return Boolean(o.payment_proof_verified);
@@ -5678,9 +5430,8 @@ Definiciones:
 - recipient_alias: alias del destinatario.
 - recipient_bank: banco o entidad receptora.
 - amount: monto total transferido como entero, sin puntos.
-- successful: true si el documento muestra claramente operación exitosa, aprobada, completada o equivalente.
-- successful puede ser false cuando el comprobante no incluye una frase explícita de éxito. No inventes esa frase.
-- status_text debe copiar cualquier estado visible, especialmente si dice pendiente, en proceso, rechazada, cancelada, fallida o anulada.
+- successful: true solo si una imagen/captura muestra claramente operación exitosa, aprobada, completada o equivalente.
+- En un PDF bancario, successful puede ser false si el documento no trae una frase explícita; igual extraé todos los demás datos.
 - readable: true si se leen claramente pagador, monto y al menos un dato del destinatario.
 - No confundas al pagador con el beneficiario.
 
@@ -5713,176 +5464,22 @@ No alteres los valores leídos para hacerlos coincidir.`,
   return parsed ? normalizePaymentProofAnalysis(parsed) : fallback;
 }
 
-
-function recoverPaymentOrderSnapshot({
-  orderData,
-  oldOrder,
-  context,
-  history,
-  parsed,
-}: {
-  orderData: OrderData;
-  oldOrder: OrderData;
-  context: any;
-  history: any[];
-  parsed: ParsedTraining;
-}) {
-  const contextOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
-
-  const productCandidates = [
-    orderData.product,
-    oldOrder.product,
-    contextOrder.product,
-    context?.last_ad_product,
-    context?.last_ad_offer?.product,
-    orderData.locked_offer?.product,
-    oldOrder.locked_offer?.product,
-    contextOrder.locked_offer?.product,
-    getProductFromLastPromotion(history, parsed)?.canonical,
-    getLastRealSalesTemplateProduct(history, parsed)?.canonical,
-  ]
-    .map(clean)
-    .filter(Boolean);
-
-  let productInfo: ProductItem | null = null;
-  for (const candidate of productCandidates) {
-    productInfo = getProductInfo(candidate, parsed);
-    if (productInfo) break;
-  }
-
-  const quantityCandidates = [
-    sanitizeQuantity(orderData.quantity),
-    sanitizeQuantity(oldOrder.quantity),
-    sanitizeQuantity(contextOrder.quantity),
-    sanitizeQuantity(orderData.locked_offer?.quantity),
-    sanitizeQuantity(oldOrder.locked_offer?.quantity),
-    sanitizeQuantity(contextOrder.locked_offer?.quantity),
-    sanitizeQuantity(context?.last_ad_offer?.quantity),
-  ].filter((q) => q > 0);
-
-  const quantity = quantityCandidates[0] || 0;
-
-  const offerCandidates = [
-    orderData.locked_offer,
-    oldOrder.locked_offer,
-    contextOrder.locked_offer,
-    context?.last_ad_offer,
-  ];
-
-  let lockedOffer: OfferItem | null = null;
-
-  if (productInfo && quantity > 0) {
-    for (const candidate of offerCandidates) {
-      if (
-        candidate &&
-        normalize(candidate.product) === normalize(productInfo.canonical) &&
-        sanitizeQuantity(candidate.quantity) === quantity &&
-        Number(candidate.total || 0) > 0
-      ) {
-        const normalizedCandidate: OfferItem = {
-          product: productInfo.canonical,
-          quantity,
-          total: Number(candidate.total),
-          label: clean(candidate.label || ""),
-          source: candidate.source || "context",
-          fixed_quantity: Boolean(candidate.fixed_quantity),
-        };
-
-        if (isPlausibleOfferForProduct(normalizedCandidate, productInfo)) {
-          lockedOffer = normalizedCandidate;
-          break;
-        }
-      }
-    }
-
-    if (!lockedOffer) {
-      lockedOffer =
-        getCatalogOffer(productInfo, quantity) ||
-        (
-          productInfo.fixedPackQuantity === quantity
-            ? getCatalogFixedPackOffer(productInfo)
-            : null
-        );
-    }
-  }
-
-  const city =
-    canonicalizeStoredCity(orderData.city || "", parsed) ||
-    canonicalizeStoredCity(oldOrder.city || "", parsed) ||
-    canonicalizeStoredCity(contextOrder.city || "", parsed) ||
-    clean(orderData.city || oldOrder.city || contextOrder.city || "");
-
-  const customerName =
-    clean(orderData.customer_name) ||
-    clean(oldOrder.customer_name) ||
-    clean(contextOrder.customer_name);
-
-  const phone =
-    clean(orderData.phone) ||
-    clean(oldOrder.phone) ||
-    clean(contextOrder.phone);
-
-  const canonicalProduct = productInfo?.canonical || "";
-
-  let expectedAmount =
-    canonicalProduct && quantity > 0
-      ? calculateTotal(canonicalProduct, quantity, parsed, lockedOffer)
-      : 0;
-
-  if (!expectedAmount && lockedOffer?.total) {
-    expectedAmount = Number(lockedOffer.total);
-  }
-
-  const contextTotalCandidates = [
-    Number(context?.total || 0),
-    Number(context?.order_total || 0),
-    Number(context?.expected_payment_amount || 0),
-    Number(context?.order_data?.total || 0),
-  ].filter((value) => Number.isFinite(value) && value > 0);
-
-  if (!expectedAmount && contextTotalCandidates.length) {
-    expectedAmount = contextTotalCandidates[0];
-  }
-
-  return {
-    productInfo,
-    product: canonicalProduct,
-    quantity,
-    lockedOffer,
-    city,
-    customerName,
-    phone,
-    expectedAmount,
-  };
-}
-
 function paymentProofVerificationMessage(order: OrderData, expectedAmount: number): string {
   if (!order.payment_proof_received) return "";
 
-  if (order.payment_proof_verified && !order.payment_manual_review_required) {
-    return `✅ TRANSFERENCIA VERIFICADA
-
-El comprobante es legible y los datos del pago coinciden correctamente.
-
-👤 Pagador: ${order.payment_holder_name}
-💰 Monto recibido: ${formatGs(order.payment_amount || 0)} Gs
-🏦 Destinatario: ${order.payment_recipient_name || "cuenta bancaria configurada"}${order.payment_operation_number ? `
-🔢 Operación: ${order.payment_operation_number}` : ""}
-
-El monto cubre el total del pedido de ${formatGs(expectedAmount)} Gs.`;
-  }
-
-  if (order.payment_manual_review_required) {
-    return `⏳ COMPROBANTE RECIBIDO
-
-El destinatario y el monto coinciden, pero la transferencia todavía figura pendiente de acreditación.
+  if (order.payment_proof_verified) {
+    return `${
+      order.payment_manual_review_required
+        ? "✅ Comprobante recibido\n⏳ Acreditación pendiente de verificación manual"
+        : "✅ Comprobante verificado"
+    }
 
 👤 Pagador detectado: ${order.payment_holder_name}
 💰 Monto detectado: ${formatGs(order.payment_amount || 0)} Gs
-🏦 Destinatario: ${order.payment_recipient_name || "cuenta bancaria configurada"}${order.payment_operation_number ? `
+🏦 Destinatario verificado: ${order.payment_recipient_name || "cuenta bancaria configurada"}${order.payment_operation_number ? `
 🔢 Operación: ${order.payment_operation_number}` : ""}
 
-El pedido todavía no fue confirmado. Se confirmará cuando el pago figure exitoso o acreditado.`;
+El monto cubre el total del pedido de ${formatGs(expectedAmount)} Gs.`;
   }
 
   const details = [
@@ -6060,10 +5657,19 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
 📞 Contacto: ${o.phone}${observationBlock(o)}
 
 🚚 Envío por transportadora
-💳 Comprobante verificado y pago anticipado confirmado
+${o.payment_manual_review_required
+  ? "💳 Comprobante recibido\n⏳ Acreditación pendiente de verificación manual"
+  : "💳 Pago anticipado verificado"}
+👤 Pagador: ${o.payment_holder_name}
+🏦 Destinatario verificado: ${o.payment_recipient_name || parsed.bankData?.titular || "cuenta configurada"}
+💰 Monto recibido: ${formatGs(o.payment_amount || 0)} Gs${o.payment_operation_number ? `
+🔢 Operación: ${o.payment_operation_number}` : ""}
+
+Una vez despachado, te enviaremos el comprobante correspondiente. 📦
 
 ¡Muchas gracias por tu compra! 💜`;
   }
+
   return `✅ PEDIDO CONFIRMADO
 
 📦 Producto: ${o.product}
@@ -6082,194 +5688,14 @@ Nuestro equipo se pondrá en contacto para coordinar la entrega. 📲
 ¡Muchas gracias por tu compra! 💜`;
 }
 
-type CityLogistics = {
-  canonical: string;
-  zone: "CENTRAL" | "FUERA_DE_CENTRAL" | "";
-  deliveryRule: "CORTE_12_30" | "24_A_48_HORAS" | "";
-};
-
-function cityLogisticsFromTraining(city: string, coverageTraining: string): CityLogistics {
-  const target = normalize(city);
-  const fallback: CityLogistics = { canonical: clean(city), zone: "", deliveryRule: "" };
-  if (!target || !coverageTraining) return fallback;
-
-  const lines = coverageTraining
-    .split(/\r?\n/g)
-    .map((line) => clean(line.replace(/^[📍✅✔❌🚚💳\-•]+\s*/, "")))
-    .filter(Boolean);
-
-  for (let i = 0; i < lines.length; i++) {
-    // Una entrada válida tiene nombre, variantes y luego sus etiquetas técnicas.
-    const window = lines.slice(i, i + 10);
-    const zoneLine = window.find((line) => /^ZONA_LOG[IÍ]STICA\s*:/i.test(line));
-    const ruleLine = window.find((line) => /^REGLA_ENTREGA\s*:/i.test(line));
-    const coverageLine = window.find((line) => /^COBERTURA\s*:/i.test(line));
-
-    if (!zoneLine || !ruleLine || !coverageLine) continue;
-
-    const canonical = clean(lines[i]);
-    const aliasesLine = clean(lines[i + 1] || "");
-    const candidates = [canonical, ...aliasesLine.split(",").map(clean)]
-      .map(normalize)
-      .filter(Boolean);
-
-    if (!candidates.includes(target)) continue;
-
-    const zoneRaw = normalize(zoneLine.split(":").slice(1).join(":"));
-    const ruleRaw = normalize(ruleLine.split(":").slice(1).join(":"));
-
-    return {
-      canonical,
-      zone: zoneRaw === "central"
-        ? "CENTRAL"
-        : zoneRaw === "fuera_de_central" || zoneRaw === "fuera de central"
-          ? "FUERA_DE_CENTRAL"
-          : "",
-      deliveryRule: ruleRaw === "corte_12_30" || ruleRaw === "corte 12 30"
-        ? "CORTE_12_30"
-        : ruleRaw === "24_a_48_horas" || ruleRaw === "24 a 48 horas"
-          ? "24_A_48_HORAS"
-          : "",
-    };
-  }
-
-  return fallback;
-}
-
-function paraguayDateTimeParts(now = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Asuncion",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(now);
-
-  const value = (type: string) => parts.find((part) => part.type === type)?.value || "";
-  const weekday = value("weekday");
-  const hour = Number(value("hour") || 0);
-  const minute = Number(value("minute") || 0);
-
-  const weekdayIndex: Record<string, number> = {
-    Sun: 0,
-    Mon: 1,
-    Tue: 2,
-    Wed: 3,
-    Thu: 4,
-    Fri: 5,
-    Sat: 6,
-  };
-
-  return {
-    day: weekdayIndex[weekday] ?? -1,
-    minutes: hour * 60 + minute,
-  };
-}
-
-function paraguayCurrentDateTime(now = new Date()) {
-  const date = new Intl.DateTimeFormat("es-PY", {
-    timeZone: "America/Asuncion",
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  }).format(now);
-
-  const time = new Intl.DateTimeFormat("es-PY", {
-    timeZone: "America/Asuncion",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).format(now);
-
-  return {
-    date,
-    time,
-    text: `${date}, ${time}`,
-    iso: now.toISOString(),
-  };
-}
-
-function isCurrentDateTimeQuestion(text: string): boolean {
-  const n = normalize(text);
-  if (!n) return false;
-  return (
-    /\b(que dia es hoy|qué día es hoy|fecha de hoy|cual es la fecha|cuál es la fecha|en que fecha estamos|en qué fecha estamos|que fecha es hoy|qué fecha es hoy)\b/.test(n) ||
-    /\b(que hora es|qué hora es|hora actual|que hora tenemos|qué hora tenemos)\b/.test(n) ||
-    /^(hoy es que dia|hoy es qué día|hoy que dia es|hoy qué día es)$/.test(n)
-  );
-}
-
-function buildCurrentDateTimeResponse(text: string, now = new Date()): string {
-  const current = paraguayCurrentDateTime(now);
-  const n = normalize(text);
-  if (/\b(que hora|qué hora|hora actual|hora tenemos)\b/.test(n) &&
-      !/\b(fecha|dia|día)\b/.test(n)) {
-    return `Ahora son las ${current.time} en Paraguay.`;
-  }
-  return `Hoy es ${current.date}. La hora actual en Paraguay es ${current.time}.`;
-}
-
-function coveredDeliveryTimingText(
-  city: string,
-  parsed: ParsedTraining,
-  now = new Date()
-): string {
-  if (!hasCoverage(city, parsed)) {
-    return "";
-  }
-
-  const logistics = cityLogisticsFromTraining(city, parsed.coverageTraining || parsed.raw);
-  const { day, minutes } = paraguayDateTimeParts(now);
-  const beforeCutoff = minutes < 12 * 60 + 30;
-
-  if (logistics.zone === "FUERA_DE_CENTRAL" || logistics.deliveryRule === "24_A_48_HORAS") {
-    if (day === 0) {
-      return "La entrega demora normalmente entre 24 y 48 horas, de lunes a sábado. Como hoy es domingo, el plazo comienza a contar desde el lunes.";
-    }
-
-    return "La entrega demora normalmente entre 24 y 48 horas, de lunes a sábado, dentro del horario de 9:00 a 18:00.";
-  }
-
-  // CENTRAL / CORTE_12_30.
-  if (day === 0) {
-    return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Como hoy es domingo, tu pedido se procesa desde el lunes y puede salir en ruta ese día.";
-  }
-
-  if (day >= 1 && day <= 5 && beforeCutoff) {
-    return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Como el pedido ingresó antes de las 12:30, puede salir hoy dentro de ese horario.";
-  }
-
-  if (day >= 1 && day <= 4 && !beforeCutoff) {
-    return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Como el pedido ingresó a las 12:30 o después, se agenda para el siguiente día de reparto.";
-  }
-
-  if (day === 5 && !beforeCutoff) {
-    return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Como el pedido ingresó el viernes a las 12:30 o después, se agenda para el sábado.";
-  }
-
-  if (day === 6 && beforeCutoff) {
-    return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Como el pedido ingresó antes de las 12:30, puede salir hoy dentro de ese horario.";
-  }
-
-  if (day === 6 && !beforeCutoff) {
-    return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Como el pedido ingresó el sábado a las 12:30 o después, se procesa desde el lunes.";
-  }
-
-  // Respuesta defensiva si Intl no devuelve un día confiable.
-  return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Los pedidos de la zona Central recibidos antes de las 12:30 pueden salir el mismo día; después del corte pasan al siguiente día de reparto.";
-}
-
-function deterministicAfterCityCoverageMessage(
-  state: ConversationState,
-  parsed: ParsedTraining
-) {
+function deterministicAfterCityCoverageMessage(state: ConversationState) {
   const o = state.order;
   if (!o.product || !o.city) return "";
 
-  const actualCoverage = hasCoverage(o.city, parsed);
+  // Los packs fijos usan un mensaje más completo en otra función.
+  if (o.locked_offer?.fixed_quantity) return "";
 
-  if (!actualCoverage) {
+  if (state.coverage === false) {
     if (!o.quantity) {
       return `📍 ${o.city} está fuera de nuestra zona de contra-entrega.
 
@@ -6284,27 +5710,16 @@ function deterministicAfterCityCoverageMessage(
 😊 Igual podemos enviarte por transportadora 🚚
 💳 Para este destino el pago es anticipado.
 
-📦 Producto: ${o.product}
-🔢 Cantidad: ${o.quantity} u.
-💰 Total a transferir: ${formatGs(state.total)} Gs
+Para continuar, realizá la transferencia y enviame el comprobante.
 
-🏦 Datos para la transferencia:
-${bankDataText(parsed)}
-
-📎 Después de transferir, enviame el comprobante.
-👤 Si todavía no me pasaste tu nombre completo, podés enviarlo junto con el comprobante. Si el comprobante verificado muestra claramente un pagador válido, usaremos ese nombre para confirmar directamente.`;
+Si todavía no me pasaste tu nombre completo, enviámelo junto con el comprobante.`;
   }
 
-  const timing = coveredDeliveryTimingText(o.city, parsed);
-  const coverageIntro = `Perfecto 😊 Para ${o.city} tenemos envío gratis contra entrega y podés pagar al recibir.
-
-🕘 ${timing}`;
-
-  // La logística se informa siempre al capturar/corregir la ciudad. Luego se
-  // solicita únicamente el siguiente dato faltante, sin borrar la cantidad.
   if (!o.quantity) {
     const offers = state.productInfo ? productOffersText(state.productInfo) : "";
-    return `${coverageIntro}
+    return `✅ Tenemos envío GRATIS contra entrega en ${o.city} 🚚
+
+Pagás solamente el producto cuando lo recibís 😊
 
 ${offers ? `🔥 Promociones disponibles:
 ${offers}
@@ -6312,33 +5727,7 @@ ${offers}
 ` : ""}¿Cuántas unidades querés llevar?`;
   }
 
-  const selected = o.locked_offer?.fixed_quantity
-    ? `📦 Promo seleccionada: ${o.quantity} unidades de ${o.product}\n💰 Total: ${formatGs(state.total)} Gs`
-    : `📦 Producto: ${o.product}\n🔢 Cantidad: ${o.quantity} u.\n💰 Total: ${formatGs(state.total)} Gs`;
-
-  if (!clean(o.customer_name)) {
-    return `${coverageIntro}
-
-${selected}
-
-Para completar el pedido, pasame tu nombre y apellido.`;
-  }
-
-  if (!state.addressOptional && !clean(o.address)) {
-    return `${coverageIntro}
-
-${selected}
-
-Para completar el pedido, pasame tu dirección escrita o compartime tu ubicación por Google Maps. Cualquiera de las dos opciones es válida.`;
-  }
-
-  // Normalmente este caso queda reservado para datos complementarios, porque
-  // si todo está completo el cierre determinístico tiene prioridad.
-  return `${coverageIntro}
-
-${selected}
-
-Ya tengo los datos obligatorios del pedido.`;
+  return "";
 }
 
 function deterministicAfterCityFixedOfferMessage(state: ConversationState, parsed: ParsedTraining) {
@@ -6366,7 +5755,7 @@ ${bankDataText(parsed)} 📲`;
 
   const fixedRequiredLines = [
     !clean(o.customer_name) ? "✅ nombre y apellido" : "",
-    !state.addressOptional && !clean(o.address) ? "✅ dirección escrita o ubicación por Google Maps" : "",
+    !state.addressOptional && !clean(o.address) ? "✅ dirección exacta o ubicación" : "",
   ].filter(Boolean);
 
   const fixedOptionalLocation =
@@ -6426,7 +5815,7 @@ ${bankDataText(parsed)} 📲`;
 
   const requiredLines = [
     !clean(o.customer_name) ? "✅ nombre y apellido" : "",
-    !state.addressOptional && !clean(o.address) ? "✅ dirección escrita o ubicación por Google Maps" : "",
+    !state.addressOptional && !clean(o.address) ? "✅ dirección exacta o ubicación" : "",
   ].filter(Boolean);
 
   return `🎉 ¡Excelente elección! Queda seleccionado:
@@ -6530,7 +5919,6 @@ ESTADO DEL PEDIDO:
 - Total calculado: ${state.total ? `${formatGs(state.total)} Gs` : "aún no corresponde"}
 - Faltante: ${state.missing.length ? state.missing.join(", ") : "nada"}
 - Dirección opcional según entrenamiento: ${state.addressOptional ? "sí" : "no"}
-- Fecha y hora actuales en Paraguay (America/Asuncion): ${paraguayCurrentDateTime().text}
 - Promo bloqueada desde plantilla: ${o.locked_offer ? `${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs` : "no"}
 - Observación del cliente: ${observationLines(o).length ? observationLines(o).join(" | ") : "sin observación"}
 
@@ -6583,8 +5971,6 @@ ORDEN DE PRIORIDAD:
 
 REGLAS DURAS:
 - Respondé en español paraguayo/neutro, estilo WhatsApp.
-- Para cualquier referencia a hoy, mañana, día, fecha u hora, usá exclusivamente la fecha y hora actuales de Paraguay mostradas arriba. Nunca inventes ni uses UTC directamente.
-- Si falta dirección en una ciudad cubierta y el entrenamiento la exige, pedí una de estas dos opciones equivalentes: dirección escrita O ubicación compartida por Google Maps. Confirmá inmediatamente después de recibir cualquiera de las dos, si no falta ningún otro dato.
 - Sé vendedor amable, cálido y fluido. Usá emojis comerciales moderados: 😊🔥🚚✅📦💰📍📲.
 - Si el COPY DE VENTA ya se envió antes (ver arriba), NO lo repitas: avanzá directo al siguiente paso del pedido con una respuesta breve y natural.
 - Si es la primera vez que se presenta el producto (copy NO enviado todavía) y hay COPY DE VENTA ORIGINAL, NO lo resumas, NO lo acortes y NO le quites partes: enviá el copy completo aunque sea largo.
@@ -6608,10 +5994,8 @@ REGLAS DURAS:
 - Si Ciudad ya tiene valor en ESTADO DEL PEDIDO, PROHIBIDO volver a preguntar ciudad.
 - PROHIBIDO usar ciudad vieja si no aparece en ESTADO DEL PEDIDO.
 - Si falta producto, ofrecé catálogo/productos.
-- REGLA DE UNA SOLA PREGUNTA: pedí únicamente el primer dato faltante según este orden: ciudad, cantidad, nombre y apellido, dirección o ubicación. Nunca preguntes ciudad y cantidad en la misma respuesta.
-- Antes de responder, respetá todos los datos detectados en el mensaje actual. Si el cliente escribió ciudad y cantidad juntas, no vuelvas a pedir ninguna de las dos. Si escribió solo cantidad, guardala y preguntá únicamente ciudad. Si escribió solo ciudad, informá logística y preguntá únicamente cantidad.
-- Si falta ciudad, preguntá solamente ciudad (variá la frase, no uses siempre la misma) y no agregues una pregunta de cantidad.
-- Si la ciudad ya está completa y falta cantidad, preguntá solamente cantidad.
+- Si falta ciudad, preguntá ciudad (variá la frase, no uses siempre la misma).
+- Si falta cantidad, preguntá cantidad.
 - Si la plantilla dice Producto + Cantidad + Precio, pack fijo, combo fijo, no se vende por unidad o únicamente por pack: NO preguntes cantidad, respetá cantidad y precio de la plantilla.
 - Si hay promo variable de 2 unidades y el cliente no especificó cantidad, NO asumas 1 unidad ni 2 unidades: preguntá si quiere 1 unidad o la promo.
 - Si el cliente pide fecha, horario, pagar cuando cobre, llamar antes o coordinar entrega, guardalo como observación y continuá cerrando la venta. No cortes la venta por eso.
@@ -6650,7 +6034,7 @@ REGLAS DURAS:
 - Guardá el talle/calce en observación. Pedí dirección solamente cuando Dirección opcional = no.
 - Nunca uses una frase publicitaria como "Usalas con" como nombre de producto.
 
-- En ciudad sin contra-entrega, un comprobante exitoso, con destinatario correcto y monto suficiente, puede usar el nombre válido del pagador cuando todavía falta el nombre del cliente. Si todos los demás datos están completos, el backend confirma inmediatamente en la misma respuesta.
+- En ciudad sin contra-entrega, el comprobante verificado NO alcanza por sí solo para confirmar: también debe existir un nombre completo escrito explícitamente por el cliente. El pagador del comprobante se guarda como dato técnico, pero nunca reemplaza automáticamente el nombre del cliente. Si falta el nombre, validá el comprobante y pedí solamente el nombre completo. Una ciudad o un producto nunca pueden ser nombre del cliente.
 - Si el cliente propone una transportadora específica, registrá la preferencia como observación. No prometas que se enviará por esa empresa ni digas que ya fue coordinado, salvo que ENTRENAMIENTO GENERAL indique expresamente que está disponible o autorizada.
 - REGLA ABSOLUTA PARA TRANSPORTADORA/ENCOMIENDA: la ciudad es suficiente como destino. Nunca pidas dirección exacta, calle, barrio, ubicación ni referencia. Si el cliente menciona una agencia (por ejemplo NASA), guardala solo como observación o preferencia de transportadora, pero no bloquees el cierre.
 - Cuando ya existen producto, cantidad, ciudad sin contra-entrega, nombre y comprobante verificado, no redactes una confirmación libre: el backend debe emitir inmediatamente el formato fijo de PEDIDO CONFIRMADO.
@@ -6667,81 +6051,7 @@ function buildFullProductCopyResponse(state: ConversationState, _templatePricing
 }
 
 function buildFriendlyCityQuestion() {
-  return "¿En qué ciudad sería la entrega?";
-}
-
-function lastAssistantAskedForCustomerName(history: any[]): boolean {
-  const assistantMessages = (history || [])
-    .filter((item: any) => {
-      const role = normalize(item?.role || item?.sender || item?.type || "");
-      return role === "assistant" || role === "bot" || role === "ia";
-    })
-    .slice(-5)
-    .reverse();
-
-  return assistantMessages.some((item: any) => {
-    const content = normalize(
-      item?.content ||
-      item?.text ||
-      item?.message ||
-      item?.response ||
-      ""
-    );
-
-    return /\b(nombre y apellido|a que nombre|a qué nombre|nombre completo|pasame tu nombre|pásame tu nombre|me falta tu nombre)\b/.test(content);
-  });
-}
-
-async function buildAICityQuestion({
-  apiKey,
-  model,
-  order,
-}: {
-  apiKey: string;
-  model: string;
-  order: OrderData;
-}): Promise<string> {
-  const fallback = buildFriendlyCityQuestion();
-  if (!apiKey || !model) return fallback;
-
-  const product = clean(order.product);
-  const prompt = `Redactá una sola pregunta breve, natural y amable en español paraguayo para pedir la ciudad de entrega al cliente.
-Reglas:
-- Pedí únicamente la ciudad.
-- No preguntes cantidad, nombre, dirección ni teléfono.
-- No menciones cobertura, transportadora ni pago todavía.
-- No confirmes el pedido.
-- No uses más de una oración.
-${product ? `Producto actual: ${product}.` : ""}`;
-
-  try {
-    const response = await callGemini({
-      apiKey,
-      model,
-      system: "Sos una vendedora por WhatsApp. Respondé únicamente con la pregunta solicitada.",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      temperature: 0.35,
-      maxTokens: 80,
-    });
-
-    const cleanResponse = clean(response)
-      .replace(/^["'`]+|["'`]+$/g, "")
-      .trim();
-
-    if (
-      cleanResponse &&
-      cleanResponse !== "__GEMINI_QUOTA_EXCEEDED__" &&
-      cleanResponse.length <= 180 &&
-      /\b(ciudad|localidad)\b/i.test(cleanResponse) &&
-      !/\b(nombre|apellido|direccion|dirección|cantidad|telefono|teléfono)\b/i.test(cleanResponse)
-    ) {
-      return cleanResponse;
-    }
-  } catch (error) {
-    console.error("buildAICityQuestion:", error);
-  }
-
-  return fallback;
+  return "😊 Para confirmar la cobertura y la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
 }
 
 // ✅ FIX V46: para consultas de precio posteriores al copy, responde solo precios
@@ -6770,7 +6080,7 @@ function buildPriceOnlyResponse(
   } else if (!state.order.customer_name) {
     continuation = "Para continuar, pasame tu nombre y apellido. 😊";
   } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
-    continuation = "Ahora pasame la dirección escrita o ubicación por Google Maps para la entrega. 😊";
+    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega. 😊";
   } else if (!state.order.phone) {
     continuation = "Por último, pasame un número de celular para coordinar la entrega. 😊";
   }
@@ -7153,169 +6463,7 @@ export default async function handler(req: any, res: any) {
       Boolean(context?.pending_catalog_confirmation && isAffirmative(texto));
 
     const productsMentionedNow = detectProductsMentioned(texto, parsed);
-
-    // V138: un pedido confirmado no permanece abierto indefinidamente.
-    // Si pasaron más de 45 minutos y aparece interés en un producto, se trata
-    // como una compra nueva y se eliminan producto/cantidad/carrito anteriores.
-    const confirmedSessionExpired =
-      ["pedido_confirmado", "pedido_confirmado_multiple"].includes(clean(context?.step)) &&
-      minutesSince(context?.updated_at) > 45 &&
-      productsMentionedNow.length > 0;
-
-    if (confirmedSessionExpired && context && typeof context === "object") {
-      context.order_data = emptyOrder(makeOrderId(fromNumber));
-      context.order_data.phone = senderPhoneFallback(fromNumber);
-      context.multi_product_cart = [];
-      context.multi_order_id = "";
-      context.pending_multiple_products = [];
-      context.current_product = null;
-      context.last_topic = null;
-      context.step = "collecting_product";
-      context.previous_confirmed_order_expired = true;
-    }
-
-    // V140: después de un pedido confirmado, mencionar/interesarse por otro
-    // producto inicia una VENTA NUEVA. Solo se conserva el pedido anterior cuando
-    // el cliente pide explícitamente agregar/sumar al mismo pedido.
-    const confirmedStepNow =
-      ["pedido_confirmado", "pedido_confirmado_multiple"].includes(clean(context?.step));
-    const confirmedOrderNow = sanitizeOldOrder(context?.order_data || {}, parsed);
-    const mentionedNewProduct =
-      productsMentionedNow.length === 1 ? productsMentionedNow[0] : null;
-    const previousConfirmedProduct = getProductInfo(confirmedOrderNow.product, parsed);
-    const explicitSameOrderAdd = hasExplicitSameOrderAddIntent(texto);
-
-    // V141: el estado puede haber quedado contaminado en una etapa multiproducto
-    // (por ejemplo collecting_multiple_product_quantities). En ese caso no alcanza
-    // con revisar únicamente pedido_confirmado: el carrito viejo se procesaría antes
-    // y respondería con el producto anterior. Reunimos todos los productos activos
-    // del contexto y damos prioridad absoluta al nuevo interés explícito.
-    const contextProductNames = Array.from(new Set([
-      clean(confirmedOrderNow.product),
-      clean(context?.current_product),
-      ...(Array.isArray(context?.multi_product_cart)
-        ? context.multi_product_cart.map((item: any) => clean(item?.product))
-        : []),
-      ...(Array.isArray(context?.pending_multiple_products)
-        ? context.pending_multiple_products.map((item: any) => clean(item?.product || item))
-        : []),
-    ].filter(Boolean).map(normalize)));
-
-    const hasPreviousCommerceState =
-      contextProductNames.length > 0 ||
-      confirmedStepNow ||
-      /^(collecting_multiple_|pedido_confirmado|collecting_quantity|collecting_city|collecting_name|collecting_address)/.test(clean(context?.step));
-
-    const isDifferentProductFromActiveContext =
-      !!mentionedNewProduct &&
-      !contextProductNames.includes(normalize(mentionedNewProduct.canonical));
-
-    const explicitNewProductInterest =
-      !!mentionedNewProduct &&
-      (hasExplicitProductInterestPhrase(texto) ||
-        isBuyIntent(texto) ||
-        isPriceQuery(texto) ||
-        /\b(tenes|tenés|hay|disponible|informacion|información|precio|me interesa|quiero|necesito)\b/.test(normalize(texto)));
-
-    if (
-      hasPreviousCommerceState &&
-      isDifferentProductFromActiveContext &&
-      explicitNewProductInterest &&
-      !explicitSameOrderAdd
-    ) {
-      const newOrder = emptyOrder(makeOrderId(fromNumber));
-      newOrder.phone = senderPhoneFallback(fromNumber);
-      newOrder.product = mentionedNewProduct!.canonical;
-
-      const quantityNow =
-        extractQuantityForNamedProduct(texto, mentionedNewProduct!) ||
-        extractQuantity(texto) ||
-        mentionedNewProduct!.fixedPackQuantity ||
-        0;
-      if (quantityNow > 0) {
-        newOrder.quantity = sanitizeQuantity(quantityNow);
-        newOrder.locked_offer = null;
-      }
-
-      const cityNow = detectCity(texto, parsed, "");
-      if (cityNow) newOrder.city = cityNow;
-
-      const copy =
-        clean(mentionedNewProduct!.salesCopy || "") ||
-        `📦 ${mentionedNewProduct!.canonical}\n${productOffersText(mentionedNewProduct!)}`;
-      const images = mentionedNewProduct!.images?.length
-        ? mentionedNewProduct!.images.slice(0, 3)
-        : undefined;
-
-      let followUp = "";
-      if (!newOrder.quantity && !mentionedNewProduct!.fixedPackQuantity) {
-        followUp = buildNaturalSingleProductQuantityPrompt(mentionedNewProduct!);
-      } else if (!newOrder.city) {
-        followUp = `Perfecto 😊 Ya registré ${newOrder.quantity} unidad${newOrder.quantity === 1 ? "" : "es"}.\n\n📍 ¿Para qué ciudad querés que preparemos el envío?`;
-      } else {
-        const coverageNow = hasCoverage(newOrder.city, parsed);
-        followUp = `${coveredDeliveryTimingText(newOrder.city, parsed)}\n\n📦 Producto: ${mentionedNewProduct!.canonical}\n🔢 Cantidad: ${newOrder.quantity} u.\n💰 Total: ${formatGs(calculateTotal(mentionedNewProduct!.canonical, newOrder.quantity, parsed, newOrder.locked_offer || null))} Gs\n\nPara completar el pedido, pasame tu nombre y apellido.`;
-      }
-
-      return res.json({
-        response: copy,
-        follow_up_response: followUp,
-        media_urls: images,
-        context: {
-          ...(context || {}),
-          order_data: newOrder,
-          order_id: newOrder.order_id,
-          current_product: mentionedNewProduct!.canonical,
-          last_topic: mentionedNewProduct!.canonical,
-          pending_multiple_products: [],
-          multi_product_cart: [],
-          multi_order_id: "",
-          step:
-            !newOrder.quantity && !mentionedNewProduct!.fixedPackQuantity
-              ? "collecting_quantity"
-              : !newOrder.city
-                ? "collecting_city"
-                : "collecting_name",
-          updated_at: new Date().toISOString(),
-        },
-        debug: {
-          v141_new_sale_preempts_old_context: true,
-          v140_new_sale_after_confirmed: confirmedStepNow,
-          previous_product: previousConfirmedProduct?.canonical || null,
-          new_product: mentionedNewProduct!.canonical,
-          explicit_same_order_add: false,
-          image_count: images?.length || 0,
-        },
-      });
-    }
-
     let activeMultiCart = getMultiCartFromContext(context, parsed);
-
-    // V137: algunos conectores pueden conservar step/current_product pero perder
-    // multi_product_cart entre el copy del producto agregado y la respuesta de cantidad.
-    // Reconstruimos el carrito desde el pedido confirmado + producto pendiente.
-    if (
-      activeMultiCart.length < 2 &&
-      context?.step === "collecting_multiple_product_quantities" &&
-      clean(context?.current_product)
-    ) {
-      const confirmedBase = sanitizeOldOrder(context?.order_data || {}, parsed);
-      const pendingProduct = getProductInfo(clean(context.current_product), parsed);
-      const previousProduct = getProductInfo(confirmedBase.product, parsed);
-
-      if (
-        pendingProduct &&
-        previousProduct &&
-        normalize(pendingProduct.canonical) !== normalize(previousProduct.canonical)
-      ) {
-        activeMultiCart = createMultiCartFromConfirmedOrder(
-          confirmedBase,
-          pendingProduct,
-          "",
-          parsed
-        );
-      }
-    }
 
     // V57: iniciar carrito multiproducto con respuesta breve.
     // Si el cliente ya indicó cantidades (ej. "1 peladora y 1 afilador"),
@@ -7398,21 +6546,6 @@ export default async function handler(req: any, res: any) {
       activeMultiCart = applyQuantitiesToMultiCart(texto, activeMultiCart, parsed);
       const missingQty = multiCartMissingQuantities(activeMultiCart);
 
-      if (isMultiCartTotalQuery(texto) && missingQty.length > 0) {
-        return res.json({
-          response: `Para calcular el total exacto, primero necesito la cantidad de:\n${missingQty.map((p) => `• ${p}`).join("\n")}\n\n¿Cuántas unidades querés agregar?`,
-          context: {
-            ...(context || {}),
-            order_data: commonOrder,
-            multi_product_cart: activeMultiCart,
-            multi_order_id: multiOrderId,
-            step: "collecting_multiple_product_quantities",
-            updated_at: new Date().toISOString(),
-          },
-          debug: { multi_cart_total_waiting_for_quantity: true },
-        });
-      }
-
       if (context?.step === "collecting_multiple_product_quantities" || missingQty.length > 0) {
         if (missingQty.length > 0) {
           return res.json({
@@ -7428,39 +6561,9 @@ export default async function handler(req: any, res: any) {
           });
         }
 
-        const coverageNow = hasCoverage(commonOrder.city, parsed);
-        const addressOptionalNow = isAddressOptionalByTraining(parsed, coverageNow);
-
-        if (
-          commonOrder.city &&
-          commonOrder.customer_name &&
-          commonOrder.phone &&
-          (addressOptionalNow || isSufficientDeliveryLocation(commonOrder.address))
-        ) {
-          await saveMultiProductOrders(user_id, fromNumber, activeMultiCart, commonOrder, parsed, multiOrderId);
-          return res.json({
-            response: buildMultiProductFinalConfirmation(activeMultiCart, commonOrder, coverageNow),
-            context: {
-              ...(context || {}),
-              order_data: commonOrder,
-              multi_product_cart: activeMultiCart,
-              multi_order_id: multiOrderId,
-              step: "pedido_confirmado_multiple",
-              updated_at: new Date().toISOString(),
-            },
-            debug: { multi_product_order_confirmed_after_quantity: true },
-          });
-        }
-
         const nextStep = commonOrder.city ? "collecting_multiple_customer_data" : "collecting_multiple_city";
-        const missingCustomer = [
-          !commonOrder.customer_name ? "nombre y apellido" : "",
-          !commonOrder.city ? "ciudad" : "",
-          !addressOptionalNow && !isSufficientDeliveryLocation(commonOrder.address) ? "dirección escrita o ubicación por Google Maps" : "",
-        ].filter(Boolean);
-
         return res.json({
-          response: `${multiCartSummary(activeMultiCart)}\n\n${missingCustomer.length ? `Para finalizar me falta:\n✅ ${missingCustomer.join("\n✅ ")}` : "Ya tengo los datos del pedido."}`,
+          response: `${multiCartSummary(activeMultiCart)}\n\n${commonOrder.city ? "Ahora pasame tu nombre y apellido, dirección exacta. El celular es opcional; si no lo pasás usamos este WhatsApp. 📲" : "📍 ¿Para qué ciudad sería el envío? 😊"}`,
           context: {
             ...(context || {}),
             order_data: commonOrder,
@@ -7473,9 +6576,7 @@ export default async function handler(req: any, res: any) {
       }
 
       if (!commonOrder.city) {
-        const detectedMultiCity = isStandaloneQuantityReply(texto)
-          ? ""
-          : detectCity(texto, parsed, "");
+        const detectedMultiCity = detectCity(texto, parsed, "");
         if (detectedMultiCity) commonOrder.city = detectedMultiCity;
         if (!commonOrder.city) {
           return res.json({
@@ -7496,13 +6597,12 @@ export default async function handler(req: any, res: any) {
       const multiObservationPatch = extractOrderObservation(texto);
       Object.assign(commonOrder, mergeOrderObservation(commonOrder, multiObservationPatch));
 
-      const coverage = hasCoverage(commonOrder.city, parsed);
-      const addressOptional = isAddressOptionalByTraining(parsed, coverage);
       const missingData: string[] = [];
       if (!commonOrder.customer_name) missingData.push("nombre y apellido");
-      if (!addressOptional && !isSufficientDeliveryLocation(commonOrder.address)) missingData.push("dirección escrita o ubicación por Google Maps");
+      if (!commonOrder.address) missingData.push("dirección exacta o ubicación");
 
       if (missingData.length > 0) {
+        const coverage = hasCoverage(commonOrder.city, parsed);
         return res.json({
           response: `${coverage ? `✅ Tenemos cobertura en ${commonOrder.city}.` : `😊 Hasta ${commonOrder.city} podemos enviarte por transportadora.`}\n\n${multiCartSummary(activeMultiCart)}\n\nPara finalizar me falta:\n✅ ${missingData.join("\n✅ ")}`,
           context: { ...(context || {}), order_data: commonOrder, multi_product_cart: activeMultiCart, multi_order_id: multiOrderId, step: "collecting_multiple_customer_data", updated_at: new Date().toISOString() },
@@ -7510,8 +6610,9 @@ export default async function handler(req: any, res: any) {
       }
 
       await saveMultiProductOrders(user_id, fromNumber, activeMultiCart, commonOrder, parsed, multiOrderId);
+      const coverage = hasCoverage(commonOrder.city, parsed);
       return res.json({
-        response: buildMultiProductFinalConfirmation(activeMultiCart, commonOrder, coverage),
+        response: `✅ PEDIDO CONFIRMADO\n\n${multiCartSummary(activeMultiCart)}\n\n👤 Cliente: ${commonOrder.customer_name}\n📍 Ciudad: ${commonOrder.city}\n🏠 Dirección: ${commonOrder.address}\n📞 Contacto: ${commonOrder.phone}${observationBlock(commonOrder)}\n\n${coverage ? "🚚 Envío contra entrega. Pagás al recibir." : "🚚 Envío por transportadora con pago anticipado."}\n\n¡Gracias por tu compra! 💜`,
         context: { ...(context || {}), order_data: commonOrder, multi_product_cart: activeMultiCart, multi_order_id: multiOrderId, step: "pedido_confirmado_multiple", updated_at: new Date().toISOString() },
         debug: { multi_product_order_confirmed: true, items: activeMultiCart.length, group_id: multiOrderId },
       });
@@ -7535,33 +6636,10 @@ export default async function handler(req: any, res: any) {
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
     if (!oldOrder.phone) oldOrder.phone = senderPhoneFallback(fromNumber);
 
-    // V136: las preguntas por fecha u hora actual nunca se delegan a Gemini.
-    // Se responden con Intl y la zona horaria oficial de Paraguay.
-    if (isCurrentDateTimeQuestion(texto)) {
-      return res.json({
-        response: buildCurrentDateTimeResponse(texto),
-        context: {
-          ...(context || {}),
-          order_data: oldOrder,
-          order_id: oldOrder.order_id || null,
-          step: context?.step || nextStep(
-            oldOrder,
-            oldOrder.city ? hasCoverage(oldOrder.city, parsed) : null,
-            isAddressOptionalByTraining(
-              parsed,
-              oldOrder.city ? hasCoverage(oldOrder.city, parsed) : null
-            )
-          ),
-          current_paraguay_datetime: paraguayCurrentDateTime().text,
-          updated_at: new Date().toISOString(),
-        },
-        debug: { deterministic_paraguay_datetime: true },
-      });
-    }
-
     // V100: un chat nuevo o una sesión vencida jamás hereda producto,
     // cantidad, ciudad ni datos de un chat anterior.
     const resetBecauseNewChat =
+      context?.step !== "pedido_confirmado" &&
       looksLikeNewChatSession(texto, context, history) &&
       Boolean(oldOrder.product || oldOrder.city || oldOrder.quantity || oldOrder.customer_name || oldOrder.address);
 
@@ -7571,57 +6649,6 @@ export default async function handler(req: any, res: any) {
     }
 
     let forceFreshOrderFromConfirmedTemplate = false;
-
-    // V132: agregar un producto nuevo a un pedido ya confirmado.
-    // Este bloque debe ejecutarse ANTES del flujo genérico de postventa para
-    // conservar el pedido anterior, presentar el copy + imagen del producto
-    // nuevo y abrir correctamente el carrito multiproducto.
-    if (
-      (context?.step === "pedido_confirmado" || context?.step === "pedido_confirmado_multiple") &&
-      productsMentionedNow.length === 1
-    ) {
-      const newProduct = productsMentionedNow[0];
-      const previousProduct = getProductInfo(oldOrder.product, parsed);
-      const isDifferentProduct =
-        !!previousProduct &&
-        normalize(previousProduct.canonical) !== normalize(newProduct.canonical);
-      const addIntent = hasExplicitSameOrderAddIntent(texto);
-
-      if (isDifferentProduct && addIntent) {
-        const multiOrderId = clean(context?.multi_order_id) || makeOrderId(fromNumber);
-        const cart = createMultiCartFromConfirmedOrder(oldOrder, newProduct, texto, parsed);
-        const missingQty = multiCartMissingQuantities(cart);
-        const images = newProduct.images?.length ? newProduct.images.slice(0, 3) : undefined;
-        const copy = clean(newProduct.salesCopy || "") || `📦 ${newProduct.canonical}\n${productOffersText(newProduct)}`;
-
-        return res.json({
-          response: copy,
-          follow_up_response: missingQty.length
-            ? `Podemos agregarlo al mismo pedido 😊\n\n${buildNaturalSingleProductQuantityPrompt(newProduct)}`
-            : `${multiCartSummary(cart)}\n\nYa tengo tus datos de entrega. El pedido se actualizará con ambos productos.`,
-          media_urls: images,
-          context: {
-            ...(context || {}),
-            order_data: oldOrder,
-            current_product: newProduct.canonical,
-            last_topic: newProduct.canonical,
-            pending_multiple_products: cart.map((item) => item.product),
-            multi_product_cart: cart,
-            multi_order_id: multiOrderId,
-            step: missingQty.length
-              ? "collecting_multiple_product_quantities"
-              : "collecting_multiple_customer_data",
-            updated_at: new Date().toISOString(),
-          },
-          debug: {
-            add_product_to_confirmed_order: true,
-            previous_product: previousProduct?.canonical,
-            new_product: newProduct.canonical,
-            image_count: images?.length || 0,
-          },
-        });
-      }
-    }
 
     if (context?.step === "pedido_confirmado") {
       const msgNormClosed = normalize(texto);
@@ -7644,18 +6671,6 @@ export default async function handler(req: any, res: any) {
         forceFreshOrderFromConfirmedTemplate = true;
         oldOrder = emptyOrder(makeOrderId(fromNumber));
       } else {
-        // V137: persistir realmente un nuevo número indicado para coordinar
-        // la entrega. La respuesta de Gemini no puede limitarse a prometer el cambio.
-        const postSalePhone = extractPhone(texto);
-        const asksToUseNewPhone =
-          !!postSalePhone &&
-          /\b(escriban|escribile|contacten|contactar|llamen|llamar|coordinen|coordinar|numero|número|telefono|teléfono|celular|ella|el encargado|encargado|contacto)\b/.test(normalize(texto));
-
-        if (asksToUseNewPhone) {
-          oldOrder.phone = senderPhoneFallback(postSalePhone) || postSalePhone;
-          await safeUpsertOrder(user_id, fromNumber, oldOrder, parsed, true);
-        }
-
         // V52: después de confirmar, un dato adicional de ubicación (por ejemplo
         // "Barrio San Ramón") complementa la dirección. Nunca debe reemplazar
         // el nombre del cliente ni iniciar otro pedido.
@@ -7837,26 +6852,6 @@ export default async function handler(req: any, res: any) {
       promoResponse,
       parsed,
     });
-
-    // V147: una imagen o PDF recibido durante un pedido activo pertenece al mismo
-    // pedido. Nunca debe iniciar una venta nueva ni borrar producto/cantidad.
-    const incomingPaymentProof = hasPaymentProof(
-      context,
-      texto,
-      media_url,
-      media_type || mime_type
-    );
-
-    if (
-      incomingPaymentProof &&
-      (
-        clean(oldOrder.product) ||
-        clean(context?.order_data?.product) ||
-        clean(context?.last_ad_product)
-      )
-    ) {
-      freshOrder = false;
-    }
 
     if ((newTemplateSignal.isNew || forceFreshOrderFromConfirmedTemplate) && context?.step === "pedido_confirmado") {
       freshOrder = true;
@@ -8056,42 +7051,6 @@ export default async function handler(req: any, res: any) {
     const isCityStep = prevStep === "collecting_city";
     const isDataCollectionStep = ["collecting_name", "collecting_address", "collecting_phone", "collecting_quantity"].includes(prevStep);
 
-    // V146: si el backend acaba de pedir nombre y ya existe una ciudad válida,
-    // una respuesta con nombre y apellido se procesa exclusivamente como nombre.
-    // No se permite que esa respuesta vuelva a entrar a detectCity().
-    const orderCommerciallyReadyForName = Boolean(
-      clean(oldOrder.product) &&
-      sanitizeQuantity(oldOrder.quantity) > 0 &&
-      clean(oldOrder.city) &&
-      !clean(oldOrder.customer_name)
-    );
-
-    const nameWasExplicitlyRequested = Boolean(
-      prevStep === "collecting_name" ||
-      lastAssistantAskedForCustomerName(history)
-    );
-
-    // V148: no depende únicamente de context.step. Si producto, cantidad y
-    // ciudad ya están completos y falta el nombre, una respuesta con nombre
-    // completo se procesa exclusivamente como customer_name.
-    const expectingCustomerNameReply = Boolean(
-      clean(oldOrder.city) &&
-      !clean(oldOrder.customer_name) &&
-      (
-        nameWasExplicitlyRequested ||
-        orderCommerciallyReadyForName
-      )
-    );
-
-    const validStandaloneNameReply = Boolean(
-      expectingCustomerNameReply &&
-      isStrictStandaloneCustomerName(texto, oldOrder.city || "", parsed) &&
-      !isInvalidCustomerNameForOrder(texto, oldOrder.city || "", parsed) &&
-      !isContaminatedCustomerName(texto, parsed) &&
-      !exactKnownCity(texto, parsed) &&
-      !extractCityStatement(texto)
-    );
-
     // V63: sanea ciudades contaminadas que hayan quedado guardadas por una versión anterior.
     // Ej.: "Asuncion Roberto Lpetti El" se convierte inmediatamente en "Asunción".
     const sanitizedOldCity = canonicalizeStoredCity(oldOrder.city || "", parsed);
@@ -8099,19 +7058,9 @@ export default async function handler(req: any, res: any) {
       oldOrder.city = sanitizedOldCity;
     }
 
-    const quantityOnlyReply = isStandaloneQuantityReply(texto);
-    const lockCityForCurrentReply = Boolean(
-      quantityOnlyReply ||
-      validStandaloneNameReply
-    );
-
-    const explicitKnownCityFromMessage = lockCityForCurrentReply
-      ? ""
-      : extractExplicitKnownCityFromSentence(texto, parsed);
-    const detectedCityRaw = lockCityForCurrentReply
-      ? (sanitizedOldCity || oldOrder.city || "")
-      : detectCity(texto, parsed, sanitizedOldCity || "");
-    const exactCityFromMessage = lockCityForCurrentReply ? "" : exactKnownCity(texto, parsed);
+    const explicitKnownCityFromMessage = extractExplicitKnownCityFromSentence(texto, parsed);
+    const detectedCityRaw = detectCity(texto, parsed, sanitizedOldCity || "");
+    const exactCityFromMessage = exactKnownCity(texto, parsed);
     const explicitDifferentCity = Boolean(
       cityStatement &&
       exactKnownCity(cityStatement, parsed) &&
@@ -8160,15 +7109,11 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    let effectiveDetectedCity = lockCityForCurrentReply
-      ? (sanitizedOldCity || oldOrder.city || "")
-      : (cityConfirmedNow || detectedCity);
-    const cityWasCapturedNow = lockCityForCurrentReply
-      ? false
-      : Boolean(
-          cityConfirmedNow ||
-          (effectiveDetectedCity && normalize(effectiveDetectedCity) !== normalize(oldOrder.city || ""))
-        );
+    let effectiveDetectedCity = cityConfirmedNow || detectedCity;
+    const cityWasCapturedNow = Boolean(
+      cityConfirmedNow ||
+      (effectiveDetectedCity && normalize(effectiveDetectedCity) !== normalize(oldOrder.city || ""))
+    );
 
     const cityCandidateRaw = cityStatement || texto;
     const isExactCityMatch =
@@ -8209,14 +7154,7 @@ export default async function handler(req: any, res: any) {
 
     if (isCityStep && !effectiveDetectedCity && messageIsPurchaseOrQuantity) {
       return res.json({
-        response: await buildAICityQuestion({
-          apiKey,
-          model,
-          order: {
-            ...oldOrder,
-            quantity: explicitQty > 0 ? explicitQty : oldOrder.quantity,
-          },
-        }),
+        response: buildFriendlyCityQuestion(),
         context: {
           ...(context || {}),
           pending_city_confirmation: null,
@@ -8245,11 +7183,7 @@ export default async function handler(req: any, res: any) {
       !isShortAcknowledgement(texto)
     ) {
       return res.json({
-        response: await buildAICityQuestion({
-          apiKey,
-          model,
-          order: oldOrder,
-        }),
+        response: buildFriendlyCityQuestion(),
         context: {
           ...(context || {}),
           pending_city_confirmation: null,
@@ -8307,23 +7241,17 @@ export default async function handler(req: any, res: any) {
       console.error("⚠️ recoverRecentValidNameFromHistory falló:", error);
     }
 
-    const contextualName = validStandaloneNameReply
-      ? toTitleCase(clean(texto).replace(/[.,;:]+$/g, ""))
-      : "";
-
-    const name = contextualName || detectedName || historyRecoveredName;
+    const name = detectedName || historyRecoveredName;
 
     let address = "";
     try {
-      address = validStandaloneNameReply
-        ? ""
-        : extractAddress(
-            texto,
-            effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
-            phone,
-            name,
-            parsed
-          );
+      address = extractAddress(
+        texto,
+        effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
+        phone,
+        name,
+        parsed
+      );
     } catch (error) {
       console.error("⚠️ extractAddress falló; se continúa sin dirección:", error);
     }
@@ -8379,17 +7307,8 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = 0;
     }
 
-    // V146: cantidades y respuestas de nombre jamás pueden tocar ciudad,
-    // cobertura, modalidad ni forma de pago.
-    if (lockCityForCurrentReply) {
-      orderData.city = sanitizedOldCity || oldOrder.city || "";
-    } else if (!orderData.city && oldOrder.city && qty > 0) {
-      orderData.city = sanitizedOldCity || oldOrder.city;
-    }
-
-    if (validStandaloneNameReply) {
-      orderData.customer_name = contextualName;
-      orderData.city = sanitizedOldCity || oldOrder.city || orderData.city;
+    if (!orderData.city && oldOrder.city && qty > 0) {
+      orderData.city = oldOrder.city;
     }
 
     if (!orderData.city && historyRecoveredCity) {
@@ -8472,24 +7391,7 @@ export default async function handler(req: any, res: any) {
     // V104: la cantidad elegida por el cliente es la fuente de verdad.
     // Una oferta vieja de 1 unidad nunca puede reemplazar una cantidad 2.
     if (explicitQty > 0) {
-      const quantityChangedForPayment =
-        sanitizeQuantity(oldOrder.quantity) > 0 &&
-        sanitizeQuantity(oldOrder.quantity) !== sanitizeQuantity(explicitQty);
-
       orderData.quantity = explicitQty;
-
-      if (quantityChangedForPayment) {
-        orderData.payment_proof_received = false;
-        orderData.payment_proof_verified = false;
-        orderData.payment_holder_name = "";
-        orderData.payment_amount = 0;
-        orderData.payment_operation_number = "";
-        orderData.payment_status_text = "";
-        orderData.payment_verification_error = "";
-        orderData.payment_recipient_matched = false;
-        orderData.payment_manual_review_required = false;
-        orderData.payment_manual_review_reason = "";
-      }
 
       if (productInfo) {
         const exactTemplateOfferRaw = getTemplateOfferForQuantity(
@@ -8570,48 +7472,11 @@ export default async function handler(req: any, res: any) {
     }
 
     const proofReceived = hasPaymentProof(context, texto, media_url, media_type || mime_type);
-
-    // V147: el turno de imagen/PDF puede llegar sin texto. Recuperar el pedido
-    // comercial antes de calcular el monto esperado y antes de analizar el comprobante.
-    const recoveredPaymentOrder = proofReceived
-      ? recoverPaymentOrderSnapshot({
-          orderData,
-          oldOrder,
-          context,
-          history,
-          parsed,
-        })
-      : null;
-
-    if (recoveredPaymentOrder) {
-      if (recoveredPaymentOrder.product) {
-        orderData.product = recoveredPaymentOrder.product;
-      }
-      if (recoveredPaymentOrder.quantity > 0) {
-        orderData.quantity = recoveredPaymentOrder.quantity;
-      }
-      if (recoveredPaymentOrder.lockedOffer) {
-        orderData.locked_offer = recoveredPaymentOrder.lockedOffer;
-      }
-      if (recoveredPaymentOrder.city) {
-        orderData.city = recoveredPaymentOrder.city;
-      }
-      if (!orderData.customer_name && recoveredPaymentOrder.customerName) {
-        orderData.customer_name = recoveredPaymentOrder.customerName;
-      }
-      if (!orderData.phone && recoveredPaymentOrder.phone) {
-        orderData.phone = recoveredPaymentOrder.phone;
-      }
-    }
-
     const currentCoverageForProof = orderData.city ? hasCoverage(orderData.city, parsed) : null;
     const expectedPaymentAmount =
-      recoveredPaymentOrder?.expectedAmount ||
-      (
-        orderData.product && orderData.quantity
-          ? calculateTotal(orderData.product, orderData.quantity, parsed, orderData.locked_offer)
-          : 0
-      );
+      orderData.product && orderData.quantity
+        ? calculateTotal(orderData.product, orderData.quantity, parsed, orderData.locked_offer)
+        : 0;
 
     if (proofReceived && currentCoverageForProof === false) {
       orderData.payment_proof_received = true;
@@ -8681,10 +7546,12 @@ export default async function handler(req: any, res: any) {
           parsed.bankData
         );
         const transferIsPending =
+          !isPdfProof &&
           isPendingTransferStatus(proofAnalysis.status_text);
 
-        const transferHasNegativeStatus =
-          isExplicitNegativeTransferStatus(proofAnalysis.status_text);
+        const statusIsFinal =
+          isPdfProof ||
+          proofAnalysis.successful;
 
         const basePaymentDataValid = Boolean(
           proofAnalysis.readable &&
@@ -8692,16 +7559,6 @@ export default async function handler(req: any, res: any) {
           proofAnalysis.amount > 0 &&
           amountCoversOrder &&
           recipientMatches
-        );
-
-        // V145:
-        // - No se exige una palabra literal como “exitosa”.
-        // - Si el comprobante es legible, el pagador existe, el destinatario coincide
-        //   y el monto cubre el pedido, se verifica automáticamente.
-        // - Solo se bloquea por un estado pendiente o negativo expresamente visible.
-        const statusAllowsAutomaticVerification = Boolean(
-          !transferIsPending &&
-          !transferHasNegativeStatus
         );
 
         orderData.payment_manual_review_required = Boolean(
@@ -8717,18 +7574,17 @@ export default async function handler(req: any, res: any) {
         orderData.payment_recipient_matched = recipientMatches;
         orderData.payment_proof_verified = Boolean(
           basePaymentDataValid &&
-          statusAllowsAutomaticVerification
+          (
+            statusIsFinal ||
+            orderData.payment_manual_review_required
+          )
         );
 
         // V125: si todavía no existe un nombre real del cliente, usar el nombre
         // del remitente/pagador detectado en el comprobante. Nunca reemplazar un
         // nombre válido que el cliente ya haya escrito explícitamente.
-        // V134: si el comprobante queda verificado y no existe un nombre válido,
-        // el pagador válido pasa a ser el cliente. El estado se recalcula más abajo
-        // y el backend debe responder directamente con PEDIDO CONFIRMADO.
         if (
           orderData.payment_proof_verified &&
-          !orderData.payment_manual_review_required &&
           hasPayerName &&
           (
             !orderData.customer_name ||
@@ -8750,12 +7606,12 @@ export default async function handler(req: any, res: any) {
             );
           }
 
-          if (transferIsPending) {
-            reasons.push("la transferencia figura pendiente o en proceso");
-          }
-
-          if (transferHasNegativeStatus) {
-            reasons.push("la transferencia figura rechazada, cancelada, fallida o anulada");
+          if (
+            !isPdfProof &&
+            !proofAnalysis.successful &&
+            !transferIsPending
+          ) {
+            reasons.push("la imagen no muestra claramente una transferencia exitosa o aprobada");
           }
 
           if (!hasPayerName) {
@@ -8780,10 +7636,6 @@ export default async function handler(req: any, res: any) {
               ? `No se pudo verificar porque ${reasons.join(", ")}.`
               : (proofAnalysis.error || "No se pudieron verificar todos los datos obligatorios.");
         } else {
-          orderData.payment_verification_error = "";
-          orderData.payment_manual_review_required = false;
-          orderData.payment_manual_review_reason = "";
-
           const overpayment = Math.max(0, proofAnalysis.amount - expectedPaymentAmount);
           const recipientLabel =
             proofAnalysis.recipient_name ||
@@ -8949,29 +7801,6 @@ export default async function handler(req: any, res: any) {
       if (recoveredProduct) orderData.product = recoveredProduct;
     }
 
-    // V146: última barrera antes de generar cualquier respuesta visible.
-    if (lockCityForCurrentReply && (sanitizedOldCity || oldOrder.city)) {
-      orderData.city = sanitizedOldCity || oldOrder.city;
-    }
-    if (validStandaloneNameReply) {
-      orderData.customer_name = contextualName;
-      orderData.city = sanitizedOldCity || oldOrder.city || orderData.city;
-    }
-    if (
-      isStandaloneQuantityReply(orderData.city) ||
-      normalize(orderData.city) === normalize(orderData.customer_name) ||
-      (
-        validStandaloneNameReply &&
-        normalize(orderData.city) !== normalize(sanitizedOldCity || oldOrder.city || "")
-      )
-    ) {
-      orderData.city = sanitizedOldCity || oldOrder.city || "";
-    }
-
-    if (validStandaloneNameReply) {
-      orderData.customer_name = contextualName;
-    }
-
     const finalState = buildState(orderData, parsed);
     let directConfirm = hasAllRequiredOrderDataForDirectConfirmation(finalState);
     let confirm = shouldConfirmOrder(finalState) || directConfirm;
@@ -8981,13 +7810,7 @@ export default async function handler(req: any, res: any) {
       confirm = false;
     }
 
-    if (
-      finalState.coverage === false &&
-      (
-        !orderData.payment_proof_verified ||
-        orderData.payment_manual_review_required
-      )
-    ) {
+    if (finalState.coverage === false && !orderData.payment_proof_verified) {
       directConfirm = false;
       confirm = false;
     }
@@ -8995,7 +7818,7 @@ export default async function handler(req: any, res: any) {
     // V71: al confirmar una ciudad pendiente, informar SIEMPRE la modalidad
     // antes de pedir nombre, dirección o cualquier otro dato.
     if (!confirm && cityConfirmedNow && finalState.coverage === false) {
-      const mandatoryOutsideCoverageResponse = deterministicAfterCityCoverageMessage(finalState, parsed);
+      const mandatoryOutsideCoverageResponse = deterministicAfterCityCoverageMessage(finalState);
       if (mandatoryOutsideCoverageResponse) {
         if (orderData.product) {
           await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
@@ -9033,8 +7856,8 @@ export default async function handler(req: any, res: any) {
       persistedOrderId = await safeUpsertOrder(user_id, fromNumber, orderData, parsed, confirm);
     }
 
-    // V134: el cierre tiene prioridad absoluta. Solo mostrar el análisis del
-    // comprobante cuando todavía falta algún requisito y no se puede confirmar.
+    // V120: si en este mensaje se recibió un comprobante y el pedido todavía
+    // no puede cerrarse, devolver SIEMPRE el resultado técnico de la validación.
     // No permitir que Gemini o una rama conversacional silencien si el
     // destinatario coincide, el monto alcanza o el archivo fue rechazado.
     if (proofReceived && currentCoverageForProof === false && !confirm) {
@@ -9077,7 +7900,6 @@ export default async function handler(req: any, res: any) {
           detected_amount: orderData.payment_amount,
           customer_name_from_payer: orderData.customer_name || null,
           verification_error: orderData.payment_verification_error || null,
-          payment_status_text: orderData.payment_status_text || null,
         },
       });
     }
@@ -9114,20 +7936,9 @@ export default async function handler(req: any, res: any) {
       }
 
       const fixedConfirmation = finalConfirmationMessage(finalState, parsed);
-      const successfulPaymentIntro =
-        proofReceived &&
-        finalState.coverage === false &&
-        orderData.payment_proof_verified &&
-        !orderData.payment_manual_review_required
-          ? paymentProofVerificationMessage(orderData, expectedPaymentAmount)
-          : "";
-
-      const finalSuccessfulResponse = successfulPaymentIntro
-        ? `${successfulPaymentIntro}\n\n${fixedConfirmation}`
-        : fixedConfirmation;
 
       return res.json({
-        response: finalSuccessfulResponse,
+        response: fixedConfirmation,
         context: {
           ...(context || {}),
           current_product: orderData.product || null,
@@ -9253,11 +8064,12 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // V132: respuesta logística inmediata y determinística al capturar o corregir la ciudad
+    // Parche 3: Desactivado after city coverage fijo (solo el return)
     if (
       !confirm &&
       orderData.city &&
-      cityWasCapturedNow
+      cityWasCapturedNow &&
+      !orderData.locked_offer?.fixed_quantity
     ) {
       // V114: la ciudad recién recibida solo lleva a pedir cantidad cuando
       // todavía no existe una cantidad válida. Si el cliente ya dijo “quiero 2”,
@@ -9273,9 +8085,9 @@ export default async function handler(req: any, res: any) {
         finalState.step = "collecting_quantity";
         finalState.missing = Array.from(new Set(["cantidad", ...(finalState.missing || []).filter((x) => x !== "cantidad")]));
       }
-      const cityCoverageResponse = deterministicAfterCityCoverageMessage(finalState, parsed);
-      // V132: el backend garantiza cobertura, horario/plazo y luego solicita cantidad.
-      if (cityCoverageResponse) {
+      const cityCoverageResponse = deterministicAfterCityCoverageMessage(finalState);
+      // Parche 3: Solo desactivamos el return, pero conservamos la lógica de estado (quantity reset)
+      if (false && cityCoverageResponse) {
         return res.json({
           response: cityCoverageResponse,
           context: {
@@ -9406,54 +8218,6 @@ export default async function handler(req: any, res: any) {
               preferred_delivery_time: orderData.preferred_delivery_time || null,
             }
           : undefined,
-      });
-    }
-
-    // V139: flujo determinístico de un solo dato pendiente.
-    // Evita respuestas dobles como "¿cuántas unidades?" + "¿de qué ciudad?".
-    // Si el mensaje ya trajo cantidad, se conserva y se pregunta únicamente ciudad.
-    if (
-      !confirm &&
-      orderData.product &&
-      !clean(orderData.city) &&
-      !isQuestionLikeMessage(texto) &&
-      (
-        isGenericBuyReply(texto) ||
-        isBuyIntent(texto) ||
-        explicitQty > 0 ||
-        sanitizeQuantity(orderData.quantity) > 0
-      )
-    ) {
-      const qtySelected = sanitizeQuantity(orderData.quantity);
-      const aiCityQuestion = await buildAICityQuestion({
-        apiKey,
-        model,
-        order: orderData,
-      });
-      const response = qtySelected > 0
-        ? `Perfecto, ya registré ${qtySelected} unidad${qtySelected > 1 ? "es" : ""} de ${orderData.product}.\n\n${aiCityQuestion}`
-        : aiCityQuestion;
-
-      return res.json({
-        response,
-        context: {
-          ...(context || {}),
-          current_product: orderData.product || null,
-          last_topic: orderData.product || context?.last_topic || null,
-          last_ad_offer: orderData.locked_offer || null,
-          order_data: orderData,
-          order_id: orderData.order_id || null,
-          step: "collecting_city",
-          address_optional: finalState.addressOptional,
-          updated_at: new Date().toISOString(),
-        },
-        debug: {
-          v139_single_pending_question: true,
-          requested_only: "city",
-          quantity_preserved: qtySelected,
-          city: null,
-          product: orderData.product,
-        },
       });
     }
 
