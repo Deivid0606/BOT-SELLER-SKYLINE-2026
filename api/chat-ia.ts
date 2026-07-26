@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V127: checkout determinístico para transportadora; jamás pide dirección y confirma al completar nombre + comprobante.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
  * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
  * CHAT IA VENDEDOR AUTÓNOMO V115 - Mega Todo Store / One Store
@@ -4820,9 +4821,9 @@ function buildHardInstruction(state: ConversationState) {
 
   if (coverage === false && order.quantity > 0) {
     if (missing.length > 0) {
-      return "Informar total, explicar envío por transportadora y pago anticipado. Mostrar datos de transferencia porque ya hay cantidad. Pedir SOLO lo faltante: nombre completo, teléfono y/o comprobante de transferencia. Si el cliente pidió fecha/horario/pagar después, aclarar que queda anotado como observación. IMPORTANTE: no confirmar el pedido hasta recibir comprobante.";
+      return `FLUJO ESTRICTO DE TRANSPORTADORA: la ciudad "${order.city}" es el destino suficiente. PROHIBIDO pedir dirección, ubicación, calle, barrio o referencia. Pedir exclusivamente estos datos pendientes: ${missing.join(", ")}. El celular ya se obtiene del WhatsApp y no debe solicitarse. Si falta el comprobante, mostrar los datos bancarios. Si el comprobante ya está verificado y solo falta el nombre, pedir únicamente nombre y apellido. No confirmar hasta que nombre y comprobante estén completos.`;
     }
-    return "Confirmar el pedido por transportadora porque ya se recibió comprobante y datos.";
+    return "El pedido por transportadora ya tiene producto, cantidad, ciudad, nombre y comprobante verificado. No pedir ningún otro dato. El backend debe confirmar inmediatamente.";
   }
 
   if (missing.length > 0) {
@@ -6169,6 +6170,85 @@ Para agendarlo, me falta:
 📞 Teléfono: ${o.phone}${o.address ? `\n🏠 Dirección: ${o.address}` : ""}${observationBlock(o)}
 
 ¡Gracias por tu compra! 💜`;
+}
+
+function deterministicTransportCheckoutMessage(
+  state: ConversationState,
+  parsed: ParsedTraining
+): string {
+  const o = state.order;
+
+  if (state.coverage !== false) return "";
+  if (!clean(o.product) || !clean(o.city) || sanitizeQuantity(o.quantity) <= 0) return "";
+
+  // En transportadora la ciudad es el destino suficiente. La dirección nunca
+  // forma parte de los datos requeridos, aunque Gemini o el historial la mencionen.
+  if (!clean(o.customer_name)) {
+    if (o.payment_proof_verified) {
+      return `¡Recibido! El comprobante quedó verificado correctamente. ✅
+
+Para finalizar el pedido por transportadora, solo necesito tu nombre y apellido. 😊📦`;
+    }
+
+    return `✅ Pedido preparado para envío por transportadora
+
+📦 Producto: ${o.product}
+🔢 Cantidad: ${o.quantity}
+💰 Total: ${formatGs(state.total)} Gs
+📍 Destino: ${o.city}
+
+💳 El pago es anticipado. Para confirmar, enviame:
+✅ tu nombre y apellido
+✅ la foto o PDF del comprobante
+
+${bankDataText(parsed)} 📲`;
+  }
+
+  if (!o.payment_proof_verified) {
+    if (o.payment_proof_received) {
+      return paymentProofVerificationMessage(o, state.total);
+    }
+
+    return `¡Gracias, ${o.customer_name}! 😊
+
+Para confirmar tu pedido por transportadora a ${o.city}, solo falta el comprobante de transferencia.
+
+💰 Total: ${formatGs(state.total)} Gs
+
+${bankDataText(parsed)}
+
+Enviame la foto o PDF del comprobante. 📎`;
+  }
+
+  return "";
+}
+
+function sanitizeTransportadoraResponse(
+  response: string,
+  state: ConversationState
+): string {
+  if (state.coverage !== false) return response;
+
+  const n = normalize(response);
+  const asksForbiddenLocation =
+    /\b(direccion|ubicacion|calle|barrio|referencia|domicilio)\b/.test(n) &&
+    /\b(enviame|envianos|pasame|comparti|compartime|necesito|falta|faltaria|indicame|decime|donde queres recibir|para recibir)\b/.test(n);
+
+  if (!asksForbiddenLocation) return response;
+
+  // Nunca intentamos "arreglar" parcialmente una respuesta contaminada.
+  // La reemplazamos por el mensaje determinístico correspondiente.
+  if (!clean(state.order.customer_name)) {
+    return state.order.payment_proof_verified
+      ? "¡Recibido! El comprobante quedó verificado correctamente. ✅\n\nPara finalizar el pedido por transportadora, solo necesito tu nombre y apellido. 😊📦"
+      : "Para continuar con el envío por transportadora, solo necesito tu nombre y apellido y el comprobante de transferencia. La ciudad ya es suficiente como destino. 😊📦";
+  }
+
+  if (!state.order.payment_proof_verified) {
+    return "¡Gracias! Para confirmar el envío por transportadora, solo falta el comprobante de transferencia. La ciudad ya es suficiente como destino. 😊📎";
+  }
+
+  return response;
 }
 
 function postProcessResponse(resp: string) {
@@ -7983,6 +8063,40 @@ export default async function handler(req: any, res: any) {
       });
     }
 
+    // V127: checkout determinístico para transportadora.
+    // Evita que Gemini solicite dirección, ubicación, calle, barrio o referencia.
+    if (!confirm && finalState.coverage === false) {
+      const transportCheckoutResponse = deterministicTransportCheckoutMessage(finalState, parsed);
+      if (transportCheckoutResponse) {
+        return res.json({
+          response: transportCheckoutResponse,
+          context: {
+            ...(context || {}),
+            current_product: orderData.product || null,
+            last_topic: orderData.product || context?.last_topic || null,
+            last_ad_offer: orderData.locked_offer || null,
+            order_data: orderData,
+            order_id: orderData.order_id || null,
+            payment_proof_received: orderData.payment_proof_received || false,
+            payment_proof_verified: orderData.payment_proof_verified || false,
+            payment_holder_name: orderData.payment_holder_name || null,
+            payment_amount: orderData.payment_amount || 0,
+            payment_operation_number: orderData.payment_operation_number || null,
+            step: finalState.step,
+            address_optional: true,
+            updated_at: new Date().toISOString(),
+          },
+          debug: {
+            deterministic_transport_checkout: true,
+            gemini_skipped: true,
+            city: orderData.city,
+            missing: finalState.missing,
+            step: finalState.step,
+          },
+        });
+      }
+    }
+
     // Parche 1: Desactivado waiting_payment_proof fijo
     if (false && !confirm && finalState.coverage === false && finalState.step === "waiting_payment_proof") {
       const waitProofResponse = deterministicWaitingPaymentProofMessage(finalState, parsed);
@@ -8418,6 +8532,10 @@ Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas de
 
     // V97: protege cobertura y evita presentar el total del producto como costo del envío.
     aiResponse = sanitizeCoverageAndShippingResponse(aiResponse, finalState);
+
+    // V127: defensa final. Si por cualquier rama Gemini intenta pedir una
+    // dirección para transportadora, reemplazamos la respuesta completa.
+    aiResponse = sanitizeTransportadoraResponse(aiResponse, finalState);
 
     let followUpResponse = "";
 
