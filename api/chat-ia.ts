@@ -5688,7 +5688,140 @@ Nuestro equipo se pondrá en contacto para coordinar la entrega. 📲
 ¡Muchas gracias por tu compra! 💜`;
 }
 
-function deterministicAfterCityCoverageMessage(state: ConversationState) {
+type CityLogistics = {
+  canonical: string;
+  zone: "CENTRAL" | "FUERA_DE_CENTRAL" | "";
+  deliveryRule: "CORTE_12_30" | "24_A_48_HORAS" | "";
+};
+
+function cityLogisticsFromTraining(city: string, coverageTraining: string): CityLogistics {
+  const target = normalize(city);
+  const fallback: CityLogistics = { canonical: clean(city), zone: "", deliveryRule: "" };
+  if (!target || !coverageTraining) return fallback;
+
+  const lines = coverageTraining
+    .split(/\r?\n/g)
+    .map((line) => clean(line.replace(/^[📍✅✔❌🚚💳\-•]+\s*/, "")))
+    .filter(Boolean);
+
+  for (let i = 0; i < lines.length; i++) {
+    // Una entrada válida tiene nombre, variantes y luego sus etiquetas técnicas.
+    const window = lines.slice(i, i + 10);
+    const zoneLine = window.find((line) => /^ZONA_LOG[IÍ]STICA\s*:/i.test(line));
+    const ruleLine = window.find((line) => /^REGLA_ENTREGA\s*:/i.test(line));
+    const coverageLine = window.find((line) => /^COBERTURA\s*:/i.test(line));
+
+    if (!zoneLine || !ruleLine || !coverageLine) continue;
+
+    const canonical = clean(lines[i]);
+    const aliasesLine = clean(lines[i + 1] || "");
+    const candidates = [canonical, ...aliasesLine.split(",").map(clean)]
+      .map(normalize)
+      .filter(Boolean);
+
+    if (!candidates.includes(target)) continue;
+
+    const zoneRaw = normalize(zoneLine.split(":").slice(1).join(":"));
+    const ruleRaw = normalize(ruleLine.split(":").slice(1).join(":"));
+
+    return {
+      canonical,
+      zone: zoneRaw === "central"
+        ? "CENTRAL"
+        : zoneRaw === "fuera_de_central" || zoneRaw === "fuera de central"
+          ? "FUERA_DE_CENTRAL"
+          : "",
+      deliveryRule: ruleRaw === "corte_12_30" || ruleRaw === "corte 12 30"
+        ? "CORTE_12_30"
+        : ruleRaw === "24_a_48_horas" || ruleRaw === "24 a 48 horas"
+          ? "24_A_48_HORAS"
+          : "",
+    };
+  }
+
+  return fallback;
+}
+
+function paraguayDateTimeParts(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Asuncion",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+
+  const value = (type: string) => parts.find((part) => part.type === type)?.value || "";
+  const weekday = value("weekday");
+  const hour = Number(value("hour") || 0);
+  const minute = Number(value("minute") || 0);
+
+  const weekdayIndex: Record<string, number> = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6,
+  };
+
+  return {
+    day: weekdayIndex[weekday] ?? -1,
+    minutes: hour * 60 + minute,
+  };
+}
+
+function coveredDeliveryTimingText(
+  city: string,
+  parsed: ParsedTraining,
+  now = new Date()
+): string {
+  const logistics = cityLogisticsFromTraining(city, parsed.coverageTraining || parsed.raw);
+  const { day, minutes } = paraguayDateTimeParts(now);
+  const beforeCutoff = minutes < 12 * 60 + 30;
+
+  if (logistics.zone === "FUERA_DE_CENTRAL" || logistics.deliveryRule === "24_A_48_HORAS") {
+    if (day === 0) {
+      return "La entrega demora normalmente entre 24 y 48 horas, de lunes a sábado. Como hoy es domingo, el plazo comienza a contar desde el lunes.";
+    }
+
+    return "La entrega demora normalmente entre 24 y 48 horas, de lunes a sábado, dentro del horario de 9:00 a 18:00.";
+  }
+
+  // CENTRAL / CORTE_12_30.
+  if (day === 0) {
+    return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Como hoy es domingo, tu pedido se procesa desde el lunes y puede salir en ruta ese día.";
+  }
+
+  if (day >= 1 && day <= 5 && beforeCutoff) {
+    return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Como el pedido ingresó antes de las 12:30, puede salir hoy dentro de ese horario.";
+  }
+
+  if (day >= 1 && day <= 4 && !beforeCutoff) {
+    return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Como el pedido ingresó a las 12:30 o después, se agenda para el siguiente día de reparto.";
+  }
+
+  if (day === 5 && !beforeCutoff) {
+    return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Como el pedido ingresó el viernes a las 12:30 o después, se agenda para el sábado.";
+  }
+
+  if (day === 6 && beforeCutoff) {
+    return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Como el pedido ingresó antes de las 12:30, puede salir hoy dentro de ese horario.";
+  }
+
+  if (day === 6 && !beforeCutoff) {
+    return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Como el pedido ingresó el sábado a las 12:30 o después, se procesa desde el lunes.";
+  }
+
+  // Respuesta defensiva si Intl no devuelve un día confiable.
+  return "Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. Los pedidos de la zona Central recibidos antes de las 12:30 pueden salir el mismo día; después del corte pasan al siguiente día de reparto.";
+}
+
+function deterministicAfterCityCoverageMessage(
+  state: ConversationState,
+  parsed: ParsedTraining
+) {
   const o = state.order;
   if (!o.product || !o.city) return "";
 
@@ -5717,9 +5850,11 @@ Si todavía no me pasaste tu nombre completo, enviámelo junto con el comprobant
 
   if (!o.quantity) {
     const offers = state.productInfo ? productOffersText(state.productInfo) : "";
-    return `✅ Tenemos envío GRATIS contra entrega en ${o.city} 🚚
+    const timing = coveredDeliveryTimingText(o.city, parsed);
 
-Pagás solamente el producto cuando lo recibís 😊
+    return `Perfecto 😊 Para ${o.city} tenemos envío gratis contra entrega y podés pagar al recibir.
+
+🕘 ${timing}
 
 ${offers ? `🔥 Promociones disponibles:
 ${offers}
@@ -7818,7 +7953,7 @@ export default async function handler(req: any, res: any) {
     // V71: al confirmar una ciudad pendiente, informar SIEMPRE la modalidad
     // antes de pedir nombre, dirección o cualquier otro dato.
     if (!confirm && cityConfirmedNow && finalState.coverage === false) {
-      const mandatoryOutsideCoverageResponse = deterministicAfterCityCoverageMessage(finalState);
+      const mandatoryOutsideCoverageResponse = deterministicAfterCityCoverageMessage(finalState, parsed);
       if (mandatoryOutsideCoverageResponse) {
         if (orderData.product) {
           await safeUpsertOrder(user_id, fromNumber, orderData, parsed, false);
@@ -8064,7 +8199,7 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    // Parche 3: Desactivado after city coverage fijo (solo el return)
+    // V132: respuesta logística inmediata y determinística al capturar o corregir la ciudad
     if (
       !confirm &&
       orderData.city &&
@@ -8085,9 +8220,9 @@ export default async function handler(req: any, res: any) {
         finalState.step = "collecting_quantity";
         finalState.missing = Array.from(new Set(["cantidad", ...(finalState.missing || []).filter((x) => x !== "cantidad")]));
       }
-      const cityCoverageResponse = deterministicAfterCityCoverageMessage(finalState);
-      // Parche 3: Solo desactivamos el return, pero conservamos la lógica de estado (quantity reset)
-      if (false && cityCoverageResponse) {
+      const cityCoverageResponse = deterministicAfterCityCoverageMessage(finalState, parsed);
+      // V132: el backend garantiza cobertura, horario/plazo y luego solicita cantidad.
+      if (cityCoverageResponse) {
         return res.json({
           response: cityCoverageResponse,
           context: {
