@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V146: cuando el flujo espera nombre, una respuesta de nombre no puede reemplazar ciudad/cobertura; mejora el nombre canónico de productos y bloquea titulares publicitarios.
  * V145: confirma comprobantes legibles sin exigir la palabra “exitosa” cuando pagador, destinatario y monto coinciden y no existe estado pendiente o negativo.
  * V144: separa transferencia exitosa de acreditación pendiente; comprobante válido confirma inmediatamente y muestra verificación + cierre en una sola respuesta.
  * V143: preserva ciudades reales no listadas entre turnos, impide que cantidades reemplacen ciudad/cobertura y reconoce variantes como procesador/procesadora.
@@ -797,7 +798,10 @@ function extractProductNameFromCopy(text: string): string {
     const looksLikeAdvertisingHook =
       /[?¿]/.test(clean(value)) ||
       /^(tu|tus|su|sus|el|la)\s+.+\b(no|nunca|todavia|todavía|ya no)\b/.test(candidateNorm) ||
-      /\b(no corta|no funciona|estas cansado|estás cansado|te cuesta|problema|sufris|sufrís|perdes|perdés tiempo)\b/.test(candidateNorm);
+      /\b(no corta|no funciona|estas cansado|estás cansado|te cuesta|problema|sufris|sufrís|perdes|perdés tiempo)\b/.test(candidateNorm) ||
+      /\b(mas ligeras|más ligeras|mas ligeros|más ligeros|descansadas|descansados|desde los primeros|resultados visibles|volve a sentir|volvé a sentir|sentite|sentí|cambia tu vida|transforma tu|transformá tu)\b/.test(candidateNorm) ||
+      /\b(dias|días|horas|minutos)\b/.test(candidateNorm) &&
+        /\b(primeros|resultado|resultados|visible|visibles|desde)\b/.test(candidateNorm);
 
     if (
       looksLikeAdvertisingHook ||
@@ -809,6 +813,22 @@ function extractProductNameFromCopy(text: string): string {
     if (words.length < 1 || words.length > 10) return "";
     return toTitleCase(candidate);
   };
+
+  // V146: prioriza líneas descriptivas reales del producto antes de cualquier
+  // titular publicitario. Ej.: “Crema de Castaña de Indias – 240 gramos”.
+  const descriptiveProductPatterns = [
+    /(?:^|\n)\s*(?:[\p{Extended_Pictographic}\uFE0F\u200D]+\s*)?((?:crema|gel|serum|sérum|locion|loción|aceite|bálsamo|balsamo|spray|shampoo|champú|jabon|jabón|suplemento|capsulas|cápsulas|vitaminas|procesador|procesadora|afilador|corrector|plantillas|masajeador|depilador|limpiador|organizador|sellador|cortador|picador|triturador|aspiradora|cepillo)(?:\s+(?:de|del|para|con)\s+[^\n–—-]{2,80}|\s+[^\n–—-]{2,80}))(?=\s*(?:[–—-]|\n|$))/imu,
+    /(?:^|\n)\s*(?:[\p{Extended_Pictographic}\uFE0F\u200D]+\s*)?((?:crema|gel|serum|sérum|locion|loción|aceite|bálsamo|balsamo|spray|shampoo|champú|jabon|jabón)\s+[^\n]{2,80})$/imu,
+  ];
+
+  for (const pattern of descriptiveProductPatterns) {
+    const rawCandidate = clean(raw.match(pattern)?.[1])
+      .replace(/\s*[–—-]\s*\d+(?:[.,]\d+)?\s*(?:g|gr|gramos?|ml|mililitros?|kg|kilos?)\b.*$/i, "")
+      .replace(/\s+\d+(?:[.,]\d+)?\s*(?:g|gr|gramos?|ml|mililitros?|kg|kilos?)\b.*$/i, "")
+      .trim();
+    const candidate = accept(rawCandidate);
+    if (candidate) return candidate;
+  }
 
   // Ej.: “Con el Procesador de Alimentos Premium RAF PRO® preparás...”
   const introPatterns = [
@@ -7797,6 +7817,22 @@ export default async function handler(req: any, res: any) {
     const isCityStep = prevStep === "collecting_city";
     const isDataCollectionStep = ["collecting_name", "collecting_address", "collecting_phone", "collecting_quantity"].includes(prevStep);
 
+    // V146: si el backend acaba de pedir nombre y ya existe una ciudad válida,
+    // una respuesta con nombre y apellido se procesa exclusivamente como nombre.
+    // No se permite que esa respuesta vuelva a entrar a detectCity().
+    const expectingCustomerNameReply = Boolean(
+      prevStep === "collecting_name" &&
+      !clean(oldOrder.customer_name) &&
+      clean(oldOrder.city)
+    );
+
+    const validStandaloneNameReply = Boolean(
+      expectingCustomerNameReply &&
+      isStrictStandaloneCustomerName(texto, oldOrder.city || "", parsed) &&
+      !isInvalidCustomerNameForOrder(texto, oldOrder.city || "", parsed) &&
+      !isContaminatedCustomerName(texto, parsed)
+    );
+
     // V63: sanea ciudades contaminadas que hayan quedado guardadas por una versión anterior.
     // Ej.: "Asuncion Roberto Lpetti El" se convierte inmediatamente en "Asunción".
     const sanitizedOldCity = canonicalizeStoredCity(oldOrder.city || "", parsed);
@@ -7805,14 +7841,18 @@ export default async function handler(req: any, res: any) {
     }
 
     const quantityOnlyReply = isStandaloneQuantityReply(texto);
+    const lockCityForCurrentReply = Boolean(
+      quantityOnlyReply ||
+      validStandaloneNameReply
+    );
 
-    const explicitKnownCityFromMessage = quantityOnlyReply
+    const explicitKnownCityFromMessage = lockCityForCurrentReply
       ? ""
       : extractExplicitKnownCityFromSentence(texto, parsed);
-    const detectedCityRaw = quantityOnlyReply
-      ? (sanitizedOldCity || "")
+    const detectedCityRaw = lockCityForCurrentReply
+      ? (sanitizedOldCity || oldOrder.city || "")
       : detectCity(texto, parsed, sanitizedOldCity || "");
-    const exactCityFromMessage = quantityOnlyReply ? "" : exactKnownCity(texto, parsed);
+    const exactCityFromMessage = lockCityForCurrentReply ? "" : exactKnownCity(texto, parsed);
     const explicitDifferentCity = Boolean(
       cityStatement &&
       exactKnownCity(cityStatement, parsed) &&
@@ -7861,10 +7901,10 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    let effectiveDetectedCity = quantityOnlyReply
+    let effectiveDetectedCity = lockCityForCurrentReply
       ? (sanitizedOldCity || oldOrder.city || "")
       : (cityConfirmedNow || detectedCity);
-    const cityWasCapturedNow = quantityOnlyReply
+    const cityWasCapturedNow = lockCityForCurrentReply
       ? false
       : Boolean(
           cityConfirmedNow ||
@@ -7997,7 +8037,11 @@ export default async function handler(req: any, res: any) {
       console.error("⚠️ recoverRecentValidNameFromHistory falló:", error);
     }
 
-    const name = detectedName || historyRecoveredName;
+    const contextualName = validStandaloneNameReply
+      ? toTitleCase(clean(texto).replace(/[.,;:]+$/g, ""))
+      : "";
+
+    const name = contextualName || detectedName || historyRecoveredName;
 
     let address = "";
     try {
@@ -8063,11 +8107,16 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = 0;
     }
 
-    // V143: una respuesta de cantidad jamás puede tocar ciudad ni logística.
-    if (quantityOnlyReply) {
+    // V146: cantidades y respuestas de nombre jamás pueden tocar ciudad,
+    // cobertura, modalidad ni forma de pago.
+    if (lockCityForCurrentReply) {
       orderData.city = sanitizedOldCity || oldOrder.city || "";
     } else if (!orderData.city && oldOrder.city && qty > 0) {
       orderData.city = sanitizedOldCity || oldOrder.city;
+    }
+
+    if (validStandaloneNameReply) {
+      orderData.customer_name = contextualName;
     }
 
     if (!orderData.city && historyRecoveredCity) {
@@ -8573,11 +8622,17 @@ export default async function handler(req: any, res: any) {
       if (recoveredProduct) orderData.product = recoveredProduct;
     }
 
-    // V143: última barrera antes de generar cualquier respuesta visible.
-    if (quantityOnlyReply && (sanitizedOldCity || oldOrder.city)) {
+    // V146: última barrera antes de generar cualquier respuesta visible.
+    if (lockCityForCurrentReply && (sanitizedOldCity || oldOrder.city)) {
       orderData.city = sanitizedOldCity || oldOrder.city;
     }
-    if (isStandaloneQuantityReply(orderData.city)) {
+    if (validStandaloneNameReply) {
+      orderData.customer_name = contextualName;
+    }
+    if (
+      isStandaloneQuantityReply(orderData.city) ||
+      normalize(orderData.city) === normalize(orderData.customer_name)
+    ) {
       orderData.city = sanitizedOldCity || oldOrder.city || "";
     }
 
