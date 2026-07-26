@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V145: confirma comprobantes legibles sin exigir la palabra “exitosa” cuando pagador, destinatario y monto coinciden y no existe estado pendiente o negativo.
  * V144: separa transferencia exitosa de acreditación pendiente; comprobante válido confirma inmediatamente y muestra verificación + cierre en una sola respuesta.
  * V143: preserva ciudades reales no listadas entre turnos, impide que cantidades reemplacen ciudad/cobertura y reconoce variantes como procesador/procesadora.
  * V140: después de una compra confirmada, otro producto abre una venta nueva y reenvía imagen/copy; solo agrega al pedido con intención explícita de mismo pedido.
@@ -28,7 +29,7 @@ import { createClient } from "@supabase/supabase-js";
  * V119 histórico reemplazado por V125: el pagador completa el nombre solo cuando todavía no existe un nombre válido del cliente.
  * V118: conserva comprobantes aunque cambie el order_id interno, nunca exige dirección para transportadora y fuerza el cierre fijo correcto.
  * V112: detecta ciudades en frases con errores como “Yo estoi en Caacupe”, bloquea nombres y direcciones contaminadas.
- * V110 histórico: registraba comprobantes pendientes para revisión manual; V144 ya no confirma el pedido hasta que el pago figure exitoso.
+ * V110 histórico: registraba comprobantes pendientes para revisión manual; V145 solo bloquea estados pendientes o negativos expresos.
  * V109: impide usar ciudades como nombre del cliente.
  * V108 histórico: valida destinatario bancario y admite PDF sin texto de estado; V125 usa el pagador como cliente únicamente si falta un nombre válido.
  * V107: verifica titular, monto y estado del comprobante antes de confirmar pagos anticipados.
@@ -2819,6 +2820,13 @@ function isPendingTransferStatus(value: string): boolean {
   if (!n) return false;
 
   return /\b(pendiente|en proceso|procesando|solicitamos el envio|solicitado el envio|acreditacion dependera|pendiente de acreditacion|por acreditar|en revision|esperando acreditacion|transferencia enviada)\b/.test(n);
+}
+
+function isExplicitNegativeTransferStatus(value: string): boolean {
+  const n = normalize(value);
+  if (!n) return false;
+
+  return /\b(rechazada|rechazado|rechazo|cancelada|cancelado|cancelacion|fallida|fallido|error|anulada|anulado|devuelta|devuelto|revertida|revertido|no procesada|no procesado|no realizada|no realizado|denegada|denegado|declinada|declinado)\b/.test(n);
 }
 
 
@@ -5648,8 +5656,9 @@ Definiciones:
 - recipient_alias: alias del destinatario.
 - recipient_bank: banco o entidad receptora.
 - amount: monto total transferido como entero, sin puntos.
-- successful: true solo si una imagen/captura muestra claramente operación exitosa, aprobada, completada o equivalente.
-- En un PDF bancario, successful puede ser false si el documento no trae una frase explícita; igual extraé todos los demás datos.
+- successful: true si el documento muestra claramente operación exitosa, aprobada, completada o equivalente.
+- successful puede ser false cuando el comprobante no incluye una frase explícita de éxito. No inventes esa frase.
+- status_text debe copiar cualquier estado visible, especialmente si dice pendiente, en proceso, rechazada, cancelada, fallida o anulada.
 - readable: true si se leen claramente pagador, monto y al menos un dato del destinatario.
 - No confundas al pagador con el beneficiario.
 
@@ -5688,7 +5697,7 @@ function paymentProofVerificationMessage(order: OrderData, expectedAmount: numbe
   if (order.payment_proof_verified && !order.payment_manual_review_required) {
     return `✅ TRANSFERENCIA VERIFICADA
 
-La transferencia figura exitosa y los datos coinciden correctamente.
+El comprobante es legible y los datos del pago coinciden correctamente.
 
 👤 Pagador: ${order.payment_holder_name}
 💰 Monto recibido: ${formatGs(order.payment_amount || 0)} Gs
@@ -5886,7 +5895,7 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
 📞 Contacto: ${o.phone}${observationBlock(o)}
 
 🚚 Envío por transportadora
-💳 Transferencia exitosa y pago anticipado verificado
+💳 Comprobante verificado y pago anticipado confirmado
 
 ¡Muchas gracias por tu compra! 💜`;
   }
@@ -8296,12 +8305,10 @@ export default async function handler(req: any, res: any) {
           parsed.bankData
         );
         const transferIsPending =
-          !isPdfProof &&
           isPendingTransferStatus(proofAnalysis.status_text);
 
-        const statusIsFinal =
-          isPdfProof ||
-          proofAnalysis.successful;
+        const transferHasNegativeStatus =
+          isExplicitNegativeTransferStatus(proofAnalysis.status_text);
 
         const basePaymentDataValid = Boolean(
           proofAnalysis.readable &&
@@ -8309,6 +8316,16 @@ export default async function handler(req: any, res: any) {
           proofAnalysis.amount > 0 &&
           amountCoversOrder &&
           recipientMatches
+        );
+
+        // V145:
+        // - No se exige una palabra literal como “exitosa”.
+        // - Si el comprobante es legible, el pagador existe, el destinatario coincide
+        //   y el monto cubre el pedido, se verifica automáticamente.
+        // - Solo se bloquea por un estado pendiente o negativo expresamente visible.
+        const statusAllowsAutomaticVerification = Boolean(
+          !transferIsPending &&
+          !transferHasNegativeStatus
         );
 
         orderData.payment_manual_review_required = Boolean(
@@ -8322,13 +8339,9 @@ export default async function handler(req: any, res: any) {
             : "";
 
         orderData.payment_recipient_matched = recipientMatches;
-        // V144: solo un pago finalizado/aprobado se considera verificado.
-        // Una transferencia pendiente puede estar bien dirigida y por el monto correcto,
-        // pero no confirma el pago ni el pedido hasta que figure exitosa/acreditada.
         orderData.payment_proof_verified = Boolean(
           basePaymentDataValid &&
-          statusIsFinal &&
-          !transferIsPending
+          statusAllowsAutomaticVerification
         );
 
         // V125: si todavía no existe un nombre real del cliente, usar el nombre
@@ -8361,12 +8374,12 @@ export default async function handler(req: any, res: any) {
             );
           }
 
-          if (
-            !isPdfProof &&
-            !proofAnalysis.successful &&
-            !transferIsPending
-          ) {
-            reasons.push("la imagen no muestra claramente una transferencia exitosa o aprobada");
+          if (transferIsPending) {
+            reasons.push("la transferencia figura pendiente o en proceso");
+          }
+
+          if (transferHasNegativeStatus) {
+            reasons.push("la transferencia figura rechazada, cancelada, fallida o anulada");
           }
 
           if (!hasPayerName) {
@@ -8391,6 +8404,10 @@ export default async function handler(req: any, res: any) {
               ? `No se pudo verificar porque ${reasons.join(", ")}.`
               : (proofAnalysis.error || "No se pudieron verificar todos los datos obligatorios.");
         } else {
+          orderData.payment_verification_error = "";
+          orderData.payment_manual_review_required = false;
+          orderData.payment_manual_review_reason = "";
+
           const overpayment = Math.max(0, proofAnalysis.amount - expectedPaymentAmount);
           const recipientLabel =
             proofAnalysis.recipient_name ||
@@ -8669,6 +8686,7 @@ export default async function handler(req: any, res: any) {
           detected_amount: orderData.payment_amount,
           customer_name_from_payer: orderData.customer_name || null,
           verification_error: orderData.payment_verification_error || null,
+          payment_status_text: orderData.payment_status_text || null,
         },
       });
     }
