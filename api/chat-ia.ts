@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V140: después de una compra confirmada, otro producto abre una venta nueva y reenvía imagen/copy; solo agrega al pedido con intención explícita de mismo pedido.
  * V139: pide un solo dato por respuesta; captura ciudad y cantidad combinadas y, si llega solo cantidad, conserva la cantidad y pregunta únicamente ciudad.
  * V138: bloquea cantidades antes de detectar ciudad, conserva ciudad ante departamentos/regiones y reinicia pedidos confirmados vencidos.
  * V137: corrige postventa multiproducto, persiste teléfono alternativo y exige una ubicación completa (no solo km/barrio).
@@ -334,6 +335,23 @@ function isGenericBuyReply(text: string) {
   if (exact.includes(m)) return true;
 
   return /^(si\s+)?(quiero|lo quiero|me interesa|comprar|compro|dale|ok|listo|confirmo|ese quiero|quiero ese|quiero eso)$/.test(m);
+}
+
+function hasExplicitSameOrderAddIntent(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  // Solo estas expresiones autorizan unir el nuevo producto al pedido confirmado.
+  // "Me interesa", "quiero" o la mera palabra clave del producto abren venta nueva.
+  return (
+    /\b(tambien|también|ademas|además|sumar|sumale|súmale|agregar|agregame|agregáme|anadir|añadir|añadime|adicional)\b/.test(n) ||
+    /\b(mismo pedido|pedido anterior|junto con|junto al|con el anterior|quiero ambos|los dos productos|en el mismo envio|en el mismo envío)\b/.test(n)
+  );
+}
+
+function buildNaturalSingleProductQuantityPrompt(product: ProductItem): string {
+  const offers = productOffersText(product);
+  return `${offers ? `${offers}\n\n` : ""}¿Cuántas unidades de ${product.canonical} querés llevar?`;
 }
 
 function isAffirmative(text: string) {
@@ -6848,6 +6866,91 @@ export default async function handler(req: any, res: any) {
       context.previous_confirmed_order_expired = true;
     }
 
+    // V140: después de un pedido confirmado, mencionar/interesarse por otro
+    // producto inicia una VENTA NUEVA. Solo se conserva el pedido anterior cuando
+    // el cliente pide explícitamente agregar/sumar al mismo pedido.
+    const confirmedStepNow =
+      ["pedido_confirmado", "pedido_confirmado_multiple"].includes(clean(context?.step));
+    const confirmedOrderNow = sanitizeOldOrder(context?.order_data || {}, parsed);
+    const mentionedNewProduct =
+      productsMentionedNow.length === 1 ? productsMentionedNow[0] : null;
+    const previousConfirmedProduct = getProductInfo(confirmedOrderNow.product, parsed);
+    const isDifferentProductAfterConfirmed =
+      !!mentionedNewProduct &&
+      (!previousConfirmedProduct ||
+        normalize(mentionedNewProduct.canonical) !== normalize(previousConfirmedProduct.canonical));
+    const explicitSameOrderAdd = hasExplicitSameOrderAddIntent(texto);
+
+    if (
+      confirmedStepNow &&
+      isDifferentProductAfterConfirmed &&
+      !explicitSameOrderAdd
+    ) {
+      const newOrder = emptyOrder(makeOrderId(fromNumber));
+      newOrder.phone = senderPhoneFallback(fromNumber);
+      newOrder.product = mentionedNewProduct!.canonical;
+
+      const quantityNow =
+        extractQuantityForNamedProduct(texto, mentionedNewProduct!) ||
+        extractQuantity(texto) ||
+        mentionedNewProduct!.fixedPackQuantity ||
+        0;
+      if (quantityNow > 0) {
+        newOrder.quantity = sanitizeQuantity(quantityNow);
+        newOrder.locked_offer = null;
+      }
+
+      const cityNow = detectCity(texto, parsed, "");
+      if (cityNow) newOrder.city = cityNow;
+
+      const copy =
+        clean(mentionedNewProduct!.salesCopy || "") ||
+        `📦 ${mentionedNewProduct!.canonical}\n${productOffersText(mentionedNewProduct!)}`;
+      const images = mentionedNewProduct!.images?.length
+        ? mentionedNewProduct!.images.slice(0, 3)
+        : undefined;
+
+      let followUp = "";
+      if (!newOrder.quantity && !mentionedNewProduct!.fixedPackQuantity) {
+        followUp = buildNaturalSingleProductQuantityPrompt(mentionedNewProduct!);
+      } else if (!newOrder.city) {
+        followUp = `Perfecto 😊 Ya registré ${newOrder.quantity} unidad${newOrder.quantity === 1 ? "" : "es"}.\n\n📍 ¿Para qué ciudad querés que preparemos el envío?`;
+      } else {
+        const coverageNow = hasCoverage(newOrder.city, parsed);
+        followUp = `${coveredDeliveryTimingText(newOrder.city, parsed)}\n\n📦 Producto: ${mentionedNewProduct!.canonical}\n🔢 Cantidad: ${newOrder.quantity} u.\n💰 Total: ${formatGs(calculateTotal(mentionedNewProduct!.canonical, newOrder.quantity, parsed, newOrder.locked_offer || null))} Gs\n\nPara completar el pedido, pasame tu nombre y apellido.`;
+      }
+
+      return res.json({
+        response: copy,
+        follow_up_response: followUp,
+        media_urls: images,
+        context: {
+          ...(context || {}),
+          order_data: newOrder,
+          order_id: newOrder.order_id,
+          current_product: mentionedNewProduct!.canonical,
+          last_topic: mentionedNewProduct!.canonical,
+          pending_multiple_products: [],
+          multi_product_cart: [],
+          multi_order_id: "",
+          step:
+            !newOrder.quantity && !mentionedNewProduct!.fixedPackQuantity
+              ? "collecting_quantity"
+              : !newOrder.city
+                ? "collecting_city"
+                : "collecting_name",
+          updated_at: new Date().toISOString(),
+        },
+        debug: {
+          v140_new_sale_after_confirmed: true,
+          previous_product: previousConfirmedProduct?.canonical || null,
+          new_product: mentionedNewProduct!.canonical,
+          explicit_same_order_add: false,
+          image_count: images?.length || 0,
+        },
+      });
+    }
+
     let activeMultiCart = getMultiCartFromContext(context, parsed);
 
     // V137: algunos conectores pueden conservar step/current_product pero perder
@@ -7142,9 +7245,7 @@ export default async function handler(req: any, res: any) {
       const isDifferentProduct =
         !!previousProduct &&
         normalize(previousProduct.canonical) !== normalize(newProduct.canonical);
-      const addIntent =
-        hasExplicitProductInterestPhrase(texto) ||
-        /\b(tambien|también|ademas|además|sumar|agregar|agregame|agregáme|llevar|quiero|dame|y la|y el)\b/.test(normalize(texto));
+      const addIntent = hasExplicitSameOrderAddIntent(texto);
 
       if (isDifferentProduct && addIntent) {
         const multiOrderId = clean(context?.multi_order_id) || makeOrderId(fromNumber);
@@ -7156,7 +7257,7 @@ export default async function handler(req: any, res: any) {
         return res.json({
           response: copy,
           follow_up_response: missingQty.length
-            ? `Podemos agregarlo al mismo pedido 😊\n\n¿Cuántas unidades de ${newProduct.canonical} querés llevar?`
+            ? `Podemos agregarlo al mismo pedido 😊\n\n${buildNaturalSingleProductQuantityPrompt(newProduct)}`
             : `${multiCartSummary(cart)}\n\nYa tengo tus datos de entrega. El pedido se actualizará con ambos productos.`,
           media_urls: images,
           context: {
