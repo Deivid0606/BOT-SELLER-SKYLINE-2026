@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V136: dirección o ubicación obligatoria para zonas cubiertas y fecha/hora real de Paraguay en consultas temporales.
  * V135: informa cobertura, horario y plazo al capturar/corregir cualquier ciudad cubierta, con o sin cantidad y también en packs fijos.
  * V134: pago anticipado automático; envía datos bancarios al definir ciudad/cantidad, usa pagador válido como cliente y fuerza cierre directo.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
@@ -1598,7 +1599,7 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
         ? !state.order.customer_name
           ? "Para continuar, pasame tu nombre y apellido."
           : !state.order.address
-            ? "Ahora pasame la dirección exacta o ubicación para la entrega."
+            ? "Ahora pasame la dirección escrita o ubicación por Google Maps para la entrega."
             : ""
         : "¿Cuántas unidades querés llevar?"
       : "📍 ¿Para qué ciudad sería el envío?";
@@ -1615,7 +1616,7 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
     if (!state.order.city) continuation = "📍 ¿Para qué ciudad sería el envío?";
     else if (!state.order.quantity && !state.order.locked_offer?.fixed_quantity) continuation = "¿Cuántas unidades querés llevar?";
     else if (!state.order.customer_name) continuation = "Para continuar, pasame tu nombre y apellido.";
-    else if (!state.addressOptional && !state.order.address) continuation = "Ahora pasame la dirección exacta o ubicación.";
+    else if (!state.addressOptional && !state.order.address) continuation = "Ahora pasame la dirección escrita o ubicación por Google Maps.";
     
 
     if (state.coverage === false && state.order.city) {
@@ -1643,7 +1644,7 @@ function buildDeterministicBusinessQuestionResponse(text: string, state: Convers
   } else if (!state.order.customer_name) {
     continuation = "Para continuar, pasame tu nombre y apellido.";
   } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
-    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
+    continuation = "Ahora pasame la dirección escrita o ubicación por Google Maps para la entrega.";
   }
 
   return `Somos de Asunción y hacemos envíos a todo el país. 😊${continuation ? `\n\n${continuation}` : ""}`;
@@ -4264,7 +4265,7 @@ function buildDeterministicAcknowledgementResponse(text: string, state: Conversa
   } else if (!state.order.customer_name) {
     continuation = "Para completar el pedido, pasame tu nombre y apellido.";
   } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
-    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega.";
+    continuation = "Ahora pasame la dirección escrita o ubicación por Google Maps para la entrega.";
   }
 
   return `${friendlyLead}${continuation ? `\n\n${continuation}` : ""}`;
@@ -4658,15 +4659,21 @@ function isAddressOptionalByTraining(
   // Para transportadora la dirección exacta no forma parte del cierre técnico.
   if (coverage === false) return true;
 
-  const raw = clean(parsed.generalTraining || "");
+  const raw = clean([
+    parsed.coverageTraining || "",
+    parsed.generalTraining || "",
+    parsed.raw || "",
+  ].filter(Boolean).join("\n\n"));
   const n = normalize(raw);
   if (!n) return false;
 
-  // Una regla explícita de obligatoriedad tiene prioridad cuando no convive
-  // con una regla igualmente explícita de opcionalidad.
+  // V136: para ciudades cubiertas, una regla explícita que exija dirección
+  // escrita O ubicación de Google Maps siempre vuelve obligatorio este dato.
   const explicitlyRequired =
-    /\b(direccion|ubicacion|referencia)\b[\s\S]{0,45}\b(obligatoria|obligatorio|indispensable|requerida|requerido)\b/.test(n) ||
-    /\b(no se puede|no debe|no confirmar)\b[\s\S]{0,55}\b(sin direccion|sin ubicacion|sin referencia)\b/.test(n);
+    /\b(direccion|ubicacion|ubicacion de google|google maps|pin|referencia)\b[\s\S]{0,70}\b(obligatoria|obligatorio|indispensable|requerida|requerido|necesaria|necesario)\b/.test(n) ||
+    /\b(obligatoria|obligatorio|indispensable|requerida|requerido|necesaria|necesario)\b[\s\S]{0,70}\b(direccion|ubicacion|google maps|pin|referencia)\b/.test(n) ||
+    /\b(no se puede|no debe|no confirmar|no cerrar)\b[\s\S]{0,80}\b(sin direccion|sin ubicacion|sin google maps|sin pin|sin referencia)\b/.test(n) ||
+    /\b(direccion o ubicacion|direccion exacta o ubicacion|ubicacion por google|ubicacion de google)\b[\s\S]{0,80}\b(antes de confirmar|para confirmar|para cerrar|dato faltante)\b/.test(n);
 
   const explicitlyOptional =
     /\b(direccion|ubicacion|referencia|domicilio)\b[\s\S]{0,55}\b(opcional|no obligatoria|no obligatorio|puede faltar|no es necesaria|no es necesario)\b/.test(n) ||
@@ -4675,7 +4682,7 @@ function isAddressOptionalByTraining(
     /\b(direccion|ubicacion|referencia)\b[\s\S]{0,90}\b(despues|más tarde|mas tarde|al delivery|directamente al delivery)\b/.test(n) ||
     /\b(confirmar|registrar|agendar)\b[\s\S]{0,70}\b(pedido)\b[\s\S]{0,70}\b(sin direccion|sin ubicacion)\b/.test(n);
 
-  if (explicitlyRequired && !explicitlyOptional) return false;
+  if (explicitlyRequired) return false;
   return explicitlyOptional;
 }
 
@@ -4713,7 +4720,7 @@ function getMissing(order: OrderData, coverage: boolean | null, addressOptional 
 
   if (order.product && order.city && order.quantity) {
     if (!order.customer_name) missing.push("nombre y apellido");
-    if (coverage !== false && !addressOptional && !order.address) missing.push("dirección exacta o ubicación");
+    if (coverage !== false && !addressOptional && !order.address) missing.push("dirección escrita o ubicación por Google Maps");
     if (coverage === false && !order.payment_proof_verified) missing.push("comprobante de transferencia verificado");
   }
 
@@ -5847,6 +5854,50 @@ function paraguayDateTimeParts(now = new Date()) {
   };
 }
 
+function paraguayCurrentDateTime(now = new Date()) {
+  const date = new Intl.DateTimeFormat("es-PY", {
+    timeZone: "America/Asuncion",
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(now);
+
+  const time = new Intl.DateTimeFormat("es-PY", {
+    timeZone: "America/Asuncion",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(now);
+
+  return {
+    date,
+    time,
+    text: `${date}, ${time}`,
+    iso: now.toISOString(),
+  };
+}
+
+function isCurrentDateTimeQuestion(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+  return (
+    /\b(que dia es hoy|qué día es hoy|fecha de hoy|cual es la fecha|cuál es la fecha|en que fecha estamos|en qué fecha estamos|que fecha es hoy|qué fecha es hoy)\b/.test(n) ||
+    /\b(que hora es|qué hora es|hora actual|que hora tenemos|qué hora tenemos)\b/.test(n) ||
+    /^(hoy es que dia|hoy es qué día|hoy que dia es|hoy qué día es)$/.test(n)
+  );
+}
+
+function buildCurrentDateTimeResponse(text: string, now = new Date()): string {
+  const current = paraguayCurrentDateTime(now);
+  const n = normalize(text);
+  if (/\b(que hora|qué hora|hora actual|hora tenemos)\b/.test(n) &&
+      !/\b(fecha|dia|día)\b/.test(n)) {
+    return `Ahora son las ${current.time} en Paraguay.`;
+  }
+  return `Hoy es ${current.date}. La hora actual en Paraguay es ${current.time}.`;
+}
+
 function coveredDeliveryTimingText(
   city: string,
   parsed: ParsedTraining,
@@ -5960,7 +6011,7 @@ Para completar el pedido, pasame tu nombre y apellido.`;
 
 ${selected}
 
-Para completar el pedido, pasame la dirección exacta o ubicación.`;
+Para completar el pedido, pasame tu dirección escrita o compartime tu ubicación por Google Maps. Cualquiera de las dos opciones es válida.`;
   }
 
   // Normalmente este caso queda reservado para datos complementarios, porque
@@ -5997,7 +6048,7 @@ ${bankDataText(parsed)} 📲`;
 
   const fixedRequiredLines = [
     !clean(o.customer_name) ? "✅ nombre y apellido" : "",
-    !state.addressOptional && !clean(o.address) ? "✅ dirección exacta o ubicación" : "",
+    !state.addressOptional && !clean(o.address) ? "✅ dirección escrita o ubicación por Google Maps" : "",
   ].filter(Boolean);
 
   const fixedOptionalLocation =
@@ -6057,7 +6108,7 @@ ${bankDataText(parsed)} 📲`;
 
   const requiredLines = [
     !clean(o.customer_name) ? "✅ nombre y apellido" : "",
-    !state.addressOptional && !clean(o.address) ? "✅ dirección exacta o ubicación" : "",
+    !state.addressOptional && !clean(o.address) ? "✅ dirección escrita o ubicación por Google Maps" : "",
   ].filter(Boolean);
 
   return `🎉 ¡Excelente elección! Queda seleccionado:
@@ -6161,6 +6212,7 @@ ESTADO DEL PEDIDO:
 - Total calculado: ${state.total ? `${formatGs(state.total)} Gs` : "aún no corresponde"}
 - Faltante: ${state.missing.length ? state.missing.join(", ") : "nada"}
 - Dirección opcional según entrenamiento: ${state.addressOptional ? "sí" : "no"}
+- Fecha y hora actuales en Paraguay (America/Asuncion): ${paraguayCurrentDateTime().text}
 - Promo bloqueada desde plantilla: ${o.locked_offer ? `${o.locked_offer.quantity} unidades por ${formatGs(o.locked_offer.total)} Gs` : "no"}
 - Observación del cliente: ${observationLines(o).length ? observationLines(o).join(" | ") : "sin observación"}
 
@@ -6213,6 +6265,8 @@ ORDEN DE PRIORIDAD:
 
 REGLAS DURAS:
 - Respondé en español paraguayo/neutro, estilo WhatsApp.
+- Para cualquier referencia a hoy, mañana, día, fecha u hora, usá exclusivamente la fecha y hora actuales de Paraguay mostradas arriba. Nunca inventes ni uses UTC directamente.
+- Si falta dirección en una ciudad cubierta y el entrenamiento la exige, pedí una de estas dos opciones equivalentes: dirección escrita O ubicación compartida por Google Maps. Confirmá inmediatamente después de recibir cualquiera de las dos, si no falta ningún otro dato.
 - Sé vendedor amable, cálido y fluido. Usá emojis comerciales moderados: 😊🔥🚚✅📦💰📍📲.
 - Si el COPY DE VENTA ya se envió antes (ver arriba), NO lo repitas: avanzá directo al siguiente paso del pedido con una respuesta breve y natural.
 - Si es la primera vez que se presenta el producto (copy NO enviado todavía) y hay COPY DE VENTA ORIGINAL, NO lo resumas, NO lo acortes y NO le quites partes: enviá el copy completo aunque sea largo.
@@ -6322,7 +6376,7 @@ function buildPriceOnlyResponse(
   } else if (!state.order.customer_name) {
     continuation = "Para continuar, pasame tu nombre y apellido. 😊";
   } else if (state.coverage !== false && !state.addressOptional && !state.order.address) {
-    continuation = "Ahora pasame la dirección exacta o ubicación para la entrega. 😊";
+    continuation = "Ahora pasame la dirección escrita o ubicación por Google Maps para la entrega. 😊";
   } else if (!state.order.phone) {
     continuation = "Por último, pasame un número de celular para coordinar la entrega. 😊";
   }
@@ -6846,7 +6900,7 @@ export default async function handler(req: any, res: any) {
         const missingCustomer = [
           !commonOrder.customer_name ? "nombre y apellido" : "",
           !commonOrder.city ? "ciudad" : "",
-          !addressOptionalNow && !clean(commonOrder.address) ? "dirección exacta o ubicación" : "",
+          !addressOptionalNow && !clean(commonOrder.address) ? "dirección escrita o ubicación por Google Maps" : "",
         ].filter(Boolean);
 
         return res.json({
@@ -6888,7 +6942,7 @@ export default async function handler(req: any, res: any) {
       const addressOptional = isAddressOptionalByTraining(parsed, coverage);
       const missingData: string[] = [];
       if (!commonOrder.customer_name) missingData.push("nombre y apellido");
-      if (!addressOptional && !commonOrder.address) missingData.push("dirección exacta o ubicación");
+      if (!addressOptional && !commonOrder.address) missingData.push("dirección escrita o ubicación por Google Maps");
 
       if (missingData.length > 0) {
         return res.json({
@@ -6922,6 +6976,30 @@ export default async function handler(req: any, res: any) {
 
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
     if (!oldOrder.phone) oldOrder.phone = senderPhoneFallback(fromNumber);
+
+    // V136: las preguntas por fecha u hora actual nunca se delegan a Gemini.
+    // Se responden con Intl y la zona horaria oficial de Paraguay.
+    if (isCurrentDateTimeQuestion(texto)) {
+      return res.json({
+        response: buildCurrentDateTimeResponse(texto),
+        context: {
+          ...(context || {}),
+          order_data: oldOrder,
+          order_id: oldOrder.order_id || null,
+          step: context?.step || nextStep(
+            oldOrder,
+            oldOrder.city ? hasCoverage(oldOrder.city, parsed) : null,
+            isAddressOptionalByTraining(
+              parsed,
+              oldOrder.city ? hasCoverage(oldOrder.city, parsed) : null
+            )
+          ),
+          current_paraguay_datetime: paraguayCurrentDateTime().text,
+          updated_at: new Date().toISOString(),
+        },
+        debug: { deterministic_paraguay_datetime: true },
+      });
+    }
 
     // V100: un chat nuevo o una sesión vencida jamás hereda producto,
     // cantidad, ciudad ni datos de un chat anterior.
