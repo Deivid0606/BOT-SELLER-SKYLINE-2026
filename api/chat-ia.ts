@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V135: informa cobertura, horario y plazo al capturar/corregir cualquier ciudad cubierta, con o sin cantidad y también en packs fijos.
  * V134: pago anticipado automático; envía datos bancarios al definir ciudad/cantidad, usa pagador válido como cliente y fuerza cierre directo.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
  * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
@@ -5899,9 +5900,6 @@ function deterministicAfterCityCoverageMessage(
   const o = state.order;
   if (!o.product || !o.city) return "";
 
-  // Los packs fijos usan un mensaje más completo en otra función.
-  if (o.locked_offer?.fixed_quantity) return "";
-
   if (state.coverage === false) {
     if (!o.quantity) {
       return `📍 ${o.city} está fuera de nuestra zona de contra-entrega.
@@ -5928,13 +5926,16 @@ ${bankDataText(parsed)}
 👤 Si todavía no me pasaste tu nombre completo, podés enviarlo junto con el comprobante. Si el comprobante verificado muestra claramente un pagador válido, usaremos ese nombre para confirmar directamente.`;
   }
 
+  const timing = coveredDeliveryTimingText(o.city, parsed);
+  const coverageIntro = `Perfecto 😊 Para ${o.city} tenemos envío gratis contra entrega y podés pagar al recibir.
+
+🕘 ${timing}`;
+
+  // La logística se informa siempre al capturar/corregir la ciudad. Luego se
+  // solicita únicamente el siguiente dato faltante, sin borrar la cantidad.
   if (!o.quantity) {
     const offers = state.productInfo ? productOffersText(state.productInfo) : "";
-    const timing = coveredDeliveryTimingText(o.city, parsed);
-
-    return `Perfecto 😊 Para ${o.city} tenemos envío gratis contra entrega y podés pagar al recibir.
-
-🕘 ${timing}
+    return `${coverageIntro}
 
 ${offers ? `🔥 Promociones disponibles:
 ${offers}
@@ -5942,7 +5943,33 @@ ${offers}
 ` : ""}¿Cuántas unidades querés llevar?`;
   }
 
-  return "";
+  const selected = o.locked_offer?.fixed_quantity
+    ? `📦 Promo seleccionada: ${o.quantity} unidades de ${o.product}\n💰 Total: ${formatGs(state.total)} Gs`
+    : `📦 Producto: ${o.product}\n🔢 Cantidad: ${o.quantity} u.\n💰 Total: ${formatGs(state.total)} Gs`;
+
+  if (!clean(o.customer_name)) {
+    return `${coverageIntro}
+
+${selected}
+
+Para completar el pedido, pasame tu nombre y apellido.`;
+  }
+
+  if (!state.addressOptional && !clean(o.address)) {
+    return `${coverageIntro}
+
+${selected}
+
+Para completar el pedido, pasame la dirección exacta o ubicación.`;
+  }
+
+  // Normalmente este caso queda reservado para datos complementarios, porque
+  // si todo está completo el cierre determinístico tiene prioridad.
+  return `${coverageIntro}
+
+${selected}
+
+Ya tengo los datos obligatorios del pedido.`;
 }
 
 function deterministicAfterCityFixedOfferMessage(state: ConversationState, parsed: ParsedTraining) {
@@ -8384,8 +8411,7 @@ export default async function handler(req: any, res: any) {
     if (
       !confirm &&
       orderData.city &&
-      cityWasCapturedNow &&
-      !orderData.locked_offer?.fixed_quantity
+      cityWasCapturedNow
     ) {
       // V114: la ciudad recién recibida solo lleva a pedir cantidad cuando
       // todavía no existe una cantidad válida. Si el cliente ya dijo “quiero 2”,
