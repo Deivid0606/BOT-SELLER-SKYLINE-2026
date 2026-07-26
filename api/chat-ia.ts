@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V128: entrenamientos separados por reglas generales, cobertura, horarios y banco; todas las respuestas normales se guían por esos entrenamientos y el cierre definitivo permanece fijo en el código.
  * V127: checkout determinístico para transportadora; jamás pide dirección y confirma al completar nombre + comprobante.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
  * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
@@ -114,14 +115,18 @@ type BankData = {
   raw?: string;
 };
 
+type TrainingCategory = "general" | "coverage" | "delivery_schedule" | "banking";
+
 type TrainingSections = {
   general: string;
   coverage: string;
+  deliverySchedule: string;
   banking: string;
   combined: string;
   totalItems: number;
   generalItems: number;
   coverageItems: number;
+  deliveryScheduleItems: number;
   bankingItems: number;
 };
 
@@ -138,12 +143,14 @@ type ParsedTraining = {
   // generalTraining se envía a Gemini y puede contener uno o muchos registros.
   generalTraining: string;
   coverageTraining: string;
+  deliveryScheduleTraining: string;
   bankingTraining: string;
 
   trainingStats: {
     totalItems: number;
     generalItems: number;
     coverageItems: number;
+    deliveryScheduleItems: number;
     bankingItems: number;
   };
 };
@@ -381,12 +388,12 @@ function trainingItemText(item: any): string {
     .trim();
 }
 
-function classifyTrainingItem(item: any): "general" | "coverage" | "banking" {
+function classifyTrainingItem(item: any): TrainingCategory {
   const intent = normalize(item?.intent || "");
   const body = normalize(getTrainingBody(item));
 
-  // Primero datos bancarios para que una frase como "sin cobertura se paga por
-  // transferencia" dentro de las reglas generales no clasifique mal la tarjeta.
+  // 1) Banco: prioridad alta para evitar que frases como "sin cobertura se paga
+  // por transferencia" clasifiquen mal una tarjeta general o logística.
   const bankingByTitle =
     /\b(informacion bancaria|datos bancarios|datos para transferencia|datos de transferencia|cuenta bancaria)\b/.test(intent);
   const bankingByStructure =
@@ -396,22 +403,32 @@ function classifyTrainingItem(item: any): "general" | "coverage" | "banking" {
 
   if (bankingByTitle || bankingByStructure) return "banking";
 
+  // 2) Horarios y reglas globales de entrega.
+  const scheduleByTitle =
+    /\b(horarios? de entrega|horarios? de entregas|horario del delivery|dias? de entrega|reglas? de entrega|calendario de entregas)\b/.test(intent);
+  const scheduleByStructure =
+    /\b(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.test(body) &&
+    /\b(entrega|entregas|delivery|pedido|pedidos|procesar|procesarse|horario|corte)\b/.test(body);
+
+  if (scheduleByTitle || scheduleByStructure) return "delivery_schedule";
+
+  // 3) Ciudades, zonas y cobertura específica.
   const coverageByTitle =
     /\b(zona|zonas|ciudad|ciudades)\b/.test(intent) &&
     /\bcobertura\b/.test(intent);
   const coverageByHeader =
-    /\b(zonas? con cobertura|zonas? de cobertura|lista completa por ciudad)\b/.test(body);
+    /\b(zonas? con cobertura|zonas? sin cobertura|zonas? de cobertura|lista completa por ciudad)\b/.test(body);
 
   if (coverageByTitle || coverageByHeader) return "coverage";
 
-  // Todo registro activo que no sea banco ni cobertura se considera una regla
-  // general. Así el usuario puede tener 1, 3, 10 o más entrenamientos separados.
+  // 4) Todo lo demás son reglas generales comerciales/conversacionales.
   return "general";
 }
 
 function buildTrainingSections(items: any[]): TrainingSections {
   const generalParts: string[] = [];
   const coverageParts: string[] = [];
+  const deliveryScheduleParts: string[] = [];
   const bankingParts: string[] = [];
 
   for (const item of items || []) {
@@ -424,6 +441,7 @@ function buildTrainingSections(items: any[]): TrainingSections {
     const category = classifyTrainingItem(item);
     if (category === "banking") bankingParts.push(fullText);
     else if (category === "coverage") coverageParts.push(fullText);
+    else if (category === "delivery_schedule") deliveryScheduleParts.push(fullText);
     else generalParts.push(fullText);
   }
 
@@ -435,11 +453,12 @@ function buildTrainingSections(items: any[]): TrainingSections {
 
   const general = joinAll(generalParts);
   const coverage = joinAll(coverageParts);
+  const deliverySchedule = joinAll(deliveryScheduleParts);
   const banking = joinAll(bankingParts);
 
-  // El parser recibe las tres secciones. Gemini recibe generalTraining por
-  // separado para aplicar TODAS las reglas comerciales del usuario.
-  const combined = [general, coverage, banking]
+  // El parser técnico recibe todo. Gemini recibe cada fuente separada y rotulada,
+  // para no mezclar conversación, cobertura, horarios ni banco.
+  const combined = [general, coverage, deliverySchedule, banking]
     .filter(Boolean)
     .join("\n\n---\n\n")
     .trim();
@@ -447,11 +466,13 @@ function buildTrainingSections(items: any[]): TrainingSections {
   return {
     general,
     coverage,
+    deliverySchedule,
     banking,
     combined,
     totalItems: (items || []).length,
     generalItems: generalParts.length,
     coverageItems: coverageParts.length,
+    deliveryScheduleItems: deliveryScheduleParts.length,
     bankingItems: bankingParts.length,
   };
 }
@@ -944,11 +965,13 @@ function parseTraining(training: string): ParsedTraining {
     raw: training,
     generalTraining: "",
     coverageTraining: "",
+    deliveryScheduleTraining: "",
     bankingTraining: "",
     trainingStats: {
       totalItems: 0,
       generalItems: 0,
       coverageItems: 0,
+      deliveryScheduleItems: 0,
       bankingItems: 0,
     },
   };
@@ -4333,16 +4356,26 @@ REGLAS OBLIGATORIAS:
 - Nunca vuelvas a preguntar un dato que ya figura en DATOS DEL PEDIDO.
 - Sé natural, directo y coherente con el estilo definido por el entrenamiento.
 
-ENTRENAMIENTOS GENERALES DEL USUARIO:
+REGLAS GENERALES DEL USUARIO:
 ${parsed.generalTraining || "No hay reglas generales configuradas para este usuario."}
 
-DATOS DE TRANSFERENCIA DEL USUARIO:
-${bankDataText(parsed)}
+CIUDADES Y COBERTURA:
+${parsed.coverageTraining || "No hay entrenamiento específico de cobertura configurado."}
+
+HORARIOS Y REGLAS DE ENTREGA:
+${parsed.deliveryScheduleTraining || "No hay entrenamiento específico de horarios configurado."}
+
+DATOS BANCARIOS:
+${parsed.bankingTraining || "No hay entrenamiento bancario configurado."}
 
 IMPORTANTE:
-- Aplicá todos los entrenamientos generales activos del usuario, no solamente el primero.
-- El estado técnico del pedido prevalece únicamente para datos calculados y validaciones.
-- El estilo, la conversación, la postventa y las reglas comerciales deben salir de los entrenamientos generales del usuario.
+- Aplicá todos los entrenamientos activos del usuario y respetá la fuente específica de cada tema.
+- Conversación, identidad, estilo, objeciones y postventa: REGLAS GENERALES.
+- Ciudad, modalidad, cobertura, pago y requisitos: CIUDADES Y COBERTURA, junto con el estado técnico.
+- Días, horarios, cortes y procesamiento: HORARIOS Y REGLAS DE ENTREGA.
+- Titular, banco, cuenta, CI y alias: DATOS BANCARIOS.
+- El estado técnico del pedido prevalece para datos calculados, registrados y validaciones.
+- No redactes ni repitas un cierre definitivo: el cierre permanece fijo en el código.
 `.trim();
 }
 
@@ -5944,31 +5977,49 @@ ${state.productInfo.salesCopy}
 `
     : ""
 }
-DATOS DE TRANSFERENCIA:
-${bankDataText(parsed)}
-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO
+REGLAS GENERALES ACTIVAS DEL USUARIO
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
 ${parsed.generalTraining || "No hay reglas generales configuradas para este usuario."}
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENTRENAMIENTO DE CIUDADES Y COBERTURA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${parsed.coverageTraining || "No hay entrenamiento específico de cobertura configurado."}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENTRENAMIENTO DE HORARIOS Y ENTREGAS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${parsed.deliveryScheduleTraining || "No hay entrenamiento específico de horarios configurado."}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENTRENAMIENTO DE DATOS BANCARIOS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${parsed.bankingTraining || "No hay entrenamiento bancario configurado."}
+
+DATOS BANCARIOS ESTRUCTURADOS VALIDADOS:
+${bankDataText(parsed)}
+
 CÓMO USAR LOS ENTRENAMIENTOS DEL USUARIO:
-- Leé y aplicá TODOS los bloques anteriores; el usuario puede tener uno, tres, diez o más entrenamientos activos.
-- No ignores un entrenamiento por aparecer después de otro.
-- Si varios entrenamientos generales se complementan, aplicalos juntos.
-- Si dos reglas comerciales se contradicen, priorizá la regla más específica para la situación actual; si siguen siendo incompatibles, priorizá el entrenamiento cargado más recientemente, porque los registros fueron obtenidos en orden descendente por fecha.
-- Los entrenamientos generales deciden tono, conversación, cierres de venta, objeciones, factura, entrega, postventa y forma de pedir datos.
-- El backend decide únicamente los datos técnicos: producto detectado, cantidad registrada, ciudad, cobertura, total, datos faltantes y si el pedido puede confirmarse.
-- Nunca reemplaces un dato técnico válido por una suposición del entrenamiento.
-- No uses la lista completa de cobertura para redactar: usá el valor de cobertura ya calculado en ESTADO DEL PEDIDO.
-- Usá solamente los datos bancarios estructurados mostrados en DATOS DE TRANSFERENCIA.
+- Toda respuesta normal visible debe salir de estos entrenamientos, del copy real del producto y del estado técnico actual.
+- No uses respuestas comerciales universales ni políticas inventadas.
+- REGLAS GENERALES: identidad, estilo, conversación, objeciones, factura, postventa y forma de pedir datos.
+- CIUDADES Y COBERTURA: ciudad, zona, modalidad de envío, forma de pago, dirección requerida, transportadora y regla logística específica.
+- HORARIOS Y ENTREGAS: días, horarios, cortes, domingos y momento de procesamiento.
+- DATOS BANCARIOS: titular, CI, entidad, cuenta y alias.
+- Leé y aplicá todos los bloques activos; si se complementan, aplicalos juntos.
+- Si existe contradicción, la fuente específica tiene prioridad sobre una regla general. El estado técnico prevalece para datos ya detectados, calculados o validados.
+- No uses la lista completa de cobertura para inventar la ciudad del cliente: utilizá la ciudad y cobertura ya calculadas en ESTADO DEL PEDIDO.
+- No muestres datos bancarios salvo que la modalidad requiera pago anticipado, el estado esté esperando comprobante o el cliente los solicite expresamente.
+- El backend decide producto detectado, cantidad registrada, ciudad, cobertura, total, datos faltantes, validación del comprobante y autorización del cierre.
+- ÚNICA respuesta comercial fija: el formato definitivo generado por finalConfirmationMessage(). No lo redactes, no lo resumas y no lo reemplaces.
 
 ORDEN DE PRIORIDAD:
 1. Datos técnicos ya calculados en ESTADO DEL PEDIDO.
 2. INSTRUCCIÓN OBLIGATORIA sobre el siguiente objetivo técnico.
-3. TODOS los ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO para decidir cómo conversar y vender.
-4. Copy, precios y promociones reales del catálogo o plantilla activa.
+3. Entrenamiento específico del tema consultado.
+4. Reglas generales del usuario.
+5. Copy, precios y promociones reales del catálogo o plantilla activa.
 
 REGLAS DURAS:
 - Respondé en español paraguayo/neutro, estilo WhatsApp.
@@ -5988,7 +6039,7 @@ REGLAS DURAS:
 - Mencioná de 1 a 3 beneficios concretos presentes en ese copy. No uses una respuesta genérica si hay información específica del producto.
 - No inventes resultados, porcentajes, tiempos ni garantías que no estén escritos en el copy.
 - Si el cliente hace una consulta durante la compra: respondé primero la consulta usando SOLO el entrenamiento disponible y después retomá exactamente el siguiente dato faltante del ESTADO DEL PEDIDO.
-- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: respondé EXCLUSIVAMENTE con la regla de entrega/tiempo/horario que figure en ENTRENAMIENTO GENERAL. No uses frases genéricas ni un mensaje estándar sobre rutas, disponibilidad o que el delivery llama, salvo que eso esté escrito expresamente en el entrenamiento.
+- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: combiná únicamente la regla logística específica de CIUDADES Y COBERTURA con HORARIOS Y ENTREGAS. No uses frases genéricas ni inventes rutas, fechas u horas.
 - Una pregunta sobre entrega es solo una consulta: NO la guardes como fecha preferida, NO cambies ciudad, cantidad, nombre ni dirección y NO reinicies el pedido.
 - Después de responder la consulta de entrega, pedí solamente el siguiente dato realmente faltante. Si no falta ningún dato, respondé la consulta sin volver a repetir el cierre del pedido.
 - Si después de responder la consulta todavía falta ciudad, preguntá ciudad. No menciones transportadora, falta de cobertura ni pago anticipado hasta tener una ciudad real.
@@ -6028,7 +6079,7 @@ REGLAS DURAS:
 - PROHIBIDO redactar un cierre libre. El único cierre válido es el generado por finalConfirmationMessage().
 - Fuera del cierre confirmado y del flujo técnico de comprobantes, PROHIBIDO responder con textos genéricos fijos: redactá siempre desde los entrenamientos activos y los datos reales del pedido.
 - El teléfono se obtiene automáticamente del número de WhatsApp. Si el estado ya contiene teléfono, nunca lo pidas de nuevo. Solo solicitá uno nuevo si el cliente quiere cambiarlo.
-- En preguntas sobre demora o fecha, usá el plazo exacto del entrenamiento. Si no existe, indicá que no está especificado y que se coordina, sin inventar “próxima ronda” ni una hora.
+- En preguntas sobre demora o fecha, usá el plazo exacto de CIUDADES Y COBERTURA y las reglas de HORARIOS Y ENTREGAS. Si no existe un dato aplicable, indicá que no está especificado; no inventes “próxima ronda”, fecha ni hora.
 - Cuando falte algún dato, mostrale un resumen fijo de lo que ya tenés y pedí solamente lo faltante.
 - PROHIBIDO pedir confirmación intermedia. Si ya están todos los datos, confirmá automáticamente.
 - Frases como "quiero en calce 42", "talle 40" o "número 39" son VARIANTES, nunca direcciones.
@@ -6505,18 +6556,20 @@ export default async function handler(req: any, res: any) {
 
     const allTraining = await getAllTrainingData(user_id);
 
-    // Lee TODOS los registros activos del usuario, sin asumir que existen solo 3.
-    // Cada registro queda clasificado como reglas generales, cobertura o banco.
+    // Lee TODOS los registros activos del usuario.
+    // Cada registro queda separado como reglas generales, cobertura, horarios o banco.
     const trainingSections = buildTrainingSections(allTraining);
     const parsed = parseTraining(trainingSections.combined);
 
     parsed.generalTraining = trainingSections.general;
     parsed.coverageTraining = trainingSections.coverage;
+    parsed.deliveryScheduleTraining = trainingSections.deliverySchedule;
     parsed.bankingTraining = trainingSections.banking;
     parsed.trainingStats = {
       totalItems: trainingSections.totalItems,
       generalItems: trainingSections.generalItems,
       coverageItems: trainingSections.coverageItems,
+      deliveryScheduleItems: trainingSections.deliveryScheduleItems,
       bankingItems: trainingSections.bankingItems,
     };
 
@@ -6525,6 +6578,7 @@ export default async function handler(req: any, res: any) {
       total: parsed.trainingStats.totalItems,
       generales: parsed.trainingStats.generalItems,
       cobertura: parsed.trainingStats.coverageItems,
+      horarios: parsed.trainingStats.deliveryScheduleItems,
       bancarios: parsed.trainingStats.bankingItems,
       ciudadesDetectadas: parsed.cities.length,
       bancoDetectado: Boolean(parsed.bankData),
