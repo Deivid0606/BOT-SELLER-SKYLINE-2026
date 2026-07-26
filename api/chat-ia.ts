@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V138: bloquea cantidades antes de detectar ciudad, conserva ciudad ante departamentos/regiones y reinicia pedidos confirmados vencidos.
  * V137: corrige postventa multiproducto, persiste teléfono alternativo y exige una ubicación completa (no solo km/barrio).
  * V136: dirección o ubicación obligatoria para zonas cubiertas y fecha/hora real de Paraguay en consultas temporales.
  * V135: informa cobertura, horario y plazo al capturar/corregir cualquier ciudad cubierta, con o sin cantidad y también en packs fijos.
@@ -1705,10 +1706,27 @@ function isOnlyPurchaseWithSize(text: string): boolean {
   );
 }
 
+function isStandaloneQuantityReply(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return /^(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|\d{1,3})(?:\s+(?:unidad|unidades|par|pares|u|und|unds))?$/.test(n);
+}
+
+function isDepartmentOrRegionOnlyMessage(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+
+  return /^(?:central|cordillera|alto parana|caaguazu|guaira|paraguari|presidente hayes|san pedro|itapua|misiones|neembucu|ñeembucu|amambay|canindeyu|concepcion|alto paraguay|boqueron|chaco|capital|distrito capital)$/.test(n);
+}
+
 function isClearlyNotCityMessage(text: string): boolean {
   const raw = clean(text);
   const n = normalize(raw);
   if (!n) return true;
+
+  // V138: cantidades aisladas y departamentos/regiones nunca son ciudades.
+  if (isStandaloneQuantityReply(raw) || isDepartmentOrRegionOnlyMessage(raw)) return true;
 
   // Confirmaciones, negaciones y respuestas conversacionales nunca son ciudades.
   if (/^(si|sii|siii|sip|si asi es|sii asi es|siii asi es|asi es|correcto|exacto|esa es|es esa|ok|ok gracias|dale|listo|no|nop|gracias|muchas gracias|mil gracias|perfecto|esta bien|está bien)$/i.test(n)) return true;
@@ -1931,6 +1949,13 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 
   if (!raw) return previous;
 
+  // V138: esta protección debe ejecutarse antes de cualquier retorno temprano.
+  // “Dos” es cantidad; “Chaco” es región/departamento contextual y no reemplaza
+  // una ciudad válida ya capturada.
+  if (isStandaloneQuantityReply(raw) || isDepartmentOrRegionOnlyMessage(raw)) {
+    return previous;
+  }
+
   // V121: una consulta de precio, incluso con errores ortográficos comunes,
   // nunca puede convertirse en ciudad. Esta validación no genera mensajes:
   // únicamente conserva el estado para que Gemini responda normalmente.
@@ -1971,7 +1996,14 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
       /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(earlyStatement) &&
       /[a-zA-ZÁÉÍÓÚáéíóúÑñ]/.test(earlyStatement);
 
-    if (validEarlyLocality) return toTitleCase(earlyStatement);
+    if (
+      validEarlyLocality &&
+      !isStandaloneQuantityReply(earlyStatement) &&
+      !isDepartmentOrRegionOnlyMessage(earlyStatement) &&
+      !isClearlyNotCityMessage(earlyStatement)
+    ) {
+      return toTitleCase(earlyStatement);
+    }
   }
 
   // Nunca convertir respuestas comerciales, cantidades, agradecimientos,
@@ -2013,6 +2045,7 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
     /[a-zA-ZÁÉÍÓÚáéíóúÑñ]/.test(candidate);
 
   if (!validLocalityShape) return previous;
+  if (isStandaloneQuantityReply(candidate) || isDepartmentOrRegionOnlyMessage(candidate)) return previous;
 
   // Bloqueo final de expresiones que tienen forma de texto pero no de localidad.
   if (
@@ -6791,6 +6824,27 @@ export default async function handler(req: any, res: any) {
       Boolean(context?.pending_catalog_confirmation && isAffirmative(texto));
 
     const productsMentionedNow = detectProductsMentioned(texto, parsed);
+
+    // V138: un pedido confirmado no permanece abierto indefinidamente.
+    // Si pasaron más de 45 minutos y aparece interés en un producto, se trata
+    // como una compra nueva y se eliminan producto/cantidad/carrito anteriores.
+    const confirmedSessionExpired =
+      ["pedido_confirmado", "pedido_confirmado_multiple"].includes(clean(context?.step)) &&
+      minutesSince(context?.updated_at) > 45 &&
+      productsMentionedNow.length > 0;
+
+    if (confirmedSessionExpired && context && typeof context === "object") {
+      context.order_data = emptyOrder(makeOrderId(fromNumber));
+      context.order_data.phone = senderPhoneFallback(fromNumber);
+      context.multi_product_cart = [];
+      context.multi_order_id = "";
+      context.pending_multiple_products = [];
+      context.current_product = null;
+      context.last_topic = null;
+      context.step = "collecting_product";
+      context.previous_confirmed_order_expired = true;
+    }
+
     let activeMultiCart = getMultiCartFromContext(context, parsed);
 
     // V137: algunos conectores pueden conservar step/current_product pero perder
@@ -7062,7 +7116,6 @@ export default async function handler(req: any, res: any) {
     // V100: un chat nuevo o una sesión vencida jamás hereda producto,
     // cantidad, ciudad ni datos de un chat anterior.
     const resetBecauseNewChat =
-      context?.step !== "pedido_confirmado" &&
       looksLikeNewChatSession(texto, context, history) &&
       Boolean(oldOrder.product || oldOrder.city || oldOrder.quantity || oldOrder.customer_name || oldOrder.address);
 
