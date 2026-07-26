@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V143: preserva ciudades reales no listadas entre turnos, impide que cantidades reemplacen ciudad/cobertura y reconoce variantes como procesador/procesadora.
  * V140: después de una compra confirmada, otro producto abre una venta nueva y reenvía imagen/copy; solo agrega al pedido con intención explícita de mismo pedido.
  * V141: un producto nuevo con interés explícito reinicia cualquier carrito/estado viejo antes de procesarlo y reenvía imagen + copy.
  * V140: otro producto tras una compra abre venta nueva salvo intención explícita de agregar al mismo pedido.
@@ -1000,6 +1001,10 @@ function singularizeProductWord(word: string) {
   let w = normalize(word);
   if (w.length > 5 && w.endsWith("es")) w = w.slice(0, -2);
   else if (w.length > 4 && w.endsWith("s")) w = w.slice(0, -1);
+
+  // V143: variantes de género frecuentes en nombres comerciales.
+  // "procesadora" debe coincidir con "procesador".
+  if (w.length > 6 && w.endsWith("adora")) w = `${w.slice(0, -1)}`;
   return w;
 }
 
@@ -1731,7 +1736,7 @@ function isStandaloneQuantityReply(text: string): boolean {
   const n = normalize(text);
   if (!n) return false;
 
-  return /^(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|\d{1,3})(?:\s+(?:unidad|unidades|par|pares|u|und|unds))?$/.test(n);
+  return /^(?:(?:quiero|llevo|dame|mandame|mándame|preparame|prepárame)\s+)?(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|\d{1,3})(?:\s+(?:unidad|unidades|par|pares|u|und|unds))?(?:\s+para\s+probar)?$/.test(n);
 }
 
 function isDepartmentOrRegionOnlyMessage(text: string): boolean {
@@ -1807,6 +1812,22 @@ function isCompleteMultiwordLocality(text: string): boolean {
   return words.length >= 3 && words.length <= 6;
 }
 
+function stripTrailingDepartmentOrRegion(value: string): string {
+  let result = clean(value)
+    .replace(/[.,;:]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const trailingRegion =
+    /\s+(?:chaco|boqueron|boquerón|central|cordillera|alto parana|alto paraná|caaguazu|caaguazú|guaira|guairá|paraguari|paraguarí|presidente hayes|san pedro|itapua|itapúa|misiones|neembucu|ñeembucú|amambay|canindeyu|canindeyú|concepcion|concepción|alto paraguay)$/i;
+
+  while (trailingRegion.test(result)) {
+    result = result.replace(trailingRegion, "").trim();
+  }
+
+  return result;
+}
+
 function canonicalizeStoredCity(value: string, parsed: ParsedTraining): string {
   const raw = clean(value);
   const n = normalize(raw);
@@ -1825,7 +1846,28 @@ function canonicalizeStoredCity(value: string, parsed: ParsedTraining): string {
     }
   }
 
-  // Un valor viejo o contaminado que no existe en el entrenamiento se elimina.
+  // V143: una ciudad real no listada debe conservarse entre turnos.
+  // Antes se eliminaba aquí y, al llegar "Uno", el flujo perdía la ciudad previa.
+  if (
+    !isStandaloneQuantityReply(raw) &&
+    !isDepartmentOrRegionOnlyMessage(raw) &&
+    !isClearlyNotCityMessage(raw) &&
+    !isQuestionLikeMessage(raw)
+  ) {
+    const cleanedUnknown = stripTrailingDepartmentOrRegion(raw);
+    const words = normalize(cleanedUnknown).split(/\s+/).filter(Boolean);
+    if (
+      cleanedUnknown.length >= 3 &&
+      cleanedUnknown.length <= 70 &&
+      words.length >= 1 &&
+      words.length <= 6 &&
+      /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(cleanedUnknown) &&
+      /[a-zA-ZÁÉÍÓÚáéíóúÑñ]/.test(cleanedUnknown)
+    ) {
+      return toTitleCase(cleanedUnknown);
+    }
+  }
+
   return "";
 }
 
@@ -2023,7 +2065,7 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
       !isDepartmentOrRegionOnlyMessage(earlyStatement) &&
       !isClearlyNotCityMessage(earlyStatement)
     ) {
-      return toTitleCase(earlyStatement);
+      return toTitleCase(stripTrailingDepartmentOrRegion(earlyStatement));
     }
   }
 
@@ -2076,7 +2118,7 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
     return previous;
   }
 
-  return toTitleCase(candidate);
+  return toTitleCase(stripTrailingDepartmentOrRegion(candidate));
 }
 
 function hasCoverage(city: string, parsed: ParsedTraining) {
@@ -5989,6 +6031,10 @@ function coveredDeliveryTimingText(
   parsed: ParsedTraining,
   now = new Date()
 ): string {
+  if (!hasCoverage(city, parsed)) {
+    return "";
+  }
+
   const logistics = cityLogisticsFromTraining(city, parsed.coverageTraining || parsed.raw);
   const { day, minutes } = paraguayDateTimeParts(now);
   const beforeCutoff = minutes < 12 * 60 + 30;
@@ -6037,7 +6083,9 @@ function deterministicAfterCityCoverageMessage(
   const o = state.order;
   if (!o.product || !o.city) return "";
 
-  if (state.coverage === false) {
+  const actualCoverage = hasCoverage(o.city, parsed);
+
+  if (!actualCoverage) {
     if (!o.quantity) {
       return `📍 ${o.city} está fuera de nuestra zona de contra-entrega.
 
@@ -7167,7 +7215,9 @@ export default async function handler(req: any, res: any) {
       }
 
       if (!commonOrder.city) {
-        const detectedMultiCity = detectCity(texto, parsed, "");
+        const detectedMultiCity = isStandaloneQuantityReply(texto)
+          ? ""
+          : detectCity(texto, parsed, "");
         if (detectedMultiCity) commonOrder.city = detectedMultiCity;
         if (!commonOrder.city) {
           return res.json({
@@ -7735,9 +7785,15 @@ export default async function handler(req: any, res: any) {
       oldOrder.city = sanitizedOldCity;
     }
 
-    const explicitKnownCityFromMessage = extractExplicitKnownCityFromSentence(texto, parsed);
-    const detectedCityRaw = detectCity(texto, parsed, sanitizedOldCity || "");
-    const exactCityFromMessage = exactKnownCity(texto, parsed);
+    const quantityOnlyReply = isStandaloneQuantityReply(texto);
+
+    const explicitKnownCityFromMessage = quantityOnlyReply
+      ? ""
+      : extractExplicitKnownCityFromSentence(texto, parsed);
+    const detectedCityRaw = quantityOnlyReply
+      ? (sanitizedOldCity || "")
+      : detectCity(texto, parsed, sanitizedOldCity || "");
+    const exactCityFromMessage = quantityOnlyReply ? "" : exactKnownCity(texto, parsed);
     const explicitDifferentCity = Boolean(
       cityStatement &&
       exactKnownCity(cityStatement, parsed) &&
@@ -7786,11 +7842,15 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    let effectiveDetectedCity = cityConfirmedNow || detectedCity;
-    const cityWasCapturedNow = Boolean(
-      cityConfirmedNow ||
-      (effectiveDetectedCity && normalize(effectiveDetectedCity) !== normalize(oldOrder.city || ""))
-    );
+    let effectiveDetectedCity = quantityOnlyReply
+      ? (sanitizedOldCity || oldOrder.city || "")
+      : (cityConfirmedNow || detectedCity);
+    const cityWasCapturedNow = quantityOnlyReply
+      ? false
+      : Boolean(
+          cityConfirmedNow ||
+          (effectiveDetectedCity && normalize(effectiveDetectedCity) !== normalize(oldOrder.city || ""))
+        );
 
     const cityCandidateRaw = cityStatement || texto;
     const isExactCityMatch =
@@ -7984,8 +8044,11 @@ export default async function handler(req: any, res: any) {
       orderData.quantity = 0;
     }
 
-    if (!orderData.city && oldOrder.city && qty > 0) {
-      orderData.city = oldOrder.city;
+    // V143: una respuesta de cantidad jamás puede tocar ciudad ni logística.
+    if (quantityOnlyReply) {
+      orderData.city = sanitizedOldCity || oldOrder.city || "";
+    } else if (!orderData.city && oldOrder.city && qty > 0) {
+      orderData.city = sanitizedOldCity || oldOrder.city;
     }
 
     if (!orderData.city && historyRecoveredCity) {
@@ -8479,6 +8542,14 @@ export default async function handler(req: any, res: any) {
         getProductInfo(context?.current_product || "", parsed)?.canonical ||
         detectProduct(texto, parsed, context?.current_product || "");
       if (recoveredProduct) orderData.product = recoveredProduct;
+    }
+
+    // V143: última barrera antes de generar cualquier respuesta visible.
+    if (quantityOnlyReply && (sanitizedOldCity || oldOrder.city)) {
+      orderData.city = sanitizedOldCity || oldOrder.city;
+    }
+    if (isStandaloneQuantityReply(orderData.city)) {
+      orderData.city = sanitizedOldCity || oldOrder.city || "";
     }
 
     const finalState = buildState(orderData, parsed);
