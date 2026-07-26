@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V128: logística determinística desde ZONAS CON COBERTURA; horarios en America/Asuncion, prioridad de coverageTraining y dirección obligatoria solo donde corresponde.
  * V127: checkout determinístico para transportadora; jamás pide dirección y confirma al completar nombre + comprobante.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
  * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
@@ -2985,7 +2986,10 @@ function extractAddress(text: string, detectedCity: string, phone: string, name:
   if (parsed) {
     const cityInMessage = detectedCity || configuredCityInsideMessage(raw, parsed);
     const cityReference = extractReferenceAfterKnownCity(raw, cityInMessage, parsed);
-    if (cityReference) return stripPhoneFromAddress(cityReference, phone);
+    // V128: ruta/km/barrio junto a una ciudad es una referencia logística,
+    // no una dirección completa. Se conserva por observación, pero no satisface
+    // el requisito de dirección/ubicación de una ciudad con cobertura.
+    if (cityReference) return "";
   }
 
   // V123: una consulta o confirmación de precio jamás puede ser dirección,
@@ -3189,11 +3193,157 @@ function isConfirmedDeliveryPreference(text: string): boolean {
   );
 }
 
-function buildDeliveryTimingQuestionResponse(text: string, order: OrderData): string {
-  const n = normalize(text);
-  const requested = /\bmanana|mañana\b/.test(n) ? "mañana" : /\bhoy\b/.test(n) ? "hoy" : "la fecha consultada";
-  const product = clean(order.product) ? ` de ${order.product}` : "";
-  return `🚚 No podemos asegurar una hora exacta porque depende de la ruta del delivery. Tu pedido${product} se coordina según disponibilidad y el delivery te contacta antes de llegar.\n\n¿Querés que anote como preferencia de entrega para ${requested}?`;
+type DeliveryRule = "CORTE_12_30" | "24_A_48_HORAS" | "NO_CONFIGURADO";
+
+type CityLogistics = {
+  city: string;
+  covered: boolean;
+  zone: "CENTRAL" | "FUERA_DE_CENTRAL" | "TRANSPORTADORA" | "DESCONOCIDA";
+  rule: DeliveryRule;
+};
+
+function paraguayNow() {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Asuncion",
+    weekday: "long",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+
+  const parts = formatter.formatToParts(new Date());
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value || "";
+
+  return {
+    weekday: get("weekday").toLowerCase(),
+    hour: Number(get("hour") || 0),
+    minute: Number(get("minute") || 0),
+    isoDate: `${get("year")}-${get("month")}-${get("day")}`,
+  };
+}
+
+function resolveCityLogistics(city: string, parsed: ParsedTraining): CityLogistics {
+  const canonical =
+    parsed.cities.find((item) => normalize(item.alias) === normalize(city))?.canonical ||
+    city;
+
+  const covered = hasCoverage(canonical, parsed) === true;
+  if (!covered) {
+    return {
+      city: canonical,
+      covered: false,
+      zone: "TRANSPORTADORA",
+      rule: "NO_CONFIGURADO",
+    };
+  }
+
+  const raw = clean(parsed.coverageTraining || parsed.raw || "");
+  const sourceLines = raw.split(/\r?\n/g).map(clean);
+  const target = normalize(canonical);
+
+  let block = "";
+  for (let i = 0; i < sourceLines.length; i++) {
+    const current = normalize(sourceLines[i]);
+    if (!current) continue;
+
+    // La línea de ciudad puede ser el nombre canónico o una lista de variantes.
+    const isCityLine =
+      current === target ||
+      current.split(",").map((part) => normalize(part)).includes(target);
+
+    if (!isCityLine) continue;
+
+    const collected: string[] = [];
+    for (let j = i; j < Math.min(sourceLines.length, i + 18); j++) {
+      const line = sourceLines[j];
+      const norm = normalize(line);
+
+      if (
+        j > i &&
+        collected.length >= 4 &&
+        (/^departamento\b/.test(norm) || /^zona logistica\b/.test(norm)) &&
+        collected.some((x) => /^regla entrega\b/.test(normalize(x)))
+      ) {
+        break;
+      }
+
+      collected.push(line);
+      if (/^regla entrega\b/.test(norm)) break;
+    }
+    block = collected.join("\n");
+    break;
+  }
+
+  const n = normalize(block);
+  const zone =
+    /\bzona logistica\s+central\b/.test(n)
+      ? "CENTRAL"
+      : /\bzona logistica\s+fuera de central\b/.test(n)
+        ? "FUERA_DE_CENTRAL"
+        : "DESCONOCIDA";
+
+  const rule: DeliveryRule =
+    /\bregla entrega\s+corte 12 30\b/.test(n)
+      ? "CORTE_12_30"
+      : /\bregla entrega\s+24 a 48 horas\b/.test(n)
+        ? "24_A_48_HORAS"
+        : zone === "CENTRAL"
+          ? "CORTE_12_30"
+          : zone === "FUERA_DE_CENTRAL"
+            ? "24_A_48_HORAS"
+            : "NO_CONFIGURADO";
+
+  return { city: canonical, covered: true, zone, rule };
+}
+
+function buildDeliveryTimingQuestionResponse(
+  _text: string,
+  order: OrderData,
+  parsed: ParsedTraining
+): string {
+  const logistics = resolveCityLogistics(order.city, parsed);
+  const now = paraguayNow();
+  const sunday = now.weekday === "sunday";
+  const saturday = now.weekday === "saturday";
+  const beforeCutoff = now.hour < 12 || (now.hour === 12 && now.minute < 30);
+
+  if (!order.city) {
+    return "📍 Para indicarte correctamente cuándo llega, primero necesito saber la ciudad de entrega.";
+  }
+
+  if (!logistics.covered) {
+    return "🚚 Para esta ciudad el envío se realiza por transportadora con pago anticipado. El entrenamiento no tiene un plazo técnico configurado para este destino, por eso no corresponde inventar una fecha ni una demora exacta.";
+  }
+
+  if (logistics.rule === "24_A_48_HORAS") {
+    if (sunday) {
+      return "🚚 La entrega demora normalmente entre 24 y 48 horas. Los domingos no realizamos entregas, por lo que el plazo comienza a contar desde el lunes. El horario de reparto es de lunes a sábado, de 9:00 a 18:00.";
+    }
+
+    return "🚚 La entrega demora normalmente entre 24 y 48 horas, de lunes a sábado, dentro del horario de 9:00 a 18:00.";
+  }
+
+  if (logistics.rule === "CORTE_12_30") {
+    if (sunday) {
+      return "🚚 Los domingos no realizamos entregas. Tu pedido comienza a procesarse desde el lunes y puede salir en ruta ese día, dentro del horario de 9:00 a 18:00.";
+    }
+
+    if (saturday && !beforeCutoff) {
+      return "🚚 Como el pedido ingresó el sábado a las 12:30 o después, se agenda para el lunes. El horario de reparto es de 9:00 a 18:00.";
+    }
+
+    if (beforeCutoff) {
+      return "🚚 Como el pedido ingresó antes de las 12:30, puede salir el mismo día dentro del horario de 9:00 a 18:00.";
+    }
+
+    return "🚚 Como el pedido ingresó a las 12:30 o después, se agenda para el siguiente día de reparto. Las entregas se realizan de lunes a sábado, de 9:00 a 18:00.";
+  }
+
+  return "🚚 Las entregas se realizan de lunes a sábado, de 9:00 a 18:00. No podemos prometer una hora exacta.";
 }
 
 function extractOrderObservation(text: string): Partial<OrderData> {
@@ -5953,22 +6103,30 @@ ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO
 
 ${parsed.generalTraining || "No hay reglas generales configuradas para este usuario."}
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ENTRENAMIENTO ESPECÍFICO DE ZONAS, COBERTURA Y ENTREGA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+${parsed.coverageTraining || "No hay entrenamiento específico de cobertura configurado."}
+
 CÓMO USAR LOS ENTRENAMIENTOS DEL USUARIO:
 - Leé y aplicá TODOS los bloques anteriores; el usuario puede tener uno, tres, diez o más entrenamientos activos.
 - No ignores un entrenamiento por aparecer después de otro.
 - Si varios entrenamientos generales se complementan, aplicalos juntos.
 - Si dos reglas comerciales se contradicen, priorizá la regla más específica para la situación actual; si siguen siendo incompatibles, priorizá el entrenamiento cargado más recientemente, porque los registros fueron obtenidos en orden descendente por fecha.
-- Los entrenamientos generales deciden tono, conversación, cierres de venta, objeciones, factura, entrega, postventa y forma de pedir datos.
-- El backend decide únicamente los datos técnicos: producto detectado, cantidad registrada, ciudad, cobertura, total, datos faltantes y si el pedido puede confirmarse.
-- Nunca reemplaces un dato técnico válido por una suposición del entrenamiento.
-- No uses la lista completa de cobertura para redactar: usá el valor de cobertura ya calculado en ESTADO DEL PEDIDO.
+- Los entrenamientos generales deciden tono, conversación, cierres de venta, objeciones, factura y postventa.
+- Para ciudades, cobertura, modalidad, pago, dirección requerida, horarios, días, cortes y plazos, el ENTRENAMIENTO ESPECÍFICO DE ZONAS, COBERTURA Y ENTREGA tiene prioridad absoluta.
+- El backend decide los datos técnicos: producto, cantidad, ciudad, cobertura, total, faltantes y confirmación.
+- Nunca reemplaces un dato técnico válido por una suposición.
+- Cuando pregunten cuándo llega, cuánto tarda, si llega hoy o el horario, nunca respondas solo que el delivery contactará: usá la regla logística específica disponible.
 - Usá solamente los datos bancarios estructurados mostrados en DATOS DE TRANSFERENCIA.
 
 ORDEN DE PRIORIDAD:
 1. Datos técnicos ya calculados en ESTADO DEL PEDIDO.
-2. INSTRUCCIÓN OBLIGATORIA sobre el siguiente objetivo técnico.
-3. TODOS los ENTRENAMIENTOS GENERALES ACTIVOS DEL USUARIO para decidir cómo conversar y vender.
-4. Copy, precios y promociones reales del catálogo o plantilla activa.
+2. ENTRENAMIENTO ESPECÍFICO DE ZONAS, COBERTURA Y ENTREGA para toda decisión logística.
+3. INSTRUCCIÓN OBLIGATORIA sobre el siguiente objetivo técnico.
+4. ENTRENAMIENTOS GENERALES para tono y conversación.
+5. Copy, precios y promociones reales del catálogo o plantilla activa.
 
 REGLAS DURAS:
 - Respondé en español paraguayo/neutro, estilo WhatsApp.
@@ -5988,7 +6146,7 @@ REGLAS DURAS:
 - Mencioná de 1 a 3 beneficios concretos presentes en ese copy. No uses una respuesta genérica si hay información específica del producto.
 - No inventes resultados, porcentajes, tiempos ni garantías que no estén escritos en el copy.
 - Si el cliente hace una consulta durante la compra: respondé primero la consulta usando SOLO el entrenamiento disponible y después retomá exactamente el siguiente dato faltante del ESTADO DEL PEDIDO.
-- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: respondé EXCLUSIVAMENTE con la regla de entrega/tiempo/horario que figure en ENTRENAMIENTO GENERAL. No uses frases genéricas ni un mensaje estándar sobre rutas, disponibilidad o que el delivery llama, salvo que eso esté escrito expresamente en el entrenamiento.
+- Si pregunta cuándo llega, cuándo se entrega, cuánto tarda, qué día se entrega o en qué horario: respondé EXCLUSIVAMENTE con la regla de entrega, tiempo, corte y horario que figure en ENTRENAMIENTO ESPECÍFICO DE ZONAS, COBERTURA Y ENTREGA. No uses frases genéricas ni un mensaje estándar sobre rutas, disponibilidad o que el delivery llama, salvo que eso esté escrito expresamente en el entrenamiento.
 - Una pregunta sobre entrega es solo una consulta: NO la guardes como fecha preferida, NO cambies ciudad, cantidad, nombre ni dirección y NO reinicies el pedido.
 - Después de responder la consulta de entrega, pedí solamente el siguiente dato realmente faltante. Si no falta ningún dato, respondé la consulta sin volver a repetir el cierre del pedido.
 - Si después de responder la consulta todavía falta ciudad, preguntá ciudad. No menciones transportadora, falta de cobertura ni pago anticipado hasta tener una ciudad real.
@@ -6762,9 +6920,9 @@ export default async function handler(req: any, res: any) {
           // La respuesta visible continúa por Gemini más abajo.
         }
 
-        if (false && isDeliveryTimingQuestion(texto)) {
+        if (isDeliveryTimingQuestion(texto)) {
           return res.json({
-            response: buildDeliveryTimingQuestionResponse(texto, oldOrder),
+            response: buildDeliveryTimingQuestionResponse(texto, oldOrder, parsed),
             context: {
               ...(context || {}),
               order_data: oldOrder,
@@ -7347,9 +7505,9 @@ export default async function handler(req: any, res: any) {
     // una respuesta fija del backend. Continúan hacia Gemini para que responda
     // exclusivamente con las reglas de entrega cargadas en el entrenamiento
     // y luego retome el siguiente dato faltante sin reiniciar el pedido.
-    if (false && isDeliveryTimingQuestion(texto) && oldOrder.product) {
+    if (isDeliveryTimingQuestion(texto) && oldOrder.product) {
       return res.json({
-        response: buildDeliveryTimingQuestionResponse(texto, oldOrder),
+        response: buildDeliveryTimingQuestionResponse(texto, oldOrder, parsed),
         context: {
           ...(context || {}),
           order_data: oldOrder,
