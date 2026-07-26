@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V148: la IA redacta la pregunta de ciudad y el backend bloquea la ciudad al recibir un nombre válido, incluso si context.step llega atrasado; conserva todas las correcciones de pagos anticipados V147.
  * V147: los comprobantes enviados como imagen/PDF conservan y recuperan producto, cantidad, oferta, ciudad y total; el pago anticipado confirma directamente cuando los datos coinciden.
  * V146: cuando el flujo espera nombre, una respuesta de nombre no puede reemplazar ciudad/cobertura; mejora el nombre canónico de productos y bloquea titulares publicitarios.
  * V145: confirma comprobantes legibles sin exigir la palabra “exitosa” cuando pagador, destinatario y monto coinciden y no existe estado pendiente o negativo.
@@ -6666,7 +6667,81 @@ function buildFullProductCopyResponse(state: ConversationState, _templatePricing
 }
 
 function buildFriendlyCityQuestion() {
-  return "😊 Para confirmar la cobertura y la modalidad de entrega, ¿me indicás por favor de qué ciudad sos? 📍";
+  return "¿En qué ciudad sería la entrega?";
+}
+
+function lastAssistantAskedForCustomerName(history: any[]): boolean {
+  const assistantMessages = (history || [])
+    .filter((item: any) => {
+      const role = normalize(item?.role || item?.sender || item?.type || "");
+      return role === "assistant" || role === "bot" || role === "ia";
+    })
+    .slice(-5)
+    .reverse();
+
+  return assistantMessages.some((item: any) => {
+    const content = normalize(
+      item?.content ||
+      item?.text ||
+      item?.message ||
+      item?.response ||
+      ""
+    );
+
+    return /\b(nombre y apellido|a que nombre|a qué nombre|nombre completo|pasame tu nombre|pásame tu nombre|me falta tu nombre)\b/.test(content);
+  });
+}
+
+async function buildAICityQuestion({
+  apiKey,
+  model,
+  order,
+}: {
+  apiKey: string;
+  model: string;
+  order: OrderData;
+}): Promise<string> {
+  const fallback = buildFriendlyCityQuestion();
+  if (!apiKey || !model) return fallback;
+
+  const product = clean(order.product);
+  const prompt = `Redactá una sola pregunta breve, natural y amable en español paraguayo para pedir la ciudad de entrega al cliente.
+Reglas:
+- Pedí únicamente la ciudad.
+- No preguntes cantidad, nombre, dirección ni teléfono.
+- No menciones cobertura, transportadora ni pago todavía.
+- No confirmes el pedido.
+- No uses más de una oración.
+${product ? `Producto actual: ${product}.` : ""}`;
+
+  try {
+    const response = await callGemini({
+      apiKey,
+      model,
+      system: "Sos una vendedora por WhatsApp. Respondé únicamente con la pregunta solicitada.",
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      temperature: 0.35,
+      maxTokens: 80,
+    });
+
+    const cleanResponse = clean(response)
+      .replace(/^["'`]+|["'`]+$/g, "")
+      .trim();
+
+    if (
+      cleanResponse &&
+      cleanResponse !== "__GEMINI_QUOTA_EXCEEDED__" &&
+      cleanResponse.length <= 180 &&
+      /\b(ciudad|localidad)\b/i.test(cleanResponse) &&
+      !/\b(nombre|apellido|direccion|dirección|cantidad|telefono|teléfono)\b/i.test(cleanResponse)
+    ) {
+      return cleanResponse;
+    }
+  } catch (error) {
+    console.error("buildAICityQuestion:", error);
+  }
+
+  return fallback;
 }
 
 // ✅ FIX V46: para consultas de precio posteriores al copy, responde solo precios
@@ -7984,17 +8059,37 @@ export default async function handler(req: any, res: any) {
     // V146: si el backend acaba de pedir nombre y ya existe una ciudad válida,
     // una respuesta con nombre y apellido se procesa exclusivamente como nombre.
     // No se permite que esa respuesta vuelva a entrar a detectCity().
+    const orderCommerciallyReadyForName = Boolean(
+      clean(oldOrder.product) &&
+      sanitizeQuantity(oldOrder.quantity) > 0 &&
+      clean(oldOrder.city) &&
+      !clean(oldOrder.customer_name)
+    );
+
+    const nameWasExplicitlyRequested = Boolean(
+      prevStep === "collecting_name" ||
+      lastAssistantAskedForCustomerName(history)
+    );
+
+    // V148: no depende únicamente de context.step. Si producto, cantidad y
+    // ciudad ya están completos y falta el nombre, una respuesta con nombre
+    // completo se procesa exclusivamente como customer_name.
     const expectingCustomerNameReply = Boolean(
-      prevStep === "collecting_name" &&
+      clean(oldOrder.city) &&
       !clean(oldOrder.customer_name) &&
-      clean(oldOrder.city)
+      (
+        nameWasExplicitlyRequested ||
+        orderCommerciallyReadyForName
+      )
     );
 
     const validStandaloneNameReply = Boolean(
       expectingCustomerNameReply &&
       isStrictStandaloneCustomerName(texto, oldOrder.city || "", parsed) &&
       !isInvalidCustomerNameForOrder(texto, oldOrder.city || "", parsed) &&
-      !isContaminatedCustomerName(texto, parsed)
+      !isContaminatedCustomerName(texto, parsed) &&
+      !exactKnownCity(texto, parsed) &&
+      !extractCityStatement(texto)
     );
 
     // V63: sanea ciudades contaminadas que hayan quedado guardadas por una versión anterior.
@@ -8114,7 +8209,14 @@ export default async function handler(req: any, res: any) {
 
     if (isCityStep && !effectiveDetectedCity && messageIsPurchaseOrQuantity) {
       return res.json({
-        response: buildFriendlyCityQuestion(),
+        response: await buildAICityQuestion({
+          apiKey,
+          model,
+          order: {
+            ...oldOrder,
+            quantity: explicitQty > 0 ? explicitQty : oldOrder.quantity,
+          },
+        }),
         context: {
           ...(context || {}),
           pending_city_confirmation: null,
@@ -8143,7 +8245,11 @@ export default async function handler(req: any, res: any) {
       !isShortAcknowledgement(texto)
     ) {
       return res.json({
-        response: buildFriendlyCityQuestion(),
+        response: await buildAICityQuestion({
+          apiKey,
+          model,
+          order: oldOrder,
+        }),
         context: {
           ...(context || {}),
           pending_city_confirmation: null,
@@ -8209,13 +8315,15 @@ export default async function handler(req: any, res: any) {
 
     let address = "";
     try {
-      address = extractAddress(
-        texto,
-        effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
-        phone,
-        name,
-        parsed
-      );
+      address = validStandaloneNameReply
+        ? ""
+        : extractAddress(
+            texto,
+            effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
+            phone,
+            name,
+            parsed
+          );
     } catch (error) {
       console.error("⚠️ extractAddress falló; se continúa sin dirección:", error);
     }
@@ -8281,6 +8389,7 @@ export default async function handler(req: any, res: any) {
 
     if (validStandaloneNameReply) {
       orderData.customer_name = contextualName;
+      orderData.city = sanitizedOldCity || oldOrder.city || orderData.city;
     }
 
     if (!orderData.city && historyRecoveredCity) {
@@ -8846,12 +8955,21 @@ export default async function handler(req: any, res: any) {
     }
     if (validStandaloneNameReply) {
       orderData.customer_name = contextualName;
+      orderData.city = sanitizedOldCity || oldOrder.city || orderData.city;
     }
     if (
       isStandaloneQuantityReply(orderData.city) ||
-      normalize(orderData.city) === normalize(orderData.customer_name)
+      normalize(orderData.city) === normalize(orderData.customer_name) ||
+      (
+        validStandaloneNameReply &&
+        normalize(orderData.city) !== normalize(sanitizedOldCity || oldOrder.city || "")
+      )
     ) {
       orderData.city = sanitizedOldCity || oldOrder.city || "";
+    }
+
+    if (validStandaloneNameReply) {
+      orderData.customer_name = contextualName;
     }
 
     const finalState = buildState(orderData, parsed);
@@ -9307,9 +9425,14 @@ export default async function handler(req: any, res: any) {
       )
     ) {
       const qtySelected = sanitizeQuantity(orderData.quantity);
+      const aiCityQuestion = await buildAICityQuestion({
+        apiKey,
+        model,
+        order: orderData,
+      });
       const response = qtySelected > 0
-        ? `Perfecto 😊 Ya registré ${qtySelected} unidad${qtySelected > 1 ? "es" : ""} de ${orderData.product}.\n\n📍 ¿Para qué ciudad querés que preparemos el envío?`
-        : "😊 ¿Para qué ciudad querés que preparemos el envío? 📦📍";
+        ? `Perfecto, ya registré ${qtySelected} unidad${qtySelected > 1 ? "es" : ""} de ${orderData.product}.\n\n${aiCityQuestion}`
+        : aiCityQuestion;
 
       return res.json({
         response,
