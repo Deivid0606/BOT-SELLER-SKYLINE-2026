@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V144: separa transferencia exitosa de acreditación pendiente; comprobante válido confirma inmediatamente y muestra verificación + cierre en una sola respuesta.
  * V143: preserva ciudades reales no listadas entre turnos, impide que cantidades reemplacen ciudad/cobertura y reconoce variantes como procesador/procesadora.
  * V140: después de una compra confirmada, otro producto abre una venta nueva y reenvía imagen/copy; solo agrega al pedido con intención explícita de mismo pedido.
  * V141: un producto nuevo con interés explícito reinicia cualquier carrito/estado viejo antes de procesarlo y reenvía imagen + copy.
@@ -27,7 +28,7 @@ import { createClient } from "@supabase/supabase-js";
  * V119 histórico reemplazado por V125: el pagador completa el nombre solo cuando todavía no existe un nombre válido del cliente.
  * V118: conserva comprobantes aunque cambie el order_id interno, nunca exige dirección para transportadora y fuerza el cierre fijo correcto.
  * V112: detecta ciudades en frases con errores como “Yo estoi en Caacupe”, bloquea nombres y direcciones contaminadas.
- * V110: confirma comprobantes pendientes para revisión manual cuando destinatario y monto son válidos.
+ * V110 histórico: registraba comprobantes pendientes para revisión manual; V144 ya no confirma el pedido hasta que el pago figure exitoso.
  * V109: impide usar ciudades como nombre del cliente.
  * V108 histórico: valida destinatario bancario y admite PDF sin texto de estado; V125 usa el pagador como cliente únicamente si falta un nombre válido.
  * V107: verifica titular, monto y estado del comprobante antes de confirmar pagos anticipados.
@@ -5684,19 +5685,30 @@ No alteres los valores leídos para hacerlos coincidir.`,
 function paymentProofVerificationMessage(order: OrderData, expectedAmount: number): string {
   if (!order.payment_proof_received) return "";
 
-  if (order.payment_proof_verified) {
-    return `${
-      order.payment_manual_review_required
-        ? "✅ Comprobante recibido\n⏳ Acreditación pendiente de verificación manual"
-        : "✅ Comprobante verificado"
-    }
+  if (order.payment_proof_verified && !order.payment_manual_review_required) {
+    return `✅ TRANSFERENCIA VERIFICADA
 
-👤 Pagador detectado: ${order.payment_holder_name}
-💰 Monto detectado: ${formatGs(order.payment_amount || 0)} Gs
-🏦 Destinatario verificado: ${order.payment_recipient_name || "cuenta bancaria configurada"}${order.payment_operation_number ? `
+La transferencia figura exitosa y los datos coinciden correctamente.
+
+👤 Pagador: ${order.payment_holder_name}
+💰 Monto recibido: ${formatGs(order.payment_amount || 0)} Gs
+🏦 Destinatario: ${order.payment_recipient_name || "cuenta bancaria configurada"}${order.payment_operation_number ? `
 🔢 Operación: ${order.payment_operation_number}` : ""}
 
 El monto cubre el total del pedido de ${formatGs(expectedAmount)} Gs.`;
+  }
+
+  if (order.payment_manual_review_required) {
+    return `⏳ COMPROBANTE RECIBIDO
+
+El destinatario y el monto coinciden, pero la transferencia todavía figura pendiente de acreditación.
+
+👤 Pagador detectado: ${order.payment_holder_name}
+💰 Monto detectado: ${formatGs(order.payment_amount || 0)} Gs
+🏦 Destinatario: ${order.payment_recipient_name || "cuenta bancaria configurada"}${order.payment_operation_number ? `
+🔢 Operación: ${order.payment_operation_number}` : ""}
+
+El pedido todavía no fue confirmado. Se confirmará cuando el pago figure exitoso o acreditado.`;
   }
 
   const details = [
@@ -5874,9 +5886,7 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
 📞 Contacto: ${o.phone}${observationBlock(o)}
 
 🚚 Envío por transportadora
-${o.payment_manual_review_required
-  ? "💳 Comprobante recibido — acreditación pendiente de verificación manual"
-  : "💳 Pago anticipado verificado"}
+💳 Transferencia exitosa y pago anticipado verificado
 
 ¡Muchas gracias por tu compra! 💜`;
   }
@@ -6466,7 +6476,7 @@ REGLAS DURAS:
 - Guardá el talle/calce en observación. Pedí dirección solamente cuando Dirección opcional = no.
 - Nunca uses una frase publicitaria como "Usalas con" como nombre de producto.
 
-- En ciudad sin contra-entrega, el comprobante verificado NO alcanza por sí solo para confirmar: también debe existir un nombre completo escrito explícitamente por el cliente. El pagador del comprobante se guarda como dato técnico, pero nunca reemplaza automáticamente el nombre del cliente. Si falta el nombre, validá el comprobante y pedí solamente el nombre completo. Una ciudad o un producto nunca pueden ser nombre del cliente.
+- En ciudad sin contra-entrega, un comprobante exitoso, con destinatario correcto y monto suficiente, puede usar el nombre válido del pagador cuando todavía falta el nombre del cliente. Si todos los demás datos están completos, el backend confirma inmediatamente en la misma respuesta.
 - Si el cliente propone una transportadora específica, registrá la preferencia como observación. No prometas que se enviará por esa empresa ni digas que ya fue coordinado, salvo que ENTRENAMIENTO GENERAL indique expresamente que está disponible o autorizada.
 - REGLA ABSOLUTA PARA TRANSPORTADORA/ENCOMIENDA: la ciudad es suficiente como destino. Nunca pidas dirección exacta, calle, barrio, ubicación ni referencia. Si el cliente menciona una agencia (por ejemplo NASA), guardala solo como observación o preferencia de transportadora, pero no bloquees el cierre.
 - Cuando ya existen producto, cantidad, ciudad sin contra-entrega, nombre y comprobante verificado, no redactes una confirmación libre: el backend debe emitir inmediatamente el formato fijo de PEDIDO CONFIRMADO.
@@ -8312,12 +8322,13 @@ export default async function handler(req: any, res: any) {
             : "";
 
         orderData.payment_recipient_matched = recipientMatches;
+        // V144: solo un pago finalizado/aprobado se considera verificado.
+        // Una transferencia pendiente puede estar bien dirigida y por el monto correcto,
+        // pero no confirma el pago ni el pedido hasta que figure exitosa/acreditada.
         orderData.payment_proof_verified = Boolean(
           basePaymentDataValid &&
-          (
-            statusIsFinal ||
-            orderData.payment_manual_review_required
-          )
+          statusIsFinal &&
+          !transferIsPending
         );
 
         // V125: si todavía no existe un nombre real del cliente, usar el nombre
@@ -8328,6 +8339,7 @@ export default async function handler(req: any, res: any) {
         // y el backend debe responder directamente con PEDIDO CONFIRMADO.
         if (
           orderData.payment_proof_verified &&
+          !orderData.payment_manual_review_required &&
           hasPayerName &&
           (
             !orderData.customer_name ||
@@ -8561,7 +8573,13 @@ export default async function handler(req: any, res: any) {
       confirm = false;
     }
 
-    if (finalState.coverage === false && !orderData.payment_proof_verified) {
+    if (
+      finalState.coverage === false &&
+      (
+        !orderData.payment_proof_verified ||
+        orderData.payment_manual_review_required
+      )
+    ) {
       directConfirm = false;
       confirm = false;
     }
@@ -8687,9 +8705,20 @@ export default async function handler(req: any, res: any) {
       }
 
       const fixedConfirmation = finalConfirmationMessage(finalState, parsed);
+      const successfulPaymentIntro =
+        proofReceived &&
+        finalState.coverage === false &&
+        orderData.payment_proof_verified &&
+        !orderData.payment_manual_review_required
+          ? paymentProofVerificationMessage(orderData, expectedPaymentAmount)
+          : "";
+
+      const finalSuccessfulResponse = successfulPaymentIntro
+        ? `${successfulPaymentIntro}\n\n${fixedConfirmation}`
+        : fixedConfirmation;
 
       return res.json({
-        response: fixedConfirmation,
+        response: finalSuccessfulResponse,
         context: {
           ...(context || {}),
           current_product: orderData.product || null,
