@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V139: pide un solo dato por respuesta; captura ciudad y cantidad combinadas y, si llega solo cantidad, conserva la cantidad y pregunta únicamente ciudad.
  * V138: bloquea cantidades antes de detectar ciudad, conserva ciudad ante departamentos/regiones y reinicia pedidos confirmados vencidos.
  * V137: corrige postventa multiproducto, persiste teléfono alternativo y exige una ubicación completa (no solo km/barrio).
  * V136: dirección o ubicación obligatoria para zonas cubiertas y fecha/hora real de Paraguay en consultas temporales.
@@ -4952,7 +4953,7 @@ function buildHardInstruction(state: ConversationState) {
     if (order.locked_offer?.fixed_quantity) {
       return `Confirmar que la promo es un pack fijo de ${order.locked_offer.quantity} unidades por ${formatGs(order.locked_offer.total)} Gs, aclarar que no se vende por unidad y preguntar SOLO ciudad de envío. No pedir nombre/dirección/teléfono todavía.`;
     }
-    return "Confirmar producto/precio/promo y preguntar SOLO ciudad de envío. No inventar ciudad. No pedir nombre/dirección/teléfono todavía.";
+    return "Preguntar EXCLUSIVAMENTE la ciudad de envío. No preguntar cantidad en esta respuesta. No hacer dos preguntas. Si el cliente ya indicó cantidad en el mensaje actual, conservarla y preguntar únicamente ciudad. No inventar ciudad. No pedir nombre/dirección/teléfono todavía.";
   }
 
   if (!order.quantity) {
@@ -6355,8 +6356,10 @@ REGLAS DURAS:
 - Si Ciudad ya tiene valor en ESTADO DEL PEDIDO, PROHIBIDO volver a preguntar ciudad.
 - PROHIBIDO usar ciudad vieja si no aparece en ESTADO DEL PEDIDO.
 - Si falta producto, ofrecé catálogo/productos.
-- Si falta ciudad, preguntá ciudad (variá la frase, no uses siempre la misma).
-- Si falta cantidad, preguntá cantidad.
+- REGLA DE UNA SOLA PREGUNTA: pedí únicamente el primer dato faltante según este orden: ciudad, cantidad, nombre y apellido, dirección o ubicación. Nunca preguntes ciudad y cantidad en la misma respuesta.
+- Antes de responder, respetá todos los datos detectados en el mensaje actual. Si el cliente escribió ciudad y cantidad juntas, no vuelvas a pedir ninguna de las dos. Si escribió solo cantidad, guardala y preguntá únicamente ciudad. Si escribió solo ciudad, informá logística y preguntá únicamente cantidad.
+- Si falta ciudad, preguntá solamente ciudad (variá la frase, no uses siempre la misma) y no agregues una pregunta de cantidad.
+- Si la ciudad ya está completa y falta cantidad, preguntá solamente cantidad.
 - Si la plantilla dice Producto + Cantidad + Precio, pack fijo, combo fijo, no se vende por unidad o únicamente por pack: NO preguntes cantidad, respetá cantidad y precio de la plantilla.
 - Si hay promo variable de 2 unidades y el cliente no especificó cantidad, NO asumas 1 unidad ni 2 unidades: preguntá si quiere 1 unidad o la promo.
 - Si el cliente pide fecha, horario, pagar cuando cobre, llamar antes o coordinar entrega, guardalo como observación y continuá cerrando la venta. No cortes la venta por eso.
@@ -8761,6 +8764,49 @@ export default async function handler(req: any, res: any) {
               preferred_delivery_time: orderData.preferred_delivery_time || null,
             }
           : undefined,
+      });
+    }
+
+    // V139: flujo determinístico de un solo dato pendiente.
+    // Evita respuestas dobles como "¿cuántas unidades?" + "¿de qué ciudad?".
+    // Si el mensaje ya trajo cantidad, se conserva y se pregunta únicamente ciudad.
+    if (
+      !confirm &&
+      orderData.product &&
+      !clean(orderData.city) &&
+      !isQuestionLikeMessage(texto) &&
+      (
+        isGenericBuyReply(texto) ||
+        isBuyIntent(texto) ||
+        explicitQty > 0 ||
+        sanitizeQuantity(orderData.quantity) > 0
+      )
+    ) {
+      const qtySelected = sanitizeQuantity(orderData.quantity);
+      const response = qtySelected > 0
+        ? `Perfecto 😊 Ya registré ${qtySelected} unidad${qtySelected > 1 ? "es" : ""} de ${orderData.product}.\n\n📍 ¿Para qué ciudad querés que preparemos el envío?`
+        : "😊 ¿Para qué ciudad querés que preparemos el envío? 📦📍";
+
+      return res.json({
+        response,
+        context: {
+          ...(context || {}),
+          current_product: orderData.product || null,
+          last_topic: orderData.product || context?.last_topic || null,
+          last_ad_offer: orderData.locked_offer || null,
+          order_data: orderData,
+          order_id: orderData.order_id || null,
+          step: "collecting_city",
+          address_optional: finalState.addressOptional,
+          updated_at: new Date().toISOString(),
+        },
+        debug: {
+          v139_single_pending_question: true,
+          requested_only: "city",
+          quantity_preserved: qtySelected,
+          city: null,
+          product: orderData.product,
+        },
       });
     }
 
