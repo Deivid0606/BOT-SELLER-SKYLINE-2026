@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V134: pago anticipado automático; envía datos bancarios al definir ciudad/cantidad, usa pagador válido como cliente y fuerza cierre directo.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
  * V125: si falta un nombre real, el comprobante válido usa el nombre del pagador como cliente; bloquea nombres que sean productos y evita prometer transportadoras no autorizadas.
  * CHAT IA VENDEDOR AUTÓNOMO V115 - Mega Todo Store / One Store
@@ -5738,18 +5739,11 @@ function finalConfirmationMessage(state: ConversationState, parsed: ParsedTraini
 
 🚚 Envío por transportadora
 ${o.payment_manual_review_required
-  ? "💳 Comprobante recibido\n⏳ Acreditación pendiente de verificación manual"
+  ? "💳 Comprobante recibido — acreditación pendiente de verificación manual"
   : "💳 Pago anticipado verificado"}
-👤 Pagador: ${o.payment_holder_name}
-🏦 Destinatario verificado: ${o.payment_recipient_name || parsed.bankData?.titular || "cuenta configurada"}
-💰 Monto recibido: ${formatGs(o.payment_amount || 0)} Gs${o.payment_operation_number ? `
-🔢 Operación: ${o.payment_operation_number}` : ""}
-
-Una vez despachado, te enviaremos el comprobante correspondiente. 📦
 
 ¡Muchas gracias por tu compra! 💜`;
   }
-
   return `✅ PEDIDO CONFIRMADO
 
 📦 Producto: ${o.product}
@@ -5923,9 +5917,15 @@ function deterministicAfterCityCoverageMessage(
 😊 Igual podemos enviarte por transportadora 🚚
 💳 Para este destino el pago es anticipado.
 
-Para continuar, realizá la transferencia y enviame el comprobante.
+📦 Producto: ${o.product}
+🔢 Cantidad: ${o.quantity} u.
+💰 Total a transferir: ${formatGs(state.total)} Gs
 
-Si todavía no me pasaste tu nombre completo, enviámelo junto con el comprobante.`;
+🏦 Datos para la transferencia:
+${bankDataText(parsed)}
+
+📎 Después de transferir, enviame el comprobante.
+👤 Si todavía no me pasaste tu nombre completo, podés enviarlo junto con el comprobante. Si el comprobante verificado muestra claramente un pagador válido, usaremos ese nombre para confirmar directamente.`;
   }
 
   if (!o.quantity) {
@@ -7896,6 +7896,9 @@ export default async function handler(req: any, res: any) {
         // V125: si todavía no existe un nombre real del cliente, usar el nombre
         // del remitente/pagador detectado en el comprobante. Nunca reemplazar un
         // nombre válido que el cliente ya haya escrito explícitamente.
+        // V134: si el comprobante queda verificado y no existe un nombre válido,
+        // el pagador válido pasa a ser el cliente. El estado se recalcula más abajo
+        // y el backend debe responder directamente con PEDIDO CONFIRMADO.
         if (
           orderData.payment_proof_verified &&
           hasPayerName &&
@@ -8169,8 +8172,8 @@ export default async function handler(req: any, res: any) {
       persistedOrderId = await safeUpsertOrder(user_id, fromNumber, orderData, parsed, confirm);
     }
 
-    // V120: si en este mensaje se recibió un comprobante y el pedido todavía
-    // no puede cerrarse, devolver SIEMPRE el resultado técnico de la validación.
+    // V134: el cierre tiene prioridad absoluta. Solo mostrar el análisis del
+    // comprobante cuando todavía falta algún requisito y no se puede confirmar.
     // No permitir que Gemini o una rama conversacional silencien si el
     // destinatario coincide, el monto alcanza o el archivo fue rechazado.
     if (proofReceived && currentCoverageForProof === false && !confirm) {
