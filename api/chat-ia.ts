@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V147: los comprobantes enviados como imagen/PDF conservan y recuperan producto, cantidad, oferta, ciudad y total; el pago anticipado confirma directamente cuando los datos coinciden.
  * V146: cuando el flujo espera nombre, una respuesta de nombre no puede reemplazar ciudad/cobertura; mejora el nombre canónico de productos y bloquea titulares publicitarios.
  * V145: confirma comprobantes legibles sin exigir la palabra “exitosa” cuando pagador, destinatario y monto coinciden y no existe estado pendiente o negativo.
  * V144: separa transferencia exitosa de acreditación pendiente; comprobante válido confirma inmediatamente y muestra verificación + cierre en una sola respuesta.
@@ -5711,6 +5712,149 @@ No alteres los valores leídos para hacerlos coincidir.`,
   return parsed ? normalizePaymentProofAnalysis(parsed) : fallback;
 }
 
+
+function recoverPaymentOrderSnapshot({
+  orderData,
+  oldOrder,
+  context,
+  history,
+  parsed,
+}: {
+  orderData: OrderData;
+  oldOrder: OrderData;
+  context: any;
+  history: any[];
+  parsed: ParsedTraining;
+}) {
+  const contextOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
+
+  const productCandidates = [
+    orderData.product,
+    oldOrder.product,
+    contextOrder.product,
+    context?.last_ad_product,
+    context?.last_ad_offer?.product,
+    orderData.locked_offer?.product,
+    oldOrder.locked_offer?.product,
+    contextOrder.locked_offer?.product,
+    getProductFromLastPromotion(history, parsed)?.canonical,
+    getLastRealSalesTemplateProduct(history, parsed)?.canonical,
+  ]
+    .map(clean)
+    .filter(Boolean);
+
+  let productInfo: ProductItem | null = null;
+  for (const candidate of productCandidates) {
+    productInfo = getProductInfo(candidate, parsed);
+    if (productInfo) break;
+  }
+
+  const quantityCandidates = [
+    sanitizeQuantity(orderData.quantity),
+    sanitizeQuantity(oldOrder.quantity),
+    sanitizeQuantity(contextOrder.quantity),
+    sanitizeQuantity(orderData.locked_offer?.quantity),
+    sanitizeQuantity(oldOrder.locked_offer?.quantity),
+    sanitizeQuantity(contextOrder.locked_offer?.quantity),
+    sanitizeQuantity(context?.last_ad_offer?.quantity),
+  ].filter((q) => q > 0);
+
+  const quantity = quantityCandidates[0] || 0;
+
+  const offerCandidates = [
+    orderData.locked_offer,
+    oldOrder.locked_offer,
+    contextOrder.locked_offer,
+    context?.last_ad_offer,
+  ];
+
+  let lockedOffer: OfferItem | null = null;
+
+  if (productInfo && quantity > 0) {
+    for (const candidate of offerCandidates) {
+      if (
+        candidate &&
+        normalize(candidate.product) === normalize(productInfo.canonical) &&
+        sanitizeQuantity(candidate.quantity) === quantity &&
+        Number(candidate.total || 0) > 0
+      ) {
+        const normalizedCandidate: OfferItem = {
+          product: productInfo.canonical,
+          quantity,
+          total: Number(candidate.total),
+          label: clean(candidate.label || ""),
+          source: candidate.source || "context",
+          fixed_quantity: Boolean(candidate.fixed_quantity),
+        };
+
+        if (isPlausibleOfferForProduct(normalizedCandidate, productInfo)) {
+          lockedOffer = normalizedCandidate;
+          break;
+        }
+      }
+    }
+
+    if (!lockedOffer) {
+      lockedOffer =
+        getCatalogOffer(productInfo, quantity) ||
+        (
+          productInfo.fixedPackQuantity === quantity
+            ? getCatalogFixedPackOffer(productInfo)
+            : null
+        );
+    }
+  }
+
+  const city =
+    canonicalizeStoredCity(orderData.city || "", parsed) ||
+    canonicalizeStoredCity(oldOrder.city || "", parsed) ||
+    canonicalizeStoredCity(contextOrder.city || "", parsed) ||
+    clean(orderData.city || oldOrder.city || contextOrder.city || "");
+
+  const customerName =
+    clean(orderData.customer_name) ||
+    clean(oldOrder.customer_name) ||
+    clean(contextOrder.customer_name);
+
+  const phone =
+    clean(orderData.phone) ||
+    clean(oldOrder.phone) ||
+    clean(contextOrder.phone);
+
+  const canonicalProduct = productInfo?.canonical || "";
+
+  let expectedAmount =
+    canonicalProduct && quantity > 0
+      ? calculateTotal(canonicalProduct, quantity, parsed, lockedOffer)
+      : 0;
+
+  if (!expectedAmount && lockedOffer?.total) {
+    expectedAmount = Number(lockedOffer.total);
+  }
+
+  const contextTotalCandidates = [
+    Number(context?.total || 0),
+    Number(context?.order_total || 0),
+    Number(context?.expected_payment_amount || 0),
+    Number(context?.order_data?.total || 0),
+  ].filter((value) => Number.isFinite(value) && value > 0);
+
+  if (!expectedAmount && contextTotalCandidates.length) {
+    expectedAmount = contextTotalCandidates[0];
+  }
+
+  return {
+    productInfo,
+    product: canonicalProduct,
+    quantity,
+    lockedOffer,
+    city,
+    customerName,
+    phone,
+    expectedAmount,
+  };
+}
+
 function paymentProofVerificationMessage(order: OrderData, expectedAmount: number): string {
   if (!order.payment_proof_received) return "";
 
@@ -7619,6 +7763,26 @@ export default async function handler(req: any, res: any) {
       parsed,
     });
 
+    // V147: una imagen o PDF recibido durante un pedido activo pertenece al mismo
+    // pedido. Nunca debe iniciar una venta nueva ni borrar producto/cantidad.
+    const incomingPaymentProof = hasPaymentProof(
+      context,
+      texto,
+      media_url,
+      media_type || mime_type
+    );
+
+    if (
+      incomingPaymentProof &&
+      (
+        clean(oldOrder.product) ||
+        clean(context?.order_data?.product) ||
+        clean(context?.last_ad_product)
+      )
+    ) {
+      freshOrder = false;
+    }
+
     if ((newTemplateSignal.isNew || forceFreshOrderFromConfirmedTemplate) && context?.step === "pedido_confirmado") {
       freshOrder = true;
     }
@@ -8199,7 +8363,24 @@ export default async function handler(req: any, res: any) {
     // V104: la cantidad elegida por el cliente es la fuente de verdad.
     // Una oferta vieja de 1 unidad nunca puede reemplazar una cantidad 2.
     if (explicitQty > 0) {
+      const quantityChangedForPayment =
+        sanitizeQuantity(oldOrder.quantity) > 0 &&
+        sanitizeQuantity(oldOrder.quantity) !== sanitizeQuantity(explicitQty);
+
       orderData.quantity = explicitQty;
+
+      if (quantityChangedForPayment) {
+        orderData.payment_proof_received = false;
+        orderData.payment_proof_verified = false;
+        orderData.payment_holder_name = "";
+        orderData.payment_amount = 0;
+        orderData.payment_operation_number = "";
+        orderData.payment_status_text = "";
+        orderData.payment_verification_error = "";
+        orderData.payment_recipient_matched = false;
+        orderData.payment_manual_review_required = false;
+        orderData.payment_manual_review_reason = "";
+      }
 
       if (productInfo) {
         const exactTemplateOfferRaw = getTemplateOfferForQuantity(
@@ -8280,11 +8461,48 @@ export default async function handler(req: any, res: any) {
     }
 
     const proofReceived = hasPaymentProof(context, texto, media_url, media_type || mime_type);
+
+    // V147: el turno de imagen/PDF puede llegar sin texto. Recuperar el pedido
+    // comercial antes de calcular el monto esperado y antes de analizar el comprobante.
+    const recoveredPaymentOrder = proofReceived
+      ? recoverPaymentOrderSnapshot({
+          orderData,
+          oldOrder,
+          context,
+          history,
+          parsed,
+        })
+      : null;
+
+    if (recoveredPaymentOrder) {
+      if (recoveredPaymentOrder.product) {
+        orderData.product = recoveredPaymentOrder.product;
+      }
+      if (recoveredPaymentOrder.quantity > 0) {
+        orderData.quantity = recoveredPaymentOrder.quantity;
+      }
+      if (recoveredPaymentOrder.lockedOffer) {
+        orderData.locked_offer = recoveredPaymentOrder.lockedOffer;
+      }
+      if (recoveredPaymentOrder.city) {
+        orderData.city = recoveredPaymentOrder.city;
+      }
+      if (!orderData.customer_name && recoveredPaymentOrder.customerName) {
+        orderData.customer_name = recoveredPaymentOrder.customerName;
+      }
+      if (!orderData.phone && recoveredPaymentOrder.phone) {
+        orderData.phone = recoveredPaymentOrder.phone;
+      }
+    }
+
     const currentCoverageForProof = orderData.city ? hasCoverage(orderData.city, parsed) : null;
     const expectedPaymentAmount =
-      orderData.product && orderData.quantity
-        ? calculateTotal(orderData.product, orderData.quantity, parsed, orderData.locked_offer)
-        : 0;
+      recoveredPaymentOrder?.expectedAmount ||
+      (
+        orderData.product && orderData.quantity
+          ? calculateTotal(orderData.product, orderData.quantity, parsed, orderData.locked_offer)
+          : 0
+      );
 
     if (proofReceived && currentCoverageForProof === false) {
       orderData.payment_proof_received = true;
