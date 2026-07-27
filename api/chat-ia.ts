@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V129: saludos y consultas generales sin producto ya no heredan productos viejos, plantillas históricas ni current_product; preserva únicamente compras activas recientes y verificables.
  * V128: entrenamientos separados por reglas generales, cobertura, horarios y banco; todas las respuestas normales se guían por esos entrenamientos y el cierre definitivo permanece fijo en el código.
  * V127: checkout determinístico para transportadora; jamás pide dirección y confirma al completar nombre + comprobante.
  * V126: clasificación estricta de nombre, ciudad y referencia; reconoce ciudades con ruta/km/barrio, bloquea frases conversacionales como nombres y trata la ubicación postergada como opcional.
@@ -5002,6 +5003,89 @@ function looksLikeNewChatSession(text: string, context: any, history: any[]) {
   return ageMinutes > 45;
 }
 
+/**
+ * V129: apertura genérica sin producto.
+ *
+ * Un saludo o una solicitud vaga de información no puede activar un producto
+ * heredado desde historial, current_product, last_topic, una plantilla antigua
+ * ni un pedido ya confirmado. Solo se conserva una compra en curso cuando existe
+ * una interacción reciente y verificable en la que el bot estaba solicitando
+ * un dato concreto de ese mismo pedido.
+ */
+function isGenericOpeningMessage(text: string) {
+  const n = normalize(text);
+  if (!n) return false;
+
+  const pureGreeting =
+    /^(hola+|holi+|ola+|buenas|buen dia|buenas tardes|buenas noches|saludos|hey|hello)[!. ]*$/.test(n);
+
+  const genericInformation =
+    /^(?:hola+\s+|holi+\s+|buenas\s+)?(?:(?:quiero|quisiera|necesito|me gustaria|me gustaría)\s+)?(?:mas\s+)?(?:informacion|info|saber mas|conocer mas)(?:\s+por favor|\s+porfa)?[!. ]*$/.test(n);
+
+  const genericPurchase =
+    /^(?:hola+\s+|holi+\s+|buenas\s+)?(?:quiero comprar|me interesa|quiero saber que tienen|que tienen disponible|qué tienen disponible)[!. ]*$/.test(n);
+
+  return pureGreeting || genericInformation || genericPurchase;
+}
+
+function currentInboundHasProductSource(
+  body: any,
+  text: string,
+  parsed: ParsedTraining,
+  currentTemplatePricing: TemplatePricing | null
+) {
+  if (detectProductStrict(text, parsed)) return true;
+  if (currentTemplatePricing?.product) return true;
+
+  const referral = body?.referral || body?.ad_referral || body?.source_referral || {};
+  const candidates = [
+    body?.product,
+    body?.product_name,
+    body?.ad_product,
+    body?.ad_product_name,
+    body?.template_product,
+    referral?.product,
+    referral?.product_name,
+    referral?.headline,
+    referral?.body,
+    referral?.source_url,
+  ]
+    .map(clean)
+    .filter(Boolean);
+
+  return candidates.some((candidate) => Boolean(detectProductStrict(candidate, parsed)));
+}
+
+function hasRecentActiveCheckoutConversation(context: any, history: any[], parsed: ParsedTraining) {
+  const step = clean(context?.step);
+  const order = sanitizeOldOrder(context?.order_data || {}, parsed);
+  const ageMinutes = minutesSince(context?.updated_at);
+
+  const activeStep = [
+    "collecting_city",
+    "collecting_quantity",
+    "collecting_name",
+    "collecting_address",
+    "collecting_phone",
+    "waiting_payment_proof",
+  ].includes(step);
+
+  if (!activeStep || !order.product || ageMinutes > 15) return false;
+
+  const lastAssistant = (Array.isArray(history) ? history : [])
+    .slice()
+    .reverse()
+    .find((item: any) => item?.role === "assistant" || item?.role === "model");
+
+  const lastAssistantText = normalize(lastAssistant?.content || "");
+  if (!lastAssistantText) return false;
+
+  return (
+    /\?/.test(clean(lastAssistant?.content || "")) &&
+    /\b(ciudad|unidades|cantidad|nombre|apellido|direccion|ubicacion|comprobante|transferencia|promo|promocion)\b/.test(lastAssistantText)
+  );
+}
+
 async function safeUpsertOrder(
   userId: string,
   from: string,
@@ -6754,6 +6838,14 @@ export default async function handler(req: any, res: any) {
 
     const currentTemplatePricing = detectTemplatePricingSmart(texto, parsed);
 
+    const genericOpeningNow = isGenericOpeningMessage(texto);
+    const inboundHasCurrentProduct = currentInboundHasProductSource(
+      req.body,
+      texto,
+      parsed,
+      currentTemplatePricing
+    );
+
     const newTemplateSignal = isNewTemplateOrProductIntent(texto, parsed, history);
 
     const recentExplicitProductInterest = getRecentExplicitProductInterestAfterConfirmed(history, parsed);
@@ -6770,12 +6862,37 @@ export default async function handler(req: any, res: any) {
     let oldOrder = sanitizeOldOrder(context?.order_data || {}, parsed);
     if (!oldOrder.phone) oldOrder.phone = senderPhoneFallback(fromNumber);
 
+    const recentActiveCheckout = hasRecentActiveCheckoutConversation(
+      context,
+      history,
+      parsed
+    );
+
+    const detachInheritedProductForGenericOpening = Boolean(
+      genericOpeningNow &&
+      !inboundHasCurrentProduct &&
+      !recentActiveCheckout
+    );
+
+    // V129: "Hola" o "quiero más información" sin producto actual no hereda
+    // productos desde current_product, last_topic, historial, plantillas antiguas
+    // ni pedidos confirmados. El entrenamiento recibirá producto vacío y podrá
+    // preguntar naturalmente qué producto le interesa al cliente.
+    if (detachInheritedProductForGenericOpening) {
+      oldOrder = emptyOrder(makeOrderId(fromNumber));
+      oldOrder.phone = senderPhoneFallback(fromNumber);
+      templatePricing = currentTemplatePricing;
+    }
+
     // V100: un chat nuevo o una sesión vencida jamás hereda producto,
     // cantidad, ciudad ni datos de un chat anterior.
     const resetBecauseNewChat =
-      context?.step !== "pedido_confirmado" &&
-      looksLikeNewChatSession(texto, context, history) &&
-      Boolean(oldOrder.product || oldOrder.city || oldOrder.quantity || oldOrder.customer_name || oldOrder.address);
+      detachInheritedProductForGenericOpening ||
+      (
+        context?.step !== "pedido_confirmado" &&
+        looksLikeNewChatSession(texto, context, history) &&
+        Boolean(oldOrder.product || oldOrder.city || oldOrder.quantity || oldOrder.customer_name || oldOrder.address)
+      );
 
     if (resetBecauseNewChat) {
       oldOrder = emptyOrder(makeOrderId(fromNumber));
@@ -6973,8 +7090,14 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    const productFromMessageInitial = detectProduct(texto, parsed, "") || newTemplateSignal.product || "";
-    const lockedProductInitial = getLockedProductFromContext(context, oldOrder, history, parsed);
+    const productFromMessageInitial =
+      detectProduct(texto, parsed, "") ||
+      (!detachInheritedProductForGenericOpening ? newTemplateSignal.product : "") ||
+      "";
+
+    const lockedProductInitial = detachInheritedProductForGenericOpening
+      ? null
+      : getLockedProductFromContext(context, oldOrder, history, parsed);
     const promoResponse = isRespondingToPromotion(texto, history);
 
     let freshOrder = resetBecauseNewChat || shouldStartFreshOrder({
@@ -7039,20 +7162,29 @@ export default async function handler(req: any, res: any) {
             : null)
         : currentTemplateLockedOfferRaw;
 
-    let lockedOfferByContext = freshOrder
-      ? (currentTemplateLockedOffer || getOfferFromLastPromotion(history, parsed))
-      : getLockedOfferFromContext(context, oldOrder, history, parsed);
+    let lockedOfferByContext = detachInheritedProductForGenericOpening
+      ? null
+      : freshOrder
+        ? (currentTemplateLockedOffer || getOfferFromLastPromotion(history, parsed))
+        : getLockedOfferFromContext(context, oldOrder, history, parsed);
 
-    let productToUse =
-      currentTemplatePricing?.product ||
-      ((isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) ? recentExplicitProductInterest?.product?.canonical || "" : "") ||
-      productFromMessageInitial ||
-      newTemplateSignal.product ||
-      (!freshOrder ? oldOrder.product || "" : "") ||
-      templatePricing?.product ||
-      "";
+    let productToUse = detachInheritedProductForGenericOpening
+      ? (currentTemplatePricing?.product || detectProductStrict(texto, parsed) || "")
+      : (
+          currentTemplatePricing?.product ||
+          ((isGenericBuyReply(texto) || isStrongNewPurchaseReply(texto) || hasTemplateBuyIntent(texto)) ? recentExplicitProductInterest?.product?.canonical || "" : "") ||
+          productFromMessageInitial ||
+          newTemplateSignal.product ||
+          (!freshOrder ? oldOrder.product || "" : "") ||
+          templatePricing?.product ||
+          ""
+        );
 
-    if (!productToUse && (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))) {
+    if (
+      !detachInheritedProductForGenericOpening &&
+      !productToUse &&
+      (isGenericBuyReply(texto) || promoResponse || isBuyIntent(texto))
+    ) {
       productToUse = templatePricing?.product || getProductFromLastPromotion(history, parsed)?.canonical || lockedProductInitial?.canonical || "";
     }
 
@@ -7079,7 +7211,9 @@ export default async function handler(req: any, res: any) {
     // V65: nunca permitir que títulos comerciales reemplacen el producto.
     // Se prioriza el producto canónico previamente válido o el detectado en el mensaje.
     const explicitCanonicalProduct = getProductInfo(detectProduct(texto, parsed, ""), parsed)?.canonical || "";
-    const previousCanonicalProduct = getProductInfo(oldOrder.product || "", parsed)?.canonical || "";
+    const previousCanonicalProduct = detachInheritedProductForGenericOpening
+      ? ""
+      : getProductInfo(oldOrder.product || "", parsed)?.canonical || "";
     const candidateCanonicalProduct = getProductInfo(product || productToUse || "", parsed)?.canonical || "";
     product = explicitCanonicalProduct || previousCanonicalProduct || candidateCanonicalProduct || "";
     if (isGenericProductLabel(product) || /promoci[oó]n especial/i.test(product)) {
@@ -7928,7 +8062,10 @@ export default async function handler(req: any, res: any) {
       }
     }
 
-    if (isGenericProductLabel(orderData.product) || /^(usalas con|usala con|usalo con)$/i.test(normalize(orderData.product))) {
+    if (
+      !detachInheritedProductForGenericOpening &&
+      (isGenericProductLabel(orderData.product) || /^(usalas con|usala con|usalo con)$/i.test(normalize(orderData.product)))
+    ) {
       const recoveredProduct =
         getProductInfo(context?.current_product || "", parsed)?.canonical ||
         detectProduct(texto, parsed, context?.current_product || "");
@@ -8518,7 +8655,7 @@ export default async function handler(req: any, res: any) {
     const copyAlreadySent = wasProductCopyAlreadySent(history, finalState.productInfo);
     const system = buildSalesSystemPrompt(parsed, finalState, templatePricing, copyAlreadySent);
 
-    const contents = (history || [])
+    const contents = (detachInheritedProductForGenericOpening ? [] : (history || []))
       .slice(-12)
       .filter((h: any) => clean(h?.content))
       .map((h: any) => ({
@@ -8532,6 +8669,12 @@ ${texto || "(mensaje sin texto)"}
 
 INTENCIÓN TÉCNICA DETECTADA:
 - Solicita catálogo: ${catalogRequestedNow ? "sí" : "no"}
+- Apertura genérica sin producto actual: ${detachInheritedProductForGenericOpening ? "sí" : "no"}
+- Producto mencionado o identificado en este mensaje: ${inboundHasCurrentProduct ? "sí" : "no"}
+
+${detachInheritedProductForGenericOpening
+  ? "INSTRUCCIÓN OBLIGATORIA: el mensaje actual no identifica ningún producto. Saludá, ofrecé ayuda y preguntá sobre qué producto desea información. No presentes ningún copy, precio ni promoción y no preguntes ciudad todavía."
+  : ""}
 
 Respondé ahora como vendedor. Seguí la instrucción obligatoria. No inventes ciudad ni datos.
 Toda la respuesta visible debe ser escrita por vos; no dependas de plantillas del backend.
