@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V130: interpretación semántica estructurada desde los entrenamientos; el backend valida datos y conserva cierres/comprobantes determinísticos.
  * V129: saludos y consultas generales sin producto ya no heredan productos viejos, plantillas históricas ni current_product; preserva únicamente compras activas recientes y verificables.
  * V128: entrenamientos separados por reglas generales, cobertura, horarios y banco; todas las respuestas normales se guían por esos entrenamientos y el cierre definitivo permanece fijo en el código.
  * V127: checkout determinístico para transportadora; jamás pide dirección y confirma al completar nombre + comprobante.
@@ -5404,6 +5405,226 @@ function parseJsonObjectFromModel(text: string): any {
   return null;
 }
 
+
+type ConversationInterpretation = {
+  intent: string;
+  is_question: boolean;
+  pause_flow: boolean;
+  product: string;
+  city: string;
+  quantity: number;
+  customer_name: string;
+  address: string;
+  observation: string;
+  reply_guidance: string;
+};
+
+function emptyConversationInterpretation(): ConversationInterpretation {
+  return {
+    intent: "otro",
+    is_question: false,
+    pause_flow: false,
+    product: "",
+    city: "",
+    quantity: 0,
+    customer_name: "",
+    address: "",
+    observation: "",
+    reply_guidance: "",
+  };
+}
+
+function normalizeConversationInterpretation(value: any): ConversationInterpretation {
+  const fallback = emptyConversationInterpretation();
+  const quantity = sanitizeQuantity(value?.quantity ?? value?.cantidad ?? 0);
+
+  return {
+    intent: clean(value?.intent || value?.intencion || fallback.intent),
+    is_question: value?.is_question === true || normalize(value?.is_question) === "true",
+    pause_flow: value?.pause_flow === true || normalize(value?.pause_flow) === "true",
+    product: clean(value?.product || value?.producto || ""),
+    city: clean(value?.city || value?.ciudad || ""),
+    quantity,
+    customer_name: clean(value?.customer_name || value?.nombre_cliente || value?.name || ""),
+    address: clean(value?.address || value?.direccion || value?.reference || value?.referencia || ""),
+    observation: clean(value?.observation || value?.observacion || ""),
+    reply_guidance: clean(value?.reply_guidance || value?.guia_respuesta || ""),
+  };
+}
+
+function validateSemanticProduct(value: string, parsed: ParsedTraining): string {
+  return getProductInfo(value, parsed)?.canonical || "";
+}
+
+function validateSemanticCity(value: string, parsed: ParsedTraining): string {
+  const raw = clean(value);
+  if (!raw) return "";
+
+  const exact = exactKnownCity(raw, parsed);
+  if (exact) return exact;
+
+  const canonical = canonicalizeStoredCity(raw, parsed);
+  if (canonical && exactKnownCity(canonical, parsed)) return canonical;
+
+  // Una ciudad declarada explícitamente puede estar fuera de cobertura.
+  // Se admite solo cuando tiene forma de localidad y no parece consulta,
+  // producto, cantidad, precio, saludo ni frase conversacional.
+  const n = normalize(raw);
+  if (
+    /^[a-zA-ZÁÉÍÓÚáéíóúÑñ.'\-\s]{3,60}$/.test(raw) &&
+    !/[?¿]/.test(raw) &&
+    !/\b(hola|buenas|precio|presio|informacion|información|quiero|producto|unidad|promo|gracias|delivery|envio|envío|factura|pago)\b/.test(n)
+  ) {
+    return toTitleCase(raw);
+  }
+
+  return "";
+}
+
+async function interpretConversationWithTraining({
+  apiKey,
+  model,
+  message,
+  parsed,
+  currentOrder,
+  currentStep,
+  history,
+}: {
+  apiKey: string;
+  model: string;
+  message: string;
+  parsed: ParsedTraining;
+  currentOrder: OrderData;
+  currentStep: string;
+  history: any[];
+}): Promise<ConversationInterpretation> {
+  const fallback = emptyConversationInterpretation();
+
+  const productNames = parsed.products
+    .map((p) => p.canonical)
+    .filter(Boolean)
+    .slice(0, 200);
+
+  const knownCities = Array.from(
+    new Set(parsed.cities.flatMap((c) => [c.canonical, c.alias]).map(clean).filter(Boolean))
+  ).slice(0, 600);
+
+  const recentHistory = (history || [])
+    .slice(-8)
+    .map((item: any) => `${item?.role === "assistant" ? "ASISTENTE" : "CLIENTE"}: ${clean(item?.content)}`)
+    .filter(Boolean)
+    .join("\n");
+
+  const system = `Sos un intérprete de mensajes comerciales de WhatsApp.
+Tu trabajo es interpretar el mensaje usando EXCLUSIVAMENTE:
+1) los entrenamientos activos;
+2) el catálogo real;
+3) las ciudades reales;
+4) el estado técnico actual.
+
+No redactes el cierre definitivo. No confirmes pagos. No inventes datos.
+Respondé EXCLUSIVAMENTE JSON válido, sin markdown, con esta forma:
+{
+  "intent": "saludo|consulta_general|producto|precio|cantidad|ciudad|nombre|direccion|entrega|pago|factura|agradecimiento|pausa|otro",
+  "is_question": boolean,
+  "pause_flow": boolean,
+  "product": string,
+  "city": string,
+  "quantity": number,
+  "customer_name": string,
+  "address": string,
+  "observation": string,
+  "reply_guidance": string
+}
+
+REGLAS:
+- Campos no presentes: cadena vacía o 0.
+- No copies datos viejos en los campos extraídos: devolvé solo datos expresados o confirmados por el mensaje actual.
+- "Hola", "quiero información", "me interesa" sin producto NO identifican producto.
+- Una pregunta no es ciudad, nombre ni dirección.
+- Solo devolvé product si coincide con un producto del catálogo.
+- Solo devolvé quantity cuando el mensaje actual expresa una cantidad inequívoca.
+- Solo devolvé customer_name cuando parece nombre real y no producto, ciudad, pregunta o frase conversacional.
+- pause_flow=true para agradecimiento, despedida o cuando dice que seguirá después.
+- reply_guidance describe brevemente qué debe responder la vendedora según el entrenamiento, sin redactar un cierre.
+- Si el cliente pregunta otra cosa durante la compra, indicá responder primero esa consulta y luego retomar el siguiente dato faltante.
+- El entrenamiento general controla conversación; cobertura, horarios y banco controlan sus propios temas.
+
+CATÁLOGO REAL:
+${productNames.join("\n") || "(sin productos)"}
+
+CIUDADES Y VARIANTES CONOCIDAS:
+${knownCities.join("\n") || "(sin ciudades configuradas)"}
+
+ENTRENAMIENTO GENERAL:
+${parsed.generalTraining || "(vacío)"}
+
+ENTRENAMIENTO DE COBERTURA:
+${parsed.coverageTraining || "(vacío)"}
+
+ENTRENAMIENTO DE HORARIOS:
+${parsed.deliveryScheduleTraining || "(vacío)"}
+
+ENTRENAMIENTO BANCARIO:
+${parsed.bankingTraining || "(vacío)"}`;
+
+  const user = `ESTADO TÉCNICO ACTUAL:
+- Producto: ${currentOrder.product || "(vacío)"}
+- Ciudad: ${currentOrder.city || "(vacía)"}
+- Cantidad: ${currentOrder.quantity || 0}
+- Nombre: ${currentOrder.customer_name || "(vacío)"}
+- Dirección: ${currentOrder.address || "(vacía)"}
+- Paso: ${currentStep || "(vacío)"}
+
+HISTORIAL RECIENTE:
+${recentHistory || "(vacío)"}
+
+MENSAJE ACTUAL:
+${message || "(sin texto)"}
+
+Interpretá solamente el mensaje actual.`;
+
+  try {
+    const response = await callGemini({
+      apiKey,
+      model,
+      system,
+      contents: [{ role: "user", parts: [{ text: user }] }],
+      temperature: 0,
+      maxTokens: 900,
+    });
+
+    if (!response || response === "__GEMINI_QUOTA_EXCEEDED__") return fallback;
+    const parsedJson = parseJsonObjectFromModel(response);
+    if (!parsedJson) return fallback;
+
+    const normalized = normalizeConversationInterpretation(parsedJson);
+    normalized.product = validateSemanticProduct(normalized.product, parsed);
+    normalized.city = validateSemanticCity(normalized.city, parsed);
+
+    if (
+      normalized.customer_name &&
+      isInvalidCustomerNameForOrder(
+        normalized.customer_name,
+        normalized.city || currentOrder.city || "",
+        parsed
+      )
+    ) {
+      normalized.customer_name = "";
+    }
+
+    if (normalized.address && isQuestionLikeMessage(normalized.address)) {
+      normalized.address = "";
+    }
+
+    return normalized;
+  } catch (error) {
+    console.error("⚠️ Interpretación semántica falló; se usan validadores técnicos:", error);
+    return fallback;
+  }
+}
+
+
 function normalizePaymentProofAnalysis(value: any): PaymentProofAnalysis {
   const amount = Number(String(value?.amount ?? value?.monto ?? 0).replace(/[^\d]/g, "") || 0);
   const holder = clean(value?.holder_name || value?.titular || value?.payer_name || "");
@@ -7090,7 +7311,21 @@ export default async function handler(req: any, res: any) {
       }
     }
 
+    // V130: Gemini interpreta el mensaje desde los entrenamientos y devuelve
+    // datos estructurados. El backend valida esos datos antes de guardarlos.
+    // Los extractores históricos permanecen solo como respaldo técnico.
+    const semanticInterpretation = await interpretConversationWithTraining({
+      apiKey,
+      model,
+      message: texto,
+      parsed,
+      currentOrder: oldOrder,
+      currentStep: context?.step || "",
+      history,
+    });
+
     const productFromMessageInitial =
+      semanticInterpretation.product ||
       detectProduct(texto, parsed, "") ||
       (!detachInheritedProductForGenericOpening ? newTemplateSignal.product : "") ||
       "";
@@ -7237,7 +7472,7 @@ export default async function handler(req: any, res: any) {
       oldOrder.order_id = makeOrderId(fromNumber);
     }
 
-    let explicitQty = extractQuantity(texto);
+    let explicitQty = semanticInterpretation.quantity || extractQuantity(texto);
 
     if (explicitQty === 0 && productInfo) {
       const qtyFromPrice = extractQuantityFromPriceMention(texto, productInfo, templatePricing);
@@ -7326,7 +7561,9 @@ export default async function handler(req: any, res: any) {
       oldOrder.city = sanitizedOldCity;
     }
 
-    const explicitKnownCityFromMessage = extractExplicitKnownCityFromSentence(texto, parsed);
+    const explicitKnownCityFromMessage =
+      semanticInterpretation.city ||
+      extractExplicitKnownCityFromSentence(texto, parsed);
     const detectedCityRaw = detectCity(texto, parsed, sanitizedOldCity || "");
     const exactCityFromMessage = exactKnownCity(texto, parsed);
     const explicitDifferentCity = Boolean(
@@ -7483,7 +7720,7 @@ export default async function handler(req: any, res: any) {
     // derribar todo el turno ni devolver “No pude procesar...”.
     let detectedName = "";
     try {
-      detectedName = extractName(
+      detectedName = semanticInterpretation.customer_name || extractName(
         texto,
         effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
         phone,
@@ -7513,7 +7750,7 @@ export default async function handler(req: any, res: any) {
 
     let address = "";
     try {
-      address = extractAddress(
+      address = semanticInterpretation.address || extractAddress(
         texto,
         effectiveDetectedCity !== oldOrder.city ? effectiveDetectedCity : "",
         phone,
@@ -7527,6 +7764,12 @@ export default async function handler(req: any, res: any) {
     let observationPatch: Partial<OrderData> = {};
     try {
       observationPatch = extractOrderObservation(texto);
+      if (semanticInterpretation.observation) {
+        observationPatch.observation = mergeUniqueText(
+          clean(observationPatch.observation || ""),
+          semanticInterpretation.observation
+        );
+      }
     } catch (error) {
       console.error("⚠️ extractOrderObservation falló:", error);
     }
@@ -8668,6 +8911,10 @@ Mensaje del cliente:
 ${texto || "(mensaje sin texto)"}
 
 INTENCIÓN TÉCNICA DETECTADA:
+- Intención semántica: ${semanticInterpretation.intent || "otro"}
+- Es pregunta: ${semanticInterpretation.is_question ? "sí" : "no"}
+- Pausa o despedida: ${semanticInterpretation.pause_flow ? "sí" : "no"}
+- Guía extraída desde los entrenamientos: ${semanticInterpretation.reply_guidance || "(ninguna)"}
 - Solicita catálogo: ${catalogRequestedNow ? "sí" : "no"}
 - Apertura genérica sin producto actual: ${detachInheritedProductForGenericOpening ? "sí" : "no"}
 - Producto mencionado o identificado en este mensaje: ${inboundHasCurrentProduct ? "sí" : "no"}
