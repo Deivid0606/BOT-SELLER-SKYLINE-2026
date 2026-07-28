@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 /**
+ * V131: corrige falsos positivos de ciudad en frases comerciales como “cómo sería para la compra”; valida antes de extraer y bloquea candidatos no geográficos.
  * V130: interpretación semántica estructurada desde los entrenamientos; el backend valida datos y conserva cierres/comprobantes determinísticos.
  * V129: saludos y consultas generales sin producto ya no heredan productos viejos, plantillas históricas ni current_product; preserva únicamente compras activas recientes y verificables.
  * V128: entrenamientos separados por reglas generales, cobertura, horarios y banco; todas las respuestas normales se guían por esos entrenamientos y el cierre definitivo permanece fijo en el código.
@@ -1659,7 +1660,10 @@ function isClearlyNotCityMessage(text: string): boolean {
   if (/\b(cuentan con delivery|tienen delivery|hay delivery|hacen envios|hacen envio|realizan delivery|de donde traen|de donde viene|de donde es|ustedes de donde|donde son ustedes)\b/.test(n)) return true;
 
   // Preguntas escritas sin signos o con errores frecuentes.
-  if (/\b(seria|sería|cuanto|cuánto|cuantos|cuántos|precio|costo|valor|sale|cuesta)\b/.test(n)) return true;
+  if (/\b(seria|sería|cuanto|cuánto|cuantos|cuántos|precio|costo|valor|sale|cuesta|como|cómo)\b/.test(n)) return true;
+
+  // V130: lenguaje comercial o de checkout nunca es una ciudad.
+  if (/\b(compra|comprar|pedido|producto|pago|pagar|transferencia|comprobante|factura|datos bancarios|como seria para|cómo sería para)\b/.test(n)) return true;
 
   // Consultas de funcionamiento o resultado nunca son ciudades.
   if (isProductEffectivenessQuestion(raw)) return true;
@@ -1867,57 +1871,48 @@ function isStrictStandaloneCustomerName(
   return !forbidden.test(n);
 }
 
+function isRejectedCityCandidate(text: string): boolean {
+  const raw = clean(text);
+  const n = normalize(raw);
+  if (!raw || !n) return true;
+
+  // Frases comerciales, preguntas, estados del pedido y medios de pago nunca
+  // pueden convertirse en una localidad, aunque tengan forma de nombre propio.
+  if (isQuestionLikeMessage(raw) || isTemporalDeliveryExpression(raw)) return true;
+
+  if (
+    /\b(?:compra|comprar|compro|pedido|producto|articulo|artículo|precio|presio|costo|valor|promo|promocion|promoción|oferta|unidad|unidades|cantidad|pago|pagar|pagos|transferencia|efectivo|banco|cuenta|alias|comprobante|factura|delivery|envio|envío|entrega|consulta|informacion|información|datos|nombre|apellido|telefono|teléfono|celular|direccion|dirección|ubicacion|ubicación|referencia|quiero|necesito|me interesa|como seria|cómo sería|como sería|como hago|cómo hago)\b/.test(n)
+  ) {
+    return true;
+  }
+
+  if (/^(?:la|el|una|un)?\s*(?:compra|venta|consulta|promocion|promoción|oferta|entrega|informacion|información|transferencia|confirmacion|confirmación)$/i.test(n)) {
+    return true;
+  }
+
+  return false;
+}
+
 function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const raw = clean(text);
   const previous = canonicalizeStoredCity(prev || "", parsed);
 
   if (!raw) return previous;
-
-  // V121: una consulta de precio, incluso con errores ortográficos comunes,
-  // nunca puede convertirse en ciudad. Esta validación no genera mensajes:
-  // únicamente conserva el estado para que Gemini responda normalmente.
   if (isPriceQuery(raw)) return previous;
 
-  // V126: una ciudad configurada dentro de una frase siempre gana.
-  // Ejemplos: "Capiatá ex ruta 1", "Luque zona aeropuerto".
+  // Las ciudades configuradas y las menciones explícitas conocidas tienen
+  // prioridad, incluso dentro de frases más largas o con referencias.
   const configuredInsideMessage = configuredCityInsideMessage(raw, parsed);
   if (configuredInsideMessage) return configuredInsideMessage;
 
-  // PRIMERO: una coincidencia exacta del entrenamiento siempre gana,
-  // incluso si contiene números, por ejemplo "Campo 9".
   const exactCity = exactKnownCity(raw, parsed);
   if (exactCity) return exactCity;
 
   const explicitKnownCity = extractExplicitKnownCityFromSentence(raw, parsed);
   if (explicitKnownCity) return explicitKnownCity;
 
-  // V112: primero extraer una declaración explícita, incluso con errores
-  // frecuentes: "Yo estoi en Caacupe", "toy en Luque", "stoy en Capiata".
-  const earlyStatement = extractCityStatement(raw);
-  if (earlyStatement) {
-    const earlyKnown = exactKnownCity(earlyStatement, parsed);
-    if (earlyKnown) return earlyKnown;
-
-    const earlyConfigured = extractExplicitKnownCityFromSentence(
-      earlyStatement,
-      parsed
-    );
-    if (earlyConfigured) return earlyConfigured;
-
-    const earlyWords = normalize(earlyStatement).split(/\s+/).filter(Boolean);
-    const validEarlyLocality =
-      earlyWords.length >= 1 &&
-      earlyWords.length <= 6 &&
-      earlyStatement.length >= 3 &&
-      earlyStatement.length <= 70 &&
-      /^[a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]+$/.test(earlyStatement) &&
-      /[a-zA-ZÁÉÍÓÚáéíóúÑñ]/.test(earlyStatement);
-
-    if (validEarlyLocality) return toTitleCase(earlyStatement);
-  }
-
-  // Nunca convertir respuestas comerciales, cantidades, agradecimientos,
-  // nombres, preguntas o productos en una ciudad.
+  // Bloquear antes de ejecutar cualquier extractor genérico. Esto evita casos
+  // como “¿cómo sería para la compra?” => “La Compra”.
   if (
     isClearlyNotCityMessage(raw) ||
     isQuestionLikeMessage(raw) ||
@@ -1930,8 +1925,7 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
 
   const statement = extractCityStatement(raw);
   const candidate = clean(statement || raw);
-
-  if (!candidate) return previous;
+  if (!candidate || isRejectedCityCandidate(candidate)) return previous;
 
   const exactStatement = exactKnownCity(candidate, parsed);
   if (exactStatement) return exactStatement;
@@ -1942,10 +1936,8 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
   const normalizedCandidate = normalize(candidate);
   const words = normalizedCandidate.split(/\s+/).filter(Boolean);
 
-  // Una localidad fuera de cobertura puede no estar en el entrenamiento.
-  // Se acepta únicamente cuando tiene forma clara de localidad.
-  // Admite ejemplos como "Campo 9", "Santa Rosa del Aguaray"
-  // o "25 de Diciembre".
+  // Se permiten localidades no configuradas únicamente cuando el mensaje tiene
+  // forma limpia de localidad y no contiene vocabulario comercial.
   const validLocalityShape =
     words.length >= 1 &&
     words.length <= 6 &&
@@ -1955,14 +1947,6 @@ function detectCity(text: string, parsed: ParsedTraining, prev?: string) {
     /[a-zA-ZÁÉÍÓÚáéíóúÑñ]/.test(candidate);
 
   if (!validLocalityShape) return previous;
-
-  // Bloqueo final de expresiones que tienen forma de texto pero no de localidad.
-  if (
-    /^(quiero|quiero uno|quiero una|quiero dos|quiero 1|quiero 2|uno|una|dos|tres|cuatro|cinco|2x1|2 x 1)$/i.test(normalizedCandidate) ||
-    /\b(gracias|pedido|precio|presio|presyo|prezio|preio|prcio|pecio|prescio|precios|presios|producto|promo|promocion|promoción|unidad|unidades|comprar|compro|quiero|necesito|delivery|envio|envío)\b/.test(normalizedCandidate)
-  ) {
-    return previous;
-  }
 
   return toTitleCase(candidate);
 }
@@ -2033,12 +2017,12 @@ function extractCityStatement(text: string): string {
     /\bmi\s+ciudad\s+(?:es|seria|sería)\s+(.+)$/i,
     /^(.+?)\s+(?:es|seria|sería)\s+mi\s+ciudad$/i,
     /\bpara\s+la\s+ciudad\s+de\s+(.+)$/i,
-    /\b(?:quiero|necesito|seria|sería)\s+para\s+(.+)$/i,
+    /^(?:seria|sería)\s+para\s+(?:la\s+ciudad\s+de\s+)?(.+)$/i,
     /\bpara\s+env[ií]o\s+a\s+(.+)$/i,
     /\bpara\s+enviar\s+a\s+(.+)$/i,
     /\benv[ií]o\s+a\s+(.+)$/i,
     /\bdelivery\s+a\s+(.+)$/i,
-    /\bpara\s+(.+)$/i,
+    /^(?:para|envio para|envío para|entrega para)\s+([a-zA-ZÁÉÍÓÚáéíóúÑñ0-9.\-\s]{3,70})$/i,
   ];
 
   for (const pattern of patterns) {
@@ -2061,7 +2045,8 @@ function extractCityStatement(text: string): string {
       words.length <= 5 &&
       !/^\d+$/.test(candidate) &&
       !isTemporalDeliveryExpression(candidate) &&
-      !looksLikeSentenceNotCity(candidate)
+      !looksLikeSentenceNotCity(candidate) &&
+      !isRejectedCityCandidate(candidate)
     ) {
       return candidate;
     }
